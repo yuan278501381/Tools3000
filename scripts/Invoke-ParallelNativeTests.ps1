@@ -6,11 +6,11 @@ Tools3000 原生 C++ 单元测试沙箱隔离智能并发调度器 (Invoke-Paral
 .DESCRIPTION
 在不跳过、不削弱任何一条 GTest 断言的前提下，通过互斥无交集静态分组 + 独立 TOOLS3000_DATA_ROOT 沙箱隔离，
 将 Tools3000Tests.exe (800+ 用例) 从单进程串行 ~105s 提速至 ~45-52s：
-  1. 重型 ONNX DeepOcr 推理池 (OCR_CORE) 独占单进程，避免多进程 ONNX 线程池争抢物理核导致空载超时抖动；
-  2. 插件与跨进程隔离池 (OCR_PLUGIN) 独立运行，与 OCR_CORE 严格互斥；
-  3. 其余 740+ 轻量单测按 GTEST_TOTAL_SHARDS=2 均分为 FAST_0 / FAST_1 并发完跑；
+  1. 重型 ONNX DeepOcr 推理池 (OCR_CORE) 独占单进程 (~46s)，避免多进程 ONNX 线程池争抢物理核导致空载超时抖动；
+  2. 插件与跨进程隔离池 (OCR_PLUGIN) 独立运行 (~14s)，与 OCR_CORE 严格互斥；
+  3. 其余 740+ 轻量/GUI 窗口单测收敛在单一确定性进程 (FAST, ~42s) 与 OCR_CORE 并行完跑，彻底消除两个 GUI 分片同时创建/检索同名 Win32 顶层窗口类 (FindWindowW) 引发的跨进程假阳性碰撞，且墙钟总耗时不增加；
   4. 每个分片分配独立 TOOLS3000_DATA_ROOT 沙箱，并通过只读目录联接 (Junction) 零拷贝共享宿主 OCR 模型目录；
-  5. 数学闭环守卫：自动比对 --gtest_list_tests 全量启用用例数与 4 路实际运行用例总和，确保 0 遗漏、0 重复！
+  5. 数学闭环守卫：自动比对 --gtest_list_tests 全量启用用例数与 3 路实际运行用例总和，确保 0 遗漏、0 重复！
 #>
 param(
     [Parameter(Mandatory = $true)]
@@ -47,7 +47,7 @@ if ($expectedTotalTests -le 0) {
     throw "未能从 $TestExePath 解析到有效 GTest 用例数"
 }
 
-# 2. 定义严格互斥无交集的 4 路并发分片（覆盖全集 100%）
+# 2. 定义严格互斥无交集的 3 路并发分片（覆盖全集 100%，且 GUI/FindWindowW 用例独占单进程 0 碰撞）
 $ocrCorePattern   = "*Ocr*:*LiveOcr*"
 $ocrPluginPattern = "*TextReplace*:*WorkerIsolation*:*PinWindow*:*CapturePluginIntegration*:*CaptureBatch2InteractionUpgrade*"
 $filterCore       = $ocrCorePattern
@@ -57,8 +57,7 @@ $filterFast       = "-${ocrCorePattern}:${ocrPluginPattern}"
 $shards = @(
     @{ Name = "OCR_CORE";   Filter = $filterCore;   TotalShards = 1; ShardIndex = 0 },
     @{ Name = "OCR_PLUGIN"; Filter = $filterPlugin; TotalShards = 1; ShardIndex = 0 },
-    @{ Name = "FAST_0";     Filter = $filterFast;   TotalShards = 2; ShardIndex = 0 },
-    @{ Name = "FAST_1";     Filter = $filterFast;   TotalShards = 2; ShardIndex = 1 }
+    @{ Name = "FAST";       Filter = $filterFast;   TotalShards = 1; ShardIndex = 0 }
 )
 
 $hostModelsDir = Join-Path $env:LOCALAPPDATA "Tools3000\models"
@@ -68,7 +67,7 @@ New-Item -ItemType Directory -Path $sandboxRoot -Force | Out-Null
 $wallSw = [System.Diagnostics.Stopwatch]::StartNew()
 $running = @()
 try {
-    Write-Host "[TEST] 启动 4 路沙箱隔离并发 C++ 单元测试 (全量基线: $expectedTotalTests 个用例)..." -ForegroundColor Cyan
+    Write-Host "[TEST] 启动 3 路沙箱隔离并发 C++ 单元测试 (全量基线: $expectedTotalTests 个用例)..." -ForegroundColor Cyan
     foreach ($s in $shards) {
         $dataDir = Join-Path $sandboxRoot $s.Name
         New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
@@ -144,7 +143,7 @@ try {
     if ($actualTotalExecuted -ne $expectedTotalTests) {
         throw "测试分片总数校验未闭环！实际运行 $actualTotalExecuted 个用例，全量基线为 $expectedTotalTests 个用例，拒绝漏测或重测。"
     }
-    Write-Host ("[TEST] [OK] 全量 {0}/{1} 个原生 C++ 单元测试 100% 通过 (4 路并发总耗时: {2:N2}s)" -f $actualTotalExecuted, $expectedTotalTests, $wallSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    Write-Host ("[TEST] [OK] 全量 {0}/{1} 个原生 C++ 单元测试 100% 通过 (3 路并发总耗时: {2:N2}s)" -f $actualTotalExecuted, $expectedTotalTests, $wallSw.Elapsed.TotalSeconds) -ForegroundColor Green
 } finally {
     foreach ($item in $running) {
         if ($item.Proc -and -not $item.Proc.HasExited) {
