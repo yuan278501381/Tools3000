@@ -10,6 +10,7 @@ endif()
 # ─────────────────────────────────────────────────────────────────────────────
 
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" TOOLS3000_VERSION)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 string(STRIP "${TOOLS3000_VERSION}" TOOLS3000_VERSION)
 if(NOT TOOLS3000_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "VERSION must contain exactly one stable SemVer value (for example 1.2.3)")

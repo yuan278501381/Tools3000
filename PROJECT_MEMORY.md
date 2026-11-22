@@ -15,6 +15,9 @@
      - `CaptureBatch2InteractionUpgradeTest` 在连发 12 格 `WM_MOUSEWHEEL` 后，既断言首帧平滑起步（`scale > 1.0f && scale < 3.89f`），又泵 `WM_TIMER(kTimerIdZoomAnim=4)` 收敛至 `>= 3.8955f` 后断言终态 `1.12^12 ~= 3.896x`、像素网格与 `"390%"` HUD 胶囊。
   3. **全 8 语种视觉资产与 README 同步升级 (`README*.md`, `docs/images/<locale>/{feature_bento_overview.png,translate_demo.webp,clipboard_demo.webp}`)**：
      - 全部 8 国语言 README 同步补齐 v1.4.0 新功能介绍、对称 5×2 动态演示表（新增截图原位翻译与持久化剪贴板动图）、Ditto/`Win+V` 替代对照与 `Alt + V` 常用快捷键；Playwright 逐帧渲染动图严禁残留 CSS `transition`（否则跨帧截屏产生原文/译文鬼影叠层）。
+  4. **增量构建版本资源防陈旧缓存双保险 (`CMakeLists.txt`, `deploy.ps1`)**：
+     - 根因：`CMakeLists.txt` 使用 `file(READ VERSION)` 时未声明 `CMAKE_CONFIGURE_DEPENDS`，且 `deploy.ps1` 复用构建树时仅核对 `.tools3000_configure_stamp.sha256`，当手工回退分支/编译触发过中间版本 `Tools3000_version.rc` 覆写而 stamp 仍保留目标版本指纹时，二次发版会误跳过 CMake Configure 致 `Tools3000.exe` 沿用旧 `ProductVersion`；
+     - 根治：`CMakeLists.txt` 绑定 `CMAKE_CONFIGURE_DEPENDS` 追踪 `VERSION`，`deploy.ps1` 直接交叉校验 `build/generated/Tools3000Version.h` 与 `Tools3000_version.rc` 真实版本内容并在不一致时强制重跑 `cmake -B` 与重建 `*.res`。
 
 ### [2026-11-23] 剪贴板桌面级 Shift/Ctrl 固定锚点多选根治 + 搜索分类栏「全部/文档内容」固定与自定义拖拽持久化
 - **核心痛点根治与架构沉淀**：

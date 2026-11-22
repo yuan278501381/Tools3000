@@ -542,9 +542,14 @@ try {
         "v2|$ProjectVersion|$Arch|$StaticAnalysis|$VcpkgToolchain|$VcpkgInstalledDir|$($CMakeExtraArgs -join ';')|$CmakeListsHash|$VcpkgJsonHash|" + ($SrcFileInventory -join "`n")
     )
     $SavedConfigureFingerprint = if (Test-Path -LiteralPath $ConfigureStampPath) { (Get-Content -LiteralPath $ConfigureStampPath -Raw).Trim() } else { "" }
+    $GeneratedVersionH = Join-Path $BuildDir "generated\Tools3000Version.h"
+    $GeneratedVersionRc = Join-Path $BuildDir "generated\Tools3000_version.rc"
+    $GeneratedVersionMatched = (Test-Path -LiteralPath $GeneratedVersionH) -and (Test-Path -LiteralPath $GeneratedVersionRc) -and
+        ((Get-Content -LiteralPath $GeneratedVersionH -Raw -ErrorAction SilentlyContinue) -match ("String\[\]\s*=\s*`"" + [regex]::Escape($ProjectVersion) + "`"")) -and
+        ((Get-Content -LiteralPath $GeneratedVersionRc -Raw -ErrorAction SilentlyContinue) -match ("ProductVersion`",\s*`"" + [regex]::Escape($ProjectVersion) + "\.0\\0`""))
 
-    if ($CleanBuild -or -not (Test-Path -LiteralPath $CMakeCachePath) -or ($SavedConfigureFingerprint -ne $ConfigureFingerprint)) {
-        Write-Log "执行 CMake Configure (检测到配置/源码清单变化或首次构建)..."
+    if ($CleanBuild -or -not (Test-Path -LiteralPath $CMakeCachePath) -or ($SavedConfigureFingerprint -ne $ConfigureFingerprint) -or -not $GeneratedVersionMatched) {
+        Write-Log "执行 CMake Configure (检测到配置/源码清单/生成版本资源变化或首次构建)..."
         $CMakePlatformArgs = @()
         if ($Arch -eq "arm64") {
             $CMakePlatformArgs = @("-A", "ARM64", "-G", $Arm64Toolchain.Generator,
@@ -562,7 +567,7 @@ try {
         Write-Log "[OK] CMake 配置/源码清单指纹未变化，0ms 复用增量构建树 ($BuildDir)" "SUCCESS"
     }
 
-    # 确保全套多分辨率 Windows 图标与托盘图标存在，仅当版本/图标/rc 指纹变化时才清理 .res 强制重链
+    # 确保全套多分辨率 Windows 图标与托盘图标存在，仅当版本/图标/rc 指纹变化或版本生成物重建时才清理 .res 强制重链
     $IconScript = "$ScriptDir\resources\build_master_production_icons.py"
     $AppIco = "$ScriptDir\resources\app.ico"
     $TrayIco = "$ScriptDir\resources\tray.ico"
@@ -577,13 +582,13 @@ try {
 
     $ResStampPath = Join-Path $BuildDir ".tools3000_res_stamp.sha256"
     $ResInputs = @($VersionFile, $AppIco, $TrayIco, $TrayDarkIco, $TrayColorIco,
-        (Join-Path $ScriptDir "src\Tools3000.rc"), (Join-Path $ScriptDir "src\VersionInfo.rc.in"))
+        (Join-Path $ScriptDir "src\Tools3000.rc"), (Join-Path $ScriptDir "src\VersionInfo.rc.in"), $GeneratedVersionRc)
     $ResHashParts = foreach ($rf in $ResInputs) {
         if (Test-Path -LiteralPath $rf) { (Get-FileHash -LiteralPath $rf -Algorithm SHA256).Hash } else { "MISSING" }
     }
     $CurrentResFingerprint = Get-StringSha256Hex -Text ($ResHashParts -join "|")
     $SavedResFingerprint = if (Test-Path -LiteralPath $ResStampPath) { (Get-Content -LiteralPath $ResStampPath -Raw).Trim() } else { "" }
-    if ($CleanBuild -or $SavedResFingerprint -ne $CurrentResFingerprint) {
+    if ($CleanBuild -or -not $GeneratedVersionMatched -or $SavedResFingerprint -ne $CurrentResFingerprint) {
         Write-Log "检测到版本或图标资源变更，刷新 *.res 确保版本号与图标强制重新链接..."
         Get-ChildItem -Path $BuildDir -Filter "*.res" -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
         [System.IO.File]::WriteAllText($ResStampPath, $CurrentResFingerprint, [System.Text.UTF8Encoding]::new($false))
