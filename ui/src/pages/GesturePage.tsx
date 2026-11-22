@@ -31,6 +31,7 @@ import {
   TRIGGER_ITEM_DEFINITIONS,
   parseGestureCode,
   matchesGestureCategory,
+  resolveRequiredEdgeTriggerKey,
   simplifyDirections,
   upsertGestureMapping,
   type Direction,
@@ -322,10 +323,20 @@ export const GesturePage: FC = () => {
   const currentTriggerStates: Record<string, TriggerState> = useMemo(() => currentProfile.triggerStates ?? {}, [currentProfile.triggerStates]);
 
   // ── 持久化当前 Profile 的手势映射 ──────────────────────────────────────────
-  const persistMappings = useCallback(async (nextMappings: GestureMapping[]) => {
+  const persistMappings = useCallback(async (
+    nextMappings: GestureMapping[],
+    triggerStateOverrides?: Record<string, TriggerState>
+  ) => {
     const profName = getCurrentProfileName();
     const prevProf = profiles[profName] ?? { name: profName, mappings: [], triggerStates: {} };
-    const updatedProf: GestureProfileData = { ...prevProf, mappings: nextMappings };
+    const nextTriggerStates = triggerStateOverrides
+      ? { ...(prevProf.triggerStates ?? {}), ...triggerStateOverrides }
+      : prevProf.triggerStates;
+    const updatedProf: GestureProfileData = {
+      ...prevProf,
+      mappings: nextMappings,
+      ...(nextTriggerStates ? { triggerStates: nextTriggerStates } : {}),
+    };
     setProfiles((prev) => ({ ...prev, [profName]: updatedProf }));
 
     try {
@@ -398,8 +409,26 @@ export const GesturePage: FC = () => {
   const handleToggleMappingEnabled = async (index: number) => {
     const nextList = [...currentMappings];
     const item = nextList[index];
-    nextList[index] = { ...item, enabled: !(item.enabled ?? true) };
-    await persistMappings(nextList);
+    const nextEnabled = !(item.enabled ?? true);
+    nextList[index] = { ...item, enabled: nextEnabled };
+
+    // 边缘手势一键拨开时自动联动点亮对应边缘触发药丸；全部关回时自动熄灭，零误触无双道锁
+    let triggerOverrides: Record<string, TriggerState> | undefined;
+    const requiredTrigger = resolveRequiredEdgeTriggerKey(item.gestureCode);
+    if (requiredTrigger) {
+      if (nextEnabled && getTriggerState(requiredTrigger) !== 'enabled') {
+        triggerOverrides = { [requiredTrigger]: 'enabled' };
+      } else if (!nextEnabled && getTriggerState(requiredTrigger) === 'enabled') {
+        const stillHasActive = nextList.some(
+          (m) => (m.enabled ?? true) && resolveRequiredEdgeTriggerKey(m.gestureCode) === requiredTrigger
+        );
+        if (!stillHasActive) {
+          triggerOverrides = { [requiredTrigger]: 'disabled' };
+        }
+      }
+    }
+
+    await persistMappings(nextList, triggerOverrides);
   };
 
   // ── 持久化 ScopeRules ───────────────────────────────────────────────────────
@@ -518,7 +547,15 @@ export const GesturePage: FC = () => {
           return !areSimilarGestureCodes(m.gestureCode, saved.gestureCode);
         })
       : currentMappings;
-    void persistMappings(upsertGestureMapping(baseMappings, saved, editingMapping));
+    const nextMappings = upsertGestureMapping(baseMappings, saved, editingMapping);
+    let triggerOverrides: Record<string, TriggerState> | undefined;
+    if (saved.enabled !== false) {
+      const requiredTrigger = resolveRequiredEdgeTriggerKey(saved.gestureCode);
+      if (requiredTrigger && getTriggerState(requiredTrigger) !== 'enabled') {
+        triggerOverrides = { [requiredTrigger]: 'enabled' };
+      }
+    }
+    void persistMappings(nextMappings, triggerOverrides);
     setEditorOpen(false);
   };
 

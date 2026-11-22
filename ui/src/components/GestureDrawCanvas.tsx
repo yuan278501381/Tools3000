@@ -118,8 +118,8 @@ const LEFTEDGE_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'LeftEdge+R', labelKey: 'gesture.actions.back.name', defaultLabel: 'Back' },
   { code: 'LeftEdge+U', labelKey: 'gesture.actions.volumeUp.name', defaultLabel: 'Volume Up' },
   { code: 'LeftEdge+D', labelKey: 'gesture.actions.volumeDown.name', defaultLabel: 'Volume Down' },
-  { code: 'LeftEdge+WheelUp', labelKey: 'gesture.actions.volumeUp.name', defaultLabel: 'Volume Up' },
-  { code: 'LeftEdge+WheelDown', labelKey: 'gesture.actions.volumeDown.name', defaultLabel: 'Volume Down' },
+  { code: 'LeftEdge+WheelUp', labelKey: 'gesture.actions.brightnessUp.name', defaultLabel: 'Brightness Up' },
+  { code: 'LeftEdge+WheelDown', labelKey: 'gesture.actions.brightnessDown.name', defaultLabel: 'Brightness Down' },
 ];
 
 const RIGHTEDGE_PRESET_GESTURES: PresetGestureItem[] = [

@@ -856,5 +856,9 @@
   "一, 二, 三": "一, 二, 三",
   "Brightness {0}%": "明るさ {0}%",
   "Quick Save (Ctrl+Shift+S, Right-click Save As)": "クイック保存 (Ctrl+Shift+S、右クリックで名前を付けて保存)",
-  "Screenshot saved and copied to clipboard": "スクリーンショットを保存し、クリップボードにコピーしました"
+  "Screenshot saved and copied to clipboard": "スクリーンショットを保存し、クリップボードにコピーしました",
+  "Brightness Up": "画面の明るさを上げる",
+  "Increase brightness of the display under cursor": "カーソルがあるディスプレイのハードウェア輝度を上げます",
+  "Brightness Down": "画面の明るさを下げる",
+  "Decrease brightness of the display under cursor": "カーソルがあるディスプレイのハードウェア輝度を下げます"
 }

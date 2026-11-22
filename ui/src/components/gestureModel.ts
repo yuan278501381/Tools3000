@@ -655,3 +655,16 @@ export function recognizeStrokes(points: Point[], minSegmentDist = 16): string {
   const simplified = simplifyDirections(rawDirs);
   return simplified.join('-');
 }
+
+/**
+ * 解析屏幕边缘手势所依赖的触发方式 key（如 LeftEdge+WheelUp -> edge_left_wheel）。
+ * 非边缘手势返回 null。
+ */
+export function resolveRequiredEdgeTriggerKey(gestureCode: string): string | null {
+  const parsed = parseGestureCode(gestureCode);
+  if (parsed.edge === 'none') {
+    return null;
+  }
+  const suffix = parsed.wheelDirection ? 'wheel' : 'slide';
+  return `edge_${parsed.edge}_${suffix}`;
+}

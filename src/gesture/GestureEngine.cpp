@@ -2021,12 +2021,36 @@ void GestureEngine::loadFromConfig() {
     loadedProfiles.emplace("special_desktop", GestureProfile::createDesktopProfile());
     loadedProfiles.emplace("special_taskbar", GestureProfile::createTaskbarProfile());
     auto profilesJson = config.get<nlohmann::json>("/gesture/profiles");
-    if (profilesJson.is_array()) {
+    const bool hadSavedProfiles = profilesJson.is_array();
+    if (hadSavedProfiles) {
         for (const auto& pj : profilesJson) {
             auto profile = GestureProfile::fromJson(pj);
             if (!profile.name().empty()) {
                 loadedProfiles.insert_or_assign(profile.name(), std::move(profile));
             }
+        }
+    }
+    if (!config.get<bool>("/gesture/edgeBrightnessPresetV1Migrated", false)) {
+        bool injected = false;
+        if (auto itDef = loadedProfiles.find("default"); itDef != loadedProfiles.end()) {
+            const GestureProfile freshDefault = GestureProfile::createDefaultGlobal();
+            for (const char* code : {"LeftEdge+WheelUp", "LeftEdge+WheelDown"}) {
+                if (!itDef->second.hasGesture(code)) {
+                    if (auto preset = freshDefault.findMapping(code)) {
+                        preset->enabled = false;
+                        itDef->second.addMapping(*preset);
+                        injected = true;
+                    }
+                }
+            }
+        }
+        config.set<bool>("/gesture/edgeBrightnessPresetV1Migrated", true);
+        if (injected && hadSavedProfiles) {
+            nlohmann::json updatedProfiles = nlohmann::json::array();
+            for (const auto& [_, prof] : loadedProfiles) {
+                updatedProfiles.push_back(prof.toJson());
+            }
+            config.set<nlohmann::json>("/gesture/profiles", updatedProfiles);
         }
     }
     const auto loadedCount = loadedProfiles.size();

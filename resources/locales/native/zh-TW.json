@@ -856,5 +856,9 @@
   "一, 二, 三": "一, 二, 三",
   "Brightness {0}%": "亮度 {0}%",
   "Quick Save (Ctrl+Shift+S, Right-click Save As)": "快速儲存 (Ctrl+Shift+S，右鍵另存新檔)",
-  "Screenshot saved and copied to clipboard": "擷圖已儲存並複製到剪貼簿"
+  "Screenshot saved and copied to clipboard": "擷圖已儲存並複製到剪貼簿",
+  "Brightness Up": "調高螢幕亮度",
+  "Increase brightness of the display under cursor": "提高游標所在顯示器的硬體亮度",
+  "Brightness Down": "調低螢幕亮度",
+  "Decrease brightness of the display under cursor": "降低游標所在顯示器的硬體亮度"
 }
