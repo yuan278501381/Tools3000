@@ -25,7 +25,10 @@
      - **起笔激活距离与拐弯切段距离解耦 + 首段微惯性回拉裁噪 (`GestureRecognizer.cpp`, `GestureEngine.cpp`)**：阶段 1 仍严格守护 `minSegmentDistance`（默认 `24px` 防单击闪点），阶段 3 拐弯切段解耦封顶 `kMaxTurnSegmentDistancePx = 16`，`refineCodeWithPath` 同步解耦至 `max(turnSeg+4, firstPrimary*16%)`；完整码未命中且段数 `>= 3` 时，若首段极短惯性（`<= 38px` 且 `<= seg1 * 28%` 且 `seg1 >= 60px`），裁去首段惯性噪点精准复查表（如复位刹不住车的 `L(短)-D-R -> D-R`，严禁触发 `instantExecute`）；
      - **前后端同源尖角矢量上下文消歧 (`GestureRecognizer.{h,cpp}`, `gestureModel.ts`, `GestureDrawCanvas.tsx`)**：每段保存净位移 `(dx, dy)`，针对 135° 反向跨象限尖角对（`D-UR`/`DR-U` 等 16 种）只要正交段同侧倾角 `>= 6°` 即还原为双对角尖角（`DR-UR`），弧臂 V（`D->DR->UR`）不再被反 C 三段圆弧误掰成 `D-R-U`，对称窄印刷体 V（每臂 `>= 15°`、总张角 `>= 36°`）亦还原为 `DR-UR` 且零误伤日常往返 `U-D`；画板 `setPointerCapture` 改绑稳定容器 `canvasRef.current` 并补齐 `onPointerCancel`；
      - **结构化手势诊断日志 (`GestureRecognizer.{h,cpp}`, `GestureEngine.cpp`)**：冷路径 `finalize()` 生成 `raw=[dir:len(deg)]`、`simp`、`bbox`、`pathRefined`，并在 `endTracking` 默认 `INFO` 级输出识别诊断、首段裁噪记录、形状匹配 Top-1/Top-2 及未命中最高候选分数；
-  6. **回归验证**：C++ 手势全套 **223/223 PASS**（含 3 组新建真实 HWND / 形状阈值 / Chrome 连划与实机 V 截图防回退用例），前端 `tsc -b` + ESLint + 6 重并发静态门禁（8 语种同构/日志/CSS/排版/内存修剪）+ Vitest **31/31 文件 230/230 用例** + `vite:build` 生产构建全部 100% 通过。
+  6. **搜索结果表格列宽拖拽与并发单测隔离根治 (`ui/src/search/searchUtils.ts`, `SearchTableHeader.tsx`, `SearchApp.tsx`, `scripts/Invoke-ParallelNativeTests.ps1`)**：
+     - 响应 V2EX `@lzrainchen` 反馈（14 楼：搜索结果列表「所在目录」列拖不动）：定位双根因——① 默认 `<=5` 列拖弹性列 `path` 右边界误改右侧固定列 `size` 导致仅拉 16–24px 即撞死 `size.minWidth=72`；② 所有弹性列锁宽后 `fallbackStretchId` 仍对 `path` 套用 `minmax(px, 1fr)` 导致宽窗口下向左缩不动。根治方案：彻底移除 `fallbackStretchId` 对已锁宽列的劫持；`SearchTableHeader` 改为 Everything 风格单列 1:1 像素直调并在拖拽瞬间通过 `batchUpdateTableColumnWidths` 原子冻结左侧未锁宽弹性列防反向漂移；
+     - 同步修复 `Invoke-ParallelNativeTests.ps1` 中 `OCR_PLUGIN` 分片含 `*PinWindow*:*CapturePluginIntegration*:*CaptureBatch2InteractionUpgrade*` 顶层全屏捕获浮层与 `FAST` 分片 `MouseHook` 单测跨进程碰撞问题，将所有创建顶层 GUI 浮层的用例收敛回唯一确定性 `FAST` 进程；
+  7. **回归验证**：C++ 全量并发单测 + 手势 **223/223 PASS**，前端 `tsc -b` + ESLint + 6 重并发静态门禁 + Vitest 全量 + `vite:build` 生产构建全部 100% 通过。
 
 ### [2026-11-22] 手势 3 视觉开关真实 HWND 根治、Rust Picasa 看图器内存瘦身与标准小窗重构、全链路并发与增量打包提速引擎
 - **核心架构决策与实机验证控制点**：

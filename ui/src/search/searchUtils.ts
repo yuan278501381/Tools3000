@@ -213,15 +213,6 @@ export function buildTableLayoutMetrics(columns: ColumnLayout): TableLayoutMetri
   const flexCandidates = visibleCols.filter(
     (id) => getTableColumnSpec(id).isFlex && widths[id] === undefined,
   );
-  const hasExplicitFrTrack = flexCandidates.length > 0;
-  // 若所有弹性列均被用户锁定了固定宽度，选取一个兜底吸收列使用 minmax(px, 1fr) 保证铺满窗口无右缘空白
-  const fallbackStretchId: TableColumnId | null = hasExplicitFrTrack
-    ? null
-    : (visibleCols.includes('path')
-        ? 'path'
-        : visibleCols.includes('name')
-          ? 'name'
-          : (visibleCols[visibleCols.length - 1] ?? null));
 
   let minWidthSum = 0;
   const tracks = visibleCols.map((id) => {
@@ -230,9 +221,11 @@ export function buildTableLayoutMetrics(columns: ColumnLayout): TableLayoutMetri
 
     if (spec.isFlex) {
       if (customWidth !== undefined) {
+        // 用户手动调整（或自适应拟合）列宽后必须严格遵守精确像素值，
+        // 严禁再套用 minmax(px, 1fr) 强行撑宽导致在宽窗口下向左完全缩不动。
         const clamped = clampTableColumnWidth(id, customWidth);
         minWidthSum += clamped;
-        return id === fallbackStretchId ? `minmax(${clamped}px, 1fr)` : `${clamped}px`;
+        return `${clamped}px`;
       }
       // 当可见列超过 5 列（开启了扩展属性列）时，保证名称与路径保留舒适底宽防止横向挤压
       const floorPx = visibleCols.length > 5
@@ -251,7 +244,7 @@ export function buildTableLayoutMetrics(columns: ColumnLayout): TableLayoutMetri
       ? clampTableColumnWidth(id, customWidth)
       : spec.defaultWidth;
     minWidthSum += px;
-    return id === fallbackStretchId ? `minmax(${px}px, 1fr)` : `${px}px`;
+    return `${px}px`;
   });
 
   const gapTotal = Math.max(0, visibleCols.length - 1) * TABLE_COLUMN_GAP_PX;

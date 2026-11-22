@@ -597,4 +597,62 @@ describe('VirtualSearchResults (Unified Table View)', () => {
     expect(hiddenHeader!.style.display).toBe('none');
     vi.useRealTimers();
   });
+
+  it('freely resizes the Directory (path) column wider or narrower in default 4-column layout without sticking to Size or 1fr bounce', () => {
+    const defaultCols: ColumnLayout = {
+      name: true,
+      path: true,
+      size: true,
+      modified: true,
+      created: false,
+      snippets: false,
+      nameFlex: 32,
+      pathFlex: 42,
+      tableOrder: ['name', 'path', 'size', 'modified'],
+      tableWidths: {},
+    };
+
+    const onUpdateWidth = vi.fn();
+    const onBatchUpdate = vi.fn();
+
+    render(
+      <SearchTableHeader
+        columns={defaultCols}
+        sortField="name"
+        sortDirection="asc"
+        onSelectSort={vi.fn()}
+        onUpdateNameAndPathFlex={vi.fn()}
+        onUpdateTableColumnWidth={onUpdateWidth}
+        onBatchUpdateTableColumnWidths={onBatchUpdate}
+      />,
+    );
+
+    const nameWrap = document.querySelector<HTMLElement>('.search-table-th-wrap[data-table-col="name"]')!;
+    const pathWrap = document.querySelector<HTMLElement>('.search-table-th-wrap[data-table-col="path"]')!;
+    vi.spyOn(nameWrap, 'getBoundingClientRect').mockReturnValue({
+      left: 0, right: 300, width: 300, top: 0, bottom: 32, height: 32, x: 0, y: 0, toJSON: () => ({}),
+    });
+    vi.spyOn(pathWrap, 'getBoundingClientRect').mockReturnValue({
+      left: 314, right: 714, width: 400, top: 0, bottom: 32, height: 32, x: 314, y: 0, toJSON: () => ({}),
+    });
+
+    // 1. 向右大幅拖宽 path (+220px)：冻结左侧弹性列 name=300px，path 精确增至 620px，绝不改右侧 size
+    const pathResizer = document.querySelector<HTMLElement>('[data-resize-col="path"]')!;
+    fireEvent.mouseDown(pathResizer, { button: 0, clientX: 714 });
+    fireEvent.mouseMove(window, { clientX: 934 });
+    expect(onBatchUpdate).toHaveBeenCalledWith({ name: 300, path: 620 });
+    expect(onUpdateWidth).not.toHaveBeenCalledWith('size', expect.anything());
+
+    // 2. 向左大幅缩窄 path (-200px)：精确缩至 200px
+    fireEvent.mouseMove(window, { clientX: 514 });
+    expect(onUpdateWidth).toHaveBeenLastCalledWith('path', 200);
+    fireEvent.mouseUp(window);
+
+    // 3. 当 name 和 path 均已锁宽后，CSS Grid 严格渲染固定像素宽，绝不回退为 minmax(200px, 1fr) 导致缩不回去
+    const lockedCols: ColumnLayout = {
+      ...defaultCols,
+      tableWidths: { name: 300, path: 200 },
+    };
+    expect(buildTableGridTemplate(lockedCols)).toBe('300px 200px 96px 152px');
+  });
 });
