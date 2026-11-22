@@ -80,6 +80,7 @@ interface GestureState {
   targetMode?: 'underPointer' | 'foreground';
   initialTimeoutMs?: number;
   minSegmentDistance?: number;
+  shapeMatchThreshold?: number;
   trailColorMode?: 'auto' | 'custom';
   trailColor?: string;
   trailWidth?: number;
@@ -167,6 +168,7 @@ export const GesturePage: FC = () => {
   const [targetMode, setTargetMode] = useState<'underPointer' | 'foreground'>('underPointer');
   const [initialTimeoutMs, setInitialTimeoutMs] = useState(0);
   const [minSegmentDistance, setMinSegmentDistance] = useState(24);
+  const [shapeMatchThreshold, setShapeMatchThreshold] = useState(75);
   const [scribbleCancel, setScribbleCancel] = useState(true);
   const [triggerButton, setTriggerButton] = useState('right');
   const [trailColorMode, setTrailColorMode] = useState<'auto' | 'custom'>('auto');
@@ -264,6 +266,7 @@ export const GesturePage: FC = () => {
         setTrailOutlineWidth(state.trailOutlineWidth ?? 1.5);
         setInitialTimeoutMs(state.initialTimeoutMs ?? 0);
         setMinSegmentDistance(state.minSegmentDistance ?? 24);
+        setShapeMatchThreshold(state.shapeMatchThreshold ?? 75);
         setElevated(state.elevated ?? false);
         const resolvedEngine =
           (typeof state.webSearchEngine === 'string' && state.webSearchEngine.trim() !== '' ? state.webSearchEngine : null) ??
@@ -382,7 +385,7 @@ export const GesturePage: FC = () => {
         triggerButton !== 'both'
       ) {
         setTriggerButton('both');
-        void bridgeRequest<OperationResult>('gesture.setTriggerButton', { button: 'both' }).catch(() => undefined);
+        void bridgeRequest<OperationResult>('gesture.updateSettings', { triggerButton: 'both' }).catch(() => undefined);
       }
     } catch (err) {
       setProfiles((prev) => ({ ...prev, [profName]: prevProf }));
@@ -737,6 +740,20 @@ export const GesturePage: FC = () => {
     } catch (err) {
       setMinSegmentDistance(previous);
       console.error('Failed to update gesture minSegmentDistance:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
+  const handleShapeMatchThresholdChange = async (val: number) => {
+    const previous = shapeMatchThreshold;
+    const clamped = Math.max(50, Math.min(100, Math.round(val)));
+    setShapeMatchThreshold(clamped);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { shapeMatchThreshold: clamped });
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setShapeMatchThreshold(previous);
+      console.error('Failed to update gesture shapeMatchThreshold:', err);
       toast.error(tr('gesture.saveFailed'), { description: String(err) });
     }
   };
@@ -1142,6 +1159,24 @@ export const GesturePage: FC = () => {
                 { value: '48', label: tr('gesture.minSegmentDistanceLarge') },
                 ...(![12, 18, 24, 32, 48].includes(minSegmentDistance)
                   ? [{ value: String(minSegmentDistance), label: t('gesture.customPxUnit', '{{px}} px (Custom)', { px: minSegmentDistance }) }]
+                  : []),
+              ]}
+            />
+          </SettingRow>
+          <SettingRow label={tr('gesture.shapeMatchThreshold')} description={tr('gesture.shapeMatchThresholdDesc')}>
+            <Select
+              id="gesture-shape-match-threshold"
+              value={String(shapeMatchThreshold)}
+              onChange={(val) => void handleShapeMatchThresholdChange(Number(val))}
+              options={[
+                { value: '55', label: tr('gesture.shapeMatchThresholdVeryLoose') },
+                { value: '65', label: tr('gesture.shapeMatchThresholdLoose') },
+                { value: '75', label: tr('gesture.shapeMatchThresholdStandard') },
+                { value: '85', label: tr('gesture.shapeMatchThresholdStrict') },
+                { value: '95', label: tr('gesture.shapeMatchThresholdVeryStrict') },
+                { value: '100', label: tr('gesture.shapeMatchThresholdExactOnly') },
+                ...(![55, 65, 75, 85, 95, 100].includes(shapeMatchThreshold)
+                  ? [{ value: String(shapeMatchThreshold), label: t('gesture.customPercentUnit', '{{percent}}% (Custom)', { percent: shapeMatchThreshold }) }]
                   : []),
               ]}
             />

@@ -156,12 +156,62 @@ std::string refineCodeWithPath(const std::string& code,
                                const std::vector<TrackPoint>& pts,
                                int minSegmentDistance) noexcept;
 
+/// 几何形状相似度匹配候选项
+struct ShapeMatchCandidate {
+    std::string code;          // 完整映射编码（如 "R-D-L"、"Middle+DR-UR"）
+    std::string bareDirection; // 纯方向编码（如 "R-D-L"、"DR-UR"）
+};
+
+/// 几何形状相似度匹配结果
+struct ShapeMatchResult {
+    std::string code;
+    int similarityPercent = 0; // 0..100
+    std::string runnerUpCode;
+    int runnerUpSimilarityPercent = 0;
+};
+
+/// 形状相似度匹配诊断信息（即使未达到阈值也会记录前两名得分，便于日志复盘）
+struct ShapeMatchDiagnostics {
+    std::string top1Code;
+    int top1Percent = 0;
+    std::string top2Code;
+    int top2Percent = 0;
+    bool rejectedByAmbiguity = false;
+    bool skippedSingleSegmentCandidates = true;
+};
+
+/// 单个识别方向段的诊断元数据（仅在 finalize 冷路径构建）
+struct RecognizedSegmentInfo {
+    Direction dir = Direction::None;
+    double length = 0.0;
+    double angleDeg = 0.0;
+};
+
+/// 计算原始轨迹与规范方向编码（同时评估折线、平滑圆弧与非等长 L 原型）的方向敏感几何相似度 (0..100)
+int computeGestureShapeSimilarity(const std::vector<TrackPoint>& rawPoints,
+                                  const std::string& bareDirectionCode) noexcept;
+
+/// 在多段候选集中寻找几何相似度最高且达到 thresholdPercent (50..100) 的手势；
+/// 严格禁止多段轨迹通过形状兜底降维匹配单段直线手势 (U/D/L/R)；
+/// thresholdPercent >= 100 时关闭形状兜底，返回 nullopt。
+std::optional<ShapeMatchResult> matchBestGestureShape(
+    const std::vector<TrackPoint>& rawPoints,
+    const std::vector<ShapeMatchCandidate>& candidates,
+    int thresholdPercent,
+    int minSegmentDistance = 24,
+    ShapeMatchDiagnostics* outDiagnostics = nullptr) noexcept;
+
 /// 手势识别结果
 struct GestureResult {
-    std::string code;                          // 方向编码 (如 "L-U-R")
-    std::vector<Direction> directions;          // 方向序列
-    std::vector<TrackPoint> rawPoints;          // 原始轨迹点
-    double totalDistance = 0.0;                 // 轨迹总长度（像素）
+    std::string code;                                // 方向编码 (如 "L-U-R")
+    std::vector<Direction> directions;               // 方向序列
+    std::vector<TrackPoint> rawPoints;               // 原始轨迹点
+    double totalDistance = 0.0;                      // 轨迹总长度（像素）
+    std::vector<RecognizedSegmentInfo> rawSegments;        // 化简前原始段诊断
+    std::vector<RecognizedSegmentInfo> simplifiedSegments; // 化简后段诊断
+    bool refinedByPath = false;                      // 是否由单段路径转角补救升级
+    int bboxWidth = 0;                               // 轨迹包围盒宽度（像素）
+    int bboxHeight = 0;                              // 轨迹包围盒高度（像素）
 
     bool isValid() const { return !directions.empty(); }
 
@@ -173,6 +223,9 @@ struct GestureResult {
         }
         return result;
     }
+
+    /// 紧凑结构化诊断摘要（仅用于日志输出）
+    std::string formatDiagnosticSummary() const;
 };
 
 /// 识别参数配置
@@ -243,6 +296,7 @@ private:
     std::vector<TrackPoint> m_points;              // 所有轨迹点 (预分配 4096 点 0 堆扩容)
     std::vector<Direction> m_directions;           // 已识别的方向段序列
     std::vector<double> m_segmentLengths;          // 与 m_directions 对齐的段长
+    std::vector<TrackPoint> m_segmentDeltas;       // 与 m_directions 对齐的段起止净位移 (dx, dy)
 
     // 当前方向段的累积状态 (基于拐点检测模型)
     TrackPoint m_segmentStart{0, 0};               // 当前段起点
@@ -255,6 +309,8 @@ private:
     mutable std::vector<Direction> m_cachedDirections;
     mutable DirectionCodeBits m_cachedPackedDirections{0};
     mutable TrackPoint m_lastPeakPoint{-1, -1};
+    mutable TrackPoint m_lastEndPoint{-1, -1};
+    mutable size_t m_lastPointCount = 0;
 };
 
 }  // namespace tools3000::gesture

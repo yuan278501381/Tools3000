@@ -13,12 +13,28 @@
 
 import { useState, useRef, useCallback, useEffect, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
-import { RotateCcw, MousePointer, Check, Globe } from 'lucide-react';
+import {
+  RotateCcw,
+  MousePointer,
+  Check,
+  Globe,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  ArrowUpLeft,
+  ArrowUpRight,
+  ArrowDownLeft,
+  ArrowDownRight,
+  Delete,
+} from 'lucide-react';
 import { MouseButtonSvg, ScreenEdgeSvg } from './MouseButtonSvg';
 import {
   codeToArrows,
   parseGestureCode,
+  parseDirectionSegments,
   assembleGestureCode,
+  type Direction,
   type TriggerButton,
   type ScreenEdge,
   type Point,
@@ -66,6 +82,19 @@ const RIGHT_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'L-U-R', labelKey: 'gesture.actions.refresh.name', defaultLabel: 'Reload' },
   { code: 'L-D', labelKey: 'gesture.actions.showDesktop.name', defaultLabel: 'Show Desktop' },
   { code: 'D-R-D', labelKey: 'gesture.actions.screenshot.name', defaultLabel: 'Screenshot' },
+  { code: 'R-D-L', labelKey: 'gesture.presetReverseC', defaultLabel: 'Reverse C' },
+  { code: 'DR-UR', labelKey: 'gesture.presetVShape', defaultLabel: 'V Shape' },
+];
+
+const MANUAL_DIRECTION_BUTTONS: { dir: Direction; labelKey: string; defaultLabel: string; Icon: FC<{ size?: number; strokeWidth?: number; 'aria-hidden'?: boolean }> }[] = [
+  { dir: 'UL', labelKey: 'gesture.dirUpLeft', defaultLabel: 'Up-Left', Icon: ArrowUpLeft },
+  { dir: 'U', labelKey: 'gesture.dirUp', defaultLabel: 'Up', Icon: ArrowUp },
+  { dir: 'UR', labelKey: 'gesture.dirUpRight', defaultLabel: 'Up-Right', Icon: ArrowUpRight },
+  { dir: 'L', labelKey: 'gesture.dirLeft', defaultLabel: 'Left', Icon: ArrowLeft },
+  { dir: 'R', labelKey: 'gesture.dirRight', defaultLabel: 'Right', Icon: ArrowRight },
+  { dir: 'DL', labelKey: 'gesture.dirDownLeft', defaultLabel: 'Down-Left', Icon: ArrowDownLeft },
+  { dir: 'D', labelKey: 'gesture.dirDown', defaultLabel: 'Down', Icon: ArrowDown },
+  { dir: 'DR', labelKey: 'gesture.dirDownRight', defaultLabel: 'Down-Right', Icon: ArrowDownRight },
 ];
 
 const MIDDLE_PRESET_GESTURES: PresetGestureItem[] = [
@@ -241,9 +270,11 @@ export const GestureDrawCanvas: FC<Props> = ({
 }) => {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLDivElement>(null);
+  const pointsRef = useRef<Point[]>([]);
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawingButton, setDrawingButton] = useState<number | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
+  const [liveBareCode, setLiveBareCode] = useState('');
 
   const initialParsed = parseGestureCode(value);
   const [edgeMode, setEdgeMode] = useState<ScreenEdge>(() =>
@@ -285,12 +316,22 @@ export const GestureDrawCanvas: FC<Props> = ({
       if (e.key === 'Shift') setLiveKeys((k) => ({ ...k, shift: false }));
       if (e.key === 'Alt') setLiveKeys((k) => ({ ...k, alt: false }));
     };
+    const clearLiveKeys = () => {
+      setLiveKeys({ ctrl: false, shift: false, alt: false });
+    };
+    const onVisibilityChange = () => {
+      if (document.hidden) clearLiveKeys();
+    };
 
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', clearLiveKeys);
+    document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', clearLiveKeys);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     };
   }, []);
 
@@ -352,7 +393,10 @@ export const GestureDrawCanvas: FC<Props> = ({
     const rect = canvasRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
-    setPoints([{ x, y }]);
+    const initialPts: Point[] = [{ x, y }];
+    pointsRef.current = initialPts;
+    setPoints(initialPts);
+    setLiveBareCode('');
     setIsDrawing(true);
     setDrawingButton(e.button);
 
@@ -364,7 +408,7 @@ export const GestureDrawCanvas: FC<Props> = ({
     }
 
     try {
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      canvasRef.current.setPointerCapture?.(e.pointerId);
     } catch {
       // ignore
     }
@@ -377,14 +421,17 @@ export const GestureDrawCanvas: FC<Props> = ({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
-    setPoints((prev) => {
-      if (prev.length > 0) {
-        const last = prev[prev.length - 1];
-        const dist = calculateDistance(last.x, last.y, x, y);
-        if (dist < 4) return prev;
-      }
-      return [...prev, { x, y }];
-    });
+    const prev = pointsRef.current;
+    if (prev.length > 0) {
+      const last = prev[prev.length - 1];
+      if (calculateDistance(last.x, last.y, x, y) < 4) return;
+    }
+    const next = [...prev, { x, y }];
+    pointsRef.current = next;
+    setPoints(next);
+    if (next.length >= 2) {
+      setLiveBareCode(recognizeStrokes(next));
+    }
   }, [isDrawing]);
 
   const handlePointerUp = useCallback((e: React.PointerEvent) => {
@@ -395,23 +442,48 @@ export const GestureDrawCanvas: FC<Props> = ({
     const effectiveButton = drawingButton ?? e.button;
     const effectiveTrigger = resolvePointerTrigger(effectiveButton);
 
-    if (points.length >= 2) {
-      const bare = recognizeStrokes(points);
-      if (bare) {
-        // 严格遵循顶部显式选定的触发区域 currentEdge (默认 Global='none')
-        const full = assembleGestureCode({
-          edge: currentEdge,
-          triggerButton: effectiveTrigger,
-          hasCtrl: e.ctrlKey || liveKeys.ctrl || parsed.hasCtrl,
-          hasShift: e.shiftKey || liveKeys.shift || parsed.hasShift,
-          hasAlt: e.altKey || liveKeys.alt || parsed.hasAlt,
-          bareCode: bare,
-        });
-        onChange(full);
+    let finalPts = pointsRef.current;
+    if (canvasRef.current) {
+      const rect = canvasRef.current.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      if (finalPts.length > 0) {
+        const last = finalPts[finalPts.length - 1];
+        if (calculateDistance(last.x, last.y, x, y) >= 1) {
+          finalPts = [...finalPts, { x, y }];
+          pointsRef.current = finalPts;
+          setPoints(finalPts);
+        }
       }
     }
+
+    const bare = finalPts.length >= 2 ? recognizeStrokes(finalPts) : '';
+    setLiveBareCode('');
+    if (bare) {
+      // 严格遵循顶部显式选定的触发区域 currentEdge (默认 Global='none')
+      const full = assembleGestureCode({
+        edge: currentEdge,
+        triggerButton: effectiveTrigger,
+        hasCtrl: e.ctrlKey || liveKeys.ctrl || parsed.hasCtrl,
+        hasShift: e.shiftKey || liveKeys.shift || parsed.hasShift,
+        hasAlt: e.altKey || liveKeys.alt || parsed.hasAlt,
+        bareCode: bare,
+      });
+      onChange(full);
+    } else {
+      // 原地单击或位移不足以形成有效方向段：立即清空画板，不残留孤立起始圆点
+      pointsRef.current = [];
+      setPoints([]);
+    }
     setDrawingButton(null);
-  }, [isDrawing, points, onChange, currentEdge, drawingButton, liveKeys, parsed, resolvePointerTrigger]);
+  }, [isDrawing, onChange, currentEdge, drawingButton, liveKeys, parsed, resolvePointerTrigger]);
+
+  const handlePointerCancel = useCallback(() => {
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    setLiveBareCode('');
+    setDrawingButton(null);
+  }, [isDrawing]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     if (e.deltaY === 0) return;
@@ -442,9 +514,61 @@ export const GestureDrawCanvas: FC<Props> = ({
   const handleClear = () => {
     setEdgeMode(currentEdge);
     setTriggerMode(currentTrigger);
+    pointsRef.current = [];
     setPoints([]);
+    setLiveBareCode('');
     onChange('');
   };
+
+  const currentSegments = parsed.wheelDirection ? [] : parseDirectionSegments(parsed.bareCode);
+
+  const handleAppendManualDirection = useCallback((dir: Direction) => {
+    const existing = parsed.wheelDirection ? [] : parseDirectionSegments(parsed.bareCode);
+    if (existing.length >= 8) return;
+    if (existing.length > 0 && existing[existing.length - 1] === dir) return;
+    const nextBare = [...existing, dir].join('-');
+    pointsRef.current = [];
+    setPoints([]);
+    setLiveBareCode('');
+    const full = assembleGestureCode({
+      edge: currentEdge,
+      triggerButton: currentTrigger,
+      hasCtrl: currentCtrl,
+      hasShift: currentShift,
+      hasAlt: currentAlt,
+      bareCode: nextBare,
+    });
+    onChange(full);
+  }, [currentAlt, currentCtrl, currentEdge, currentShift, currentTrigger, onChange, parsed.bareCode, parsed.wheelDirection]);
+
+  const handlePopManualDirection = useCallback(() => {
+    const existing = parsed.wheelDirection ? [] : parseDirectionSegments(parsed.bareCode);
+    if (existing.length === 0) {
+      if (value) {
+        pointsRef.current = [];
+        setPoints([]);
+        onChange('');
+      }
+      return;
+    }
+    const nextSegs = existing.slice(0, -1);
+    pointsRef.current = [];
+    setPoints([]);
+    setLiveBareCode('');
+    if (nextSegs.length === 0) {
+      onChange('');
+      return;
+    }
+    const full = assembleGestureCode({
+      edge: currentEdge,
+      triggerButton: currentTrigger,
+      hasCtrl: currentCtrl,
+      hasShift: currentShift,
+      hasAlt: currentAlt,
+      bareCode: nextSegs.join('-'),
+    });
+    onChange(full);
+  }, [currentAlt, currentCtrl, currentEdge, currentShift, currentTrigger, onChange, parsed.bareCode, parsed.wheelDirection, value]);
 
   const handleSelectPreset = (presetCode: string) => {
     const presetParsed = parseGestureCode(presetCode);
@@ -623,6 +747,7 @@ export const GestureDrawCanvas: FC<Props> = ({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
         onWheel={handleWheel}
         onContextMenu={(e) => e.preventDefault()}
         onAuxClick={(e) => e.preventDefault()}
@@ -688,13 +813,55 @@ export const GestureDrawCanvas: FC<Props> = ({
           </svg>
         )}
 
-        {/* 识别结果悬浮卡片 */}
+        {/* 实时识别预览 / 最终识别结果悬浮卡片 */}
+        {isDrawing && liveBareCode && (
+          <div className="gesture-draw-badge gesture-draw-badge--live" data-testid="gesture-live-badge">
+            <span className="gesture-draw-badge-arrows">{codeToArrows(liveBareCode)}</span>
+          </div>
+        )}
         {value && !isDrawing && (
           <div className="gesture-draw-badge">
             <Check size={14} className="gesture-draw-badge-icon" aria-hidden="true" />
             <span className="gesture-draw-badge-arrows">{codeToArrows(value)}</span>
           </div>
         )}
+      </div>
+
+      {/* 手动 8 方向箭头精准点选拼装条（自由画板之外 100% 可靠兜底，点 ↘ + ↗ 秒建 V 手势） */}
+      <div className="gesture-manual-builder" data-testid="gesture-manual-builder">
+        <span className="gesture-preset-label">{t('gesture.manualBuilderLabel', 'Manual Steps:')}</span>
+        <div className="gesture-manual-dir-grid">
+          {MANUAL_DIRECTION_BUTTONS.map(({ dir, labelKey, defaultLabel, Icon }) => {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const dirTitle = t(labelKey as any, defaultLabel);
+            const isSameAsLast = currentSegments.length > 0 && currentSegments[currentSegments.length - 1] === dir;
+            return (
+              <button
+                key={dir}
+                type="button"
+                data-manual-dir={dir}
+                className="gesture-manual-dir-btn"
+                disabled={currentSegments.length >= 8 || isSameAsLast}
+                onClick={() => handleAppendManualDirection(dir)}
+                title={dirTitle}
+                aria-label={dirTitle}
+              >
+                <Icon size={15} strokeWidth={2.2} aria-hidden={true} />
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            data-testid="gesture-manual-backspace"
+            className="gesture-manual-dir-btn gesture-manual-dir-btn--backspace"
+            disabled={!value}
+            onClick={handlePopManualDirection}
+            title={t('gesture.manualBuilderBackspace', 'Remove last direction step')}
+            aria-label={t('gesture.manualBuilderBackspace', 'Remove last direction step')}
+          >
+            <Delete size={14} strokeWidth={2} aria-hidden={true} />
+          </button>
+        </div>
       </div>
 
       {/* 常用手势快捷预设栏 */}

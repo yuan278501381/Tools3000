@@ -18,11 +18,13 @@
 #include "core/hotkey/MouseHook.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 #include <timeapi.h>
 
@@ -61,14 +63,163 @@ std::optional<GestureMapping> lookupGestureMapping(
     if (fullCode.starts_with("Middle+") && fullCode != "Middle+" + bareCode) {
         if (auto mapping = lookupProfileMapping(profile, fallback, "Middle+" + bareCode)) return mapping;
     }
-    if (auto mapping = lookupProfileMapping(profile, fallback, bareCode)) return mapping;
-    const auto expanded = expandSingleDiagonalCode(bareCode);
-    if (!expanded) return std::nullopt;
-    if (fullCode != bareCode && fullCode.size() >= bareCode.size()) {
-        const auto prefix = fullCode.substr(0, fullCode.size() - bareCode.size());
-        if (auto mapping = lookupProfileMapping(profile, fallback, prefix + *expanded)) return mapping;
+    // 方案 A：取消单对角隐式展开 (如 DL -> D-L)，彻底杜绝斜拉早松手误触发 Alt+F4 关闭整个窗口；
+    // 非精确匹配统一交由受拓扑护栏保护的「手势图形匹配阈值」管控。
+    return lookupProfileMapping(profile, fallback, bareCode);
+}
+
+std::string toUpperAscii(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    for (unsigned char ch : text) {
+        out.push_back(static_cast<char>(std::toupper(ch)));
     }
-    return lookupProfileMapping(profile, fallback, *expanded);
+    return out;
+}
+
+constexpr double kLeadingInertiaMaxPx = 38.0;
+constexpr double kLeadingInertiaMaxRatio = 0.28;
+constexpr double kLeadingInertiaMinSecondSegPx = 60.0;
+
+struct ResolvedGestureMatch {
+    std::optional<GestureMapping> mapping;
+    std::string matchedCode;
+    bool isLeadingInertiaTrim = false;
+    std::string trimmedCode;
+    double trimmedLeadingLen = 0.0;
+    bool isShapeFallback = false;
+    int shapeSimilarity = 0;
+    ShapeMatchDiagnostics shapeDiag;
+};
+
+std::vector<ShapeMatchCandidate> collectShapeMatchCandidates(
+    const std::optional<GestureProfile>& profile,
+    const std::optional<GestureProfile>& fallback,
+    const std::string& requiredPrefix) {
+    std::vector<ShapeMatchCandidate> out;
+    std::unordered_set<std::string> seenCodes;
+    const std::string reqPrefixUpper = toUpperAscii(requiredPrefix);
+
+    auto scanProfile = [&](const GestureProfile& prof) {
+        for (const auto& mapping : prof.getMappings()) {
+            const std::string codeUpper = toUpperAscii(mapping.gestureCode);
+            // 保持活跃 Profile 优先级：即便活跃 Profile 显式禁用了该编码，也阻止 fallback 同编码复活
+            if (!seenCodes.insert(codeUpper).second) {
+                continue;
+            }
+            if (!mapping.enabled) {
+                continue;
+            }
+            const size_t plusPos = codeUpper.rfind('+');
+            const std::string prefixUpper =
+                (plusPos == std::string::npos) ? std::string{} : codeUpper.substr(0, plusPos + 1);
+            const std::string bareUpper =
+                (plusPos == std::string::npos) ? codeUpper : codeUpper.substr(plusPos + 1);
+            if (bareUpper.empty() || bareUpper == "WHEELUP" || bareUpper == "WHEELDOWN") {
+                continue;
+            }
+            if (prefixUpper != reqPrefixUpper) {
+                continue;
+            }
+            if (codeToDirections(bareUpper).empty()) {
+                continue;
+            }
+            out.push_back(ShapeMatchCandidate{mapping.gestureCode, bareUpper});
+        }
+    };
+
+    if (profile) {
+        scanProfile(*profile);
+    }
+    if (fallback && (!profile || profile->name() != "default")) {
+        scanProfile(*fallback);
+    }
+    return out;
+}
+
+ResolvedGestureMatch resolveGestureMappingWithShapeFallback(
+    const std::optional<GestureProfile>& profile,
+    const std::optional<GestureProfile>& fallback,
+    const std::string& fullCode,
+    const std::string& bareCode,
+    const std::string& requiredPrefix,
+    const std::vector<TrackPoint>& rawPoints,
+    int shapeThresholdPercent,
+    int minSegDist,
+    const std::vector<RecognizedSegmentInfo>* simplifiedSegments = nullptr) {
+    ResolvedGestureMatch resolved;
+    if (!bareCode.empty()) {
+        resolved.mapping = lookupGestureMapping(profile, fallback, fullCode, bareCode);
+        if (resolved.mapping) {
+            resolved.matchedCode = resolved.mapping->gestureCode;
+            return resolved;
+        }
+    }
+
+    // 第 2 级：高速连划起笔微惯性回拉裁噪（如连续关标签时复位未刹住产生极短 L + 长 D + R -> D-R）；
+    // 仅在完整编码未命中时触发，绝不干扰已绑定的完整三段手势（如正 C L-D-R）。
+    if (simplifiedSegments && simplifiedSegments->size() >= 3) {
+        const auto& seg0 = (*simplifiedSegments)[0];
+        const auto& seg1 = (*simplifiedSegments)[1];
+        if (seg0.length > 0.0 &&
+            seg0.length <= kLeadingInertiaMaxPx &&
+            seg1.length >= kLeadingInertiaMinSecondSegPx &&
+            seg0.length <= seg1.length * kLeadingInertiaMaxRatio) {
+            std::vector<Direction> trimmedDirs;
+            trimmedDirs.reserve(simplifiedSegments->size() - 1);
+            for (size_t i = 1; i < simplifiedSegments->size(); ++i) {
+                trimmedDirs.push_back((*simplifiedSegments)[i].dir);
+            }
+            const std::string trimmedBare = directionsToCode(trimmedDirs);
+            if (!trimmedBare.empty()) {
+                if (auto mapping = lookupGestureMapping(profile, fallback, requiredPrefix + trimmedBare, trimmedBare)) {
+                    resolved.mapping = std::move(mapping);
+                    resolved.matchedCode = resolved.mapping->gestureCode;
+                    resolved.isLeadingInertiaTrim = true;
+                    resolved.trimmedCode = trimmedBare;
+                    resolved.trimmedLeadingLen = seg0.length;
+                    return resolved;
+                }
+            }
+        }
+    }
+
+    if (shapeThresholdPercent >= 100 || rawPoints.size() < 2) {
+        return resolved;
+    }
+
+    auto tryPrefix = [&](const std::string& prefix) -> bool {
+        const auto candidates = collectShapeMatchCandidates(profile, fallback, prefix);
+        if (candidates.empty()) return false;
+        ShapeMatchDiagnostics diag{};
+        const auto best = matchBestGestureShape(rawPoints, candidates, shapeThresholdPercent, minSegDist, &diag);
+        if (diag.top1Percent > resolved.shapeDiag.top1Percent) {
+            resolved.shapeDiag = diag;
+        }
+        if (!best) return false;
+        if (auto mapping = lookupProfileMapping(profile, fallback, best->code)) {
+            resolved.mapping = std::move(mapping);
+            resolved.matchedCode = best->code;
+            resolved.isShapeFallback = true;
+            resolved.shapeSimilarity = best->similarityPercent;
+            resolved.shapeDiag = diag;
+            return true;
+        }
+        return false;
+    };
+
+    if (tryPrefix(requiredPrefix)) {
+        return resolved;
+    }
+    // 兼容带触发键前缀但在 Profile 中以裸方向配置的情况（与 lookupGestureMapping 一致，且不跨边缘/修饰键串台）
+    if (!requiredPrefix.empty() &&
+        requiredPrefix.find("Edge+") == std::string::npos &&
+        requiredPrefix.find("Ctrl+") == std::string::npos &&
+        requiredPrefix.find("Alt+") == std::string::npos &&
+        requiredPrefix.find("Shift+") == std::string::npos) {
+        tryPrefix("");
+    }
+    return resolved;
 }
 
 RecognizerConfig sanitizeRecognizerConfig(RecognizerConfig cfg) noexcept {
@@ -191,6 +342,12 @@ GestureEngine& GestureEngine::instance() {
 }
 
 GestureEngine::GestureEngine() {
+    // 同步识别器默认最小段距离为 24px（单一事实源，与 m_minSegmentDistance 对齐）
+    auto cfg = m_recognizer.config();
+    cfg.minSegmentDistance = m_minSegmentDistance.load(std::memory_order_relaxed);
+    m_recognizer.setConfig(cfg);
+    m_pendingTrailPoints.reserve(64);
+
     // 创建默认 Profile 与特殊目标专属 Profile
     m_profiles["default"] = GestureProfile::createDefaultGlobal();
     m_profiles["browser"] = GestureProfile::createBrowserProfile();
@@ -640,11 +797,20 @@ void GestureEngine::setInitialTimeoutMs(int ms) {
 
 void GestureEngine::setMinSegmentDistance(int px) {
     const int clamped = std::clamp(px, 5, 100);
-    m_minSegmentDistance.store(clamped);
-    auto cfg = m_recognizer.config();
-    cfg.minSegmentDistance = clamped;
-    m_recognizer.setConfig(cfg);
+    m_minSegmentDistance.store(clamped, std::memory_order_release);
+    {
+        std::lock_guard lock(m_mutex);
+        auto cfg = m_recognizer.config();
+        cfg.minSegmentDistance = clamped;
+        m_recognizer.setConfig(cfg);
+    }
     LOG_INFO("手势最小识别距离已设置: minSegmentDistance={}px", clamped);
+}
+
+void GestureEngine::setShapeMatchThreshold(int percent) {
+    const int clamped = std::clamp(percent, 50, 100);
+    m_shapeMatchThreshold.store(clamped, std::memory_order_release);
+    LOG_INFO("Gesture shape match threshold updated: shapeMatchThreshold={}%", clamped);
 }
 
 void GestureEngine::setProfile(const std::string& name, const GestureProfile& profile) {
@@ -688,7 +854,17 @@ bool GestureEngine::removeProfile(const std::string& name) {
 }
 
 void GestureEngine::setRecognizerConfig(const RecognizerConfig& config) {
-    m_recognizer.setConfig(sanitizeRecognizerConfig(config));
+    const RecognizerConfig sanitized = sanitizeRecognizerConfig(config);
+    {
+        std::lock_guard lock(m_mutex);
+        m_recognizer.setConfig(sanitized);
+    }
+    m_minSegmentDistance.store(std::clamp(sanitized.minSegmentDistance, 5, 100), std::memory_order_release);
+}
+
+RecognizerConfig GestureEngine::recognizerConfig() const {
+    std::lock_guard lock(m_mutex);
+    return m_recognizer.config();
 }
 
 void GestureEngine::setTrailCallback(TrailRenderCallback callback) {
@@ -992,6 +1168,27 @@ void GestureEngine::watchdogWorkerLoop(std::stop_token stopToken) {
     }
 }
 
+void GestureEngine::activateOverlayIfNeededLocked(bool includeRecognizerPoints) {
+    if (m_trailOverlayActivated || !hasOverlayVisuals()) {
+        return;
+    }
+    m_trailOverlayActivated = true;
+    auto& trail = GestureTrailOverlay::instance();
+    trail.beginTrail();
+    if (m_trailVisible.load(std::memory_order_relaxed)) {
+        if (includeRecognizerPoints && !m_recognizer.points().empty()) {
+            for (const auto& pt : m_recognizer.points()) {
+                trail.addPoint(static_cast<float>(pt.x), static_cast<float>(pt.y));
+            }
+        } else {
+            for (const auto& pt : m_pendingTrailPoints) {
+                trail.addPoint(static_cast<float>(pt.x), static_cast<float>(pt.y));
+            }
+        }
+    }
+    m_pendingTrailPoints.clear();
+}
+
 void GestureEngine::beginTracking(const MouseEvent& event) {
     m_activeTriggerDown = event.type;
     m_activeTriggerUp = triggerUpFor(event.type);
@@ -999,6 +1196,8 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
     m_hasMovedBeyondThreshold = false;
+    m_trailOverlayActivated = false;
+    m_pendingTrailPoints.clear();
     m_gestureConsumed = false;
     m_enteredHigherIntegrityDuringTracking = false;
     const int trigVk = physicalVkForTriggerDown(event.type);
@@ -1051,13 +1250,10 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_state = GestureState::Tracking;
     MouseHook::instance().setIsTracking(true);
 
-    // 开始轨迹可视化（轨迹线或动作提示文字任一开启即激活覆盖层）
-    if (hasOverlayVisuals()) {
-        auto& trail = GestureTrailOverlay::instance();
-        trail.beginTrail();
-        if (m_trailVisible.load()) {
-            trail.addPoint(static_cast<float>(event.position.x), static_cast<float>(event.position.y));
-        }
+    // 延迟激活轨迹覆盖层：按下右键尚未移动超过 minSegmentDistance 前只暂存起点，
+    // 彻底避免普通右键单击在光标处闪出起始光点。
+    if (hasOverlayVisuals() && m_trailVisible.load(std::memory_order_relaxed)) {
+        m_pendingTrailPoints.push_back({event.position.x, event.position.y});
     }
 
     LOG_TRACE("手势追踪开始: pos=({},{}), modifiers=0x{:02X}, edgeZone={}, trailVisible={}",
@@ -1173,8 +1369,32 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     }
     const std::vector<Direction>& dirs = m_cachedLiveDirs;
 
+    // 尚未跨过最小识别距离（且未满 10s）前绝不唤醒轨迹覆盖层，只缓冲起笔与途经坐标
+    if (!m_hasMovedBeyondThreshold && elapsed < 10000) {
+        if (showOverlay && showTrailLine && m_pendingTrailPoints.size() < 128) {
+            if (m_pendingTrailPoints.empty()) {
+                m_pendingTrailPoints.push_back({event.position.x, event.position.y});
+            } else {
+                const auto& prevPt = m_pendingTrailPoints.back();
+                const int pdx = event.position.x - prevPt.x;
+                const int pdy = event.position.y - prevPt.y;
+                if (pdx * pdx + pdy * pdy >= 4) {
+                    m_pendingTrailPoints.push_back({event.position.x, event.position.y});
+                }
+            }
+        }
+        if (callback) {
+            callback({}, dirs);
+        }
+        return;
+    }
+
+    if (showOverlay && !m_trailOverlayActivated) {
+        activateOverlayIfNeededLocked(false);
+    }
+
     auto& trail = GestureTrailOverlay::instance();
-    if (showTrailLine) {
+    if (showTrailLine && m_trailOverlayActivated) {
         trail.addPoint(
             static_cast<float>(event.position.x),
             static_cast<float>(event.position.y)
@@ -1182,26 +1402,38 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     }
 
     if (elapsed >= 10000) {
-        if (showOverlay) {
+        if (showOverlay && m_trailOverlayActivated) {
             // 连续画了 10 秒仍未松手：弹出红底 3 个大圆点调侃状态，并持续停留，直到用户真正松手
             trail.setRecognized(false);
             trail.setLiveAction("•••");
         }
     } else {
         const std::string bareCode = directionsToCode(dirs);
-        if (bareCode != m_lastLiveCode) {
+        const int shapeThreshold = m_shapeMatchThreshold.load(std::memory_order_relaxed);
+        const bool shouldReevaluateShape =
+            needEval && shapeThreshold < 100 && m_recognizer.points().size() >= 2 &&
+            (!m_liveHadMatch || bareCode != m_lastLiveCode);
+        if (bareCode != m_lastLiveCode || shouldReevaluateShape) {
+            const bool codeChanged = (bareCode != m_lastLiveCode);
             m_lastLiveCode = bareCode;
-            m_lastRecognizedDirections = dirs;
+            if (codeChanged) {
+                m_lastRecognizedDirections = dirs;
+            }
 
             std::string liveLabel;
-            std::optional<GestureMapping> matchedMapping;
-            if (!dirs.empty()) {
-                const std::string fullCode = formatFullGestureCode(
-                    m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, bareCode);
-                matchedMapping = lookupGestureMapping(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
+            ResolvedGestureMatch resolved;
+            if (!dirs.empty() || (shapeThreshold < 100 && m_recognizer.points().size() >= 2)) {
+                const std::string requiredPrefix = formatFullGestureCode(
+                    m_gestureEdgeZone, m_gestureModifiers, m_activeTriggerDown, "");
+                const std::string fullCode = requiredPrefix + bareCode;
+                resolved = resolveGestureMappingWithShapeFallback(
+                    m_activeProfile, m_fallbackProfile,
+                    fullCode, bareCode, requiredPrefix,
+                    m_recognizer.points(), shapeThreshold, minSegDist);
 
-                // B5.3: 若命中开启了 instantExecute 的映射，先确保窗口作用域已确认再立即执行
-                if (matchedMapping && matchedMapping->instantExecute && !m_profileResolvedLocally) {
+                // B5.3: 仅精确方向命中允许触发 instantExecute（禁止对形状模糊兜底或首段裁噪中途抢跑执行）
+                if (resolved.mapping && !resolved.isShapeFallback && !resolved.isLeadingInertiaTrim &&
+                    resolved.mapping->instantExecute && !m_profileResolvedLocally) {
                     if (m_contextWorker.joinable() && !m_contextResolved.load(std::memory_order_acquire)) {
                         std::unique_lock ctxLock(m_contextResultMutex);
                         m_contextResultCv.wait_for(ctxLock, std::chrono::milliseconds(15), [&]() {
@@ -1232,22 +1464,25 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                         reinjectTriggerClick(trigger, downSuppressed);
                         return;
                     }
-                    matchedMapping = lookupGestureMapping(m_activeProfile, m_fallbackProfile, fullCode, bareCode);
+                    resolved = resolveGestureMappingWithShapeFallback(
+                        m_activeProfile, m_fallbackProfile,
+                        fullCode, bareCode, requiredPrefix,
+                        m_recognizer.points(), shapeThreshold, minSegDist);
                 }
 
-                if (matchedMapping) {
-                    if (showOverlay) {
+                if (resolved.mapping) {
+                    if (showOverlay && m_trailOverlayActivated) {
                         trail.setRecognized(true);
                     }
-                    if (matchedMapping->silentToast) {
+                    if (resolved.mapping->silentToast) {
                         m_liveHadMatch = false;
                         m_liveHeldLabel.clear();
                         liveLabel.clear();
                     } else {
                         m_liveHadMatch = true;
                         m_liveMatchTick = GetTickCount();
-                        m_liveHeldLabel = matchedMapping->action.name;
-                        liveLabel = matchedMapping->action.name;
+                        m_liveHeldLabel = resolved.mapping->action.name;
+                        liveLabel = resolved.mapping->action.name;
                     }
                 } else if (keepLiveGestureMatch(
                                false, m_liveHadMatch,
@@ -1257,7 +1492,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                 } else {
                     m_liveHadMatch = false;
                     m_liveHeldLabel.clear();
-                    if (showOverlay) trail.setRecognized(false);
+                    if (showOverlay && m_trailOverlayActivated) trail.setRecognized(false);
                     liveLabel.clear();
                 }
             } else if (keepLiveGestureMatch(
@@ -1268,31 +1503,32 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
             } else {
                 m_liveHadMatch = false;
                 m_liveHeldLabel.clear();
-                if (showOverlay) trail.setRecognized(false);
+                if (showOverlay && m_trailOverlayActivated) trail.setRecognized(false);
             }
 
-            if (showOverlay) {
+            if (showOverlay && m_trailOverlayActivated) {
                 trail.setLiveAction(liveLabel);
             }
 
-            if (matchedMapping && matchedMapping->instantExecute && !m_instantExecutedDuringTracking) {
+            if (resolved.mapping && !resolved.isShapeFallback && !resolved.isLeadingInertiaTrim &&
+                resolved.mapping->instantExecute && !m_instantExecutedDuringTracking) {
                 m_instantExecutedDuringTracking = true;
                 m_gestureConsumed = true;
                 tools3000::core::TraceId::setCurrent(m_gestureTraceId);
                 LOG_INFO("Instant gesture executed during tracking: code={}, action={}",
-                         bareCode, matchedMapping->action.name);
-                if (showOverlay) {
-                    if (matchedMapping->silentToast) {
+                         bareCode, resolved.mapping->action.name);
+                if (showOverlay && m_trailOverlayActivated) {
+                    if (resolved.mapping->silentToast) {
                         trail.setLiveAction("");
                         trail.endTrail("");
                     } else {
-                        trail.endTrail(matchedMapping->action.name);
+                        trail.endTrail(resolved.mapping->action.name);
                     }
                 }
                 const POINT endPt = { event.position.x, event.position.y };
                 m_gestureEndPt = endPt;
                 executeActionInternal(
-                    matchedMapping->action,
+                    resolved.mapping->action,
                     m_gestureStartWindow,
                     m_previousForeground,
                     m_gestureStartPt,
@@ -1315,11 +1551,14 @@ void GestureEngine::endTracking(const MouseEvent& event) {
 
     const MouseEventType triggerSnap = m_activeTriggerDown;
     const bool downSuppressed = m_activeDownWasSuppressed;
+    const bool overlayWasActivated = m_trailOverlayActivated;
 
     auto clearTrackingSessionFields = [this]() {
         m_wheelExecutedDuringTracking = false;
         m_instantExecutedDuringTracking = false;
         m_hasMovedBeyondThreshold = false;
+        m_trailOverlayActivated = false;
+        m_pendingTrailPoints.clear();
         m_gestureConsumed = false;
         m_activeDownWasSuppressed = false;
         m_observedPhysicalTriggerDown = false;
@@ -1347,7 +1586,9 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     if (m_wheelExecutedDuringTracking) {
-        if (hasOverlayVisuals()) {
+        // 滚轮手势已在 handleWheelGesture 内自行处理提示胶囊淡出或隐藏，
+        // 绝不再无条件 hide() 秒杀刚弹出的滚轮动作提示；仅清理残留的未结束轨迹线。
+        if (overlayWasActivated && hasOverlayVisuals()) {
             GestureTrailOverlay::instance().hide();
         }
         clearTrackingSessionFields();
@@ -1382,7 +1623,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
             LOG_INFO("手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击");
             clearTrackingSessionFields();
             m_state = GestureState::Idle;
-            if (hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
+            if (overlayWasActivated && hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
             if (!wasConsumed && downSuppressed) {
                 reinjectTriggerClick(triggerSnap, downSuppressed);
             }
@@ -1415,8 +1656,12 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         clearTrackingSessionFields();
         m_state = GestureState::Idle;
         if (hasOverlayVisuals()) {
-            GestureTrailOverlay::instance().setRecognized(false);
-            GestureTrailOverlay::instance().endTrail("•••");
+            auto& trail = GestureTrailOverlay::instance();
+            if (!overlayWasActivated) {
+                trail.beginTrail();
+            }
+            trail.setRecognized(false);
+            trail.endTrail("•••");
         }
         return;
     }
@@ -1424,21 +1669,28 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     const int endDx = event.position.x - startPt.x;
     const int endDy = event.position.y - startPt.y;
     const int minSegDist = m_minSegmentDistance.load(std::memory_order_relaxed);
+    const int shapeThreshold = m_shapeMatchThreshold.load(std::memory_order_relaxed);
     const bool exceededThreshold = movedBeyondThresholdSnap ||
                                    (endDx * endDx + endDy * endDy >= minSegDist * minSegDist);
 
     m_recognizer.addPoint(event.position.x, event.position.y);
+    const std::vector<TrackPoint> rawPointsSnap = m_recognizer.points();
     const bool scribbleCanceled = m_recognizer.isScribbleCanceled();
     auto result = m_recognizer.finalize();
-    if (scribbleCanceled || (exceededThreshold && (!result || !result->isValid()))) {
+    const bool hasValidResult = result && result->isValid();
+    if (scribbleCanceled || (exceededThreshold && !hasValidResult)) {
         wasConsumed = true;
     }
 
     clearTrackingSessionFields();
 
-    if (!result || !result->isValid()) {
+    const bool allowShapeOnlyFallback =
+        !hasValidResult && exceededThreshold && !scribbleCanceled &&
+        shapeThreshold < 100 && rawPointsSnap.size() >= 2;
+
+    if (!hasValidResult && !allowShapeOnlyFallback) {
         m_state = GestureState::Idle;
-        if (hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
+        if (overlayWasActivated && hasOverlayVisuals()) GestureTrailOverlay::instance().hide();
         if (!wasConsumed && downSuppressed) {
             // 轨迹未超过起始阈值且未涂抹取消：视为普通点击，补发被吞掉的触发键点击
             reinjectTriggerClick(triggerSnap, downSuppressed);
@@ -1450,18 +1702,23 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     // 生成带边缘与修饰键前缀的手势编码 (如 "TopEdge+D"、"Middle+L"、"X1+R"、"Ctrl+L"、"Alt+D-R")
-    std::string fullCode = formatFullGestureCode(edgeZoneSnap, gestureModsSnap, triggerSnap, result->code);
-    std::string bareCode = result->code;                                           // 无前缀的纯方向编码
+    const std::string requiredPrefix = formatFullGestureCode(edgeZoneSnap, gestureModsSnap, triggerSnap, "");
+    const std::string bareCode = hasValidResult ? result->code : std::string{};
+    const std::string fullCode = requiredPrefix + bareCode;
 
-    LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
-             bareCode, fullCode, result->toArrowString(), result->rawPoints.size(), result->totalDistance);
+    if (hasValidResult) {
+        LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
+                 bareCode, fullCode, result->toArrowString(), result->rawPoints.size(), result->totalDistance);
+        LOG_INFO("Gesture diagnostic: code={}, fullCode={}, dur={}ms, minSeg={}px, shapeThresh={}%, {}",
+                 bareCode, fullCode, elapsed, minSegDist, shapeThreshold, result->formatDiagnosticSummary());
+    }
 
     // 查找适用的 Profile（优先使用异步预解析快照，若未命中则降级同步解析）
     auto profile = activeProfileSnapshot ? activeProfileSnapshot : resolveProfile(startWindow);
     if (!profile) {
         // 手势在当前窗口被禁用 → 仅在未消费且初始按下确被吞没时还原为普通点击
         m_state = GestureState::Idle;
-        if (hasOverlayVisuals()) GestureTrailOverlay::instance().endTrail();
+        if (overlayWasActivated && hasOverlayVisuals()) GestureTrailOverlay::instance().endTrail();
         if (!wasConsumed && downSuppressed) {
             reinjectTriggerClick(triggerSnap, downSuppressed);
         }
@@ -1470,21 +1727,45 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     }
 
     const auto fallback = getProfile("default");
-    const std::optional<GestureMapping> matchedMapping = lookupGestureMapping(profile, fallback, fullCode, bareCode);
-    const std::string matchedCode = matchedMapping ? (profile->findAction(fullCode) ? fullCode : bareCode) : fullCode;
+    const ResolvedGestureMatch resolved = resolveGestureMappingWithShapeFallback(
+        profile, fallback, fullCode, bareCode, requiredPrefix,
+        hasValidResult ? result->rawPoints : rawPointsSnap,
+        shapeThreshold, minSegDist,
+        hasValidResult ? &result->simplifiedSegments : nullptr);
 
-    if (matchedMapping) {
-        const GestureAction& action = matchedMapping->action;
+    if (resolved.mapping) {
+        const GestureAction& action = resolved.mapping->action;
+        const std::string matchedCode = resolved.matchedCode.empty() ? fullCode : resolved.matchedCode;
+        if (resolved.isLeadingInertiaTrim) {
+            LOG_INFO("Gesture matched via leading-inertia trim: rawCode={}, trimmedCode={}, matchedCode={}, leadingLen={:.0f}px, action={}",
+                     bareCode, resolved.trimmedCode, matchedCode, resolved.trimmedLeadingLen, action.name);
+        } else if (resolved.isShapeFallback) {
+            LOG_INFO("Gesture matched via shape similarity fallback: rawCode={}, matchedCode={}, similarity={}%, runnerUp={}({}%), threshold={}%, action={}",
+                     bareCode, matchedCode, resolved.shapeSimilarity,
+                     resolved.shapeDiag.top2Code.empty() ? "none" : resolved.shapeDiag.top2Code,
+                     resolved.shapeDiag.top2Percent, shapeThreshold, action.name);
+        }
         LOG_INFO("执行手势动作: gesture={}, matchedCode={}, action={}, profile={}",
-                 result->toArrowString(), matchedCode, action.name, profile->name());
+                 hasValidResult ? result->toArrowString() : matchedCode, matchedCode, action.name, profile->name());
 
         // B5.4: silentToast 为真时静默淡出轨迹，不弹出手势名称 Toast 卡片
         if (hasOverlayVisuals()) {
             auto& trail = GestureTrailOverlay::instance();
-            if (matchedMapping->silentToast) {
-                trail.setLiveAction("");
-                trail.endTrail("");
+            if (resolved.mapping->silentToast) {
+                if (overlayWasActivated) {
+                    trail.setLiveAction("");
+                    trail.endTrail("");
+                }
             } else {
+                if (!overlayWasActivated) {
+                    trail.beginTrail();
+                    if (m_trailVisible.load(std::memory_order_relaxed)) {
+                        for (const auto& pt : rawPointsSnap) {
+                            trail.addPoint(static_cast<float>(pt.x), static_cast<float>(pt.y));
+                        }
+                    }
+                    trail.setRecognized(true);
+                }
                 trail.endTrail(action.name);
             }
         }
@@ -1493,7 +1774,14 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     } else {
         // 未绑定：轨迹保持灰色并淡出即可，不再弹出「未绑定」卡片。
         LOG_INFO("未找到手势映射: fullCode={}, bareCode={}", fullCode, bareCode);
-        if (hasOverlayVisuals()) {
+        if (shapeThreshold < 100 && !resolved.shapeDiag.top1Code.empty()) {
+            LOG_INFO("Gesture unmatched shape diagnostics: rawCode={}, top1={}({}%), top2={}({}%), threshold={}%, ambiguous={}",
+                     bareCode, resolved.shapeDiag.top1Code, resolved.shapeDiag.top1Percent,
+                     resolved.shapeDiag.top2Code.empty() ? "none" : resolved.shapeDiag.top2Code,
+                     resolved.shapeDiag.top2Percent, shapeThreshold,
+                     resolved.shapeDiag.rejectedByAmbiguity ? "true" : "false");
+        }
+        if (overlayWasActivated && hasOverlayVisuals()) {
             GestureTrailOverlay::instance().setRecognized(false);
             GestureTrailOverlay::instance().endTrail();
         }
@@ -1704,20 +1992,38 @@ bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
         m_lastDesktopSwitchTime = now;
     }
 
-    m_wheelExecutedDuringTracking = true;
-    m_gestureConsumed = true;
+    if (isTracking) {
+        m_wheelExecutedDuringTracking = true;
+        m_gestureConsumed = true;
+    }
 
     const bool isBrightnessWheelCmd =
         action.type == ActionType::BuiltinCommand &&
         (action.builtinCmd == BuiltinCommand::BrightnessUp ||
          action.builtinCmd == BuiltinCommand::BrightnessDown);
-    if (hasOverlayVisuals() && !isBrightnessWheelCmd) {
+    if (isBrightnessWheelCmd) {
+        if (isTracking && m_trailOverlayActivated && hasOverlayVisuals()) {
+            GestureTrailOverlay::instance().hide();
+            m_trailOverlayActivated = false;
+        }
+    } else if (hasOverlayVisuals()) {
         auto& trail = GestureTrailOverlay::instance();
         if (matchedMapping->silentToast) {
-            trail.setLiveAction("");
-            trail.endTrail("");
-        } else {
+            if (m_trailOverlayActivated) {
+                trail.setLiveAction("");
+                trail.endTrail("");
+                m_trailOverlayActivated = false;
+            }
+        } else if (m_showActionHint.load(std::memory_order_acquire)) {
+            // 无论之前是否激活覆盖层，都先安全开启新 epoch（消除 hideRequested 吞帧与旧轨迹残留）再展示动作提示
+            if (!m_trailOverlayActivated) {
+                trail.beginTrail();
+            }
             trail.endTrail(action.name);
+            m_trailOverlayActivated = false;
+        } else if (m_trailOverlayActivated) {
+            trail.endTrail("");
+            m_trailOverlayActivated = false;
         }
     }
 
@@ -1928,6 +2234,7 @@ void GestureEngine::cancelActiveGesture() {
 
 void GestureEngine::cancelTracking() {
     MouseHook::instance().resetTriggerState();
+    const bool overlayWasActivated = m_trailOverlayActivated;
     m_activeTriggerDown = MouseEventType::Move;
     m_activeTriggerUp = MouseEventType::Move;
     m_activeDownWasSuppressed = false;
@@ -1939,6 +2246,8 @@ void GestureEngine::cancelTracking() {
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
     m_hasMovedBeyondThreshold = false;
+    m_trailOverlayActivated = false;
+    m_pendingTrailPoints.clear();
     m_gestureConsumed = false;
     m_activeProfile.reset();
     m_fallbackProfile.reset();
@@ -1951,7 +2260,7 @@ void GestureEngine::cancelTracking() {
     m_previousForeground = nullptr;
     m_contextResolved.store(false, std::memory_order_release);
     m_contextEpoch.fetch_add(1, std::memory_order_relaxed);
-    if (hasOverlayVisuals()) {
+    if (overlayWasActivated && hasOverlayVisuals()) {
         GestureTrailOverlay::instance().hide();
     }
     m_state = GestureState::Idle;
@@ -2012,7 +2321,13 @@ void GestureEngine::loadFromConfig() {
         config.set<bool>("/gesture/initialTimeoutV2Migrated", true);
     }
     setInitialTimeoutMs(rawTimeoutMs);
-    setMinSegmentDistance(config.get<int>("/gesture/minSegmentDistance", 24));
+    const int legacyMinSeg = config.get<int>("/gesture/recognizer/minSegmentDistance", 24);
+    const auto minSegJson = config.get<nlohmann::json>("/gesture/minSegmentDistance");
+    const int resolvedMinSeg = minSegJson.is_number_integer()
+        ? minSegJson.get<int>()
+        : legacyMinSeg;
+    setMinSegmentDistance(resolvedMinSeg);
+    setShapeMatchThreshold(config.get<int>("/gesture/shapeMatchThreshold", 75));
 
     // 加载 Profile
     std::unordered_map<std::string, GestureProfile> loadedProfiles;
@@ -2065,10 +2380,9 @@ void GestureEngine::loadFromConfig() {
     auto rulesJson = config.get<nlohmann::json>("/gesture/scopeRules");
     m_scopeRules.loadFromJson(rulesJson);
 
-    // 加载识别器参数（优先继承 /gesture/minSegmentDistance，并执行上下界 std::clamp 校验）
+    // 加载识别器参数（以 /gesture/minSegmentDistance 为唯一权威源，禁止遗留键反向覆盖）
     RecognizerConfig recognizerConfig;
-    recognizerConfig.minSegmentDistance = config.get<int>(
-        "/gesture/recognizer/minSegmentDistance", m_minSegmentDistance.load());
+    recognizerConfig.minSegmentDistance = m_minSegmentDistance.load(std::memory_order_acquire);
     recognizerConfig.samplingInterval = config.get<int>("/gesture/recognizer/samplingInterval", 2);
     recognizerConfig.angleToleranceDeg = config.get<double>("/gesture/recognizer/angleTolerance", 22.5);
     recognizerConfig.maxDirections = config.get<int>("/gesture/recognizer/maxDirections", 10);
@@ -2079,6 +2393,7 @@ void GestureEngine::loadFromConfig() {
 
 bool GestureEngine::saveToConfig() {
     auto& config = tools3000::core::ConfigManager::instance();
+    const auto recCfg = recognizerConfig();
 
     // 保存 Profile
     auto profiles = getProfiles();
@@ -2095,9 +2410,11 @@ bool GestureEngine::saveToConfig() {
             {"trailFadeEnabled", m_trailFadeEnabled.load()},
             {"showActionHint", m_showActionHint.load()},
             {"autoBypassFullscreen", m_autoBypassFullscreen.load()},
+            {"enableScribbleCancel", recCfg.enableScribbleCancel},
             {"targetMode", targetMode()},
             {"initialTimeoutMs", m_initialTimeoutMs.load()},
-            {"minSegmentDistance", m_minSegmentDistance.load()}
+            {"minSegmentDistance", m_minSegmentDistance.load()},
+            {"shapeMatchThreshold", m_shapeMatchThreshold.load()}
         }}
     }, "/gesture");
 

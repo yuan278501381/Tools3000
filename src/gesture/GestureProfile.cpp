@@ -8,20 +8,66 @@
 #include "core/utils/ThemeUtils.h"
 #include <unordered_set>
 #include <algorithm>
+#include <cctype>
+#include <string_view>
 
 namespace tools3000::gesture {
+
+namespace {
+
+std::string normalizeCodeKey(std::string_view code) {
+    std::string out;
+    out.reserve(code.size());
+    for (unsigned char ch : code) {
+        out.push_back(static_cast<char>(std::toupper(ch)));
+    }
+    return out;
+}
+
+std::pair<std::string, std::vector<std::string>> splitPrefixAndSegments(std::string_view code) {
+    const std::string upper = normalizeCodeKey(code);
+    const size_t plusPos = upper.rfind('+');
+    std::string prefix;
+    std::string bare = upper;
+    if (plusPos != std::string::npos) {
+        prefix = upper.substr(0, plusPos + 1);
+        bare = upper.substr(plusPos + 1);
+    }
+    std::vector<std::string> segs;
+    size_t start = 0;
+    while (start < bare.size()) {
+        const size_t dash = bare.find('-', start);
+        const std::string tok = bare.substr(start, dash == std::string::npos ? std::string::npos : dash - start);
+        if (!tok.empty()) segs.push_back(tok);
+        if (dash == std::string::npos) break;
+        start = dash + 1;
+    }
+    return {std::move(prefix), std::move(segs)};
+}
+
+bool isStrictSegmentPrefix(const std::vector<std::string>& shorter,
+                           const std::vector<std::string>& longer) noexcept {
+    if (shorter.empty() || shorter.size() >= longer.size()) return false;
+    for (size_t i = 0; i < shorter.size(); ++i) {
+        if (shorter[i] != longer[i]) return false;
+    }
+    return true;
+}
+
+}  // namespace
 
 GestureProfile::GestureProfile(const std::string& name) : m_name(name) {}
 
 void GestureProfile::addMapping(const GestureMapping& mapping) {
-    // 如果已存在，覆盖
-    auto it = m_codeIndex.find(mapping.gestureCode);
+    // 如果已存在（大小写不敏感同编码），原位覆盖
+    const std::string key = normalizeCodeKey(mapping.gestureCode);
+    auto it = m_codeIndex.find(key);
     if (it != m_codeIndex.end()) {
         m_mappings[it->second] = mapping;
         LOG_DEBUG("覆盖手势映射: profile={}, code={}, action={}",
                   m_name, mapping.gestureCode, mapping.action.name);
     } else {
-        m_codeIndex[mapping.gestureCode] = m_mappings.size();
+        m_codeIndex[key] = m_mappings.size();
         m_mappings.push_back(mapping);
         LOG_DEBUG("添加手势映射: profile={}, code={}, action={}",
                   m_name, mapping.gestureCode, mapping.action.name);
@@ -29,7 +75,8 @@ void GestureProfile::addMapping(const GestureMapping& mapping) {
 }
 
 void GestureProfile::removeMapping(const std::string& gestureCode) {
-    auto it = m_codeIndex.find(gestureCode);
+    const std::string key = normalizeCodeKey(gestureCode);
+    auto it = m_codeIndex.find(key);
     if (it != m_codeIndex.end()) {
         m_mappings.erase(m_mappings.begin() + static_cast<ptrdiff_t>(it->second));
         rebuildIndex();
@@ -37,7 +84,8 @@ void GestureProfile::removeMapping(const std::string& gestureCode) {
 }
 
 void GestureProfile::setMappingEnabled(const std::string& gestureCode, bool enabled) {
-    auto it = m_codeIndex.find(gestureCode);
+    const std::string key = normalizeCodeKey(gestureCode);
+    auto it = m_codeIndex.find(key);
     if (it != m_codeIndex.end()) {
         m_mappings[it->second].enabled = enabled;
         LOG_DEBUG("设置手势状态: profile={}, code={}, enabled={}", m_name, gestureCode, enabled);
@@ -45,15 +93,8 @@ void GestureProfile::setMappingEnabled(const std::string& gestureCode, bool enab
 }
 
 std::optional<GestureAction> GestureProfile::findAction(const std::string& gestureCode) const {
-    auto it = m_codeIndex.find(gestureCode);
-    if (it == m_codeIndex.end()) {
-        for (const auto& [code, idx] : m_codeIndex) {
-            if (_stricmp(code.c_str(), gestureCode.c_str()) == 0) {
-                it = m_codeIndex.find(code);
-                break;
-            }
-        }
-    }
+    const std::string key = normalizeCodeKey(gestureCode);
+    auto it = m_codeIndex.find(key);
     if (it != m_codeIndex.end()) {
         if (!m_mappings[it->second].enabled) {
             LOG_DEBUG("手势已禁用，忽略动作: profile={}, code={}", m_name, gestureCode);
@@ -65,15 +106,8 @@ std::optional<GestureAction> GestureProfile::findAction(const std::string& gestu
 }
 
 std::optional<GestureMapping> GestureProfile::findMapping(const std::string& gestureCode) const {
-    auto it = m_codeIndex.find(gestureCode);
-    if (it == m_codeIndex.end()) {
-        for (const auto& [code, idx] : m_codeIndex) {
-            if (_stricmp(code.c_str(), gestureCode.c_str()) == 0) {
-                it = m_codeIndex.find(code);
-                break;
-            }
-        }
-    }
+    const std::string key = normalizeCodeKey(gestureCode);
+    auto it = m_codeIndex.find(key);
     if (it != m_codeIndex.end()) {
         return m_mappings[it->second];
     }
@@ -86,15 +120,15 @@ void GestureProfile::reorderMappings(const std::vector<std::string>& orderedCode
     std::unordered_set<std::string> placed;
 
     for (const auto& code : orderedCodes) {
-        if (auto it = m_codeIndex.find(code); it != m_codeIndex.end()) {
+        const std::string key = normalizeCodeKey(code);
+        if (auto it = m_codeIndex.find(key); it != m_codeIndex.end() && placed.insert(key).second) {
             newMappings.push_back(m_mappings[it->second]);
-            placed.insert(code);
         }
     }
 
     // 保留未在 orderedCodes 中的已有映射
     for (const auto& m : m_mappings) {
-        if (!placed.contains(m.gestureCode)) {
+        if (!placed.contains(normalizeCodeKey(m.gestureCode))) {
             newMappings.push_back(m);
         }
     }
@@ -150,21 +184,22 @@ void GestureProfile::setAllTriggerStates(TriggerModeState state) {
 }
 
 bool GestureProfile::hasGesture(const std::string& gestureCode) const {
-    if (m_codeIndex.contains(gestureCode)) return true;
-    for (const auto& [code, _] : m_codeIndex) {
-        if (_stricmp(code.c_str(), gestureCode.c_str()) == 0) return true;
-    }
-    return false;
+    return m_codeIndex.contains(normalizeCodeKey(gestureCode));
 }
 
 std::vector<std::string> GestureProfile::detectConflicts(const std::string& gestureCode) const {
     std::vector<std::string> conflicts;
-    for (const auto& [code, _] : m_codeIndex) {
-        // 前缀冲突检测：新手势是已有手势的前缀，或已有手势是新手势的前缀
-        if (code != gestureCode) {
-            if (gestureCode.starts_with(code) || code.starts_with(gestureCode)) {
-                conflicts.push_back(code);
-            }
+    const std::string targetKey = normalizeCodeKey(gestureCode);
+    const auto [targetPrefix, targetSegs] = splitPrefixAndSegments(gestureCode);
+    for (const auto& m : m_mappings) {
+        const std::string existingKey = normalizeCodeKey(m.gestureCode);
+        if (existingKey == targetKey) continue;
+        const auto [existingPrefix, existingSegs] = splitPrefixAndSegments(m.gestureCode);
+        if (existingPrefix != targetPrefix) continue;
+        // 段级前缀冲突检测：仅当同触发前缀且方向段序列严格互为前缀时才冲突（杜绝 D 与 DR-UR 误报）
+        if (isStrictSegmentPrefix(targetSegs, existingSegs) ||
+            isStrictSegmentPrefix(existingSegs, targetSegs)) {
+            conflicts.push_back(m.gestureCode);
         }
     }
     return conflicts;
@@ -173,7 +208,7 @@ std::vector<std::string> GestureProfile::detectConflicts(const std::string& gest
 void GestureProfile::rebuildIndex() {
     m_codeIndex.clear();
     for (size_t i = 0; i < m_mappings.size(); ++i) {
-        m_codeIndex[m_mappings[i].gestureCode] = i;
+        m_codeIndex[normalizeCodeKey(m_mappings[i].gestureCode)] = i;
     }
 }
 

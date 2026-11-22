@@ -100,9 +100,13 @@ public:
     void setInitialTimeoutMs(int ms);
     int initialTimeoutMs() const { return m_initialTimeoutMs.load(); }
 
-    /// 手势最小识别距离 (像素, 默认 24px)
+    /// 手势最小识别距离 (像素, 默认 24px；同时控制轨迹覆盖层激活阈值)
     void setMinSegmentDistance(int px);
     int minSegmentDistance() const { return m_minSegmentDistance.load(); }
+
+    /// 手势图形相似度匹配阈值 (百分比 50..100，默认 75；100 表示仅精确方向匹配)
+    void setShapeMatchThreshold(int percent);
+    int shapeMatchThreshold() const { return m_shapeMatchThreshold.load(); }
 
     /// 当前状态
     GestureState state() const { return m_state.load(); }
@@ -128,7 +132,7 @@ public:
     // ── 识别器配置 ───────────────────────────────────────────────────────
 
     void setRecognizerConfig(const RecognizerConfig& config);
-    const RecognizerConfig& recognizerConfig() const { return m_recognizer.config(); }
+    RecognizerConfig recognizerConfig() const;
 
     // ── 轨迹可视化 ──────────────────────────────────────────────────────
 
@@ -174,6 +178,9 @@ private:
     void endTracking(const MouseEvent& event);
     /// 取消手势追踪
     void cancelTracking();
+
+    /// 在首次跨过最小识别距离或需要显示覆盖层时延迟激活轨迹覆盖层并回填起笔点（调用方须持 m_mutex）
+    void activateOverlayIfNeededLocked(bool includeRecognizerPoints = false);
 
     /// 处理按住触发键期间的滚轮手势 (RButton + WheelUp/Down)
     bool handleWheelGesture(const MouseEvent& event);
@@ -229,6 +236,7 @@ private:
     std::atomic<GestureTargetMode> m_targetMode{GestureTargetMode::UnderPointer};
     std::atomic<int> m_initialTimeoutMs{0};
     std::atomic<int> m_minSegmentDistance{24};
+    std::atomic<int> m_shapeMatchThreshold{75};
     HWND m_gestureStartWindow = nullptr;  // 手势开始时光标下的顶层窗口（含设置窗）
     HWND m_previousForeground = nullptr;  // 手势开始时的前台窗口（跳过覆盖层）
     HWND m_lastExternalWindow = nullptr;  // 最近一次命中的目标窗口
@@ -252,6 +260,8 @@ private:
     bool m_wheelExecutedDuringTracking = false;    // 按住触发键期间是否执行过滚轮手势
     bool m_instantExecutedDuringTracking = false;  // 按住触发键划动期间是否已触发 instantExecute
     bool m_hasMovedBeyondThreshold = false;        // 是否已移动跨过起始识别阈值
+    bool m_trailOverlayActivated = false;          // 轨迹覆盖层是否已在跨过阈值后激活（未激活前 0 光点）
+    std::vector<TrackPoint> m_pendingTrailPoints;  // 跨过最小识别距离前暂存的起笔与途经坐标
     bool m_gestureConsumed = false;                // 本次手势是否已消费(instantExecute/滚轮/超阈值涂抹取消)，禁止松手回放右键
     bool m_activeDownWasSuppressed = true;         // 本次触发按下是否实际被低级钩子吞没
     bool m_observedPhysicalTriggerDown = false;    // 追踪期间 GetAsyncKeyState 是否曾观测到物理按下位
@@ -298,7 +308,7 @@ private:
     MouseEventType m_activeTriggerDown = MouseEventType::RightDown;
     MouseEventType m_activeTriggerUp = MouseEventType::RightUp;
 
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
 
     struct ActionJob {
         GestureAction action;

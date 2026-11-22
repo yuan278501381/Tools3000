@@ -358,6 +358,61 @@
   color: var(--text-secondary);
 }
 
+/* 手动 8 方向箭头精准点选拼装条 */
+.gesture-manual-builder {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding-top: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.gesture-manual-dir-grid {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.gesture-manual-dir-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  padding: 0;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.gesture-manual-dir-btn:hover:not(:disabled) {
+  background: var(--bg-elevated);
+  border-color: var(--primary);
+  color: var(--primary);
+  transform: translateY(-1px);
+}
+
+.gesture-manual-dir-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.gesture-manual-dir-btn--backspace {
+  width: 34px;
+  margin-left: 2px;
+}
+
+.gesture-draw-badge--live {
+  opacity: 0.92;
+  border-style: dashed;
+}
+
 /* 常用预设手势栏 */
 .gesture-preset-tray {
   display: flex;

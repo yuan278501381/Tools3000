@@ -6,6 +6,27 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-22] 鼠标手势前后端 MECE 全链路架构重构（响应 GitHub Issue `#4` `@Yafeiml` 与小众软件 `@buliugu` 反馈）
+- **核心问题与底层根因控制点**：
+  1. **反 C (`R-D-L`) / 正 C / U / V (`DR-UR`) 识别率提升与 FastGestures 风格「手势图形匹配阈值（%）」 (`GestureRecognizer.{h,cpp}`, `GestureEngine.{h,cpp}`, `PluginEntry.cpp`, `GesturePage.tsx`, 8 语种 JSON)**：
+     - *旧版多维缺陷*：① `isAdvancing` ±39.4° 过宽推进锥在对角圆弧上吞噬正交中段 `D`；② 3 段以上末尾对角无脑 `pop_back()` 将反 C `R-D-DL` 砍成 `R-D`（误触恢复标签页）；③ 正交磁吸 `±30°` 把 45° 对角区挤压至 `±15°`，且 `isJitterRebound` 漏掉 8 种对角邻近正交抖动（`DR-D-DR` 等），V 底部略圆 `DR-R-UR` 被直接砍断；④ 缺乏连续几何相似度兜底匹配；
+     - *终局架构*：收紧对角推进锥至 `28.125°`（正交 `34.875°`）、正交磁吸校准至 `±28°`（兼顾既有 `27.5°` 偏斜 `D` 回归用例与 60° 倾角自然 V）；补全 8 种对角抖动消除、V 底部微圆 `isDiagonalCornerFillet`、四段半圆弧双对角合并（`R-DR-DL-L -> R-D-L` 等 8 种）、反向夹心单对角（`R-DR-L -> R-D-L`）与三段反向回折收笔补全（`R-D-DL -> R-D-L`，同时严格保全同象限收笔微垂 `D-R-DR -> D-R` 防误触截图）；新增方向敏感（仅平移+等比 RMS 缩放、严禁旋转）的 32 点折线+Chaikin 圆弧双原型几何相似度匹配器（`computeGestureShapeSimilarity` / `matchBestGestureShape`）与配置项 `/gesture/shapeMatchThreshold`（默认 `75%`，范围 `50..100`，`100%` 仅精确方向；形状兜底严禁中途触发 `instantExecute`）。
+  2. **右键按下 0 起始光点：轨迹覆盖层延迟激活严格对齐「手势最小识别距离」 (`GestureEngine.{h,cpp}`, `GestureTrailOverlay.{h,cpp}`)**：
+     - `beginTracking` 不再提前调用 `trail.beginTrail()`/`addPoint()`，改用 `m_trailOverlayActivated` + `m_pendingTrailPoints` 缓冲坐标，仅在首次跨过 `minSegmentDistance`（默认 `24px`）后激活覆盖层并一次性无缝回填起笔点，普通右键单击全程 0 覆盖层唤醒、0 光点闪烁；
+     - 同步消除延迟激活暴露出的 4 条边界暗坑：`handleWheelGesture` 未激活时先安全 `beginTrail()` 再 `endTrail(action.name)`（消除 `m_hideRequested` 吞帧与旧轨迹鬼影）且仅在 `isTracking` 时写追踪标志；`endTracking` 滚轮分支不再无条件 `hide()` 秒杀刚弹出的滚轮提示；0-Move 极快甩手自动补 `beginTrail()`；短点击未激活覆盖层时绝不调用 `hide()` 误伤正在淡出的亮度 OSD。
+  3. **前端自定义手势录制画板前后端 100% 同源 + 手动 8 方向箭头拼装兜底 (`gestureModel.ts`, `GestureDrawCanvas.{tsx,css}`, `GestureEditorModal.tsx`, `GestureProfile.cpp`)**：
+     - `gestureModel.ts` 升级为与 C++ 完全一致的拐点+推进锥+圆弧/对角化简算法；`GestureDrawCanvas` 补齐 `pointsRef` 同步末点、绘制中实时方向预览徽章、单击清空孤立圆点、`window.blur`/`visibilitychange` 清修饰键防卡死，并新增 **手动 8 方向矢量箭头点选拼装条 + 退格钮**（点 `↘ + ↗` 0.5 秒稳建 V 手势）与 `R-D-L`/`DR-UR` 快捷预设；
+     - 修复 `GestureProfile::detectConflicts` 与 `GestureEditorModal` 纯字符串 `startsWith` 导致的 `D` vs `DR-UR` 前缀冲突误报，升级为同前缀 + `-` 段级前缀匹配，并将 `GestureProfile::m_codeIndex` 统一规范化为 O(1) 大小写一致索引。
+  4. **审计顺手清扫的 P1 工程隐患**：
+     - 修复 `GestureEngine::loadFromConfig()` 中遗留键 `/gesture/recognizer/minSegmentDistance` 重启覆盖 `/gesture/minSegmentDistance`；为 `setMinSegmentDistance`/`setRecognizerConfig`/`recognizerConfig()` 补齐 `m_mutex` 锁保护；修复 `GesturePage.tsx` 误调不存在的 `gesture.setTriggerButton` 改为 `gesture.updateSettings`；修复 `GestureTrailOverlay` `beginTrail()` 无锁写 `m_accumulatedStrokeDirtyRect` 与 ARM64 下 `m_fadeEpoch`/`m_fadeStartTick`/`m_fading` 弱内存序同步。
+  5. **实机压测二轮深度精修（高速连划 Chrome `D-R` 关标签防误触 + 实机 V 字全形态识别 + 结构化黑匣子日志）**：
+     - **方案 A 移除运行期单对角隐式展开 (`GestureEngine.cpp`)**：取消 `lookupGestureMapping` 对 `expandSingleDiagonalCode`（如 `DL -> D-L`）的静默跨手势展开（工具函数保留以兼容单元测试），彻底根除高速连划斜拉早松手一刀触发 `Alt+F4` 关闭整个浏览器窗口的致命隐患；
+     - **形状相似度拓扑护栏 + 端头切向一致性 + 非等长 L 折线原型 (`GestureRecognizer.cpp`)**：`matchBestGestureShape` 严禁多段/圆弧轨迹降维匹配单段直线手势（`dirs.size() <= 1` 跳过，根治 `L-D-R` 兜底误触发 `D` 最小化）；`scoreNormalizedShapes` 纳入前后 `span=3` 端头切向一致性（权重 `0.20`）保证反 C 与 `R-D` 区分度 `> +15` 分；2 段手势增补 `{1.0, 0.45}` 纯折线原型兼顾长竖短横连划 `D-R` 且加固直线惩罚护栏（`userStraightness > 0.95`）；
+     - **起笔激活距离与拐弯切段距离解耦 + 首段微惯性回拉裁噪 (`GestureRecognizer.cpp`, `GestureEngine.cpp`)**：阶段 1 仍严格守护 `minSegmentDistance`（默认 `24px` 防单击闪点），阶段 3 拐弯切段解耦封顶 `kMaxTurnSegmentDistancePx = 16`，`refineCodeWithPath` 同步解耦至 `max(turnSeg+4, firstPrimary*16%)`；完整码未命中且段数 `>= 3` 时，若首段极短惯性（`<= 38px` 且 `<= seg1 * 28%` 且 `seg1 >= 60px`），裁去首段惯性噪点精准复查表（如复位刹不住车的 `L(短)-D-R -> D-R`，严禁触发 `instantExecute`）；
+     - **前后端同源尖角矢量上下文消歧 (`GestureRecognizer.{h,cpp}`, `gestureModel.ts`, `GestureDrawCanvas.tsx`)**：每段保存净位移 `(dx, dy)`，针对 135° 反向跨象限尖角对（`D-UR`/`DR-U` 等 16 种）只要正交段同侧倾角 `>= 6°` 即还原为双对角尖角（`DR-UR`），弧臂 V（`D->DR->UR`）不再被反 C 三段圆弧误掰成 `D-R-U`，对称窄印刷体 V（每臂 `>= 15°`、总张角 `>= 36°`）亦还原为 `DR-UR` 且零误伤日常往返 `U-D`；画板 `setPointerCapture` 改绑稳定容器 `canvasRef.current` 并补齐 `onPointerCancel`；
+     - **结构化手势诊断日志 (`GestureRecognizer.{h,cpp}`, `GestureEngine.cpp`)**：冷路径 `finalize()` 生成 `raw=[dir:len(deg)]`、`simp`、`bbox`、`pathRefined`，并在 `endTracking` 默认 `INFO` 级输出识别诊断、首段裁噪记录、形状匹配 Top-1/Top-2 及未命中最高候选分数；
+  6. **回归验证**：C++ 手势全套 **223/223 PASS**（含 3 组新建真实 HWND / 形状阈值 / Chrome 连划与实机 V 截图防回退用例），前端 `tsc -b` + ESLint + 6 重并发静态门禁（8 语种同构/日志/CSS/排版/内存修剪）+ Vitest **31/31 文件 230/230 用例** + `vite:build` 生产构建全部 100% 通过。
+
 ### [2026-11-22] 手势 3 视觉开关真实 HWND 根治、Rust Picasa 看图器内存瘦身与标准小窗重构、全链路并发与增量打包提速引擎
 - **核心架构决策与实机验证控制点**：
   1. **鼠标手势 3 视觉开关正交组合与硬件亮度 OSD 彻底根治 (`src/gesture/GestureTrailOverlay.cpp`, `src/gesture/GestureEngine.cpp`, `tests/unit/test_gesture.inc`)**：
