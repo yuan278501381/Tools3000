@@ -12211,7 +12211,17 @@ TEST(PinWindowDragFirstAndZeroOcclusionTest, SmallPinZeroToolbarOcclusionAndDrag
 
         // (5) V-01 防回退：工具栏与贴图控件必须精准跟随主设置深浅主题（浅色雪瓷高定 / 深色黑曜石暗房），
         //     而纯 HUD 提示浮层则由 FloatingGlassBar::resolveHudPalette() 独立锁定高级深色保持心流
-        const std::string savedTheme = tools3000::core::ConfigManager::instance().get<std::string>("/general/theme", "dark");
+        // 若当前单测进程以独立分片/过滤方式运行且尚未初始化 ConfigManager，先绑定临时配置目录，消除对前置测试顺序的隐式依赖
+        auto& cfgMgr = tools3000::core::ConfigManager::instance();
+        std::filesystem::path tempThemeCfgDir;
+        const std::string savedTheme = cfgMgr.get<std::string>("/general/theme", "dark");
+        if (!cfgMgr.set<std::string>("/general/theme", savedTheme)) {
+            tempThemeCfgDir = std::filesystem::temp_directory_path() /
+                              (L"tools3000_pin_theme_cfg_" + std::to_wstring(GetCurrentProcessId()));
+            std::error_code mkEc;
+            std::filesystem::create_directories(tempThemeCfgDir, mkEc);
+            ASSERT_TRUE(cfgMgr.initialize(tempThemeCfgDir, "config.json"));
+        }
         const auto lightPinThemeState = invokeRpc(2114, "capture.inspectPinOcrState", {
             {"setTheme", "light"},
             {"forceHover", true},
@@ -12233,6 +12243,11 @@ TEST(PinWindowDragFirstAndZeroOcclusionTest, SmallPinZeroToolbarOcclusionAndDrag
         EXPECT_TRUE(darkPinThemeState.value("lastToolbarIsDark", false));
 
         invokeRpc(2116, "capture.inspectPinOcrState", {{"setTheme", savedTheme}});
+        if (!tempThemeCfgDir.empty()) {
+            cfgMgr.shutdown();
+            std::error_code rmEc;
+            std::filesystem::remove_all(tempThemeCfgDir, rmEc);
+        }
 
         SendMessageW(pinHwnd, WM_KEYDOWN, VK_DELETE, 0);
         EXPECT_FALSE(IsWindow(pinHwnd));

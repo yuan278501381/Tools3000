@@ -34,6 +34,7 @@ pub struct FilmstripItemLayout {
 pub struct ViewerUiLayout {
     pub view_w: f32,
     pub is_slideshow: bool,
+    pub is_windowed: bool,
     pub close_rect: RectF,
     pub close_corner_radius: f32,
 
@@ -84,6 +85,7 @@ pub struct LayoutInput {
     pub is_animated: bool,
     pub anim_playing: bool,
     pub is_slideshow: bool,
+    pub is_windowed: bool,
     pub is_actual_zoom: bool,
     pub is_flipped_h: bool,
     pub is_flipped_v: bool,
@@ -102,6 +104,7 @@ impl ViewerUiLayout {
         let cx = vw * 0.5;
         layout.view_w = vw;
         layout.is_slideshow = input.is_slideshow;
+        layout.is_windowed = input.is_windowed;
 
         // 1. 右上角费茨定律关闭徽章：圆心严格位于屏幕最右上角物理顶点 `(vw, 0)`，半径 40 DIP
         layout.close_corner_radius = CORNER_CLOSE_RADIUS_DIP;
@@ -442,8 +445,8 @@ impl ViewerUiLayout {
     }
 
     pub fn hit_test(&self, x: f32, y: f32, image_rect: RectF, ui_visible: bool) -> HitTarget {
-        // 右上角费茨定律关闭徽章：圆心位于 `(view_w, 0)`，鼠标盲甩到最右上角 `(width-1, 0)` 100% 命中！
-        if !self.is_slideshow {
+        // 右上角费茨定律关闭徽章：仅浮层看图态显示，小窗口态已有系统标题栏关闭钮故彻底隐藏不拦截命中
+        if !self.is_slideshow && !self.is_windowed {
             let dx_corner = x - self.view_w;
             let dy_corner = y;
             let hit_r = self.close_corner_radius + 4.0;
@@ -535,6 +538,7 @@ mod tests {
             is_animated: false,
             anim_playing: false,
             is_slideshow: false,
+            is_windowed: false,
             is_actual_zoom: false,
             is_flipped_h: false,
             is_flipped_v: false,
@@ -625,6 +629,36 @@ mod tests {
         assert_eq!(
             layout.hit_test(1919.0, 0.0, img_rc, true),
             HitTarget::EmptyBackdrop
+        );
+    }
+
+    #[test]
+    fn windowed_mode_hides_corner_close_hit_zone_while_preserving_bottom_toolbar() {
+        let mut input = sample_input();
+        input.view_w = 800.0;
+        input.view_h = 600.0;
+        input.is_windowed = true;
+        let layout = ViewerUiLayout::compute(&input);
+        let img_rc = RectF::new(10.0, 10.0, 790.0, 590.0);
+
+        // 右上角顶点不触发浮层四分之一圆关闭钮，返回空白画布；扇形半径内的图片区域正常命中图片
+        assert_eq!(
+            layout.hit_test(799.0, 1.0, img_rc, true),
+            HitTarget::EmptyBackdrop
+        );
+        assert_eq!(
+            layout.hit_test(785.0, 15.0, img_rc, true),
+            HitTarget::ImageCanvas
+        );
+        // 底部控制栏仍完整命中
+        let play_btn = layout
+            .buttons
+            .iter()
+            .find(|b| b.action == ToolbarAction::ToggleSlideshow)
+            .expect("小窗口模式应保留底部播放钮");
+        assert_eq!(
+            layout.hit_test(play_btn.rect.center_x(), play_btn.rect.center_y(), img_rc, true),
+            HitTarget::ToolbarButton(ToolbarAction::ToggleSlideshow)
         );
     }
 }

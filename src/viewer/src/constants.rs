@@ -25,7 +25,22 @@ pub const FIT_SCREEN_MARGIN_RATIO: f32 = 0.94;
 pub const FIT_BOTTOM_SAFE_PAD_DIP: f32 = 98.0;
 pub const FIT_TOP_SAFE_PAD_DIP: f32 = 26.0;
 pub const SLIDESHOW_MARGIN_RATIO: f32 = 1.00;
-pub const PHOTO_WHITE_MAT_DIP: f32 = 4.5;
+
+// 照片真实边缘双层高斯投影令牌（原版 Picasa 纯净无白边悬浮落影：宽环境阴影 + 贴边接触阴影）
+pub const PHOTO_SHADOW_AMBIENT_SPREAD_DIP: f32 = 30.0;
+pub const PHOTO_SHADOW_AMBIENT_OFFSET_Y_DIP: f32 = 6.0;
+pub const PHOTO_SHADOW_AMBIENT_OPACITY: f32 = 0.58;
+pub const PHOTO_SHADOW_CONTACT_SPREAD_DIP: f32 = 9.0;
+pub const PHOTO_SHADOW_CONTACT_OFFSET_Y_DIP: f32 = 1.5;
+pub const PHOTO_SHADOW_CONTACT_OPACITY: f32 = 0.42;
+
+// 标准可缩放小窗口 (Windowed) 尺寸约束与紧凑满幅参数
+pub const WINDOWED_MIN_CLIENT_W_DIP: f32 = 540.0;
+pub const WINDOWED_MIN_CLIENT_H_DIP: f32 = 420.0;
+pub const WINDOWED_TRACK_MIN_W_DIP: f32 = 480.0;
+pub const WINDOWED_TRACK_MIN_H_DIP: f32 = 360.0;
+pub const WINDOWED_MAX_WORKAREA_RATIO: f32 = 0.86;
+pub const WINDOWED_FIT_MARGIN_RATIO: f32 = 0.985;
 
 // 原版 Picasa 灵魂动效节奏（硬件 VSync 满血锁定 60~240Hz，对照原版录屏逐帧实测像素曲线精准校准）
 pub const BACKDROP_OPEN_DURATION_SEC: f32 = 0.14;       // 140ms 全屏轻盈雾灰遮罩与底栏底座利落就位
@@ -62,12 +77,13 @@ pub const ZOOM_BADGE_FADE_MS: u64 = 220;                // 正中央缩放倍率
 pub const AUTOREPEAT_INITIAL_DELAY_MS: u64 = 320;
 pub const AUTOREPEAT_INTERVAL_MS: u64 = 85;
 
-// 缓存与后台预解码预算（严格防爆内存，256px 高清缩略图满足 4K 200%~250%+ 高分屏刀锋锐度）
-pub const MAX_DECODE_CACHE_BYTES: usize = 256 * 1024 * 1024;
-pub const MAX_DECODE_CACHE_ENTRIES: usize = 11;
-pub const MAX_THUMB_CACHE_ENTRIES: usize = 180;
-pub const THUMB_TARGET_SIZE: u32 = 256;
-pub const PRELOAD_RADIUS: usize = 2;
+// 紧凑缓存与后台预解码预算（对标原版 Picasa 极致轻量内存：36MB 全图缓存 + 单图预解上限 18MB + 128px 锐利缩略图）
+pub const MAX_DECODE_CACHE_BYTES: usize = 36 * 1024 * 1024;
+pub const MAX_DECODE_CACHE_ENTRIES: usize = 3;
+pub const MAX_PRELOAD_SINGLE_ENTRY_BYTES: usize = 18 * 1024 * 1024;
+pub const MAX_THUMB_CACHE_ENTRIES: usize = 48;
+pub const THUMB_TARGET_SIZE: u32 = 128;
+pub const PRELOAD_RADIUS: usize = 1;
 pub const WORKER_THREAD_COUNT: usize = 2;
 
 // 解码安全防护上限（约 1.34 亿像素 / 512MB 单帧，严防畸形文件头触发 panic="abort" OOM）
@@ -133,6 +149,9 @@ pub const COLOR_ACCENT: [f32; 4] = [0.96, 0.44, 0.25, 1.0];
 pub const COLOR_BACKDROP_GLASS: [f32; 4] = [0.095, 0.098, 0.106, 0.58];
 pub const COLOR_BACKDROP_SOLID_DARK: [f32; 4] = [0.03, 0.032, 0.038, 0.97];
 pub const COLOR_BACKDROP_LIGHT: [f32; 4] = [0.94, 0.95, 0.965, 0.94];
+pub const COLOR_WINDOWED_BG_DARK: [f32; 4] = [0.11, 0.115, 0.125, 1.0];
+pub const COLOR_WINDOWED_BG_SOLID_DARK: [f32; 4] = [0.03, 0.032, 0.038, 1.0];
+pub const COLOR_WINDOWED_BG_LIGHT: [f32; 4] = [0.945, 0.953, 0.965, 1.0];
 pub const COLOR_BAR_BG: [f32; 4] = [0.088, 0.092, 0.100, 0.88];
 pub const COLOR_PANEL_BG: [f32; 4] = [0.085, 0.092, 0.11, 0.90];
 pub const COLOR_PANEL_TOP_SHEEN: [f32; 4] = [1.0, 1.0, 1.0, 0.18];

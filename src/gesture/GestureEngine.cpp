@@ -1707,7 +1707,11 @@ bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
     m_wheelExecutedDuringTracking = true;
     m_gestureConsumed = true;
 
-    if (hasOverlayVisuals()) {
+    const bool isBrightnessWheelCmd =
+        action.type == ActionType::BuiltinCommand &&
+        (action.builtinCmd == BuiltinCommand::BrightnessUp ||
+         action.builtinCmd == BuiltinCommand::BrightnessDown);
+    if (hasOverlayVisuals() && !isBrightnessWheelCmd) {
         auto& trail = GestureTrailOverlay::instance();
         if (matchedMapping->silentToast) {
             trail.setLiveAction("");

@@ -7,10 +7,14 @@ use crate::constants::{
     CLOSE_BACKDROP_START_RATIO, CLOSE_HUD_FADEOUT_RATIO, CLOSE_IMAGE_IMPLODE_RATIO, COLOR_ACCENT,
     COLOR_BACKDROP_GLASS, COLOR_BACKDROP_LIGHT, COLOR_BACKDROP_SOLID_DARK, COLOR_BAR_BG,
     COLOR_PANEL_BG, COLOR_PANEL_BORDER, COLOR_PANEL_TOP_SHEEN, COLOR_TEXT_PRIMARY,
-    COLOR_TEXT_SECONDARY, FILMSTRIP_DIM_OPACITY, FONT_MONO_FAMILY, FONT_UI_FAMILY,
-    MAX_THUMB_CACHE_ENTRIES, OPEN_START_SCALE_RATIO, PHOTO_WHITE_MAT_DIP, SLIDE_FAST_OFFSET_DIP,
-    SLIDE_MICRO_OFFSET_DIP, THUMB_INITIAL_STAGGER_SEC, THUMB_ITEM_GROW_DURATION_SEC,
-    THUMB_MAX_STAGGER_SEC, THUMB_WAVE_START_DELAY_SEC,
+    COLOR_TEXT_SECONDARY, COLOR_WINDOWED_BG_DARK, COLOR_WINDOWED_BG_LIGHT,
+    COLOR_WINDOWED_BG_SOLID_DARK, FILMSTRIP_DIM_OPACITY, FONT_MONO_FAMILY, FONT_UI_FAMILY,
+    MAX_THUMB_CACHE_ENTRIES, OPEN_START_SCALE_RATIO, PHOTO_SHADOW_AMBIENT_OFFSET_Y_DIP,
+    PHOTO_SHADOW_AMBIENT_OPACITY, PHOTO_SHADOW_AMBIENT_SPREAD_DIP,
+    PHOTO_SHADOW_CONTACT_OFFSET_Y_DIP, PHOTO_SHADOW_CONTACT_OPACITY,
+    PHOTO_SHADOW_CONTACT_SPREAD_DIP, SLIDE_FAST_OFFSET_DIP, SLIDE_MICRO_OFFSET_DIP,
+    THUMB_INITIAL_STAGGER_SEC, THUMB_ITEM_GROW_DURATION_SEC, THUMB_MAX_STAGGER_SEC,
+    THUMB_WAVE_START_DELAY_SEC,
 };
 use crate::i18n::ViewerLanguage;
 use crate::physics::{
@@ -75,9 +79,9 @@ use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC,
 };
 use windows::Win32::Graphics::Dxgi::{
-    IDXGIDevice, IDXGIFactory2, IDXGISurface, IDXGISwapChain1, DXGI_ERROR_DEVICE_REMOVED,
-    DXGI_ERROR_DEVICE_RESET, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-    DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
+    IDXGIDevice, IDXGIDevice3, IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
+    DXGI_ERROR_DEVICE_REMOVED, DXGI_ERROR_DEVICE_RESET, DXGI_SCALING_STRETCH,
+    DXGI_SWAP_CHAIN_DESC1, DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, DXGI_USAGE_RENDER_TARGET_OUTPUT,
 };
 
 fn color_f(c: [f32; 4]) -> D2D1_COLOR_F {
@@ -222,6 +226,7 @@ pub struct RenderFrameParams<'a> {
     pub current_index: usize,
     pub sibling_paths: &'a [PathBuf],
     pub is_slideshow: bool,
+    pub is_windowed: bool,
     pub layout: &'a ViewerUiLayout,
     pub hovered: HitTarget,
     pub anim_speed: f32,
@@ -742,6 +747,24 @@ impl ViewerRenderer {
         Ok(())
     }
 
+    /// 冷路径显存与驱动暂存页修剪（通过 IDXGIDevice3::Trim 归还 D2D/D3D11/DXGI 临时显存，严禁在动画热路径调用）
+    pub fn trim_gpu_memory(&self) {
+        unsafe {
+            if let Ok(dxgi3) = self.d3d_device.cast::<IDXGIDevice3>() {
+                dxgi3.Trim();
+            }
+        }
+    }
+
+    pub fn has_thumb(&self, path: &Path) -> bool {
+        self.thumb_bitmaps.contains_key(path)
+    }
+
+    pub fn has_main_bitmap_for(&self, path: &Path, frame_idx: usize) -> bool {
+        self.main_bitmap.is_some()
+            && matches!(&self.uploaded_key, Some((p, idx)) if p == path && *idx == frame_idx)
+    }
+
     /// 供 `--dump-ui` 将真实 GPU 渲染帧回读至内存导出 PNG
     pub fn readback_offscreen_frame(&self) -> Result<ImageFrame, String> {
         let Some(src_tex) = self.offscreen_tex.as_ref() else {
@@ -1007,6 +1030,13 @@ impl ViewerRenderer {
         if same_key && (self.main_bitmap.is_some() || self.upload_error.is_some()) {
             return;
         }
+        // 静态图上传 GPU 后已释放 CPU 像素缓冲时，安全跳过重复上传
+        let expected_bytes = (frame.width as usize)
+            .saturating_mul(frame.height as usize)
+            .saturating_mul(4);
+        if expected_bytes == 0 || frame.bgra_premul.len() < expected_bytes {
+            return;
+        }
 
         // 超长截图（宽或高超过硬件最大位图边长，如 16384 或 8192）先安全盒式降采样至 <= max_bitmap_size
         let downscaled;
@@ -1188,10 +1218,18 @@ impl ViewerRenderer {
                 }));
             }
 
-            let base_bg = match params.backdrop {
-                BackdropMode::PicasaGlass => COLOR_BACKDROP_GLASS,
-                BackdropMode::SolidDark => COLOR_BACKDROP_SOLID_DARK,
-                BackdropMode::SoftLight => COLOR_BACKDROP_LIGHT,
+            let base_bg = if params.is_windowed {
+                match params.backdrop {
+                    BackdropMode::PicasaGlass => COLOR_WINDOWED_BG_DARK,
+                    BackdropMode::SolidDark => COLOR_WINDOWED_BG_SOLID_DARK,
+                    BackdropMode::SoftLight => COLOR_WINDOWED_BG_LIGHT,
+                }
+            } else {
+                match params.backdrop {
+                    BackdropMode::PicasaGlass => COLOR_BACKDROP_GLASS,
+                    BackdropMode::SolidDark => COLOR_BACKDROP_SOLID_DARK,
+                    BackdropMode::SoftLight => COLOR_BACKDROP_LIGHT,
+                }
             };
             let eff_dim = params
                 .close_snapshot
@@ -1304,7 +1342,9 @@ impl ViewerRenderer {
                     }
                 }
 
-                self.draw_corner_close_button(params, hud_life_alpha);
+                if !params.is_windowed {
+                    self.draw_corner_close_button(params, hud_life_alpha);
+                }
 
                 let bar_fade = (1.0 - (dim_clamped / 0.24).clamp(0.0, 1.0)).powf(1.4);
                 let bar_alpha = (hud_life_alpha * bar_fade).clamp(0.0, 1.0);
@@ -1580,6 +1620,7 @@ impl ViewerRenderer {
                         let (z, cx, cy) = if !params.camera.is_fit_mode || params.close_snapshot.is_some() {
                             (eff_zoom, raw_cx, raw_cy)
                         } else {
+                            let fit_mode = params.camera.fit_layout_mode;
                             let fit_z = ViewportCamera::compute_fit_zoom_for_mode(
                                 ow,
                                 oh,
@@ -1587,7 +1628,7 @@ impl ViewerRenderer {
                                 params.view_w,
                                 params.view_h,
                                 params.camera.dpi_scale,
-                                params.is_slideshow,
+                                fit_mode,
                             );
                             let py = ViewportCamera::default_fit_pan_y(
                                 ow,
@@ -1596,7 +1637,7 @@ impl ViewerRenderer {
                                 fit_z,
                                 params.view_h,
                                 params.camera.dpi_scale,
-                                params.is_slideshow,
+                                fit_mode,
                             );
                             (
                                 fit_z * open_scale_mul * in_slide_scale,
@@ -1722,8 +1763,8 @@ impl ViewerRenderer {
                 );
             }
 
-            // ─── 图层 5：右上角标志性费茨定律 40 DIP 关闭徽章
-            if reg_hud_alpha > 0.015 {
+            // ─── 图层 5：右上角标志性费茨定律 40 DIP 关闭徽章（仅浮层态绘制，小窗口态已有系统标题栏关闭钮故隐藏）
+            if !params.is_windowed && reg_hud_alpha > 0.015 {
                 self.draw_corner_close_button(params, reg_hud_alpha);
             }
 
@@ -1913,55 +1954,32 @@ impl ViewerRenderer {
             * Matrix3x2::rotation(rotation_deg, 0.0, 0.0)
             * Matrix3x2::translation(cx, cy);
 
+        // 原版 Picasa 纯净无白边悬浮质感：双层高斯 9 宫格落影紧贴照片真实边缘（柔和环境投影 + 贴边接触投影）
         let frame_vis = (1.0 - cinema_dim).clamp(0.0, 1.0);
-        let white_mat_pad = if !has_alpha {
-            PHOTO_WHITE_MAT_DIP * frame_vis
-        } else {
-            0.0
-        };
-
         if frame_vis > 0.01 {
             let shadow_mat = matrix_scale(fx.abs(), fy.abs())
                 * Matrix3x2::rotation(rotation_deg, 0.0, 0.0)
                 * Matrix3x2::translation(cx, cy);
             self.d2d_ctx.SetTransform(&shadow_mat);
-            let outer_hw = half_w_dip + white_mat_pad;
-            let outer_hh = half_h_dip + white_mat_pad;
             let base_op = (opacity.powf(1.15) * frame_vis).clamp(0.0, 1.0);
             self.draw_gaussian_box_shadow_local(
-                -outer_hw,
-                -outer_hh,
-                outer_hw,
-                outer_hh,
-                34.0,
-                7.0,
-                0.56 * base_op,
+                -half_w_dip,
+                -half_h_dip,
+                half_w_dip,
+                half_h_dip,
+                PHOTO_SHADOW_AMBIENT_SPREAD_DIP,
+                PHOTO_SHADOW_AMBIENT_OFFSET_Y_DIP,
+                PHOTO_SHADOW_AMBIENT_OPACITY * base_op,
             );
             self.draw_gaussian_box_shadow_local(
-                -outer_hw,
-                -outer_hh,
-                outer_hw,
-                outer_hh,
-                10.0,
-                2.0,
-                0.38 * base_op,
+                -half_w_dip,
+                -half_h_dip,
+                half_w_dip,
+                half_h_dip,
+                PHOTO_SHADOW_CONTACT_SPREAD_DIP,
+                PHOTO_SHADOW_CONTACT_OFFSET_Y_DIP,
+                PHOTO_SHADOW_CONTACT_OPACITY * base_op,
             );
-
-            if white_mat_pad > 0.25 {
-                let mat_rc = D2D_RECT_F {
-                    left: -outer_hw,
-                    top: -outer_hh,
-                    right: outer_hw,
-                    bottom: outer_hh,
-                };
-                self.brush.SetColor(&D2D1_COLOR_F {
-                    r: 0.99,
-                    g: 0.99,
-                    b: 0.995,
-                    a: (0.98 * opacity * frame_vis).clamp(0.0, 1.0),
-                });
-                self.d2d_ctx.FillRectangle(&mat_rc, &self.brush);
-            }
         }
 
         let tex_mat = matrix_scale(dip_per_px * fx, dip_per_px * fy)
@@ -2009,42 +2027,23 @@ impl ViewerRenderer {
             None,
         );
 
-        // 透明素材保持克制微亮轮廓线，非透明相纸边框外缘叠加 0.75px 细灰收边防白底融合
-        if frame_vis > 0.01 {
+        // 透明素材保持克制微亮轮廓线；不透明图片彻底无白边与外框线，干净贴合高斯边缘阴影
+        if frame_vis > 0.01 && has_alpha {
             self.d2d_ctx.SetTransform(&dip_orient_mat);
-            if has_alpha {
-                let border_rc = D2D_RECT_F {
-                    left: -half_w_dip + 0.5,
-                    top: -half_h_dip + 0.5,
-                    right: half_w_dip - 0.5,
-                    bottom: half_h_dip - 0.5,
-                };
-                self.brush.SetColor(&D2D1_COLOR_F {
-                    r: 1.0,
-                    g: 1.0,
-                    b: 1.0,
-                    a: 0.24 * opacity * frame_vis,
-                });
-                self.d2d_ctx
-                    .DrawRectangle(&border_rc, &self.brush, 1.2, None);
-            } else if white_mat_pad > 0.25 {
-                let outer_hw = half_w_dip + white_mat_pad;
-                let outer_hh = half_h_dip + white_mat_pad;
-                let outer_rc = D2D_RECT_F {
-                    left: -outer_hw + 0.35,
-                    top: -outer_hh + 0.35,
-                    right: outer_hw - 0.35,
-                    bottom: outer_hh - 0.35,
-                };
-                self.brush.SetColor(&D2D1_COLOR_F {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.14 * opacity * frame_vis,
-                });
-                self.d2d_ctx
-                    .DrawRectangle(&outer_rc, &self.brush, 0.75, None);
-            }
+            let border_rc = D2D_RECT_F {
+                left: -half_w_dip + 0.5,
+                top: -half_h_dip + 0.5,
+                right: half_w_dip - 0.5,
+                bottom: half_h_dip - 0.5,
+            };
+            self.brush.SetColor(&D2D1_COLOR_F {
+                r: 1.0,
+                g: 1.0,
+                b: 1.0,
+                a: 0.24 * opacity * frame_vis,
+            });
+            self.d2d_ctx
+                .DrawRectangle(&border_rc, &self.brush, 1.2, None);
         }
 
         self.d2d_ctx.SetTransform(&Matrix3x2::identity());
@@ -3952,5 +3951,229 @@ unsafe fn build_static_geometries(factory: &ID2D1Factory1) -> StaticGeometries {
         flip_h_right,
         flip_v_top,
         flip_v_bot,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{DecodedImage, FitLayoutMode, ImageFormatKind};
+    use crate::ui_layout::LayoutInput;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn solid_opaque_image(w: u32, h: u32, b: u8, g: u8, r: u8) -> SharedImage {
+        let mut px = vec![0u8; (w * h * 4) as usize];
+        for c in px.chunks_exact_mut(4) {
+            c[0] = b;
+            c[1] = g;
+            c[2] = r;
+            c[3] = 255;
+        }
+        Arc::new(DecodedImage {
+            path: PathBuf::from("solid_test.png"),
+            format_kind: ImageFormatKind::Static("PNG".to_string()),
+            file_size_bytes: 1024,
+            width: w,
+            height: h,
+            has_alpha: false,
+            frames: vec![ImageFrame {
+                width: w,
+                height: h,
+                delay_ms: 0,
+                bgra_premul: px,
+            }],
+            total_duration_ms: 0,
+            exif_summary: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn opaque_image_renders_tight_gaussian_shadow_with_zero_white_border() {
+        let view_w = 640u32;
+        let view_h = 480u32;
+        let mut renderer = ViewerRenderer::new_offscreen(view_w, view_h, 96.0, ViewerLanguage::ZhCN)
+            .expect("离屏渲染器初始化成功");
+        let img = solid_opaque_image(200, 200, 180, 90, 30);
+        let mut cam = ViewportCamera::default();
+        cam.reset_to_fit_with_mode(200.0, 200.0, view_w as f32, view_h as f32, FitLayoutMode::Overlay);
+
+        let siblings = vec![img.path.clone()];
+        let layout = ViewerUiLayout::compute(&LayoutInput {
+            view_w: view_w as f32,
+            view_h: view_h as f32,
+            sibling_count: 1,
+            current_index: 0,
+            filmstrip_scroll_offset: 0.0,
+            is_animated: false,
+            anim_playing: false,
+            is_slideshow: false,
+            is_windowed: false,
+            is_actual_zoom: false,
+            is_flipped_h: false,
+            is_flipped_v: false,
+            show_info: false,
+            show_minimap: false,
+            img_eff_w: 200.0,
+            img_eff_h: 200.0,
+            exif_line_count: 3,
+        });
+
+        let open_at = Instant::now();
+        let params = RenderFrameParams {
+            now: open_at + Duration::from_secs(2),
+            open_started_at: open_at,
+            lang: ViewerLanguage::ZhCN,
+            view_w: view_w as f32,
+            view_h: view_h as f32,
+            dpi: 96.0,
+            backdrop_open_progress: 1.0,
+            open_anim_armed: true,
+            open_progress: 1.0,
+            close_progress: 0.0,
+            close_snapshot: None,
+            slide_progress: 1.0,
+            slide_dir: 0.0,
+            slide_is_crossfade: false,
+            slide_fast_repeat: false,
+            cinema_dim: 0.0,
+            slideshow_portal: None,
+            close_hover_anim: 0.0,
+            play_hover_anim: 0.0,
+            backdrop: BackdropMode::PicasaGlass,
+            simulated_desktop_bg: Some([0.65, 0.65, 0.65, 1.0]),
+            camera: &cam,
+            image: Some(&img),
+            fallback_thumb_path: None,
+            frame_index: 0,
+            error: None,
+            loading_name: None,
+            show_loading_box: false,
+            current_index: 0,
+            sibling_paths: &siblings,
+            is_slideshow: false,
+            is_windowed: false,
+            layout: &layout,
+            hovered: HitTarget::None,
+            anim_speed: 1.0,
+            selection_box: None,
+            toast_text: None,
+            show_info: false,
+            zoom_badge_alpha: 0.0,
+        };
+        renderer.render(&params).expect("渲染成功");
+        let fb = renderer.readback_offscreen_frame().expect("回读帧成功");
+
+        let rc = cam.image_screen_rect(200.0, 200.0, view_w as f32, view_h as f32);
+        let mid_y = rc.center_y().round() as u32;
+        let sample_px = |x: u32, y: u32| -> (u8, u8, u8) {
+            let off = ((y * view_w + x) * 4) as usize;
+            (fb.bgra_premul[off + 2], fb.bgra_premul[off + 1], fb.bgra_premul[off])
+        };
+
+        // 远离图片处的基准底色（背景 + 58% 雾灰遮罩）
+        let (bg_r, bg_g, bg_b) = sample_px(20, mid_y);
+        let bg_luma = (bg_r as u32 + bg_g as u32 + bg_b as u32) / 3;
+
+        // 紧邻图片右边外侧 2px 处：必须无白色相纸框，且应被贴边高斯阴影柔和压暗
+        let edge_out_x = (rc.right.ceil() as u32 + 2).min(view_w - 1);
+        let (sr, sg, sb) = sample_px(edge_out_x, mid_y);
+        let shadow_luma = (sr as u32 + sg as u32 + sb as u32) / 3;
+        assert!(
+            sr < 200 && sg < 200 && sb < 200,
+            "图片外缘 2px 严禁出现白色边框，实际 RGB=({sr},{sg},{sb})"
+        );
+        assert!(
+            shadow_luma < bg_luma,
+            "图片外缘 2px 应存在柔和边缘阴影压暗，shadow_luma={shadow_luma} vs bg_luma={bg_luma}"
+        );
+    }
+
+    #[test]
+    fn windowed_render_uses_opaque_background_and_omits_corner_close_badge() {
+        let view_w = 640u32;
+        let view_h = 480u32;
+        let mut renderer = ViewerRenderer::new_offscreen(view_w, view_h, 96.0, ViewerLanguage::ZhCN)
+            .expect("离屏渲染器初始化成功");
+        let img = solid_opaque_image(200, 200, 40, 120, 200);
+        let mut cam = ViewportCamera::default();
+        cam.reset_to_fit_with_mode(200.0, 200.0, view_w as f32, view_h as f32, FitLayoutMode::Windowed);
+
+        let siblings = vec![img.path.clone()];
+        let layout = ViewerUiLayout::compute(&LayoutInput {
+            view_w: view_w as f32,
+            view_h: view_h as f32,
+            sibling_count: 1,
+            current_index: 0,
+            filmstrip_scroll_offset: 0.0,
+            is_animated: false,
+            anim_playing: false,
+            is_slideshow: false,
+            is_windowed: true,
+            is_actual_zoom: false,
+            is_flipped_h: false,
+            is_flipped_v: false,
+            show_info: false,
+            show_minimap: false,
+            img_eff_w: 200.0,
+            img_eff_h: 200.0,
+            exif_line_count: 3,
+        });
+
+        let open_at = Instant::now();
+        let params = RenderFrameParams {
+            now: open_at + Duration::from_secs(2),
+            open_started_at: open_at,
+            lang: ViewerLanguage::ZhCN,
+            view_w: view_w as f32,
+            view_h: view_h as f32,
+            dpi: 96.0,
+            backdrop_open_progress: 1.0,
+            open_anim_armed: true,
+            open_progress: 1.0,
+            close_progress: 0.0,
+            close_snapshot: None,
+            slide_progress: 1.0,
+            slide_dir: 0.0,
+            slide_is_crossfade: false,
+            slide_fast_repeat: false,
+            cinema_dim: 0.0,
+            slideshow_portal: None,
+            close_hover_anim: 0.0,
+            play_hover_anim: 0.0,
+            backdrop: BackdropMode::PicasaGlass,
+            simulated_desktop_bg: None,
+            camera: &cam,
+            image: Some(&img),
+            fallback_thumb_path: None,
+            frame_index: 0,
+            error: None,
+            loading_name: None,
+            show_loading_box: false,
+            current_index: 0,
+            sibling_paths: &siblings,
+            is_slideshow: false,
+            is_windowed: true,
+            layout: &layout,
+            hovered: HitTarget::None,
+            anim_speed: 1.0,
+            selection_box: None,
+            toast_text: None,
+            show_info: false,
+            zoom_badge_alpha: 0.0,
+        };
+        renderer.render(&params).expect("小窗渲染成功");
+        let fb = renderer.readback_offscreen_frame().expect("回读帧成功");
+
+        // 左上角与右上角像素必须均为完全不透明底色（Alpha = 255），且右上角无四分之一圆深灰/白叉关闭徽章
+        let tl_off = ((14 * view_w + 14) * 4) as usize;
+        let tr_off = ((14 * view_w + (view_w - 14)) * 4) as usize;
+        assert_eq!(fb.bgra_premul[tl_off + 3], 255);
+        assert_eq!(fb.bgra_premul[tr_off + 3], 255);
+        assert_eq!(
+            &fb.bgra_premul[tl_off..tl_off + 4],
+            &fb.bgra_premul[tr_off..tr_off + 4],
+            "小窗口模式右上角不得绘制浮层关闭徽章"
+        );
     }
 }

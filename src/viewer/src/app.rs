@@ -5,7 +5,9 @@
 //   - 自适应按需重绘调度：动画进行中 VSync 高刷推进，画面静止自动休眠定时器 (0% CPU)
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::assoc_dialog::{show_file_association_dialog, AssocDialogOutcome};
+use crate::assoc_dialog::{
+    detect_system_dark_theme, show_file_association_dialog, AssocDialogOutcome,
+};
 use crate::cache::{ImageCachePool, WM_VIEWER_IMAGE_READY, WM_VIEWER_THUMB_READY};
 use crate::constants::{
     ANIM_SPEED_PRESETS, APP_WINDOW_CLASS, APP_WINDOW_TITLE, AUTOREPEAT_INITIAL_DELAY_MS,
@@ -15,7 +17,8 @@ use crate::constants::{
     LOADING_INDICATOR_DELAY_MS, OPEN_ANIM_DURATION_SEC, SLIDESHOW_CROSSFADE_DURATION_SEC,
     SLIDESHOW_ENTER_DIM_DURATION_SEC, SLIDESHOW_EXIT_DIM_DURATION_SEC, SLIDESHOW_INTERVAL_MS,
     SLIDE_FAST_REPEAT_DURATION_SEC, SLIDE_TRANSITION_DURATION_SEC, TOAST_DURATION_MS,
-    ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS,
+    WINDOWED_MAX_WORKAREA_RATIO, WINDOWED_MIN_CLIENT_H_DIP, WINDOWED_MIN_CLIENT_W_DIP,
+    WINDOWED_TRACK_MIN_H_DIP, WINDOWED_TRACK_MIN_W_DIP, ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS,
 };
 use crate::folder::{is_supported_image_path, normalize_full_path, scan_sibling_images};
 use crate::i18n::ViewerLanguage;
@@ -27,26 +30,30 @@ use crate::integration::{
 use crate::physics::exp_smooth;
 use crate::renderer::{RenderError, RenderFrameParams, ViewerRenderer};
 use crate::types::{
-    BackdropMode, CloseImplodeSnapshot, DecodeError, LifecyclePhase, RectF, SharedImage,
-    SlideshowPortalSnapshot, ToolbarAction,
+    BackdropMode, CloseImplodeSnapshot, DecodeError, DecodedImage, FitLayoutMode, ImageFrame,
+    LifecyclePhase, RectF, SharedImage, SlideshowPortalSnapshot, ToolbarAction, WindowMode,
 };
 use crate::ui_layout::{HitTarget, LayoutInput, ViewerUiLayout};
 use crate::viewport::ViewportCamera;
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_USE_IMMERSIVE_DARK_MODE};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, ScreenToClient, MONITORINFO,
     MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::DataExchange::COPYDATASTRUCT;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Threading::{GetCurrentProcess, SetProcessWorkingSetSize};
 use windows::Win32::UI::HiDpi::{
-    GetDpiForWindow, GetSystemMetricsForDpi, SetProcessDpiAwarenessContext,
-    DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+    AdjustWindowRectExForDpi, GetDpiForWindow, GetSystemMetricsForDpi,
+    SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE,
@@ -56,17 +63,19 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::Shell::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP};
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyWindow, DispatchMessageW, FindWindowW,
-    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, LoadCursorW,
-    LoadImageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage, RegisterClassExW,
-    SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA, HICON, ICON_BIG, ICON_SMALL,
-    IDC_ARROW, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, MSG, PM_REMOVE, QS_ALLINPUT, SMTO_ABORTIFHUNG,
-    SMTO_NORMAL, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SWP_NOACTIVATE, SWP_NOZORDER,
-    SW_RESTORE, SW_SHOW, WM_CANCELMODE, WM_CAPTURECHANGED, WM_COPYDATA, WM_DESTROY,
-    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_KEYDOWN, WM_KILLFOCUS, WM_LBUTTONDBLCLK,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_PAINT, WM_QUIT,
-    WM_RBUTTONUP, WM_SETICON, WM_SIZE, WNDCLASSEXW, WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST,
-    WS_POPUP, WS_VISIBLE,
+    GetClientRect, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, IsIconic,
+    IsZoomed, LoadCursorW, LoadImageW, MsgWaitForMultipleObjects, PeekMessageW, PostQuitMessage,
+    RegisterClassExW, SendMessageTimeoutW, SendMessageW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, SetWindowTextW, ShowWindow, TranslateMessage, CS_DBLCLKS, GWLP_USERDATA,
+    GWL_STYLE, HICON, HWND_NOTOPMOST, HWND_TOPMOST, ICON_BIG, ICON_SMALL, IDC_ARROW, IMAGE_ICON,
+    LR_DEFAULTCOLOR, LR_SHARED, MINMAXINFO, MSG, PM_REMOVE, QS_ALLINPUT, SIZE_MINIMIZED,
+    SMTO_ABORTIFHUNG, SMTO_NORMAL, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON,
+    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE,
+    SW_SHOW, WM_ACTIVATE, WM_CANCELMODE, WM_CAPTURECHANGED, WM_CLOSE, WM_COPYDATA, WM_DESTROY,
+    WM_DISPLAYCHANGE, WM_DPICHANGED, WM_DROPFILES, WM_GETMINMAXINFO, WM_KEYDOWN, WM_KILLFOCUS,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_MOVE, WM_PAINT, WM_QUIT, WM_RBUTTONUP, WM_SETICON, WM_SETTINGCHANGE, WM_SIZE, WNDCLASSEXW,
+    WS_EX_NOREDIRECTIONBITMAP, WS_EX_TOPMOST, WS_OVERLAPPEDWINDOW, WS_POPUP, WS_VISIBLE,
 };
 
 fn to_wide(s: &str) -> Vec<u16> {
@@ -185,16 +194,169 @@ fn compute_window_center_compensation_dip(old_rect: RECT, new_rect: RECT, dpi: f
     ((old_cx - new_cx) / scale, (old_cy - new_cy) / scale)
 }
 
+/// 生成标准窗口标题：`"{文件名} - Tools3000 Picasa Viewer"`
+fn format_window_title(path: Option<&Path>) -> String {
+    if let Some(name) = path.and_then(|p| p.file_name()).map(|s| s.to_string_lossy()) {
+        if !name.is_empty() {
+            return format!("{name} - {APP_WINDOW_TITLE}");
+        }
+    }
+    APP_WINDOW_TITLE.to_string()
+}
+
+/// 判断收到 `WM_ACTIVATE(WA_INACTIVE)` 时是否应自动从浮层态转为标准可缩放小窗口
+fn should_auto_window_on_deactivate(
+    mode: WindowMode,
+    phase: LifecyclePhase,
+    modal_dialog_active: bool,
+    window_activated_once: bool,
+    transitioning_window_mode: bool,
+) -> bool {
+    mode == WindowMode::Overlay
+        && matches!(phase, LifecyclePhase::Opening | LifecyclePhase::Viewing)
+        && !modal_dialog_active
+        && window_activated_once
+        && !transitioning_window_mode
+}
+
+/// 依据当前照片在屏幕上的实际显示几何、DPI 非客户区边框厚与显示器工作区，计算标准小窗口的外框物理 `RECT`：
+/// - 客户区下限 `540×420` DIP 保证底部悬浮控制栏绝不裁切；
+/// - 外框上限不超过当前显示器工作区的 `86%`；
+/// - 尽量贴合照片在浮层中的中心位置并严格夹紧在 `work_area` 内。
+fn compute_windowed_outer_rect(
+    photo_screen_rect_dip: RectF,
+    overlay_origin_phys: (i32, i32),
+    work_area: RECT,
+    dpi: f32,
+    frame_insets_phys: (i32, i32, i32, i32),
+) -> RECT {
+    let scale = (dpi / 96.0).max(0.5);
+    let (pad_l, pad_t, pad_r, pad_b) = frame_insets_phys;
+    let extra_w_phys = (pad_l + pad_r).max(0);
+    let extra_h_phys = (pad_t + pad_b).max(0);
+    let extra_w_dip = extra_w_phys as f32 / scale;
+    let extra_h_dip = extra_h_phys as f32 / scale;
+
+    let work_w_phys = (work_area.right - work_area.left).max(320);
+    let work_h_phys = (work_area.bottom - work_area.top).max(240);
+    let work_w_dip = work_w_phys as f32 / scale;
+    let work_h_dip = work_h_phys as f32 / scale;
+
+    let max_outer_w_dip = (work_w_dip * WINDOWED_MAX_WORKAREA_RATIO).min(work_w_dip);
+    let max_outer_h_dip = (work_h_dip * WINDOWED_MAX_WORKAREA_RATIO).min(work_h_dip);
+    let max_client_w_dip = (max_outer_w_dip - extra_w_dip).max(320.0).min((work_w_dip - extra_w_dip).max(200.0));
+    let max_client_h_dip = (max_outer_h_dip - extra_h_dip).max(240.0).min((work_h_dip - extra_h_dip).max(160.0));
+
+    let min_client_w_dip = WINDOWED_MIN_CLIENT_W_DIP.min(max_client_w_dip);
+    let min_client_h_dip = WINDOWED_MIN_CLIENT_H_DIP.min(max_client_h_dip);
+
+    let (mut cw_dip, mut ch_dip, target_cx_phys, target_cy_phys) =
+        if photo_screen_rect_dip.width() >= 1.0 && photo_screen_rect_dip.height() >= 1.0 {
+            let cx = overlay_origin_phys.0 + (photo_screen_rect_dip.center_x() * scale).round() as i32;
+            let cy = overlay_origin_phys.1 + (photo_screen_rect_dip.center_y() * scale).round() as i32;
+            (
+                photo_screen_rect_dip.width(),
+                photo_screen_rect_dip.height(),
+                cx,
+                cy,
+            )
+        } else {
+            (
+                840.0,
+                580.0,
+                (work_area.left + work_area.right) / 2,
+                (work_area.top + work_area.bottom) / 2,
+            )
+        };
+
+    // 若照片显示尺寸超出最大独立小窗口比例，则按真实宽高比等比缩放至 max_client 内
+    let shrink = (max_client_w_dip / cw_dip.max(1.0))
+        .min(max_client_h_dip / ch_dip.max(1.0))
+        .min(1.0);
+    cw_dip *= shrink;
+    ch_dip *= shrink;
+    cw_dip = cw_dip.clamp(min_client_w_dip, max_client_w_dip);
+    ch_dip = ch_dip.clamp(min_client_h_dip, max_client_h_dip);
+
+    let client_w_phys = (cw_dip * scale).round() as i32;
+    let client_h_phys = (ch_dip * scale).round() as i32;
+    let outer_w = (client_w_phys + extra_w_phys).min(work_w_phys);
+    let outer_h = (client_h_phys + extra_h_phys).min(work_h_phys);
+
+    let raw_left = target_cx_phys - client_w_phys / 2 - pad_l;
+    let raw_top = target_cy_phys - client_h_phys / 2 - pad_t;
+    let max_left = (work_area.right - outer_w).max(work_area.left);
+    let max_top = (work_area.bottom - outer_h).max(work_area.top);
+    let left = raw_left.clamp(work_area.left, max_left);
+    let top = raw_top.clamp(work_area.top, max_top);
+
+    RECT {
+        left,
+        top,
+        right: left + outer_w,
+        bottom: top + outer_h,
+    }
+}
+
+/// 将既有外框夹紧到目标显示器工作区内（防多屏拔插或切出幻灯片时窗口跑出可见区）
+fn clamp_rect_to_work_area(rect: RECT, work_area: RECT) -> RECT {
+    let work_w = (work_area.right - work_area.left).max(320);
+    let work_h = (work_area.bottom - work_area.top).max(240);
+    let w = (rect.right - rect.left).clamp(320, work_w);
+    let h = (rect.bottom - rect.top).clamp(240, work_h);
+    let left = rect
+        .left
+        .clamp(work_area.left, (work_area.right - w).max(work_area.left));
+    let top = rect
+        .top
+        .clamp(work_area.top, (work_area.bottom - h).max(work_area.top));
+    RECT {
+        left,
+        top,
+        right: left + w,
+        bottom: top + h,
+    }
+}
+
+/// 获取剪贴板复制 / PNG 导出所需的当前帧完整像素；若静态图 CPU 像素已在 GPU 上传后释放，则从磁盘无缝按需重解单帧
+fn resolve_frame_for_export(
+    img: &DecodedImage,
+    frame_idx: usize,
+) -> Result<Cow<'_, ImageFrame>, DecodeError> {
+    let safe_idx = frame_idx.min(img.frames.len().saturating_sub(1));
+    if img.has_cpu_pixels(safe_idx) {
+        return Ok(Cow::Borrowed(&img.frames[safe_idx]));
+    }
+    let redecoded = crate::decode::decode_image_file(&img.path)?;
+    let re_idx = frame_idx.min(redecoded.frames.len().saturating_sub(1));
+    redecoded
+        .frames
+        .into_iter()
+        .nth(re_idx)
+        .ok_or(DecodeError::NoValidFrames { format: "IMAGE" })
+        .map(Cow::Owned)
+}
+
 pub struct ViewerApp {
     hwnd: HWND,
     lang: ViewerLanguage,
     dpi: f32,
     view_w: f32,
     view_h: f32,
+    window_mode: WindowMode,
     is_fullscreen: bool,
     pre_slideshow_fullscreen: bool,
+    pre_slideshow_window_mode: WindowMode,
+    saved_windowed_rect: Option<RECT>,
+    saved_windowed_maximized: bool,
+    return_to_windowed_on_f11: bool,
+    modal_dialog_active: bool,
+    window_activated_once: bool,
+    transitioning_window_mode: bool,
     suppress_size_render: bool,
     recreating_renderer: bool,
+    memory_trim_dirty: bool,
+    last_memory_trim_at: Option<Instant>,
     big_icon: HICON,
     small_icon: HICON,
     renderer: Option<ViewerRenderer>,
@@ -289,7 +451,7 @@ impl ViewerApp {
         let cache = ImageCachePool::new();
         cache.request_image_and_neighbors(&siblings, current_index);
         if let Some(first_path) = siblings.get(current_index) {
-            let _ = cache.get_or_request_thumb(first_path);
+            cache.prefetch_thumb(first_path);
         }
 
         let now = Instant::now();
@@ -299,11 +461,21 @@ impl ViewerApp {
             dpi: 96.0,
             view_w: 1280.0,
             view_h: 720.0,
+            window_mode: WindowMode::Overlay,
             // 常规看图态默认工作区贴合任务栏上沿（完全还原原版 Picasa），点播放进入幻灯片时自动全屏覆盖任务栏！
             is_fullscreen: false,
             pre_slideshow_fullscreen: false,
+            pre_slideshow_window_mode: WindowMode::Overlay,
+            saved_windowed_rect: None,
+            saved_windowed_maximized: false,
+            return_to_windowed_on_f11: false,
+            modal_dialog_active: false,
+            window_activated_once: false,
+            transitioning_window_mode: false,
             suppress_size_render: false,
             recreating_renderer: false,
+            memory_trim_dirty: true,
+            last_memory_trim_at: None,
             big_icon: HICON::default(),
             small_icon: HICON::default(),
             renderer: None,
@@ -414,6 +586,7 @@ impl ViewerApp {
         app.last_tick = show_instant;
         app.last_activity = show_instant;
         app.sync_current_from_cache(true);
+        app.update_window_title();
         app.recompute_layout();
         app.request_thumbs_for_visible_filmstrip();
 
@@ -465,6 +638,20 @@ impl ViewerApp {
         self.phase == LifecyclePhase::Closing
     }
 
+    fn is_windowed(&self) -> bool {
+        self.window_mode == WindowMode::Windowed
+    }
+
+    fn current_fit_mode(&self) -> FitLayoutMode {
+        if self.is_slideshow() {
+            FitLayoutMode::Slideshow
+        } else if self.is_windowed() {
+            FitLayoutMode::Windowed
+        } else {
+            FitLayoutMode::Overlay
+        }
+    }
+
     fn ensure_anim_timer(&mut self) {
         if !self.hwnd.is_invalid() && !self.anim_timer_running {
             self.anim_timer_running = true;
@@ -472,8 +659,373 @@ impl ViewerApp {
         }
     }
 
+    /// 动画彻底收敛转入休眠（冷路径）：仅在非退出、非交互拖拽且有新增内存脏标时执行一次 DXGI Trim 与工作集修剪
     fn stop_anim_timer(&mut self) {
+        let was_running = self.anim_timer_running;
         self.anim_timer_running = false;
+        if was_running
+            && !self.is_closing()
+            && !self.dragging_image
+            && !self.dragging_filmstrip
+            && !self.dragging_minimap
+            && !self.dragging_anim_scrubber
+            && self.memory_trim_dirty
+        {
+            let cooldown_ok = self
+                .last_memory_trim_at
+                .map(|t| t.elapsed() >= Duration::from_millis(250))
+                .unwrap_or(true);
+            if cooldown_ok {
+                self.trim_idle_memory();
+            }
+        }
+    }
+
+    /// 冷路径显存 + 物理工作集修剪（严禁在鼠标移动/拖拽/缩放/动画循环热路径调用）
+    fn trim_idle_memory(&mut self) {
+        if let Some(r) = self.renderer.as_ref() {
+            r.trim_gpu_memory();
+        }
+        unsafe {
+            let _ = SetProcessWorkingSetSize(GetCurrentProcess(), usize::MAX, usize::MAX);
+        }
+        self.memory_trim_dirty = false;
+        self.last_memory_trim_at = Some(Instant::now());
+    }
+
+    /// 静态图成功上传至 GPU `ID2D1Bitmap1` 后立即释放 CPU 侧像素缓冲（零双份驻留），
+    /// 保留完整元信息供 EXIF/状态栏显示；剪贴板复制/另存 PNG/设备丢失重建时无缝按需重解
+    fn release_uploaded_static_image_cpu_pixels(&mut self) {
+        let should_release = match (self.current_image.as_ref(), self.renderer.as_ref()) {
+            (Some(img), Some(r)) => {
+                !img.is_animated()
+                    && img.has_cpu_pixels(0)
+                    && r.has_main_bitmap_for(&img.path, 0)
+            }
+            _ => false,
+        };
+        if !should_release {
+            return;
+        }
+        if let Some(img) = self.current_image.as_ref() {
+            let path = img.path.clone();
+            let meta_only = Arc::new(img.clone_metadata_without_pixels());
+            self.cache.release_full_cache_entry(&path);
+            self.current_image = Some(meta_only);
+            self.memory_trim_dirty = true;
+        }
+    }
+
+    fn update_window_title(&self) {
+        if self.hwnd.is_invalid() {
+            return;
+        }
+        let title = format_window_title(self.current_path().map(|p| p.as_path()));
+        let wide = to_wide(&title);
+        unsafe {
+            let _ = SetWindowTextW(self.hwnd, PCWSTR(wide.as_ptr()));
+        }
+    }
+
+    fn apply_window_dark_titlebar(&self, hwnd: HWND) {
+        if hwnd.is_invalid() {
+            return;
+        }
+        let dark_val: i32 = if detect_system_dark_theme() { 1 } else { 0 };
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &dark_val as *const i32 as *const _,
+                std::mem::size_of::<i32>() as u32,
+            );
+        }
+    }
+
+    fn query_windowed_frame_insets(&self, dpi: u32) -> (i32, i32, i32, i32) {
+        let mut r = RECT::default();
+        unsafe {
+            let _ = AdjustWindowRectExForDpi(
+                &mut r,
+                WS_OVERLAPPEDWINDOW,
+                false,
+                WS_EX_NOREDIRECTIONBITMAP,
+                dpi.max(96),
+            );
+        }
+        ((-r.left).max(0), (-r.top).max(0), r.right.max(0), r.bottom.max(0))
+    }
+
+    /// 从经典浮层 (`Overlay`) 平滑切换为标准可缩放小窗口 (`Windowed`)：
+    /// - `preserve_inactive == true` 时传 `SWP_NOACTIVATE` + `HWND_NOTOPMOST`，绝不抢回任务栏或其他软件焦点；
+    /// - 自动依当前照片显示尺寸/位置换算精致外框，SwapChain 同步缩小显著降低显存与内存占用。
+    fn enter_windowed_mode(&mut self, preserve_inactive: bool) {
+        if self.is_windowed() || self.is_closing() || self.hwnd.is_invalid() {
+            return;
+        }
+        let hwnd = self.hwnd;
+        let photo_rc = self.image_screen_rect();
+        let dpi_u32 = self.dpi.round().max(96.0) as u32;
+        let frame_insets = self.query_windowed_frame_insets(dpi_u32);
+
+        let (old_origin, work_area) = unsafe {
+            let mut old_rc = RECT::default();
+            let _ = GetWindowRect(hwnd, &mut old_rc);
+            let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            let work = if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                mi.rcWork
+            } else {
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1032,
+                }
+            };
+            ((old_rc.left, old_rc.top), work)
+        };
+
+        let outer = compute_windowed_outer_rect(
+            photo_rc,
+            old_origin,
+            work_area,
+            self.dpi,
+            frame_insets,
+        );
+        self.apply_windowed_style_and_rect(outer, false, preserve_inactive);
+    }
+
+    fn restore_windowed_mode(
+        &mut self,
+        saved_rect: Option<RECT>,
+        was_maximized: bool,
+        preserve_inactive: bool,
+    ) {
+        if self.is_closing() || self.hwnd.is_invalid() {
+            return;
+        }
+        let hwnd = self.hwnd;
+        let work_area = unsafe {
+            let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                mi.rcWork
+            } else {
+                RECT {
+                    left: 0,
+                    top: 0,
+                    right: 1920,
+                    bottom: 1032,
+                }
+            }
+        };
+        let outer = if let Some(r) = saved_rect {
+            clamp_rect_to_work_area(r, work_area)
+        } else {
+            let dpi_u32 = self.dpi.round().max(96.0) as u32;
+            let insets = self.query_windowed_frame_insets(dpi_u32);
+            compute_windowed_outer_rect(RectF::default(), (work_area.left, work_area.top), work_area, self.dpi, insets)
+        };
+        self.apply_windowed_style_and_rect(outer, was_maximized, preserve_inactive);
+    }
+
+    fn apply_windowed_style_and_rect(
+        &mut self,
+        outer: RECT,
+        maximize: bool,
+        preserve_inactive: bool,
+    ) {
+        let hwnd = self.hwnd;
+        self.transitioning_window_mode = true;
+        self.clear_pointer_captures();
+
+        self.window_mode = WindowMode::Windowed;
+        self.is_fullscreen = false;
+        self.return_to_windowed_on_f11 = false;
+        self.phase = LifecyclePhase::Viewing;
+        self.backdrop_open_progress = 1.0;
+        self.open_anim_armed = true;
+        self.open_progress = 1.0;
+        self.cinema_dim = 0.0;
+        self.slideshow_portal = None;
+        self.hovered = HitTarget::None;
+        self.ui_opacity = 1.0;
+        self.camera.set_fit_layout_mode(FitLayoutMode::Windowed);
+
+        let outer_w = (outer.right - outer.left).max(320);
+        let outer_h = (outer.bottom - outer.top).max(240);
+        let mut need_recreate = false;
+
+        unsafe {
+            self.suppress_size_render = true;
+            SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_OVERLAPPEDWINDOW | WS_VISIBLE).0 as isize);
+            self.apply_window_dark_titlebar(hwnd);
+            self.update_window_title();
+            let flags = SWP_FRAMECHANGED
+                | if preserve_inactive {
+                    SWP_NOACTIVATE
+                } else {
+                    SWP_SHOWWINDOW
+                };
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                outer.left,
+                outer.top,
+                outer_w,
+                outer_h,
+                flags,
+            );
+            if maximize && !preserve_inactive {
+                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+            }
+            self.suppress_size_render = false;
+
+            let cur_dpi = GetDpiForWindow(hwnd).max(96) as f32;
+            self.dpi = cur_dpi;
+            self.camera.set_dpi_scale(cur_dpi / 96.0);
+            self.apply_dpi_matched_icons(hwnd, cur_dpi as u32);
+
+            let mut client_rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client_rc);
+            let phys_w = (client_rc.right - client_rc.left).max(1) as u32;
+            let phys_h = (client_rc.bottom - client_rc.top).max(1) as u32;
+            self.view_w = phys_w as f32 * 96.0 / self.dpi;
+            self.view_h = phys_h as f32 * 96.0 / self.dpi;
+            if let Some(r) = self.renderer.as_mut() {
+                if let Err(RenderError::DeviceLost(_)) = r.resize(phys_w, phys_h, self.dpi) {
+                    need_recreate = true;
+                }
+            }
+        }
+        if need_recreate {
+            let _ = self.recreate_renderer();
+        }
+
+        self.saved_windowed_rect = Some(outer);
+        self.saved_windowed_maximized = maximize;
+
+        let (iw, ih) = self.current_image_dims();
+        if iw > 0.0 && ih > 0.0 {
+            self.camera
+                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, FitLayoutMode::Windowed);
+        }
+
+        self.transitioning_window_mode = false;
+        self.memory_trim_dirty = true;
+        self.recompute_layout();
+        self.request_thumbs_for_visible_filmstrip();
+        self.render_now();
+        if !self.anim_timer_running {
+            self.trim_idle_memory();
+        }
+    }
+
+    /// 从小窗口态切回无边框置顶浮层/全屏态（F11 或右键菜单触发）
+    fn enter_overlay_mode(&mut self, fullscreen: bool) {
+        if self.is_closing() || self.hwnd.is_invalid() {
+            return;
+        }
+        let hwnd = self.hwnd;
+        if self.is_windowed() {
+            unsafe {
+                self.saved_windowed_maximized = IsZoomed(hwnd).as_bool();
+                if !self.saved_windowed_maximized {
+                    let mut rc = RECT::default();
+                    if GetWindowRect(hwnd, &mut rc).is_ok() {
+                        self.saved_windowed_rect = Some(rc);
+                    }
+                }
+            }
+        }
+
+        self.transitioning_window_mode = true;
+        self.window_mode = WindowMode::Overlay;
+        self.is_fullscreen = fullscreen;
+        self.camera.set_fit_layout_mode(FitLayoutMode::Overlay);
+
+        let mut need_recreate = false;
+        unsafe {
+            self.suppress_size_render = true;
+            SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as isize);
+            let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            let mut mi = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(mon, &mut mi).as_bool() {
+                let r = if fullscreen { mi.rcMonitor } else { mi.rcWork };
+                let w = (r.right - r.left).max(640);
+                let h = if fullscreen {
+                    (r.bottom - r.top - 1).max(480)
+                } else {
+                    (r.bottom - r.top).max(480)
+                };
+                let _ = SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    r.left,
+                    r.top,
+                    w,
+                    h,
+                    SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                );
+            }
+            self.suppress_size_render = false;
+
+            let cur_dpi = GetDpiForWindow(hwnd).max(96) as f32;
+            self.dpi = cur_dpi;
+            self.camera.set_dpi_scale(cur_dpi / 96.0);
+            let mut client_rc = RECT::default();
+            let _ = GetClientRect(hwnd, &mut client_rc);
+            let phys_w = (client_rc.right - client_rc.left).max(1) as u32;
+            let phys_h = (client_rc.bottom - client_rc.top).max(1) as u32;
+            self.view_w = phys_w as f32 * 96.0 / self.dpi;
+            self.view_h = phys_h as f32 * 96.0 / self.dpi;
+            if let Some(r) = self.renderer.as_mut() {
+                if let Err(RenderError::DeviceLost(_)) = r.resize(phys_w, phys_h, self.dpi) {
+                    need_recreate = true;
+                }
+            }
+        }
+        if need_recreate {
+            let _ = self.recreate_renderer();
+        }
+        let (iw, ih) = self.current_image_dims();
+        if iw > 0.0 && ih > 0.0 {
+            if self.camera.is_fit_mode {
+                self.camera
+                    .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, FitLayoutMode::Overlay);
+            } else {
+                self.camera
+                    .clamp_target_pan(iw, ih, self.view_w, self.view_h);
+            }
+        }
+        self.transitioning_window_mode = false;
+        self.memory_trim_dirty = true;
+        self.recompute_layout();
+        self.request_thumbs_for_visible_filmstrip();
+        self.render_now();
+    }
+
+    /// 立即干净退出（用于 `WM_CLOSE` 与标准小窗口下按 `Esc`/中键关闭）
+    fn close_immediately(&mut self) {
+        self.phase = LifecyclePhase::Closing;
+        self.cache.begin_shutdown();
+        self.anim_timer_running = false;
+        self.clear_pointer_captures();
+        if !self.hwnd.is_invalid() {
+            unsafe {
+                let _ = DestroyWindow(self.hwnd);
+            }
+        }
     }
 
     fn current_path(&self) -> Option<&PathBuf> {
@@ -537,12 +1089,13 @@ impl ViewerApp {
                             );
                             self.ensure_anim_timer();
                         } else {
+                            let fit_mode = self.current_fit_mode();
                             self.camera.reset_to_fit_with_mode(
                                 img.width as f32,
                                 img.height as f32,
                                 self.view_w,
                                 self.view_h,
-                                self.is_slideshow(),
+                                fit_mode,
                             );
                         }
                         self.user_adjusted_viewport_for_current = false;
@@ -555,6 +1108,7 @@ impl ViewerApp {
                         if img.is_animated() {
                             self.ensure_anim_timer();
                         }
+                        self.memory_trim_dirty = true;
                     }
                     self.current_image = Some(img);
                     self.current_error = None;
@@ -631,6 +1185,7 @@ impl ViewerApp {
             self.render_now();
             return;
         }
+        let from_windowed = self.is_windowed();
         let mut portal = SlideshowPortalSnapshot {
             zoom: self.camera.zoom,
             pan_x: self.camera.pan_x,
@@ -640,7 +1195,36 @@ impl ViewerApp {
             flip_y: self.camera.visual_flip_y,
         };
 
+        self.pre_slideshow_window_mode = self.window_mode;
         self.pre_slideshow_fullscreen = self.is_fullscreen;
+        if from_windowed && !self.hwnd.is_invalid() {
+            unsafe {
+                self.saved_windowed_maximized = IsZoomed(self.hwnd).as_bool();
+                if !self.saved_windowed_maximized {
+                    let mut rc = RECT::default();
+                    if GetWindowRect(self.hwnd, &mut rc).is_ok() {
+                        self.saved_windowed_rect = Some(rc);
+                    }
+                }
+            }
+            self.transitioning_window_mode = true;
+            self.window_mode = WindowMode::Overlay;
+            unsafe {
+                self.suppress_size_render = true;
+                SetWindowLongPtrW(self.hwnd, GWL_STYLE, (WS_POPUP | WS_VISIBLE).0 as isize);
+                let _ = SetWindowPos(
+                    self.hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_SHOWWINDOW | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE,
+                );
+                self.suppress_size_render = false;
+            }
+        }
+
         self.phase = LifecyclePhase::Slideshow;
         self.is_fullscreen = true;
         self.slideshow_paused = false;
@@ -652,27 +1236,54 @@ impl ViewerApp {
         self.ui_opacity = 0.0;
         self.last_activity = Instant::now() - Duration::from_secs(10);
         let (dx_comp, dy_comp) = self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+        self.transitioning_window_mode = false;
 
-        // 依据新旧物理 RECT 中心坐标差补偿 X/Y，100% 兼容任务栏位于底/顶/左/右四种方位
-        portal.pan_x += dx_comp;
-        portal.pan_y += dy_comp;
-        self.slideshow_portal = Some(portal);
+        if from_windowed {
+            // 小窗口直切全屏幻灯片：直接纯净暗幕渐显，不叠加不同窗口样式间的旧窗框错位残影
+            self.slideshow_portal = None;
+        } else {
+            // 依据新旧物理 RECT 中心坐标差补偿 X/Y，100% 兼容任务栏位于底/顶/左/右四种方位
+            portal.pan_x += dx_comp;
+            portal.pan_y += dy_comp;
+            self.slideshow_portal = Some(portal);
+        }
 
         let (iw, ih) = self.current_image_dims();
         if iw > 0.0 && ih > 0.0 {
-            self.camera
-                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, true);
+            self.camera.snap_to_fit_mode(
+                iw,
+                ih,
+                self.view_w,
+                self.view_h,
+                FitLayoutMode::Slideshow,
+            );
         }
         self.recompute_layout();
         self.ensure_anim_timer();
         self.render_now();
     }
 
-    /// 第一级 `Esc` 或单击画面：从 `Slideshow` 以 `0.30s` 逆向双场景叠化平滑退回 `Viewing` 工作区看图态（重新露出任务栏），绝不直接退出程序！
+    /// 第一级 `Esc` 或单击画面：从 `Slideshow` 退回放映前形态（若由小窗口进入则精准还原小窗口位置与尺寸，若由浮层进入则 0.30s 逆向双场景叠化回工作区），绝不直接退出程序！
     fn stop_slideshow_gracefully(&mut self) {
         if !self.is_slideshow() {
             return;
         }
+        if self.pre_slideshow_window_mode == WindowMode::Windowed {
+            self.phase = LifecyclePhase::Viewing;
+            self.slideshow_paused = false;
+            self.hovered = HitTarget::None;
+            self.ui_opacity = 1.0;
+            self.cinema_dim = 0.0;
+            self.slideshow_portal = None;
+            self.last_activity = Instant::now();
+            self.restore_windowed_mode(
+                self.saved_windowed_rect,
+                self.saved_windowed_maximized,
+                false,
+            );
+            return;
+        }
+
         let mut portal = SlideshowPortalSnapshot {
             zoom: self.camera.zoom,
             pan_x: self.camera.pan_x,
@@ -698,7 +1309,7 @@ impl ViewerApp {
         let (iw, ih) = self.current_image_dims();
         if iw > 0.0 && ih > 0.0 {
             self.camera
-                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, false);
+                .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, FitLayoutMode::Overlay);
         }
         self.recompute_layout();
         self.ensure_anim_timer();
@@ -779,29 +1390,40 @@ impl ViewerApp {
 
         self.cache
             .request_image_and_neighbors(&self.siblings, self.current_index);
+        self.update_window_title();
         if let Some(path) = self.current_path().cloned() {
             if self.cache.get_cached_image(&path).is_some() {
                 self.sync_current_from_cache(true);
             } else {
                 let mut init_dims = (1920.0f32, 1080.0f32);
-                if let Some(tb) = self.cache.get_or_request_thumb(&path) {
+                let has_gpu_thumb = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| r.has_thumb(&path))
+                    .unwrap_or(false);
+                if has_gpu_thumb {
+                    if let Some(dims) = self
+                        .renderer
+                        .as_ref()
+                        .and_then(|r| r.thumb_original_dims(&path))
+                    {
+                        init_dims = dims;
+                    }
+                } else if let Some(tb) = self.cache.take_thumb_for_upload(&path) {
                     init_dims = (tb.orig_width.max(1) as f32, tb.orig_height.max(1) as f32);
                     let mut protected: HashSet<&Path> = HashSet::new();
                     protected.insert(path.as_path());
                     if let Some(r) = self.renderer.as_mut() {
                         r.ensure_thumb_uploaded(&path, &tb, &protected);
                     }
-                } else if let Some(dims) =
-                    self.renderer.as_ref().and_then(|r| r.thumb_original_dims(&path))
-                {
-                    init_dims = dims;
                 }
+                let fit_mode = self.current_fit_mode();
                 self.camera.reset_to_fit_with_mode(
                     init_dims.0,
                     init_dims.1,
                     self.view_w,
                     self.view_h,
-                    in_slideshow,
+                    fit_mode,
                 );
                 self.current_image = None;
                 if let Some(r) = self.renderer.as_mut() {
@@ -836,10 +1458,19 @@ impl ViewerApp {
         if siblings.is_empty() {
             return;
         }
-        // 若当前正处于幻灯片全屏态，先恢复退出前的工作区/全屏边界
+        // 若当前正处于幻灯片全屏态，先恢复退出前的窗口形态（小窗或浮层）
         if self.is_slideshow() {
-            self.is_fullscreen = self.pre_slideshow_fullscreen;
-            self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+            if self.pre_slideshow_window_mode == WindowMode::Windowed {
+                self.phase = LifecyclePhase::Viewing;
+                self.restore_windowed_mode(
+                    self.saved_windowed_rect,
+                    self.saved_windowed_maximized,
+                    false,
+                );
+            } else {
+                self.is_fullscreen = self.pre_slideshow_fullscreen;
+                self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, false);
+            }
         }
         self.siblings = siblings;
         if let Some(r) = self.renderer.as_mut() {
@@ -848,14 +1479,22 @@ impl ViewerApp {
             r.reset_filmstrip_birth_clock();
         }
         let now = Instant::now();
-        self.phase = LifecyclePhase::Opening;
+        if self.is_windowed() {
+            self.phase = LifecyclePhase::Viewing;
+            self.backdrop_open_progress = 1.0;
+            self.open_anim_armed = true;
+            self.open_started_at = now - Duration::from_secs(2);
+            self.open_progress = 1.0;
+        } else {
+            self.phase = LifecyclePhase::Opening;
+            self.backdrop_open_progress = 1.0;
+            self.open_anim_armed = false;
+            self.open_started_at = now;
+            self.open_progress = 0.0;
+        }
         self.current_image = None;
         self.user_adjusted_viewport_for_current = false;
         self.loading_since = now;
-        self.backdrop_open_progress = 1.0;
-        self.open_anim_armed = false;
-        self.open_started_at = now;
-        self.open_progress = 0.0;
         self.filmstrip_scroll_offset = 0.0;
         self.slide_progress = 1.0;
         self.slide_dir = 0.0;
@@ -870,6 +1509,7 @@ impl ViewerApp {
         self.frame_index = 0;
         self.cache
             .request_image_and_neighbors(&self.siblings, self.current_index);
+        self.update_window_title();
         self.sync_current_from_cache(true);
         self.recompute_layout();
         self.request_thumbs_for_visible_filmstrip();
@@ -908,6 +1548,7 @@ impl ViewerApp {
             is_animated: is_anim,
             anim_playing: self.anim_playing,
             is_slideshow: self.is_slideshow(),
+            is_windowed: self.is_windowed(),
             is_actual_zoom,
             is_flipped_h: self.camera.is_screen_flipped_h(),
             is_flipped_v: self.camera.is_screen_flipped_v(),
@@ -935,9 +1576,18 @@ impl ViewerApp {
         }
         for idx in indices {
             if let Some(path) = self.siblings.get(idx) {
-                if let Some(thumb) = self.cache.get_or_request_thumb(path) {
+                let already_on_gpu = self
+                    .renderer
+                    .as_ref()
+                    .map(|r| r.has_thumb(path))
+                    .unwrap_or(false);
+                if already_on_gpu {
+                    continue;
+                }
+                if let Some(thumb) = self.cache.take_thumb_for_upload(path) {
                     if let Some(r) = self.renderer.as_mut() {
                         r.ensure_thumb_uploaded(path, &thumb, &protected);
+                        self.memory_trim_dirty = true;
                     }
                 } else if self.cache.is_thumb_failed(path) {
                     if let Some(r) = self.renderer.as_mut() {
@@ -961,7 +1611,7 @@ impl ViewerApp {
     fn open_context_menu_at_screen(&mut self, screen_x: i32, screen_y: i32) {
         let st = ContextMenuState {
             is_slideshow: self.is_slideshow(),
-            is_fullscreen: self.is_fullscreen,
+            is_fullscreen: self.window_mode == WindowMode::Overlay && self.is_fullscreen,
             show_info: self.show_info,
             is_animated: self
                 .current_image
@@ -972,7 +1622,10 @@ impl ViewerApp {
             flipped_v: self.camera.is_screen_flipped_v(),
             lang: self.lang,
         };
-        if let Some(act) = show_native_context_menu(self.hwnd, screen_x, screen_y, &st) {
+        self.modal_dialog_active = true;
+        let chosen = show_native_context_menu(self.hwnd, screen_x, screen_y, &st);
+        self.modal_dialog_active = false;
+        if let Some(act) = chosen {
             self.execute_action(act);
         }
     }
@@ -1007,7 +1660,10 @@ impl ViewerApp {
             }
             ToolbarAction::OpenImageFile => {
                 self.clear_pointer_captures();
-                if let Some(picked) = crate::pick_image_via_dialog(self.hwnd, self.lang) {
+                self.modal_dialog_active = true;
+                let picked_opt = crate::pick_image_via_dialog(self.hwnd, self.lang);
+                self.modal_dialog_active = false;
+                if let Some(picked) = picked_opt {
                     self.open_selected_or_dropped_file(picked);
                     return;
                 }
@@ -1089,13 +1745,14 @@ impl ViewerApp {
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
                     self.mark_user_viewport_adjusted();
+                    let fit_mode = self.current_fit_mode();
                     self.camera.rotate_step(
                         false,
                         iw,
                         ih,
                         self.view_w,
                         self.view_h,
-                        self.is_slideshow(),
+                        fit_mode,
                     );
                     self.ensure_anim_timer();
                 }
@@ -1105,13 +1762,14 @@ impl ViewerApp {
                 let (iw, ih) = self.current_image_dims();
                 if iw > 0.0 && ih > 0.0 {
                     self.mark_user_viewport_adjusted();
+                    let fit_mode = self.current_fit_mode();
                     self.camera.rotate_step(
                         true,
                         iw,
                         ih,
                         self.view_w,
                         self.view_h,
-                        self.is_slideshow(),
+                        fit_mode,
                     );
                     self.ensure_anim_timer();
                 }
@@ -1176,27 +1834,37 @@ impl ViewerApp {
                     (self.current_image.clone(), self.current_path().cloned())
                 {
                     let safe_idx = self.frame_index.min(img.frames.len().saturating_sub(1));
-                    match save_frame_as_png_dialog(
-                        self.hwnd,
-                        &img.frames[safe_idx],
-                        self.camera.rotation,
-                        self.camera.flip_x,
-                        self.camera.flip_y,
-                        &path,
-                        safe_idx,
-                        img.is_animated(),
-                        self.lang,
-                    ) {
-                        Ok(Some(saved)) => {
-                            let name = saved
-                                .file_name()
-                                .map(|st| st.to_string_lossy().to_string())
-                                .unwrap_or_default();
-                            self.show_toast(format!("{}{name}", s.toast_saved_png_prefix));
+                    match resolve_frame_for_export(&img, safe_idx) {
+                        Ok(frame) => {
+                            self.modal_dialog_active = true;
+                            let res = save_frame_as_png_dialog(
+                                self.hwnd,
+                                frame.as_ref(),
+                                self.camera.rotation,
+                                self.camera.flip_x,
+                                self.camera.flip_y,
+                                &path,
+                                safe_idx,
+                                img.is_animated(),
+                                self.lang,
+                            );
+                            self.modal_dialog_active = false;
+                            match res {
+                                Ok(Some(saved)) => {
+                                    let name = saved
+                                        .file_name()
+                                        .map(|st| st.to_string_lossy().to_string())
+                                        .unwrap_or_default();
+                                    self.show_toast(format!("{}{name}", s.toast_saved_png_prefix));
+                                }
+                                Ok(None) => {}
+                                Err(e) => {
+                                    self.show_toast(format!("{}{e}", s.toast_save_png_failed_prefix))
+                                }
+                            }
                         }
-                        Ok(None) => {}
                         Err(e) => {
-                            self.show_toast(format!("{}{e}", s.toast_save_png_failed_prefix))
+                            self.show_toast(format!("{}{e}", s.toast_save_png_failed_prefix));
                         }
                     }
                 }
@@ -1204,17 +1872,23 @@ impl ViewerApp {
             }
             ToolbarAction::CopyImage => {
                 self.touch_activity();
-                if let (Some(img), Some(path)) = (self.current_image.as_ref(), self.current_path())
+                if let (Some(img), Some(path)) =
+                    (self.current_image.clone(), self.current_path().cloned())
                 {
                     let safe_idx = self.frame_index.min(img.frames.len().saturating_sub(1));
-                    if copy_frame_and_file_to_clipboard(
-                        self.hwnd,
-                        &img.frames[safe_idx],
-                        self.camera.rotation,
-                        self.camera.flip_x,
-                        self.camera.flip_y,
-                        path,
-                    ) {
+                    let copied = resolve_frame_for_export(&img, safe_idx)
+                        .map(|frame| {
+                            copy_frame_and_file_to_clipboard(
+                                self.hwnd,
+                                frame.as_ref(),
+                                self.camera.rotation,
+                                self.camera.flip_x,
+                                self.camera.flip_y,
+                                &path,
+                            )
+                        })
+                        .unwrap_or(false);
+                    if copied {
                         self.show_toast(s.toast_copied_image);
                     } else {
                         self.show_toast(s.toast_copy_failed);
@@ -1250,6 +1924,26 @@ impl ViewerApp {
             }
             ToolbarAction::ToggleFullscreen => {
                 self.touch_activity();
+                if self.is_slideshow() {
+                    self.stop_slideshow_gracefully();
+                    return;
+                }
+                if self.is_windowed() {
+                    self.return_to_windowed_on_f11 = true;
+                    self.enter_overlay_mode(true);
+                    self.show_toast(s.toast_fullscreen_on);
+                    self.render_now();
+                    return;
+                }
+                if self.return_to_windowed_on_f11 {
+                    self.return_to_windowed_on_f11 = false;
+                    self.restore_windowed_mode(
+                        self.saved_windowed_rect,
+                        self.saved_windowed_maximized,
+                        false,
+                    );
+                    return;
+                }
                 self.is_fullscreen = !self.is_fullscreen;
                 self.sync_monitor_bounds_and_dpi(self.hwnd, self.dpi, true);
                 self.show_toast(if self.is_fullscreen {
@@ -1271,14 +1965,19 @@ impl ViewerApp {
             }
             ToolbarAction::OpenWithDialog => {
                 self.touch_activity();
-                if let Some(path) = self.current_path() {
-                    open_with_system_dialog(self.hwnd, path);
+                if let Some(path) = self.current_path().cloned() {
+                    self.modal_dialog_active = true;
+                    open_with_system_dialog(self.hwnd, &path);
+                    self.modal_dialog_active = false;
                 }
             }
             ToolbarAction::RegisterDefaultApp => {
                 self.touch_activity();
                 self.clear_pointer_captures();
-                match show_file_association_dialog(self.hwnd, self.lang) {
+                self.modal_dialog_active = true;
+                let outcome = show_file_association_dialog(self.hwnd, self.lang);
+                self.modal_dialog_active = false;
+                match outcome {
                     AssocDialogOutcome::Applied => self.show_toast(s.toast_registered_ok),
                     AssocDialogOutcome::Unregistered => self.show_toast(s.assoc_unreg_done),
                     AssocDialogOutcome::Failed(e) => {
@@ -1291,7 +1990,10 @@ impl ViewerApp {
             ToolbarAction::DeleteToRecycleBin => {
                 self.touch_activity();
                 if let Some(path) = self.current_path().cloned() {
-                    if move_to_recycle_bin(self.hwnd, &path) {
+                    self.modal_dialog_active = true;
+                    let deleted = move_to_recycle_bin(self.hwnd, &path);
+                    self.modal_dialog_active = false;
+                    if deleted {
                         self.cache.invalidate_path(&path);
                         self.siblings.remove(self.current_index);
                         // 必须清空当前已删除图及其主纹理/错误态，防止删除非末尾图时索引不变而误判跳过导致画面僵死
@@ -1306,7 +2008,11 @@ impl ViewerApp {
                         let Some(next_idx) =
                             next_index_after_delete(self.siblings.len(), self.current_index)
                         else {
-                            self.request_animated_close();
+                            if self.is_windowed() {
+                                self.close_immediately();
+                            } else {
+                                self.request_animated_close();
+                            }
                             return;
                         };
                         self.navigate_to_index_with_dir(next_idx, Some(1.0), false);
@@ -1318,7 +2024,11 @@ impl ViewerApp {
                 }
             }
             ToolbarAction::CloseViewer => {
-                self.request_animated_close();
+                if self.is_windowed() {
+                    self.close_immediately();
+                } else {
+                    self.request_animated_close();
+                }
                 return;
             }
         }
@@ -1722,6 +2432,27 @@ impl ViewerApp {
         self.recreating_renderer = false;
         if let Some(r) = rebuilt {
             self.renderer = Some(r);
+            // 若当前静态图此前已在 GPU 上传后释放 CPU 像素缓冲，设备丢失重建后立即按需重解，绝不黑屏！
+            let needs_reload = self
+                .current_image
+                .as_ref()
+                .map(|img| {
+                    let safe_idx = self.frame_index.min(img.frames.len().saturating_sub(1));
+                    !img.has_cpu_pixels(safe_idx)
+                })
+                .unwrap_or(false);
+            if needs_reload {
+                if let Some(path) = self.current_path().cloned() {
+                    if let Ok(redecoded) = crate::decode::decode_image_file(&path) {
+                        self.current_image = Some(Arc::new(redecoded));
+                    } else {
+                        self.current_image = None;
+                        self.cache
+                            .request_image_and_neighbors(&self.siblings, self.current_index);
+                    }
+                }
+            }
+            self.memory_trim_dirty = true;
             self.recompute_layout();
             self.request_thumbs_for_visible_filmstrip();
             true
@@ -1735,6 +2466,7 @@ impl ViewerApp {
             return;
         }
         let mut device_lost = false;
+        let mut rendered_ok = false;
         {
             let now = Instant::now();
             let loading_name = self
@@ -1750,6 +2482,7 @@ impl ViewerApp {
                 >= Duration::from_millis(LOADING_INDICATOR_DELAY_MS);
             let anim_speed = self.anim_speed();
             let is_slideshow = self.is_slideshow();
+            let is_windowed = self.is_windowed();
             let zoom_badge_alpha = compute_zoom_badge_alpha(self.zoom_badge_shown_at, now);
             let params = RenderFrameParams {
                 now,
@@ -1783,6 +2516,7 @@ impl ViewerApp {
                 current_index: self.current_index,
                 sibling_paths: &self.siblings,
                 is_slideshow,
+                is_windowed,
                 layout: &self.layout,
                 hovered: self.hovered,
                 anim_speed,
@@ -1795,6 +2529,7 @@ impl ViewerApp {
                 match renderer.render(&params) {
                     Ok(()) => {
                         self.presented_frames = self.presented_frames.saturating_add(1);
+                        rendered_ok = true;
                     }
                     Err(RenderError::DeviceLost(_)) => {
                         device_lost = true;
@@ -1849,6 +2584,7 @@ impl ViewerApp {
                 current_index: self.current_index,
                 sibling_paths: &self.siblings,
                 is_slideshow: self.is_slideshow(),
+                is_windowed: self.is_windowed(),
                 layout: &self.layout,
                 hovered: self.hovered,
                 anim_speed: self.anim_speed(),
@@ -1860,8 +2596,12 @@ impl ViewerApp {
             if let Some(renderer) = self.renderer.as_mut() {
                 if renderer.render(&params).is_ok() {
                     self.presented_frames = self.presented_frames.saturating_add(1);
+                    rendered_ok = true;
                 }
             }
+        }
+        if rendered_ok {
+            self.release_uploaded_static_image_cpu_pixels();
         }
     }
 
@@ -1949,17 +2689,14 @@ impl ViewerApp {
         if need_recreate {
             let _ = self.recreate_renderer();
         }
+        self.memory_trim_dirty = true;
         if render_immediately {
             let (iw, ih) = self.current_image_dims();
             if iw > 0.0 && ih > 0.0 {
                 if self.camera.is_fit_mode {
-                    self.camera.animate_to_fit_mode(
-                        iw,
-                        ih,
-                        self.view_w,
-                        self.view_h,
-                        self.is_slideshow(),
-                    );
+                    let fit_mode = self.current_fit_mode();
+                    self.camera
+                        .animate_to_fit_mode(iw, ih, self.view_w, self.view_h, fit_mode);
                     self.ensure_anim_timer();
                 } else {
                     self.camera
@@ -1990,6 +2727,7 @@ impl ViewerApp {
                 None
             }
             WM_VIEWER_IMAGE_READY => {
+                self.memory_trim_dirty = true;
                 self.sync_current_from_cache(false);
                 self.recompute_layout();
                 self.request_thumbs_for_visible_filmstrip();
@@ -1998,12 +2736,73 @@ impl ViewerApp {
                 Some(LRESULT(0))
             }
             WM_VIEWER_THUMB_READY => {
+                self.memory_trim_dirty = true;
                 self.request_thumbs_for_visible_filmstrip();
                 self.ensure_anim_timer();
                 self.render_now();
                 Some(LRESULT(0))
             }
+            WM_ACTIVATE => {
+                let active_state = (wparam.0 & 0xFFFF) as u32;
+                if active_state != 0 {
+                    self.window_activated_once = true;
+                } else if should_auto_window_on_deactivate(
+                    self.window_mode,
+                    self.phase,
+                    self.modal_dialog_active,
+                    self.window_activated_once,
+                    self.transitioning_window_mode,
+                ) {
+                    // 点击任务栏或切换至其他应用失焦时，静默切为非置顶标准可缩放小窗口，绝不抢回焦点
+                    self.enter_windowed_mode(true);
+                }
+                None
+            }
+            WM_GETMINMAXINFO => {
+                if self.is_windowed() && lparam.0 != 0 {
+                    let dpi = self.dpi.max(96.0);
+                    let scale = dpi / 96.0;
+                    let (pl, pt, pr, pb) = self.query_windowed_frame_insets(dpi.round() as u32);
+                    let min_w = (WINDOWED_TRACK_MIN_W_DIP * scale).round() as i32 + pl + pr;
+                    let min_h = (WINDOWED_TRACK_MIN_H_DIP * scale).round() as i32 + pt + pb;
+                    unsafe {
+                        let mmi = &mut *(lparam.0 as *mut MINMAXINFO);
+                        mmi.ptMinTrackSize.x = min_w;
+                        mmi.ptMinTrackSize.y = min_h;
+                    }
+                    return Some(LRESULT(0));
+                }
+                None
+            }
+            WM_SETTINGCHANGE => {
+                if self.is_windowed() {
+                    self.apply_window_dark_titlebar(hwnd);
+                }
+                None
+            }
+            WM_CLOSE => {
+                self.close_immediately();
+                Some(LRESULT(0))
+            }
+            WM_MOVE => {
+                if self.is_windowed() && !self.transitioning_window_mode {
+                    unsafe {
+                        if !IsZoomed(hwnd).as_bool() && !IsIconic(hwnd).as_bool() {
+                            let mut rc = RECT::default();
+                            if GetWindowRect(hwnd, &mut rc).is_ok() {
+                                self.saved_windowed_rect = Some(rc);
+                            }
+                        }
+                    }
+                }
+                None
+            }
             WM_SIZE => {
+                if wparam.0 == SIZE_MINIMIZED as usize {
+                    // 窗口最小化冷路径立即修剪显存与物理工作集
+                    self.trim_idle_memory();
+                    return Some(LRESULT(0));
+                }
                 if self.suppress_size_render {
                     return Some(LRESULT(0));
                 }
@@ -2016,7 +2815,18 @@ impl ViewerApp {
                     self.camera.set_dpi_scale(cur_dpi / 96.0);
                     self.view_w = phys_w as f32 * 96.0 / self.dpi;
                     self.view_h = phys_h as f32 * 96.0 / self.dpi;
-                    if self.presented_frames > 0 {
+                    if self.is_windowed() && !self.transitioning_window_mode {
+                        unsafe {
+                            let zoomed = IsZoomed(hwnd).as_bool();
+                            self.saved_windowed_maximized = zoomed;
+                            if !zoomed {
+                                let mut rc = RECT::default();
+                                if GetWindowRect(hwnd, &mut rc).is_ok() {
+                                    self.saved_windowed_rect = Some(rc);
+                                }
+                            }
+                        }
+                    } else if self.presented_frames > 0 {
                         let dy_comp = (old_view_h - self.view_h) * 0.5;
                         if dy_comp.abs() > 0.1 {
                             self.camera.pan_y += dy_comp;
@@ -2035,17 +2845,20 @@ impl ViewerApp {
                     if need_recreate {
                         let _ = self.recreate_renderer();
                     }
+                    self.memory_trim_dirty = true;
                     let (iw, ih) = self.current_image_dims();
                     if iw > 0.0 && ih > 0.0 {
+                        let fit_mode = self.current_fit_mode();
                         if self.camera.is_fit_mode {
-                            self.camera.animate_to_fit_mode(
-                                iw,
-                                ih,
-                                self.view_w,
-                                self.view_h,
-                                self.is_slideshow(),
-                            );
-                            self.ensure_anim_timer();
+                            if self.is_windowed() {
+                                // 标准小窗拖动边框缩放时 1:1 瞬时紧贴客户区重排，零滞后拖影
+                                self.camera
+                                    .snap_to_fit_mode(iw, ih, self.view_w, self.view_h, fit_mode);
+                            } else {
+                                self.camera
+                                    .animate_to_fit_mode(iw, ih, self.view_w, self.view_h, fit_mode);
+                                self.ensure_anim_timer();
+                            }
                         } else {
                             self.camera
                                 .clamp_target_pan(iw, ih, self.view_w, self.view_h);
@@ -2059,7 +2872,7 @@ impl ViewerApp {
                 Some(LRESULT(0))
             }
             WM_COPYDATA => {
-                // 单实例复用：若正在关闭则拒绝接管，让新进程独立启动；否则无缝切换新图并置前
+                // 单实例复用：若正在关闭则拒绝接管，让新进程独立启动；否则先从最小化恢复再无缝切图并置前
                 if self.is_closing() || lparam.0 == 0 {
                     return Some(LRESULT(0));
                 }
@@ -2082,9 +2895,13 @@ impl ViewerApp {
                 let path_str = String::from_utf16_lossy(&u16_slice[..end]);
                 let p = PathBuf::from(path_str);
                 if p.is_file() {
+                    unsafe {
+                        if IsIconic(hwnd).as_bool() {
+                            let _ = ShowWindow(hwnd, SW_RESTORE);
+                        }
+                    }
                     self.open_selected_or_dropped_file(p);
                     unsafe {
-                        let _ = ShowWindow(hwnd, SW_RESTORE);
                         let _ = SetForegroundWindow(hwnd);
                     }
                     return Some(LRESULT(1));
@@ -2104,26 +2921,74 @@ impl ViewerApp {
             }
             WM_DPICHANGED => {
                 let new_dpi = ((wparam.0 >> 16) & 0xFFFF) as f32;
-                if lparam.0 != 0 {
+                if self.is_windowed() {
+                    let clamped_dpi = new_dpi.max(96.0);
+                    self.dpi = clamped_dpi;
+                    self.camera.set_dpi_scale(clamped_dpi / 96.0);
                     unsafe {
-                        let suggested = *(lparam.0 as *const RECT);
-                        let _ = SetWindowPos(
-                            hwnd,
-                            None,
-                            suggested.left,
-                            suggested.top,
-                            (suggested.right - suggested.left).max(320),
-                            (suggested.bottom - suggested.top).max(240),
-                            SWP_NOZORDER | SWP_NOACTIVATE,
-                        );
+                        self.apply_dpi_matched_icons(hwnd, clamped_dpi as u32);
+                        if lparam.0 != 0 {
+                            let suggested = *(lparam.0 as *const RECT);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                None,
+                                suggested.left,
+                                suggested.top,
+                                (suggested.right - suggested.left).max(320),
+                                (suggested.bottom - suggested.top).max(240),
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
                     }
+                } else {
+                    if lparam.0 != 0 {
+                        unsafe {
+                            let suggested = *(lparam.0 as *const RECT);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                None,
+                                suggested.left,
+                                suggested.top,
+                                (suggested.right - suggested.left).max(320),
+                                (suggested.bottom - suggested.top).max(240),
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
+                    }
+                    self.sync_monitor_bounds_and_dpi(hwnd, new_dpi, true);
                 }
-                self.sync_monitor_bounds_and_dpi(hwnd, new_dpi, true);
                 Some(LRESULT(0))
             }
             WM_DISPLAYCHANGE => {
                 let cur_dpi = unsafe { GetDpiForWindow(hwnd).max(96) as f32 };
-                self.sync_monitor_bounds_and_dpi(hwnd, cur_dpi, true);
+                if self.is_windowed() {
+                    unsafe {
+                        let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        let mut mi = MONITORINFO {
+                            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                            ..Default::default()
+                        };
+                        let mut rc = RECT::default();
+                        if GetMonitorInfoW(mon, &mut mi).as_bool()
+                            && GetWindowRect(hwnd, &mut rc).is_ok()
+                            && !IsZoomed(hwnd).as_bool()
+                            && !IsIconic(hwnd).as_bool()
+                        {
+                            let clamped = clamp_rect_to_work_area(rc, mi.rcWork);
+                            let _ = SetWindowPos(
+                                hwnd,
+                                None,
+                                clamped.left,
+                                clamped.top,
+                                (clamped.right - clamped.left).max(320),
+                                (clamped.bottom - clamped.top).max(240),
+                                SWP_NOZORDER | SWP_NOACTIVATE,
+                            );
+                        }
+                    }
+                } else {
+                    self.sync_monitor_bounds_and_dpi(hwnd, cur_dpi, true);
+                }
                 Some(LRESULT(0))
             }
             WM_MOUSEMOVE => {
@@ -2187,6 +3052,9 @@ impl ViewerApp {
                 if self.dragging_image {
                     let move_x = dx - self.drag_last_x;
                     let move_y = dy - self.drag_last_y;
+                    if move_x.abs() < 1e-4 && move_y.abs() < 1e-4 {
+                        return Some(LRESULT(0));
+                    }
                     let move_dt = now.duration_since(self.drag_last_move_at).as_secs_f32();
                     if move_x.abs() > 0.8 || move_y.abs() > 0.8 {
                         self.drag_moved = true;
@@ -2388,8 +3256,9 @@ impl ViewerApp {
                             self.stop_slideshow_gracefully();
                             self.recompute_layout();
                             self.render_now();
-                        } else {
-                            self.request_animated_close();
+                        } else if self.window_mode == WindowMode::Overlay {
+                            // 1:1 复刻原版 Picasa：浮层态单击图片外空白区自动变为标准可缩放小窗口
+                            self.enter_windowed_mode(false);
                         }
                     }
                 } else if self.dragging_image {
@@ -2445,7 +3314,11 @@ impl ViewerApp {
                 Some(LRESULT(0))
             }
             WM_MBUTTONUP => {
-                self.request_animated_close();
+                if self.is_windowed() {
+                    self.close_immediately();
+                } else {
+                    self.request_animated_close();
+                }
                 Some(LRESULT(0))
             }
             WM_RBUTTONUP => {
@@ -2541,6 +3414,8 @@ impl ViewerApp {
                             self.stop_slideshow_gracefully();
                             self.recompute_layout();
                             self.render_now();
+                        } else if self.is_windowed() {
+                            self.close_immediately();
                         } else {
                             self.request_animated_close();
                         }
@@ -2860,9 +3735,15 @@ unsafe extern "system" fn viewer_wnd_proc(
 mod tests {
     use super::{
         compute_next_filmstrip_offset, compute_window_center_compensation_dip,
-        compute_zoom_badge_alpha, next_index_after_delete, should_skip_navigation,
+        compute_windowed_outer_rect, compute_zoom_badge_alpha, format_window_title,
+        next_index_after_delete, resolve_frame_for_export, should_auto_window_on_deactivate,
+        should_skip_navigation,
     };
-    use crate::constants::{ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS};
+    use crate::constants::{
+        WINDOWED_MAX_WORKAREA_RATIO, WINDOWED_MIN_CLIENT_H_DIP, WINDOWED_MIN_CLIENT_W_DIP,
+        ZOOM_BADGE_FADE_MS, ZOOM_BADGE_HOLD_MS,
+    };
+    use crate::types::{ImageFrame, LifecyclePhase, RectF, WindowMode};
     use std::path::Path;
     use std::time::{Duration, Instant};
     use windows::Win32::Foundation::RECT;
@@ -2974,5 +3855,148 @@ mod tests {
         let work_right = RECT { left: 0, top: 0, right: 1840, bottom: 1080 };
         let (dx, dy) = compute_window_center_compensation_dip(work_right, full, 96.0);
         assert!((dx - (-40.0)).abs() < 1e-3 && (dy - 0.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn windowed_outer_rect_respects_min_max_aspect_and_workarea_clamp() {
+        let work = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1032,
+        };
+        let insets = (8, 31, 8, 8);
+
+        // 1. 极小图片客户区应受 540x420 DIP 下限保护，防止底栏按钮裁切
+        let small_rc = RectF::new(860.0, 416.0, 1060.0, 616.0);
+        let out_small = compute_windowed_outer_rect(small_rc, (0, 0), work, 96.0, insets);
+        let client_w_small = (out_small.right - out_small.left) - (insets.0 + insets.2);
+        let client_h_small = (out_small.bottom - out_small.top) - (insets.1 + insets.3);
+        assert!(client_w_small >= WINDOWED_MIN_CLIENT_W_DIP as i32);
+        assert!(client_h_small >= WINDOWED_MIN_CLIENT_H_DIP as i32);
+
+        // 2. 超大图/放大图外框不得超过工作区 86%
+        let huge_rc = RectF::new(-500.0, -300.0, 2600.0, 1400.0);
+        let out_huge = compute_windowed_outer_rect(huge_rc, (0, 0), work, 96.0, insets);
+        let max_w = (1920.0 * WINDOWED_MAX_WORKAREA_RATIO).ceil() as i32 + 2;
+        let max_h = (1032.0 * WINDOWED_MAX_WORKAREA_RATIO).ceil() as i32 + 2;
+        assert!(out_huge.right - out_huge.left <= max_w);
+        assert!(out_huge.bottom - out_huge.top <= max_h);
+        assert!(out_huge.left >= work.left && out_huge.right <= work.right);
+        assert!(out_huge.top >= work.top && out_huge.bottom <= work.bottom);
+
+        // 3. 拖拽到屏幕极右侧后切小窗，应贴靠右侧且严格夹紧在工作区内不越屏
+        let dragged_right = RectF::new(1500.0, 200.0, 2200.0, 900.0);
+        let out_drag = compute_windowed_outer_rect(dragged_right, (0, 0), work, 96.0, insets);
+        assert!(out_drag.right <= work.right);
+        assert!(out_drag.left >= work.left);
+        assert!(out_drag.top >= work.top && out_drag.bottom <= work.bottom);
+    }
+
+    #[test]
+    fn auto_window_on_deactivate_state_machine_respects_all_guards() {
+        // 正常浮层态且已激活、非模态弹窗 -> 失焦自动切小窗
+        assert!(should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Viewing,
+            false,
+            true,
+            false,
+        ));
+        assert!(should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Opening,
+            false,
+            true,
+            false,
+        ));
+        // 模态菜单/对话框弹出期间绝不误触发切小窗
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Viewing,
+            true,
+            true,
+            false,
+        ));
+        // 幻灯片、关闭中、已在小窗口态、尚未首次激活、正在模式切换中 -> 一律不触发
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Slideshow,
+            false,
+            true,
+            false,
+        ));
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Closing,
+            false,
+            true,
+            false,
+        ));
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Windowed,
+            LifecyclePhase::Viewing,
+            false,
+            true,
+            false,
+        ));
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Viewing,
+            false,
+            false,
+            false,
+        ));
+        assert!(!should_auto_window_on_deactivate(
+            WindowMode::Overlay,
+            LifecyclePhase::Viewing,
+            false,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn window_title_formats_filename_cleanly() {
+        assert_eq!(
+            format_window_title(Some(Path::new(r"C:\Photos\image3.png"))),
+            "image3.png - Tools3000 Picasa Viewer"
+        );
+        assert_eq!(format_window_title(None), "Tools3000 Picasa Viewer");
+    }
+
+    #[test]
+    fn resolve_frame_for_export_redecodes_from_disk_after_cpu_pixels_released() {
+        let dir = std::env::temp_dir().join("t3k_picasa_redecode_export_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("tiny_export.png");
+        let src_frame = ImageFrame {
+            width: 4,
+            height: 4,
+            delay_ms: 0,
+            bgra_premul: vec![120, 80, 200, 255].repeat(16),
+        };
+        crate::integration::save_premul_bgra_as_png(&src_frame, &file).expect("保存测试 PNG");
+
+        let decoded = crate::decode::decode_image_file(&file).expect("首次解码成功");
+        assert!(decoded.has_cpu_pixels(0));
+        assert!(decoded.memory_bytes() == 4 * 4 * 4);
+
+        // 模拟静态图上传 GPU 后释放 CPU 像素缓冲
+        let gpu_only = decoded.clone_metadata_without_pixels();
+        assert!(!gpu_only.has_cpu_pixels(0));
+        assert_eq!(gpu_only.memory_bytes(), 0);
+        assert_eq!(gpu_only.width, 4);
+        assert_eq!(gpu_only.height, 4);
+
+        // 剪贴板复制 / PNG 导出无缝按需重解，像素 100% 一致
+        let resolved = resolve_frame_for_export(&gpu_only, 0).expect("按需重解成功");
+        assert_eq!(resolved.width, 4);
+        assert_eq!(resolved.height, 4);
+        assert_eq!(resolved.bgra_premul.len(), 64);
+        assert_eq!(&resolved.bgra_premul[0..4], &[120, 80, 200, 255]);
+
+        let _ = std::fs::remove_file(&file);
+        let _ = std::fs::remove_dir(&dir);
     }
 }

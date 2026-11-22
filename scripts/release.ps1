@@ -17,10 +17,12 @@ param(
     [string]$ReleaseTitle = "",
     [string]$NextFeatureBranch = "",
     [switch]$LocalOnly = $false,             # 仅本地演练发版 (不推送到远端 Git，不发布 GitHub Release)
-    [switch]$SkipGitHubPublish = $false      # 推送 Git 标签但跳过 GitHub Release 网页发布
+    [switch]$SkipGitHubPublish = $false,     # 推送 Git 标签但跳过 GitHub Release 网页发布
+    [switch]$CleanBuild = $false             # 强制清理 build/、重新 npm ci 并清空第三方 DLL 签名缓存执行全量冷编译
 )
 
 $ErrorActionPreference = "Stop"
+$ReleaseStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $ScriptDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Definition)
@@ -383,13 +385,17 @@ if ($OriginalBranch -ne "main") {
     Write-Host "[GIT] 当前已在 main 分支，直接进入洁净构建与本地权威签名流程..." -ForegroundColor Cyan
 }
 
-# 7. 全量清理并执行本地编译构建与生命周期端到端门禁
-Write-Host "[BUILD] 执行全量编译构建与生命周期测试门禁..." -ForegroundColor Cyan
+# 7. 清理旧产物并执行本地并行编译构建与生命周期端到端门禁
+Write-Host "[BUILD] 执行本地构建与全量生命周期测试门禁 (CleanBuild=$CleanBuild)..." -ForegroundColor Cyan
 foreach ($ArtifactDirectory in @("Output", "deploy_dist", "ui\dist", "release_assets")) {
     Remove-ProjectArtifactDirectorySafely -ProjectRoot $ScriptDir -RelativePath $ArtifactDirectory
 }
 
-& pwsh -ExecutionPolicy Bypass -File .\deploy.ps1 -RequireSigning
+$DeployArgs = @("-ExecutionPolicy", "Bypass", "-File", ".\deploy.ps1", "-RequireSigning")
+if ($CleanBuild) {
+    $DeployArgs += "-CleanBuild"
+}
+& pwsh @DeployArgs
 if ($LASTEXITCODE -ne 0) { throw "构建部署门禁失败，终止发版！" }
 
 $ExpectedSetupExe = "Output\Tools3000-v$TargetVersion-Setup.exe"
@@ -401,13 +407,12 @@ if (-not (Test-Path -LiteralPath $ExpectedSetupExe)) {
 $SignedReleaseInputs = @(
     $ExpectedSetupExe
 ) + @(Get-ChildItem "deploy_dist" -Include "*.exe", "*.dll" -Recurse -File | Select-Object -ExpandProperty FullName)
-foreach ($SignedInput in $SignedReleaseInputs) {
-    $Signature = Get-AuthenticodeSignature -LiteralPath $SignedInput
-    if ($Signature.Status -ne "Valid") {
-        throw "正式发布签名验证失败: $SignedInput ($($Signature.Status))"
-    }
+& pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $ScriptDir "scripts\sign-artifacts.ps1") `
+    -Paths $SignedReleaseInputs -VerifyOnly -Required
+if ($LASTEXITCODE -ne 0) {
+    throw "正式发布批量签名校验失败！"
 }
-Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名验证通过" -ForegroundColor Green
+Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名与时间戳批量验证通过" -ForegroundColor Green
 
 # 8. EXE 二进制版本强校验门禁（覆盖主程序与 Rust Picasa 看图器）
 foreach ($BuiltExe in @("deploy_dist\Tools3000.exe", "deploy_dist\Tools3000_Picasa_Viewer.exe")) {
@@ -605,8 +610,10 @@ if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
     $FinalBranch = (git branch --show-current).Trim()
 }
 
+$ReleaseStopwatch.Stop()
+$TotalReleaseSec = [math]::Round($ReleaseStopwatch.Elapsed.TotalSeconds, 1)
 Write-Host "=======================================================" -ForegroundColor Green
-Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！" -ForegroundColor Green
+Write-Host " [OK] Tools3000 $TargetTag 本地权威自动化发版流水线执行完毕！ (总耗时: ${TotalReleaseSec}s)" -ForegroundColor Green
 Write-Host " - 最新安装包: $ExpectedSetupExe" -ForegroundColor Green
 Write-Host " - 最新便携包: $ExpectedPortableZip" -ForegroundColor Green
 Write-Host " - 发布资产库: release_assets" -ForegroundColor Green

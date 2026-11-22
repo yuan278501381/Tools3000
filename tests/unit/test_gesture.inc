@@ -3952,3 +3952,97 @@ TEST(GestureAuditRegressionTest, TrailFadeActionHintAndNewBuiltinCommands) {
     engine.setShowActionHint(prevHint);
 }
 
+TEST(GestureAuditRegressionTest, ThreeVisualSwitchesRealHwndVisibilityMatrix) {
+    using namespace tools3000::gesture;
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
+
+    HWND hwnd = FindWindowW(L"Tools3000_GestureOverlay", nullptr);
+    ASSERT_NE(hwnd, nullptr);
+
+    auto waitUntil = [](auto predicate, int timeoutMs) -> bool {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+        while (std::chrono::steady_clock::now() < deadline) {
+            if (predicate()) return true;
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        return predicate();
+    };
+
+    const bool prevLine = overlay.drawTrailLine();
+    const bool prevHint = overlay.showActionHint();
+    const bool prevFade = overlay.fadeEnabled();
+
+    // 组合 1: 关闭轨迹线 + 开启提示文字 + 开启渐隐动画 (用户实测核心组合)
+    overlay.setDrawTrailLine(false);
+    overlay.setShowActionHint(true);
+    overlay.setFadeEnabled(true);
+
+    overlay.beginTrail();
+    overlay.setRecognized(true);
+    overlay.setLiveAction("Forward");
+    EXPECT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(hwnd) != FALSE; }, 800))
+        << "Toast-only live action must actually show the overlay HWND";
+
+    // 划到未绑定方向清空实时提示：旧提示胶囊必须立即隐藏不残留
+    overlay.setRecognized(false);
+    overlay.setLiveAction("");
+    EXPECT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(hwnd) == FALSE; }, 600))
+        << "Clearing live action in toast-only mode must hide the overlay HWND cleanly";
+
+    // 重新命中并松手：先保持淡出可见，最终自动淡出隐藏
+    overlay.setRecognized(true);
+    overlay.setLiveAction("Forward");
+    ASSERT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(hwnd) != FALSE; }, 800));
+    overlay.endTrail("Forward");
+    EXPECT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(hwnd) == FALSE; }, 1200))
+        << "Toast-only fade-out must complete and hide HWND cleanly";
+
+    // 组合 2: 关闭轨迹线 + 开启提示文字 + 关闭渐隐动画 -> 松手 0ms 瞬消
+    overlay.setDrawTrailLine(false);
+    overlay.setShowActionHint(true);
+    overlay.setFadeEnabled(false);
+
+    overlay.beginTrail();
+    overlay.setRecognized(true);
+    overlay.setLiveAction("Back");
+    ASSERT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(hwnd) != FALSE; }, 800));
+    overlay.endTrail("Back");
+    EXPECT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(hwnd) == FALSE; }, 300))
+        << "Disabling fade animation must hide toast-only overlay immediately without linger";
+
+    // 组合 3: 开启轨迹线 + 关闭提示文字 + 关闭渐隐动画 -> 仅绘轨迹，0 文字，松手瞬消
+    overlay.setDrawTrailLine(true);
+    overlay.setShowActionHint(false);
+    overlay.setFadeEnabled(false);
+
+    overlay.beginTrail();
+    overlay.addPoint(240.0f, 240.0f);
+    overlay.addPoint(380.0f, 240.0f);
+    overlay.setRecognized(true);
+    overlay.setLiveAction("SuppressedHint");
+    EXPECT_TRUE(overlay.currentResultTextForTesting().empty());
+    ASSERT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(hwnd) != FALSE; }, 800));
+    overlay.endTrail("SuppressedHint");
+    EXPECT_TRUE(overlay.currentResultTextForTesting().empty());
+    EXPECT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(hwnd) == FALSE; }, 300))
+        << "Disabling fade animation must hide trail-only overlay immediately";
+
+    // 组合 4: 双关轨迹线与提示文字，独立硬件亮度 OSD (showStandaloneToast) 仍必须可见并自动淡出
+    overlay.setDrawTrailLine(false);
+    overlay.setShowActionHint(false);
+    overlay.setFadeEnabled(false);
+    overlay.showStandaloneToast("Brightness 70%", 180);
+    EXPECT_TRUE(waitUntil([&]() { return overlay.isVisible() && IsWindowVisible(hwnd) != FALSE; }, 800))
+        << "Standalone brightness OSD must show overlay HWND even when trail and hint switches are OFF";
+    EXPECT_TRUE(waitUntil([&]() { return !overlay.isVisible() && IsWindowVisible(hwnd) == FALSE; }, 1200))
+        << "Standalone brightness OSD must auto-hide after hold+fade";
+
+    overlay.setDrawTrailLine(prevLine);
+    overlay.setShowActionHint(prevHint);
+    overlay.setFadeEnabled(prevFade);
+    overlay.hide();
+    overlay.shutdown();
+}
+
+
