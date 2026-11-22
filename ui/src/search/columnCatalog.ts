@@ -1163,6 +1163,9 @@ export function doesItemRequireBackendProperty(
   item: SearchResult,
   colId: TableColumnId,
 ): boolean {
+  if (item.resultType === 'bookmark') {
+    return false;
+  }
   if (colId === 'accessed') {
     return !(typeof item.lastAccessTime === 'number' && Number.isFinite(item.lastAccessTime) && item.lastAccessTime > 0);
   }

@@ -1,4 +1,5 @@
 import {
+  Bookmark,
   FileArchive,
   FileAudio,
   FileCode,
@@ -42,6 +43,7 @@ export const CATEGORY_DEFS = [
   { id: 'archive', labelKey: 'search.catArchives', defaultLabel: 'Archives', prefix: 'ext:zip;rar;7z;tar;gz ', icon: FileArchive },
   { id: 'code', labelKey: 'search.catCode', defaultLabel: 'Code', prefix: 'ext:cpp;h;ts;tsx;js;py;rs;go;java;lua;json ', icon: FileCode },
   { id: 'folder', labelKey: 'search.catFolders', defaultLabel: 'Folders', prefix: 'folder: ', icon: Folder },
+  { id: 'bookmark', labelKey: 'search.catBookmarks', defaultLabel: 'Bookmarks', prefix: 'bm:', icon: Bookmark },
 ] as const;
 
 export const SYNTAX_CATEGORIES = [
@@ -76,6 +78,7 @@ export const SYNTAX_EXAMPLES: SyntaxExampleItem[] = [
   { category: 'logic', syntax: 'nopy:wx', descKey: 'search.syntaxExNoPinyin', defaultDesc: 'Disable Pinyin matching for this term to match literal English letters only' },
   { category: 'logic', syntax: 'size:>10mb', descKey: 'search.syntaxExSize', defaultDesc: 'Filter by file size (supports kb / mb / gb and > < >= <=)' },
   { category: 'logic', syntax: 'dm:today', descKey: 'search.syntaxExDate', defaultDesc: 'Filter by modified date (today / yesterday / thisweek / 2026-09)' },
+  { category: 'logic', syntax: 'bm:github', descKey: 'search.syntaxExBookmark', defaultDesc: 'Search local Edge / Chrome / Brave browser bookmarks directly with zero file-syntax conflict', highlight: true },
 ];
 
 export const CONTENT_FORMAT_CATEGORIES: FormatCategory[] = [

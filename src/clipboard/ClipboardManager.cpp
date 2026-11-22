@@ -351,11 +351,13 @@ bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::pa
         return false;
     }
 
-    // 3. 注册 Windows 标准隐私与 PNG 剪贴板格式
+    // 3. 注册 Windows 标准隐私、图片与富文本 (HTML/RTF) 剪贴板格式
     m_fmtExcludeMonitor = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
     m_fmtCanIncludeHistory = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
     m_fmtViewerIgnore = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
     m_fmtPng = RegisterClipboardFormatW(L"PNG");
+    m_fmtHtml = RegisterClipboardFormatW(L"HTML Format");
+    m_fmtRtf = RegisterClipboardFormatW(L"Rich Text Format");
     m_lastProcessedSeq = GetClipboardSequenceNumber();
 
     // 4. 创建后台图片编码与入库单工作线程
@@ -648,6 +650,24 @@ void ClipboardManager::handleClipboardUpdateDebounced() {
                 GlobalUnlock(hText);
                 task.textUtf8 = tools3000::core::WinUtils::wstringToUtf8(wtext);
                 if (!task.textUtf8.empty()) {
+                    // 同步捕获 CF_HTML / CF_RTF 富文本样式（严格封顶 512 KB 杜绝内存突刺）
+                    auto grabNullTermBytes = [](UINT fmt, std::vector<uint8_t>& out) {
+                        if (fmt == 0 || !IsClipboardFormatAvailable(fmt)) return;
+                        HANDLE hData = GetClipboardData(fmt);
+                        if (!hData) return;
+                        const SIZE_T rawSz = GlobalSize(hData);
+                        if (rawSz == 0 || rawSz > kMaxRichTextBytes) return;
+                        const auto* bytes = static_cast<const uint8_t*>(GlobalLock(hData));
+                        if (!bytes) return;
+                        const size_t actualLen = strnlen(reinterpret_cast<const char*>(bytes), static_cast<size_t>(rawSz));
+                        if (actualLen > 0 && actualLen <= kMaxRichTextBytes) {
+                            out.assign(bytes, bytes + actualLen);
+                        }
+                        GlobalUnlock(hData);
+                    };
+                    grabNullTermBytes(m_fmtHtml, task.rawHtmlBytes);
+                    grabNullTermBytes(m_fmtRtf, task.rawRtfBytes);
+
                     task.kind = 0; // Text (Rust 内核会自动升级识别 #HEX/rgb() 为 Color)
                     enqueueTask(std::move(task));
                     return;
@@ -750,7 +770,34 @@ void ClipboardManager::processTask(PendingCaptureTask& task) {
             static_cast<uint32_t>(snap.maxDays));
     } else {
         if (task.textUtf8.empty()) return;
-        addedId = t3k_clip_add_item(
+        auto persistRichBlob = [&](const std::vector<uint8_t>& bytes, const char* prefix, const char* ext) -> std::string {
+            if (bytes.empty() || bytes.size() > kMaxRichTextBytes) return {};
+            const std::string h = fnv1a128Hex(bytes.data(), bytes.size());
+            const std::string name = std::string(prefix) + h.substr(0, 20) + ext;
+            const std::filesystem::path p = getBlobsDir() / tools3000::core::WinUtils::utf8ToWstring(name);
+            std::error_code ec;
+            if (!std::filesystem::exists(p, ec)) {
+                std::filesystem::create_directories(p.parent_path(), ec);
+                const std::filesystem::path tmp = p.wstring() + L".tmp";
+                {
+                    std::ofstream ofs(tmp, std::ios::binary | std::ios::trunc);
+                    if (!ofs) return {};
+                    ofs.write(reinterpret_cast<const char*>(bytes.data()),
+                              static_cast<std::streamsize>(bytes.size()));
+                }
+                std::filesystem::rename(tmp, p, ec);
+                if (ec) {
+                    std::filesystem::remove(tmp, ec);
+                    if (!std::filesystem::exists(p, ec)) return {};
+                }
+            }
+            return name;
+        };
+
+        const std::string htmlFile = persistRichBlob(task.rawHtmlBytes, "h_", ".html");
+        const std::string rtfFile = persistRichBlob(task.rawRtfBytes, "r_", ".rtf");
+
+        addedId = t3k_clip_add_item_v2(
             task.kind,
             task.textUtf8.c_str(),
             "",
@@ -760,7 +807,9 @@ void ClipboardManager::processTask(PendingCaptureTask& task) {
             task.sourceApp.c_str(),
             static_cast<uint64_t>(task.textUtf8.size()),
             static_cast<uint32_t>(snap.maxItems),
-            static_cast<uint32_t>(snap.maxDays));
+            static_cast<uint32_t>(snap.maxDays),
+            htmlFile.c_str(),
+            rtfFile.c_str());
     }
 
     if (addedId > 0) {
@@ -789,12 +838,13 @@ void ClipboardManager::notifyChanged(const nlohmann::json& payload) {
 }
 
 nlohmann::json ClipboardManager::queryItems(
-    const std::string& query, const std::string& kind, uint32_t limit, uint32_t offset) const {
+    const std::string& query, const std::string& kind, uint32_t limit, uint32_t offset,
+    const std::string& groupId) const {
     if (!m_initialized.load(std::memory_order_acquire)) {
         return {{"total", 0}, {"matched", 0}, {"items", nlohmann::json::array()}};
     }
     const std::string raw = consumeRustJsonString(
-        t3k_clip_query_json(query.c_str(), kind.c_str(), limit, offset));
+        t3k_clip_query_json_v2(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset));
     try {
         return nlohmann::json::parse(raw);
     } catch (...) {
@@ -831,6 +881,80 @@ bool ClipboardManager::deleteItem(uint64_t id) {
     return ok;
 }
 
+uint32_t ClipboardManager::deleteItems(const std::vector<uint64_t>& ids, bool skipPinned) {
+    if (!m_initialized.load(std::memory_order_acquire) || ids.empty()) return 0;
+    const uint32_t removed = t3k_clip_delete_items_batch(
+        ids.data(), static_cast<uint32_t>(ids.size()), skipPinned ? 1 : 0);
+    if (removed > 0) {
+        notifyChanged({{"batchDeleted", removed}});
+    }
+    return removed;
+}
+
+bool ClipboardManager::updateItemText(uint64_t id, const std::string& newTextUtf8) {
+    if (!m_initialized.load(std::memory_order_acquire) || id == 0) return false;
+    const bool ok = t3k_clip_update_item_text(id, newTextUtf8.c_str()) != 0;
+    if (ok) {
+        notifyChanged({{"editedId", id}});
+    }
+    return ok;
+}
+
+nlohmann::json ClipboardManager::listGroups() const {
+    if (!m_initialized.load(std::memory_order_acquire)) {
+        return {{"groups", nlohmann::json::array()}};
+    }
+    const std::string raw = consumeRustJsonString(t3k_clip_list_groups_json());
+    try {
+        return nlohmann::json::parse(raw);
+    } catch (...) {
+        return {{"groups", nlohmann::json::array()}};
+    }
+}
+
+nlohmann::json ClipboardManager::createGroup(const std::string& nameUtf8) {
+    if (!m_initialized.load(std::memory_order_acquire) || nameUtf8.empty()) {
+        return nlohmann::json();
+    }
+    const std::string raw = consumeRustJsonString(t3k_clip_create_group(nameUtf8.c_str()));
+    if (raw.empty()) return nlohmann::json();
+    try {
+        auto grp = nlohmann::json::parse(raw);
+        notifyChanged({{"groupsChanged", true}});
+        return grp;
+    } catch (...) {
+        return nlohmann::json();
+    }
+}
+
+bool ClipboardManager::renameGroup(const std::string& groupId, const std::string& newNameUtf8) {
+    if (!m_initialized.load(std::memory_order_acquire)) return false;
+    const bool ok = t3k_clip_rename_group(groupId.c_str(), newNameUtf8.c_str()) != 0;
+    if (ok) {
+        notifyChanged({{"groupsChanged", true}});
+    }
+    return ok;
+}
+
+bool ClipboardManager::deleteGroup(const std::string& groupId) {
+    if (!m_initialized.load(std::memory_order_acquire)) return false;
+    const bool ok = t3k_clip_delete_group(groupId.c_str()) != 0;
+    if (ok) {
+        notifyChanged({{"groupsChanged", true}});
+    }
+    return ok;
+}
+
+uint32_t ClipboardManager::setItemsGroup(const std::vector<uint64_t>& ids, const std::string& groupId) {
+    if (!m_initialized.load(std::memory_order_acquire) || ids.empty()) return 0;
+    const uint32_t updated = t3k_clip_set_items_group(
+        ids.data(), static_cast<uint32_t>(ids.size()), groupId.c_str());
+    if (updated > 0) {
+        notifyChanged({{"groupsChanged", true}, {"updated", updated}});
+    }
+    return updated;
+}
+
 uint32_t ClipboardManager::clearHistory(bool keepPinned) {
     if (!m_initialized.load(std::memory_order_acquire)) return 0;
     const uint32_t removed = t3k_clip_clear_history(keepPinned ? 1 : 0);
@@ -850,15 +974,18 @@ nlohmann::json ClipboardManager::getStats() const {
     }
 }
 
+std::filesystem::path ClipboardManager::resolveSafeBlobFile(const std::string& relName) const {
+    if (relName.empty() || relName.find("..") != std::string::npos ||
+        relName.find('\\') != std::string::npos || relName.find('/') != std::string::npos) {
+        return {};
+    }
+    return getBlobsDir() / tools3000::core::WinUtils::utf8ToWstring(relName);
+}
+
 std::filesystem::path ClipboardManager::resolveImageBlobPath(uint64_t id) const {
     const auto item = getItem(id);
     if (!item.is_object()) return {};
-    const std::string file = item.value("imageFile", "");
-    if (file.empty() || file.find("..") != std::string::npos ||
-        file.find('\\') != std::string::npos || file.find('/') != std::string::npos) {
-        return {};
-    }
-    return getBlobsDir() / tools3000::core::WinUtils::utf8ToWstring(file);
+    return resolveSafeBlobFile(item.value("imageFile", ""));
 }
 
 std::filesystem::path ClipboardManager::getDataDir() const {
@@ -871,7 +998,10 @@ std::filesystem::path ClipboardManager::getBlobsDir() const {
     return m_blobsDir;
 }
 
-bool ClipboardManager::writeTextToSystemClipboard(const std::wstring& wtext) {
+bool ClipboardManager::writeTextToSystemClipboard(
+    const std::wstring& wtext,
+    const std::vector<uint8_t>& htmlBytes,
+    const std::vector<uint8_t>& rtfBytes) {
     if (!OpenClipboard(m_listenerHwnd)) return false;
     struct Guard { ~Guard() { CloseClipboard(); } } guard;
     EmptyClipboard();
@@ -890,6 +1020,28 @@ bool ClipboardManager::writeTextToSystemClipboard(const std::wstring& wtext) {
         GlobalFree(hMem);
         return false;
     }
+
+    auto setNullTermFormat = [](UINT fmt, const std::vector<uint8_t>& raw) {
+        if (fmt == 0 || raw.empty()) return;
+        const bool hasNul = (raw.back() == 0);
+        const size_t allocSize = raw.size() + (hasNul ? 0u : 1u);
+        HGLOBAL hBuf = GlobalAlloc(GMEM_MOVEABLE, allocSize);
+        if (!hBuf) return;
+        auto* p = static_cast<uint8_t*>(GlobalLock(hBuf));
+        if (!p) {
+            GlobalFree(hBuf);
+            return;
+        }
+        std::memcpy(p, raw.data(), raw.size());
+        if (!hasNul) p[raw.size()] = 0;
+        GlobalUnlock(hBuf);
+        if (!SetClipboardData(fmt, hBuf)) {
+            GlobalFree(hBuf);
+        }
+    };
+    setNullTermFormat(m_fmtHtml, htmlBytes);
+    setNullTermFormat(m_fmtRtf, rtfBytes);
+
     m_suppressedSeq.store(GetClipboardSequenceNumber(), std::memory_order_release);
     return true;
 }
@@ -1046,10 +1198,58 @@ bool ClipboardManager::activateItem(uint64_t id, bool plainTextOnly, bool autoPa
     } else {
         const std::string text = item.value("text", "");
         if (!text.empty()) {
-            ok = writeTextToSystemClipboard(tools3000::core::WinUtils::utf8ToWstring(text));
+            std::vector<uint8_t> htmlBytes;
+            std::vector<uint8_t> rtfBytes;
+            if (!plainTextOnly) {
+                auto readRichFile = [&](const std::string& relName, std::vector<uint8_t>& out) {
+                    const auto path = resolveSafeBlobFile(relName);
+                    std::error_code ec;
+                    if (path.empty() || !std::filesystem::exists(path, ec)) return;
+                    const auto sz = std::filesystem::file_size(path, ec);
+                    if (ec || sz == 0 || sz > kMaxRichTextBytes) return;
+                    std::ifstream ifs(path, std::ios::binary);
+                    if (!ifs) return;
+                    out.resize(static_cast<size_t>(sz));
+                    ifs.read(reinterpret_cast<char*>(out.data()), static_cast<std::streamsize>(sz));
+                };
+                readRichFile(item.value("htmlFile", ""), htmlBytes);
+                readRichFile(item.value("rtfFile", ""), rtfBytes);
+            }
+            ok = writeTextToSystemClipboard(
+                tools3000::core::WinUtils::utf8ToWstring(text), htmlBytes, rtfBytes);
         }
     }
 
+    if (ok && autoPaste) {
+        sendCtrlVPasteAsync(targetHwnd);
+    }
+    return ok;
+}
+
+bool ClipboardManager::activateItemsBatch(
+    const std::vector<uint64_t>& ids,
+    const std::string& separator,
+    bool autoPaste,
+    HWND targetHwnd) {
+    if (ids.empty()) return false;
+    std::string combined;
+    size_t added = 0;
+    for (uint64_t id : ids) {
+        const auto item = getItem(id);
+        if (!item.is_object()) continue;
+        const std::string kind = item.value("kind", "text");
+        if (kind == "image") continue;
+        const std::string text = item.value("text", "");
+        if (text.empty()) continue;
+        if (added > 0) {
+            combined.append(separator);
+        }
+        combined.append(text);
+        ++added;
+    }
+    if (added == 0 || combined.empty()) return false;
+
+    const bool ok = writeTextToSystemClipboard(tools3000::core::WinUtils::utf8ToWstring(combined));
     if (ok && autoPaste) {
         sendCtrlVPasteAsync(targetHwnd);
     }

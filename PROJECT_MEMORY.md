@@ -2592,3 +2592,21 @@
    - 完善幻灯片双场景叠化（屏蔽 `WM_SIZE` 抢跑、四方位任务栏中心补偿、透明 PNG `SOURCE_OVER` 除亮晕）、`WM_CAPTURECHANGED` 指针清理、单实例 `WM_COPYDATA` 转发、`D2DERR_RECREATE_TARGET` 设备丢失自愈、`assoc_dialog` 多屏 DPI/焦点环/无障碍/单刷复用、8 语种 EXIF 与错误本地化、真 LRU 缩略图与 `MsgWaitForMultipleObjects` 零轮询休眠；最终体积 `1.686 MB`（< 2MB），0 `VCRUNTIME140.dll`。
 5. **发布资产清爽 3 件套与安装/卸载/SBOM 闭环 (`deploy.ps1`, `installer.iss`, `scripts/*`, `bucket/tools3000.json`, 8 份 `README*.md`)**:
    - GitHub Release 精简为 3 件套（`Tools3000-vX.Y.Z-Setup.exe`、`Tools3000-vX.Y.Z-win-x64-portable.zip`、`SHA256SUMS.txt`）；剔除 124 个 PE 实测 0 引用的 6 个僵尸 DLL（含 `WebView2Loader.dll` 与 5 个多余 VC++ 运行库）；安装器跨账户遍历 `HKU\<SID>` 清理 41 格式关联、覆盖升级自动继承已有 `config.json` 开关；将 `Tools3000_Picasa_Viewer.exe` 纳入版本号 SSOT、Authenticode 签名与 61 个 Rust crates SBOM 清单；修复 Scoop `bucket/tools3000.json` 二维数组展平 Bug。
+
+
+---
+
+## 2026-11-23 Dependabot 全量清零、Windows 10 兼容加固、剪贴板 5 大旗舰增强与浏览器书签零冲突直搜
+1. **GitHub Dependabot 21 条前端供应链安全告警全量清零 (`ui/package.json`, `ui/package-lock.json`)**:
+   - 升级直接依赖 `vite@^8.3.8`、`vitest@^4.1.12`（连带 `@vitest/mocker@4.1.12`）、`eslint@^10.15.0`，并通过精确 `overrides` 锁定 `undici@^7.30.2`（严控 7.x 主版本避免 `undici@8` 破坏 `jsdom@29` 的内部 `wrap-handler.js` 加载）、`source-map-js@^1.2.4`、`brace-expansion@^5.0.13`、`minimatch@^11.0.9`、`zod@^4.6.6`；实测 `npm audit` 达 `0 vulnerabilities` 且全量 Vitest / ESLint / Vite build 全绿。
+2. **Windows 10 兼容性实机级 PE 审计与 3 点精准加固 (`WinUtils.{h,cpp}`, `WebViewEnvironmentManager.cpp`, `ClipboardWindow.cpp`, `QuickLookWindow.cpp`, `StudioPreviewWindow.cpp`)**:
+   - 通过 `dumpbin /dependents` 与 `/imports` 对全部 10 个核心二进制完成逐符号审计：证实全仓 0 个 Win11-only 静态导入 API，且全部 VC++ Runtime 均已随包分发，最低系统门槛稳定落在 Windows 10 1809+；
+   - 新增 `WinUtils::applyImmersiveDarkMode`（优先 DWM 属性 `20`，Win10 1809/1903/1909 自动回退属性 `19`）与 `WinUtils::applyWin11SystemBackdrop`（仅 Build >= 22621 启用 `DWMWA_SYSTEMBACKDROP_TYPE=38`，避免 Win10 无效属性调用）；
+   - 在 `WebViewEnvironmentManager` 中检测 Windows 10 常见未预装 Microsoft Edge WebView2 Runtime 场景（`GetAvailableCoreWebView2BrowserVersionString` 失败且非无头测试进程），每会话最多弹出一次 8 语种友好原生引导框，一键打开微软官方 Evergreen 引导程序下载页。
+3. **剪贴板历史 5 大旗舰增强 (`src/clipboard/rust_clipboard/src/*`, `ClipboardManager.{h,cpp}`, `src/main.cpp`, `ui/src/ClipboardApp.{tsx,css}`)**:
+   - **二进制快照 `history.t3k` v1 -> v2 无损向前兼容升级**：完整保留老版本快照零丢数据，新增收藏分组（`groups` CRUD + 删除分组不删条目 + 归组条目免于自动淘汰）、单条/批量归组、批量删除（单次原子刷盘 + 单次 GC）、纯文本内联编辑（自动重算颜色识别并回收失效富文本 blob）；
+   - **富文本 `CF_HTML` / `CF_RTF` 样式原样保留与内存铁律**：单块硬封顶 `512 KB`，后台线程按内容哈希去重原子落盘至 `blobs/h_*.html` 与 `blobs/r_*.rtf` 并纳入 `gc_unreferenced_blobs` 自动清理；列表查询 0 传大载荷（仅带 `hasRichText` 布尔标识），仅在真正贴回且 `!plainTextOnly` 时惰性读盘写回，按 `Shift+Enter` 随时纯文本剥离；
+   - **全键盘与多选合并流**：前 9 条展示等宽序号微标并支持 `Alt+1..9` 直接秒贴（`Alt+Shift+1..9` 纯文本秒贴）；支持 `Ctrl` 多选（严格按勾选先后顺序）、`Shift` 范围连选及「多选」开关，勾选后滑出批量操作条支持按换行/空行/空格分隔符一键合并粘贴、批量归组与批量删除。
+4. **全局搜索零冲突浏览器书签直达 (`src/search/BrowserBookmarkIndex.{h,cpp}`, `SearchPlugin.cpp`, `SearchInteractionHandlers.cpp`, `ui/src/search/*`, `SearchPage.tsx`)**:
+   - **零语法冲突三重直达**：绝不占用单字母 `b ` 前缀，采用与 `ext:`/`content:` 统一的独立 `bm:` 前缀 + 分类栏「书签」胶囊 + 可控常规搜索混排（`/search/includeBookmarks` 默认开启，自动避让显式文件操作符与盘符路径）；
+   - **零常驻线程与超低内存**：纯离线只读解析本地 Edge / Chrome / Brave / Vivaldi / Chromium 多 Profile `Bookmarks` JSON，按文件 `mtime` + 10s stat 节流惰性刷新（单文件上限 8 MB、全局 8000 条 URL 去重封顶，常规内存 `< 300 KB`），纯 `bm:` 查询 `< 0.5ms` 瞬出且绝不违背搜索服务 `DEMAND_START` 契约；安全校验仅放行 `http://` / `https://` 网址直开默认浏览器。

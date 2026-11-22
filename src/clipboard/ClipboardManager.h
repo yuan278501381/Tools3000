@@ -63,15 +63,29 @@ public:
 
     /// 供 ClipboardWindow 与 SettingsPage 调用的高速 Rust 查询/操作接口
     nlohmann::json queryItems(const std::string& query, const std::string& kind,
-                              uint32_t limit = 80, uint32_t offset = 0) const;
+                              uint32_t limit = 80, uint32_t offset = 0,
+                              const std::string& groupId = {}) const;
     nlohmann::json getItem(uint64_t id) const;
     int togglePin(uint64_t id);
     bool deleteItem(uint64_t id);
+    uint32_t deleteItems(const std::vector<uint64_t>& ids, bool skipPinned = false);
+    bool updateItemText(uint64_t id, const std::string& newTextUtf8);
     uint32_t clearHistory(bool keepPinned);
     nlohmann::json getStats() const;
 
-    /// 将历史条目写回系统剪贴板，并可选向 targetHwnd 无感发送 Ctrl+V 粘贴
+    /// 自定义收藏分组管理接口
+    nlohmann::json listGroups() const;
+    nlohmann::json createGroup(const std::string& nameUtf8);
+    bool renameGroup(const std::string& groupId, const std::string& newNameUtf8);
+    bool deleteGroup(const std::string& groupId);
+    uint32_t setItemsGroup(const std::vector<uint64_t>& ids, const std::string& groupId);
+
+    /// 将历史条目写回系统剪贴板，并可选向 targetHwnd 无感发送 Ctrl+V 粘贴（非纯文本模式原样保留 HTML/RTF 富文本）
     bool activateItem(uint64_t id, bool plainTextOnly, bool autoPaste, HWND targetHwnd = nullptr);
+
+    /// 按选定顺序合并多条文本记录写回系统剪贴板并可选无感贴出
+    bool activateItemsBatch(const std::vector<uint64_t>& ids, const std::string& separator,
+                            bool autoPaste, HWND targetHwnd = nullptr);
 
     /// 返回图片历史条目的绝对文件路径（供一键贴图 / 离线 OCR / 原位翻译直连）
     std::filesystem::path resolveImageBlobPath(uint64_t id) const;
@@ -94,6 +108,8 @@ private:
     struct PendingCaptureTask {
         uint8_t kind = 0; // 0=Text, 1=Image, 2=Files
         std::string textUtf8;
+        std::vector<uint8_t> rawHtmlBytes;
+        std::vector<uint8_t> rawRtfBytes;
         std::vector<uint8_t> rawPngBytes;
         std::vector<uint8_t> rawDibBytes;
         std::string sourceApp;
@@ -106,13 +122,18 @@ private:
     void workerLoop(std::stop_token st);
     void processTask(PendingCaptureTask& task);
 
-    bool writeTextToSystemClipboard(const std::wstring& wtext);
+    bool writeTextToSystemClipboard(
+        const std::wstring& wtext,
+        const std::vector<uint8_t>& htmlBytes = {},
+        const std::vector<uint8_t>& rtfBytes = {});
     bool writeFilesToSystemClipboard(const std::vector<std::wstring>& files);
     bool writePngImageToSystemClipboard(const std::filesystem::path& pngPath);
+    std::filesystem::path resolveSafeBlobFile(const std::string& relName) const;
     static void sendCtrlVPasteAsync(HWND targetHwnd);
 
     static constexpr UINT_PTR IDT_CLIP_DEBOUNCE = 4101;
     static constexpr UINT kDebounceMs = 45;
+    static constexpr size_t kMaxRichTextBytes = 512u * 1024u; // 单条富文本 HTML/RTF 上限 512 KB
 
     mutable std::mutex m_settingsMutex;
     ClipboardSettings m_settings;
@@ -126,11 +147,13 @@ private:
     std::atomic<DWORD> m_suppressedSeq{0};
     DWORD m_lastProcessedSeq = 0;
 
-    // 注册 Windows 官方隐私剪贴板格式 ID
+    // 注册 Windows 官方隐私与富文本/图片剪贴板格式 ID
     UINT m_fmtExcludeMonitor = 0;
     UINT m_fmtCanIncludeHistory = 0;
     UINT m_fmtViewerIgnore = 0;
     UINT m_fmtPng = 0;
+    UINT m_fmtHtml = 0;
+    UINT m_fmtRtf = 0;
 
     std::mutex m_queueMutex;
     std::condition_variable_any m_queueCv;

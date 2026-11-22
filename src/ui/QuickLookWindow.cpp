@@ -71,8 +71,7 @@ bool isQuickLookDarkTheme() {
 
 void syncQuickLookWindowTheme(HWND hwnd) {
     if (!hwnd || !IsWindow(hwnd)) return;
-    const BOOL useDarkMode = isQuickLookDarkTheme() ? TRUE : FALSE;
-    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDarkMode, sizeof(useDarkMode));
+    tools3000::core::WinUtils::applyImmersiveDarkMode(hwnd, isQuickLookDarkTheme());
 }
 
 std::string formatFileSize(uintmax_t bytes) {
@@ -1087,8 +1086,7 @@ bool QuickLookWindow::createWindow(HINSTANCE hInstance) {
     }
 
     syncQuickLookWindowTheme(m_hwnd);
-    DWORD backdropType = DWMSBT_MAINWINDOW;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdropType, sizeof(backdropType));
+    tools3000::core::WinUtils::applyWin11SystemBackdrop(m_hwnd, DWMSBT_MAINWINDOW);
     const MARGINS margins = {1, 1, 1, 1};
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,

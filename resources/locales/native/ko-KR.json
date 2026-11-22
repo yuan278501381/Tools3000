@@ -891,5 +891,7 @@
   "正在翻译中...||Translating...": "번역 중입니다...",
   "No translatable text recognized": "번역할 텍스트를 인식하지 못했습니다",
   "Translation complete (Press Tab or click pill for original)": "원위치 번역 완료 (Tab 또는 하단 배지로 원본 전환)",
-  "No translatable prose found (code identifiers, filenames or paths kept as-is)": "번역할 본문을 찾지 못했습니다(코드 식별자, 파일명 또는 경로는 원본 유지)"
+  "No translatable prose found (code identifiers, filenames or paths kept as-is)": "번역할 본문을 찾지 못했습니다(코드 식별자, 파일명 또는 경로는 원본 유지)",
+  "缺少 Microsoft Edge WebView2 运行时": "Microsoft Edge WebView2 런타임이 필요합니다",
+  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "이 Windows 시스템에 Microsoft Edge WebView2 런타임이 설치되어 있지 않아 설정, 검색 및 클립보드 UI를 표시할 수 없습니다.\n\n예를 클릭하여 공식 Microsoft 다운로드 페이지를 열고 설치한 뒤 Tools3000을 다시 시작하세요."
 }

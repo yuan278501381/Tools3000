@@ -1,15 +1,26 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  * ClipboardApp — 极速呼出剪贴板历史无边框悬浮面板 (Alt+V)
  *
- * 核心能力:
- *   1. 全键盘极速流：自动聚焦搜索框，上下导航、Enter 无感贴入、Shift+Enter 纯文本、
- *      Ctrl+C 仅复制、Ctrl+P 置顶、Delete 删除、Esc 秒关；
- *   2. 图片历史零 Base64 直出 (clipboard-blobs.tools3000.local) 并提供 Tools3000
- *      独有生态联动：一键 F3 贴图 / 离线 OCR 提字 / 微信级原位翻译；
- *   3. 100% 零 Emoji + 8 语言国际化 + 实时同步系统主题。
+ * 世界级核心能力:
+ *   1. 全键盘极速流：Alt+1..9 秒贴前 9 条（Alt+Shift+1..9 纯文本秒贴）、上下导航、
+ *      Enter 贴入、Shift+Enter 纯文本剥离、Ctrl+P 置顶、Delete 删除、Esc 秒关；
+ *   2. 批量多选合并粘贴 & 批量删除 & 批量归组：Ctrl 多选 / Shift 范围连选 / 多选开关，
+ *      严格按勾选顺序合并粘贴（支持换行/空行/空格分隔符）；
+ *   3. 富文本 HTML/RTF 样式原样保留（惰性按需加载，列表 0 大载荷），随时 Shift+Enter 剥离纯文本；
+ *   4. 自定义收藏分组 / 文件夹 CRUD 与筛选 + 纯文本详情区一键内联编辑；
+ *   5. 100% 零 Emoji + 8 语言国际化 + 实时同步系统主题 + 原生拖动/置顶/8向缩放/最大化。
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useState, useEffect, useRef, useCallback, type FC, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from 'react';
+import {
+  useState,
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  type FC,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   ClipboardList,
@@ -24,11 +35,20 @@ import {
   FileText,
   Image as ImageIcon,
   FolderOpen,
+  FolderPlus,
+  Folder,
   Palette,
   Languages,
   ScanText,
   StickyNote,
   CornerDownLeft,
+  CheckSquare,
+  Square,
+  ListChecks,
+  Layers,
+  Pencil,
+  Check,
+  Sparkles,
 } from 'lucide-react';
 import { CodeBadge } from './components/UIKit';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
@@ -39,6 +59,8 @@ export interface ClipboardItemSummary {
   kind: 'text' | 'image' | 'files' | 'color';
   preview: string;
   text?: string;
+  hasRichText?: boolean;
+  groupId?: string;
   charCount: number;
   lineCount: number;
   imageFile: string;
@@ -53,13 +75,25 @@ export interface ClipboardItemSummary {
   copyCount: number;
 }
 
+export interface ClipboardGroupInfo {
+  id: string;
+  name: string;
+  count: number;
+  createdAt: number;
+}
+
 interface ClipboardQueryResponse {
   total: number;
   matched: number;
   items: ClipboardItemSummary[];
 }
 
+interface ClipboardGroupsResponse {
+  groups: ClipboardGroupInfo[];
+}
+
 type FilterKind = 'all' | 'pinned' | 'text' | 'image' | 'files' | 'color';
+type MergeSeparator = '\n' | '\n\n' | ' ';
 
 const BLOBS_BASE_URL = 'https://clipboard-blobs.tools3000.local/';
 
@@ -84,6 +118,8 @@ export const ClipboardApp: FC = () => {
   const { t } = useTranslation();
   const [query, setQuery] = useState('');
   const [filterKind, setFilterKind] = useState<FilterKind>('all');
+  const [activeGroupId, setActiveGroupId] = useState('');
+  const [groups, setGroups] = useState<ClipboardGroupInfo[]>([]);
   const [items, setItems] = useState<ClipboardItemSummary[]>([]);
   const [totalCount, setTotalCount] = useState(0);
   const [selectedIndex, setSelectedIndex] = useState(0);
@@ -92,8 +128,38 @@ export const ClipboardApp: FC = () => {
   const [windowPinned, setWindowPinned] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
 
+  // 批量多选状态（数组严格保序，用于按勾选先后顺序合并粘贴）
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [mergeSeparator, setMergeSeparator] = useState<MergeSeparator>('\n');
+
+  // 自定义收藏分组内联创建 / 重命名状态
+  const [creatingGroup, setCreatingGroup] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [renamingGroupId, setRenamingGroupId] = useState<string | null>(null);
+  const [renameGroupDraft, setRenameGroupDraft] = useState('');
+
+  // 纯文本详情内联编辑状态
+  const [editingItemId, setEditingItemId] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const newGroupInputRef = useRef<HTMLInputElement>(null);
+
   const selectedItem = items[selectedIndex] ?? null;
+  const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const selectedTextableCount = useMemo(() => {
+    const byId = new Map(items.map((it) => [it.id, it]));
+    let n = 0;
+    for (const id of selectedIds) {
+      const it = byId.get(id);
+      if (it && it.kind !== 'image') n += 1;
+    }
+    return n;
+  }, [items, selectedIds]);
+
   const detailText =
     selectedItem && selectedItem.kind !== 'image'
       ? detailCache && detailCache.id === selectedItem.id
@@ -101,18 +167,36 @@ export const ClipboardApp: FC = () => {
         : selectedItem.preview
       : '';
 
-  const fetchItems = useCallback(async (q: string, kind: FilterKind) => {
+  const isEditingCurrent = Boolean(selectedItem && editingItemId === selectedItem.id);
+
+  const fetchGroups = useCallback(async () => {
+    try {
+      const res = await bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true });
+      if (res && Array.isArray(res.groups)) {
+        setGroups(res.groups);
+      }
+    } catch {
+      // 静默兜底
+    }
+  }, []);
+
+  const fetchItems = useCallback(async (q: string, kind: FilterKind, groupId: string) => {
     setLoading(true);
     try {
       const res = await bridgeRequest<ClipboardQueryResponse>(
         'clipboard.query',
-        { query: q, kind, limit: 120, offset: 0 },
+        { query: q, kind, groupId, limit: 120, offset: 0 },
         { silent: true },
       );
       if (res && Array.isArray(res.items)) {
         setItems(res.items);
         setTotalCount(typeof res.total === 'number' ? res.total : res.items.length);
         setSelectedIndex((prev) => (res.items.length === 0 ? 0 : Math.min(prev, res.items.length - 1)));
+        const aliveIds = new Set(res.items.map((it) => it.id));
+        setSelectedIds((prev) => {
+          const filtered = prev.filter((id) => aliveIds.has(id));
+          return filtered.length === prev.length ? prev : filtered;
+        });
       }
     } catch {
       // 静默兜底
@@ -122,11 +206,25 @@ export const ClipboardApp: FC = () => {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true })
+      .then((res) => {
+        if (!cancelled && res && Array.isArray(res.groups)) {
+          setGroups(res.groups);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     const timer = window.setTimeout(() => {
-      void fetchItems(query, filterKind);
+      void fetchItems(query, filterKind, activeGroupId);
     }, query ? 40 : 0);
     return () => window.clearTimeout(timer);
-  }, [query, filterKind, fetchItems]);
+  }, [query, filterKind, activeGroupId, fetchItems]);
 
   useEffect(() => {
     if (!selectedItem || selectedItem.kind === 'image') {
@@ -153,7 +251,9 @@ export const ClipboardApp: FC = () => {
 
   useBridgeEvent('clipboard:shown', () => {
     setSelectedIndex(0);
-    void fetchItems(query, filterKind);
+    setEditingItemId(null);
+    void fetchGroups();
+    void fetchItems(query, filterKind, activeGroupId);
     requestAnimationFrame(() => {
       searchInputRef.current?.focus();
       searchInputRef.current?.select();
@@ -161,7 +261,8 @@ export const ClipboardApp: FC = () => {
   });
 
   useBridgeEvent('clipboard:updated', () => {
-    void fetchItems(query, filterKind);
+    void fetchGroups();
+    void fetchItems(query, filterKind, activeGroupId);
   });
 
   useBridgeEvent('clipboard:windowState', (rawState) => {
@@ -208,14 +309,14 @@ export const ClipboardApp: FC = () => {
   const handleHeaderMouseDown = useCallback((e: ReactMouseEvent<HTMLElement>) => {
     if (e.button !== 0) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest('input, button, a, textarea, [data-no-drag="true"]')) return;
+    if (target?.closest('input, button, a, textarea, select, [data-no-drag="true"]')) return;
     void bridgeRequest('clipboard.startDrag', undefined, { silent: true });
   }, []);
 
   const handleHeaderDoubleClick = useCallback(
     (e: ReactMouseEvent<HTMLElement>) => {
       const target = e.target as HTMLElement | null;
-      if (target?.closest('input, button, a, textarea, [data-no-drag="true"]')) return;
+      if (target?.closest('input, button, a, textarea, select, [data-no-drag="true"]')) return;
       void handleToggleWindowMaximize();
     },
     [handleToggleWindowMaximize],
@@ -243,20 +344,127 @@ export const ClipboardApp: FC = () => {
     [windowPinned],
   );
 
+  const handleBatchMergePaste = useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    await bridgeRequest('clipboard.pasteItemsBatch', {
+      ids: selectedIds,
+      separator: mergeSeparator,
+      autoPaste: true,
+      hideAfter: !windowPinned,
+    });
+    setSelectedIds([]);
+    setMultiSelectMode(false);
+  }, [selectedIds, mergeSeparator, windowPinned]);
+
+  const handleBatchDelete = useCallback(async () => {
+    if (selectedIds.length === 0) return;
+    await bridgeRequest('clipboard.deleteItems', {
+      ids: selectedIds,
+      skipPinned: false,
+    });
+    setSelectedIds([]);
+    setMultiSelectMode(false);
+    void fetchGroups();
+    void fetchItems(query, filterKind, activeGroupId);
+  }, [selectedIds, fetchGroups, fetchItems, query, filterKind, activeGroupId]);
+
+  const handleAssignGroup = useCallback(
+    async (ids: number[], groupId: string) => {
+      if (ids.length === 0) return;
+      await bridgeRequest('clipboard.setItemsGroup', { ids, groupId });
+      void fetchGroups();
+      void fetchItems(query, filterKind, activeGroupId);
+    },
+    [fetchGroups, fetchItems, query, filterKind, activeGroupId],
+  );
+
+  const handleCreateGroupSubmit = useCallback(async () => {
+    const trimmed = newGroupName.trim();
+    if (!trimmed) {
+      setCreatingGroup(false);
+      return;
+    }
+    const res = await bridgeRequest<{ success?: boolean; group?: ClipboardGroupInfo }>(
+      'clipboard.createGroup',
+      { name: trimmed },
+      { silent: true },
+    );
+    setNewGroupName('');
+    setCreatingGroup(false);
+    await fetchGroups();
+    if (res?.group?.id) {
+      setActiveGroupId(res.group.id);
+      setSelectedIndex(0);
+    }
+  }, [newGroupName, fetchGroups]);
+
+  const handleRenameGroupSubmit = useCallback(async () => {
+    if (!renamingGroupId) return;
+    const trimmed = renameGroupDraft.trim();
+    const targetId = renamingGroupId;
+    setRenamingGroupId(null);
+    setRenameGroupDraft('');
+    if (!trimmed) return;
+    await bridgeRequest('clipboard.renameGroup', { id: targetId, name: trimmed }, { silent: true });
+    void fetchGroups();
+  }, [renamingGroupId, renameGroupDraft, fetchGroups]);
+
+  const handleDeleteGroup = useCallback(
+    async (groupId: string) => {
+      await bridgeRequest('clipboard.deleteGroup', { id: groupId }, { silent: true });
+      if (activeGroupId === groupId) {
+        setActiveGroupId('');
+      }
+      void fetchGroups();
+      void fetchItems(query, filterKind, activeGroupId === groupId ? '' : activeGroupId);
+    },
+    [activeGroupId, fetchGroups, fetchItems, query, filterKind],
+  );
+
+  const handleStartEditItem = useCallback(() => {
+    if (!selectedItem || selectedItem.kind === 'image' || selectedItem.kind === 'files') return;
+    setEditingItemId(selectedItem.id);
+    setEditDraft(detailText || selectedItem.preview);
+    requestAnimationFrame(() => {
+      editTextareaRef.current?.focus();
+    });
+  }, [selectedItem, detailText]);
+
+  const handleSaveEditItem = useCallback(async () => {
+    if (editingItemId === null || savingEdit) return;
+    const trimmed = editDraft.trim();
+    if (!trimmed) return;
+    setSavingEdit(true);
+    try {
+      const res = await bridgeRequest<{ success?: boolean }>(
+        'clipboard.updateItemText',
+        { id: editingItemId, text: editDraft },
+      );
+      if (res?.success) {
+        setDetailCache({ id: editingItemId, text: editDraft });
+        setEditingItemId(null);
+        void fetchItems(query, filterKind, activeGroupId);
+      }
+    } finally {
+      setSavingEdit(false);
+    }
+  }, [editingItemId, savingEdit, editDraft, fetchItems, query, filterKind, activeGroupId]);
+
   const handleTogglePin = useCallback(
     async (item: ClipboardItemSummary) => {
       await bridgeRequest('clipboard.togglePin', { id: item.id });
-      void fetchItems(query, filterKind);
+      void fetchItems(query, filterKind, activeGroupId);
     },
-    [fetchItems, query, filterKind],
+    [fetchItems, query, filterKind, activeGroupId],
   );
 
   const handleDelete = useCallback(
     async (item: ClipboardItemSummary) => {
       await bridgeRequest('clipboard.deleteItem', { id: item.id });
-      void fetchItems(query, filterKind);
+      void fetchGroups();
+      void fetchItems(query, filterKind, activeGroupId);
     },
-    [fetchItems, query, filterKind],
+    [fetchGroups, fetchItems, query, filterKind, activeGroupId],
   );
 
   const handlePinImageAction = useCallback(
@@ -270,12 +478,102 @@ export const ClipboardApp: FC = () => {
     [],
   );
 
+  const toggleItemChecked = useCallback((id: number) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((existing) => existing !== id) : [...prev, id],
+    );
+  }, []);
+
+  const handleItemClick = useCallback(
+    (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
+      if (editingItemId !== null && editingItemId !== item.id) {
+        setEditingItemId(null);
+      }
+      if (e.shiftKey && items.length > 0) {
+        e.preventDefault();
+        const lo = Math.min(selectedIndex, idx);
+        const hi = Math.max(selectedIndex, idx);
+        const rangeIds = items.slice(lo, hi + 1).map((it) => it.id);
+        setSelectedIds((prev) => {
+          const merged = [...prev];
+          for (const id of rangeIds) {
+            if (!merged.includes(id)) merged.push(id);
+          }
+          return merged;
+        });
+        setSelectedIndex(idx);
+        return;
+      }
+      if (e.ctrlKey || e.metaKey || multiSelectMode) {
+        e.preventDefault();
+        toggleItemChecked(item.id);
+        setSelectedIndex(idx);
+        return;
+      }
+      setSelectedIndex(idx);
+    },
+    [editingItemId, items, selectedIndex, multiSelectMode, toggleItemChecked],
+  );
+
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    const activeTag = (document.activeElement as HTMLElement | null)?.tagName;
+    const isTypingInEditor = activeTag === 'TEXTAREA' || (activeTag === 'INPUT' && document.activeElement !== searchInputRef.current);
+
     if (e.key === 'Escape') {
       e.preventDefault();
+      if (editingItemId !== null) {
+        setEditingItemId(null);
+        return;
+      }
+      if (creatingGroup) {
+        setCreatingGroup(false);
+        return;
+      }
+      if (renamingGroupId) {
+        setRenamingGroupId(null);
+        return;
+      }
+      if (selectedIds.length > 0 || multiSelectMode) {
+        setSelectedIds([]);
+        setMultiSelectMode(false);
+        return;
+      }
       void bridgeRequest('clipboard.hideWindow', undefined, { silent: true });
       return;
     }
+
+    if (isTypingInEditor) {
+      return;
+    }
+
+    // Alt+1..9 随时秒贴前 9 条（Alt+Shift+1..9 纯文本秒贴），绝不与搜索输入数字冲突
+    if (e.altKey && !e.ctrlKey && !e.metaKey && e.key >= '1' && e.key <= '9') {
+      const slot = Number(e.key) - 1;
+      const target = items[slot];
+      if (target) {
+        e.preventDefault();
+        void handleActivate(target, e.shiftKey, true);
+      }
+      return;
+    }
+
+    // 非搜索输入态下直接按 1..9 快速选中对应行
+    if (
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      document.activeElement !== searchInputRef.current &&
+      e.key >= '1' &&
+      e.key <= '9'
+    ) {
+      const slot = Number(e.key) - 1;
+      if (items[slot]) {
+        e.preventDefault();
+        setSelectedIndex(slot);
+      }
+      return;
+    }
+
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       setSelectedIndex((prev) => (items.length === 0 ? 0 : (prev + 1) % items.length));
@@ -286,9 +584,15 @@ export const ClipboardApp: FC = () => {
       setSelectedIndex((prev) => (items.length === 0 ? 0 : (prev - 1 + items.length) % items.length));
       return;
     }
-    if (e.key === 'Enter' && selectedItem) {
+    if (e.key === 'Enter') {
       e.preventDefault();
-      void handleActivate(selectedItem, e.shiftKey, true);
+      if (selectedIds.length >= 2) {
+        void handleBatchMergePaste();
+        return;
+      }
+      if (selectedItem) {
+        void handleActivate(selectedItem, e.shiftKey, true);
+      }
       return;
     }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'p' && selectedItem) {
@@ -296,9 +600,13 @@ export const ClipboardApp: FC = () => {
       void handleTogglePin(selectedItem);
       return;
     }
-    if (e.key === 'Delete' && selectedItem && document.activeElement !== searchInputRef.current) {
+    if (e.key === 'Delete' && document.activeElement !== searchInputRef.current) {
       e.preventDefault();
-      void handleDelete(selectedItem);
+      if (selectedIds.length > 0) {
+        void handleBatchDelete();
+      } else if (selectedItem) {
+        void handleDelete(selectedItem);
+      }
     }
   };
 
@@ -310,6 +618,12 @@ export const ClipboardApp: FC = () => {
     { id: 'files', label: t('clipboard.filterFiles', 'Files') },
     { id: 'color', label: t('clipboard.filterColor', 'Colors') },
   ];
+
+  const groupNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const g of groups) map.set(g.id, g.name);
+    return map;
+  }, [groups]);
 
   const renderKindIcon = (kind: ClipboardItemSummary['kind']) => {
     switch (kind) {
@@ -323,6 +637,8 @@ export const ClipboardApp: FC = () => {
         return <FileText size={14} strokeWidth={2.2} aria-hidden="true" />;
     }
   };
+
+  const showCheckboxes = multiSelectMode || selectedIds.length > 0;
 
   return (
     <div
@@ -393,7 +709,7 @@ export const ClipboardApp: FC = () => {
                 : t('clipboard.pinWindow', 'Keep window on top')
             }
           >
-            {windowPinned ? <Pin size={15} strokeWidth={2.3} aria-hidden="true" /> : <Pin size={15} strokeWidth={2} aria-hidden="true" />}
+            <Pin size={15} strokeWidth={windowPinned ? 2.3 : 2} aria-hidden="true" />
           </button>
 
           <button
@@ -444,10 +760,247 @@ export const ClipboardApp: FC = () => {
             </button>
           ))}
         </div>
-        <span className="clip-popup__count-badge">
-          {t('clipboard.totalCountBadge', { count: totalCount, defaultValue: `${totalCount} items` })}
-        </span>
+
+        <div className="clip-popup__filter-right">
+          <button
+            type="button"
+            className={`clip-popup__pill${showCheckboxes ? ' clip-popup__pill--active' : ''}`}
+            aria-pressed={showCheckboxes}
+            onClick={() => {
+              if (showCheckboxes) {
+                setMultiSelectMode(false);
+                setSelectedIds([]);
+              } else {
+                setMultiSelectMode(true);
+              }
+            }}
+            title={t('clipboard.multiSelectTip', 'Toggle multi-select mode (or Ctrl/Shift+Click)')}
+          >
+            <ListChecks size={14} aria-hidden="true" />
+            <span>{t('clipboard.multiSelectBtn', 'Select')}</span>
+          </button>
+          <span className="clip-popup__count-badge">
+            {t('clipboard.totalCountBadge', { count: totalCount, defaultValue: `${totalCount} items` })}
+          </span>
+        </div>
       </div>
+
+      {/* 自定义收藏分组栏 */}
+      <div className="clip-popup__groups-bar" onMouseDown={handleHeaderMouseDown}>
+        <button
+          type="button"
+          className={`clip-popup__group-chip${activeGroupId === '' ? ' clip-popup__group-chip--active' : ''}`}
+          onClick={() => {
+            setActiveGroupId('');
+            setSelectedIndex(0);
+          }}
+        >
+          <Folder size={13} aria-hidden="true" />
+          <span>{t('clipboard.groupAll', 'All Groups')}</span>
+        </button>
+
+        {groups.map((grp) => (
+          <div
+            key={grp.id}
+            className={`clip-popup__group-chip-wrap${activeGroupId === grp.id ? ' clip-popup__group-chip-wrap--active' : ''}`}
+          >
+            {renamingGroupId === grp.id ? (
+              <input
+                type="text"
+                className="clip-popup__group-inline-input"
+                value={renameGroupDraft}
+                onChange={(e) => setRenameGroupDraft(e.target.value)}
+                onBlur={() => void handleRenameGroupSubmit()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    void handleRenameGroupSubmit();
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setRenamingGroupId(null);
+                  }
+                }}
+                autoFocus
+                aria-label={t('clipboard.renameGroupAria', 'Rename collection group')}
+              />
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className={`clip-popup__group-chip${activeGroupId === grp.id ? ' clip-popup__group-chip--active' : ''}`}
+                  onClick={() => {
+                    setActiveGroupId(grp.id);
+                    setSelectedIndex(0);
+                  }}
+                >
+                  <Folder size={13} aria-hidden="true" />
+                  <span>{grp.name}</span>
+                  <span className="clip-popup__group-count">{grp.count}</span>
+                </button>
+                {activeGroupId === grp.id && (
+                  <span className="clip-popup__group-mini-actions">
+                    <button
+                      type="button"
+                      className="clip-popup__group-mini-btn"
+                      onClick={() => {
+                        setRenamingGroupId(grp.id);
+                        setRenameGroupDraft(grp.name);
+                      }}
+                      title={t('clipboard.renameGroup', 'Rename group')}
+                      aria-label={t('clipboard.renameGroup', 'Rename group')}
+                    >
+                      <Pencil size={12} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      className="clip-popup__group-mini-btn clip-popup__group-mini-btn--danger"
+                      onClick={() => void handleDeleteGroup(grp.id)}
+                      title={t('clipboard.deleteGroup', 'Delete group (items are kept)')}
+                      aria-label={t('clipboard.deleteGroup', 'Delete group (items are kept)')}
+                    >
+                      <X size={12} aria-hidden="true" />
+                    </button>
+                  </span>
+                )}
+              </>
+            )}
+          </div>
+        ))}
+
+        {creatingGroup ? (
+          <div className="clip-popup__group-create-box">
+            <input
+              ref={newGroupInputRef}
+              type="text"
+              className="clip-popup__group-inline-input"
+              value={newGroupName}
+              onChange={(e) => setNewGroupName(e.target.value)}
+              placeholder={t('clipboard.newGroupPlaceholder', 'Group name...')}
+              aria-label={t('clipboard.newGroupPlaceholder', 'Group name...')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  void handleCreateGroupSubmit();
+                } else if (e.key === 'Escape') {
+                  e.preventDefault();
+                  setCreatingGroup(false);
+                  setNewGroupName('');
+                }
+              }}
+              autoFocus
+            />
+            <button
+              type="button"
+              className="clip-popup__group-mini-btn"
+              onClick={() => void handleCreateGroupSubmit()}
+              aria-label={t('clipboard.confirmCreateGroup', 'Create group')}
+            >
+              <Check size={13} aria-hidden="true" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="clip-popup__group-add-btn"
+            onClick={() => {
+              setCreatingGroup(true);
+              setNewGroupName('');
+              requestAnimationFrame(() => newGroupInputRef.current?.focus());
+            }}
+          >
+            <FolderPlus size={13} aria-hidden="true" />
+            <span>{t('clipboard.newGroupBtn', 'New Group')}</span>
+          </button>
+        )}
+      </div>
+
+      {/* 批量操作工具条（勾选 >= 1 条时展开） */}
+      {selectedIds.length > 0 && (
+        <div className="clip-popup__batch-bar" role="region" aria-label={t('clipboard.batchBarAria', 'Batch actions')}>
+          <div className="clip-popup__batch-info">
+            <span className="clip-popup__batch-count">
+              {t('clipboard.selectedCount', { count: selectedIds.length, defaultValue: `${selectedIds.length} selected` })}
+            </span>
+            <button
+              type="button"
+              className="clip-popup__batch-link"
+              onClick={() => setSelectedIds(items.map((it) => it.id))}
+            >
+              {t('clipboard.selectAll', 'Select All')}
+            </button>
+            <button
+              type="button"
+              className="clip-popup__batch-link"
+              onClick={() => {
+                setSelectedIds([]);
+                setMultiSelectMode(false);
+              }}
+            >
+              {t('clipboard.clearSelection', 'Clear')}
+            </button>
+          </div>
+
+          <div className="clip-popup__batch-actions">
+            {selectedTextableCount >= 1 && (
+              <div className="clip-popup__merge-control">
+                <select
+                  className="clip-popup__compact-select"
+                  value={mergeSeparator}
+                  onChange={(e) => setMergeSeparator(e.target.value as MergeSeparator)}
+                  aria-label={t('clipboard.mergeSeparatorAria', 'Merge separator')}
+                >
+                  <option value={'\n'}>{t('clipboard.sepNewline', 'Newline')}</option>
+                  <option value={'\n\n'}>{t('clipboard.sepBlankLine', 'Blank Line')}</option>
+                  <option value={' '}>{t('clipboard.sepSpace', 'Space')}</option>
+                </select>
+                <button
+                  type="button"
+                  className="clip-popup__action-btn clip-popup__action-btn--primary"
+                  onClick={() => void handleBatchMergePaste()}
+                >
+                  <Layers size={14} aria-hidden="true" />
+                  <span>{t('clipboard.batchMergePaste', 'Merge Paste')}</span>
+                </button>
+              </div>
+            )}
+
+            {groups.length > 0 && (
+              <select
+                className="clip-popup__compact-select"
+                value=""
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '__ungroup__') {
+                    void handleAssignGroup(selectedIds, '');
+                  } else if (val) {
+                    void handleAssignGroup(selectedIds, val);
+                  }
+                }}
+                aria-label={t('clipboard.batchMoveGroupAria', 'Move selected items to group')}
+              >
+                <option value="" disabled>
+                  {t('clipboard.batchMoveToGroup', 'Move to Group...')}
+                </option>
+                <option value="__ungroup__">{t('clipboard.groupNone', 'No Group')}</option>
+                {groups.map((g) => (
+                  <option key={g.id} value={g.id}>
+                    {g.name}
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <button
+              type="button"
+              className="clip-popup__action-btn clip-popup__action-btn--danger"
+              onClick={() => void handleBatchDelete()}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+              <span>{t('clipboard.batchDelete', { count: selectedIds.length, defaultValue: `Delete (${selectedIds.length})` })}</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       <main className="clip-popup__body">
         <section className="clip-popup__list" role="listbox" aria-label={t('clipboard.listAria', 'Clipboard history list')}>
@@ -461,64 +1014,120 @@ export const ClipboardApp: FC = () => {
               </span>
             </div>
           ) : (
-            items.map((item, idx) => (
-              <button
-                key={item.id}
-                type="button"
-                role="option"
-                aria-selected={idx === selectedIndex}
-                className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}`}
-                onClick={() => setSelectedIndex(idx)}
-                onDoubleClick={() => void handleActivate(item, false, true)}
-              >
-                <div className="clip-popup__item-top">
-                  <span className="clip-popup__item-kind">
-                    {renderKindIcon(item.kind)}
-                    {item.sourceApp ? <CodeBadge>{item.sourceApp}</CodeBadge> : null}
-                  </span>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                    {item.copyCount > 1 && <CodeBadge>{`x${item.copyCount}`}</CodeBadge>}
-                    {item.pinned && <Pin size={13} strokeWidth={2.4} className="clip-popup__pin-dot" aria-hidden="true" />}
-                  </span>
-                </div>
+            items.map((item, idx) => {
+              const isChecked = selectedIdSet.has(item.id);
+              const orderBadge = isChecked ? selectedIds.indexOf(item.id) + 1 : 0;
+              const groupLabel = item.groupId ? groupNameById.get(item.groupId) : undefined;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="option"
+                  aria-selected={idx === selectedIndex}
+                  className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}${isChecked ? ' clip-popup__item--checked' : ''}`}
+                  onClick={(e) => handleItemClick(item, idx, e)}
+                  onDoubleClick={() => {
+                    if (!multiSelectMode && selectedIds.length === 0) {
+                      void handleActivate(item, false, true);
+                    }
+                  }}
+                >
+                  <div className="clip-popup__item-top">
+                    <span className="clip-popup__item-kind">
+                      {showCheckboxes ? (
+                        <span className="clip-popup__check-indicator" aria-hidden="true">
+                          {isChecked ? <CheckSquare size={15} strokeWidth={2.2} /> : <Square size={15} strokeWidth={2} />}
+                          {orderBadge > 0 && <span className="clip-popup__order-num">{orderBadge}</span>}
+                        </span>
+                      ) : idx < 9 ? (
+                        <span
+                          className="clip-popup__slot-badge"
+                          title={t('clipboard.quickSlotTip', { slot: idx + 1, defaultValue: `Alt+${idx + 1} to paste directly` })}
+                        >
+                          {idx + 1}
+                        </span>
+                      ) : null}
+                      {renderKindIcon(item.kind)}
+                      {item.sourceApp ? <CodeBadge>{item.sourceApp}</CodeBadge> : null}
+                      {item.hasRichText && (
+                        <span className="clip-popup__rich-pill" title={t('clipboard.richTextTooltip', 'Preserves rich HTML/RTF formatting')}>
+                          <Sparkles size={11} aria-hidden="true" />
+                          <span>{t('clipboard.richTextBadge', 'Rich')}</span>
+                        </span>
+                      )}
+                      {groupLabel && <span className="clip-popup__group-tag">{groupLabel}</span>}
+                    </span>
+                    <span className="clip-popup__item-badges">
+                      {item.copyCount > 1 && <CodeBadge>{`x${item.copyCount}`}</CodeBadge>}
+                      {item.pinned && <Pin size={13} strokeWidth={2.4} className="clip-popup__pin-dot" aria-hidden="true" />}
+                    </span>
+                  </div>
 
-                <div className="clip-popup__item-preview">
-                  {item.kind === 'color' && item.colorHex && (
-                    <span
-                      className="clip-popup__color-swatch"
-                      style={{ backgroundColor: item.colorHex }}
-                      aria-hidden="true"
-                    />
-                  )}
-                  {item.kind === 'image' && item.imageFile && (
-                    <img
-                      className="clip-popup__thumb"
-                      src={`${BLOBS_BASE_URL}${encodeURIComponent(item.imageFile)}`}
-                      alt={item.preview}
-                      loading="lazy"
-                    />
-                  )}
-                  <span className="clip-popup__text-snippet">
-                    {item.kind === 'color' ? `${item.colorHex}  ${item.preview}` : item.preview}
-                  </span>
-                </div>
+                  <div className="clip-popup__item-preview">
+                    {item.kind === 'color' && item.colorHex && (
+                      <span
+                        className="clip-popup__color-swatch"
+                        style={{ backgroundColor: item.colorHex }}
+                        aria-hidden="true"
+                      />
+                    )}
+                    {item.kind === 'image' && item.imageFile && (
+                      <img
+                        className="clip-popup__thumb"
+                        src={`${BLOBS_BASE_URL}${encodeURIComponent(item.imageFile)}`}
+                        alt={item.preview}
+                        loading="lazy"
+                      />
+                    )}
+                    <span className="clip-popup__text-snippet">
+                      {item.kind === 'color' ? `${item.colorHex}  ${item.preview}` : item.preview}
+                    </span>
+                  </div>
 
-                <div className="clip-popup__item-meta">
-                  <span>
-                    {item.kind === 'image'
-                      ? `${item.imageWidth}x${item.imageHeight} · ${formatBytesCompact(item.byteSize)}`
-                      : `${item.charCount} ${t('clipboard.charsUnit', 'chars')}`}
-                  </span>
-                  <span>{formatRelativeTime(item.updatedAt)}</span>
-                </div>
-              </button>
-            ))
+                  <div className="clip-popup__item-meta">
+                    <span>
+                      {item.kind === 'image'
+                        ? `${item.imageWidth}x${item.imageHeight} · ${formatBytesCompact(item.byteSize)}`
+                        : `${item.charCount} ${t('clipboard.charsUnit', 'chars')}`}
+                    </span>
+                    <span>{formatRelativeTime(item.updatedAt)}</span>
+                  </div>
+                </button>
+              );
+            })
           )}
         </section>
 
         <aside className="clip-popup__detail">
           {selectedItem ? (
             <>
+              <div className="clip-popup__detail-meta-bar">
+                <div className="clip-popup__detail-meta-left">
+                  {selectedItem.sourceApp ? <CodeBadge>{selectedItem.sourceApp}</CodeBadge> : null}
+                  {selectedItem.hasRichText && (
+                    <span className="clip-popup__rich-pill">
+                      <Sparkles size={11} aria-hidden="true" />
+                      <span>{t('clipboard.richTextPreserved', 'Rich Format')}</span>
+                    </span>
+                  )}
+                </div>
+                {groups.length > 0 && (
+                  <select
+                    className="clip-popup__compact-select"
+                    value={selectedItem.groupId || ''}
+                    onChange={(e) => void handleAssignGroup([selectedItem.id], e.target.value)}
+                    aria-label={t('clipboard.assignGroupAria', 'Assign entry to collection group')}
+                  >
+                    <option value="">{t('clipboard.groupNone', 'No Group')}</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </div>
+
               <div className="clip-popup__detail-body">
                 {selectedItem.kind === 'image' && selectedItem.imageFile ? (
                   <div className="clip-popup__detail-image-wrap">
@@ -531,6 +1140,23 @@ export const ClipboardApp: FC = () => {
                       {`${selectedItem.imageWidth} x ${selectedItem.imageHeight} · ${formatBytesCompact(selectedItem.byteSize)}`}
                     </CodeBadge>
                   </div>
+                ) : isEditingCurrent ? (
+                  <textarea
+                    ref={editTextareaRef}
+                    className="clip-popup__detail-editor"
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                        e.preventDefault();
+                        void handleSaveEditItem();
+                      } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        setEditingItemId(null);
+                      }
+                    }}
+                    aria-label={t('clipboard.editTextAria', 'Edit clipboard text')}
+                  />
                 ) : selectedItem.kind === 'color' && selectedItem.colorHex ? (
                   <div className="clip-popup__detail-color">
                     <div
@@ -545,70 +1171,116 @@ export const ClipboardApp: FC = () => {
               </div>
 
               <div className="clip-popup__detail-actions">
-                <button
-                  type="button"
-                  className="clip-popup__action-btn clip-popup__action-btn--primary"
-                  onClick={() => void handleActivate(selectedItem, false, true)}
-                >
-                  <CornerDownLeft size={14} aria-hidden="true" />
-                  <span>{t('clipboard.actionPaste', 'Paste')}</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="clip-popup__action-btn"
-                  onClick={() => void handleActivate(selectedItem, true, false)}
-                >
-                  <Copy size={14} aria-hidden="true" />
-                  <span>{t('clipboard.actionCopyOnly', 'Copy')}</span>
-                </button>
-
-                {selectedItem.kind === 'image' && (
+                {isEditingCurrent ? (
                   <>
                     <button
                       type="button"
-                      className="clip-popup__action-btn"
-                      onClick={() => void handlePinImageAction(selectedItem, {})}
+                      className="clip-popup__action-btn clip-popup__action-btn--primary"
+                      disabled={savingEdit || !editDraft.trim()}
+                      onClick={() => void handleSaveEditItem()}
                     >
-                      <StickyNote size={14} aria-hidden="true" />
-                      <span>{t('clipboard.actionPinImage', 'Pin (F3)')}</span>
+                      <Check size={14} aria-hidden="true" />
+                      <span>{t('clipboard.actionSaveEdit', 'Save (Ctrl+Enter)')}</span>
                     </button>
                     <button
                       type="button"
                       className="clip-popup__action-btn"
-                      onClick={() => void handlePinImageAction(selectedItem, { autoOcr: true })}
+                      onClick={() => setEditingItemId(null)}
                     >
-                      <ScanText size={14} aria-hidden="true" />
-                      <span>{t('clipboard.actionOcrImage', 'OCR')}</span>
+                      <X size={14} aria-hidden="true" />
+                      <span>{t('clipboard.actionCancelEdit', 'Cancel')}</span>
                     </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="clip-popup__action-btn clip-popup__action-btn--primary"
+                      onClick={() => void handleActivate(selectedItem, false, true)}
+                    >
+                      <CornerDownLeft size={14} aria-hidden="true" />
+                      <span>{t('clipboard.actionPaste', 'Paste')}</span>
+                    </button>
+
+                    {selectedItem.hasRichText && (
+                      <button
+                        type="button"
+                        className="clip-popup__action-btn"
+                        onClick={() => void handleActivate(selectedItem, true, true)}
+                      >
+                        <FileText size={14} aria-hidden="true" />
+                        <span>{t('clipboard.actionPastePlain', 'Plain Text')}</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       className="clip-popup__action-btn"
-                      onClick={() => void handlePinImageAction(selectedItem, { autoTranslate: true })}
+                      onClick={() => void handleActivate(selectedItem, false, false)}
                     >
-                      <Languages size={14} aria-hidden="true" />
-                      <span>{t('clipboard.actionTranslateImage', 'Translate')}</span>
+                      <Copy size={14} aria-hidden="true" />
+                      <span>{t('clipboard.actionCopyOnly', 'Copy')}</span>
+                    </button>
+
+                    {(selectedItem.kind === 'text' || selectedItem.kind === 'color') && (
+                      <button
+                        type="button"
+                        className="clip-popup__action-btn"
+                        onClick={handleStartEditItem}
+                      >
+                        <Pencil size={14} aria-hidden="true" />
+                        <span>{t('clipboard.actionEdit', 'Edit')}</span>
+                      </button>
+                    )}
+
+                    {selectedItem.kind === 'image' && (
+                      <>
+                        <button
+                          type="button"
+                          className="clip-popup__action-btn"
+                          onClick={() => void handlePinImageAction(selectedItem, {})}
+                        >
+                          <StickyNote size={14} aria-hidden="true" />
+                          <span>{t('clipboard.actionPinImage', 'Pin (F3)')}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="clip-popup__action-btn"
+                          onClick={() => void handlePinImageAction(selectedItem, { autoOcr: true })}
+                        >
+                          <ScanText size={14} aria-hidden="true" />
+                          <span>{t('clipboard.actionOcrImage', 'OCR')}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="clip-popup__action-btn"
+                          onClick={() => void handlePinImageAction(selectedItem, { autoTranslate: true })}
+                        >
+                          <Languages size={14} aria-hidden="true" />
+                          <span>{t('clipboard.actionTranslateImage', 'Translate')}</span>
+                        </button>
+                      </>
+                    )}
+
+                    <button
+                      type="button"
+                      className="clip-popup__action-btn"
+                      onClick={() => void handleTogglePin(selectedItem)}
+                    >
+                      {selectedItem.pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
+                      <span>{selectedItem.pinned ? t('clipboard.actionUnpin', 'Unpin') : t('clipboard.actionPin', 'Pin')}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      className="clip-popup__action-btn"
+                      onClick={() => void handleDelete(selectedItem)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" />
+                      <span>{t('clipboard.actionDelete', 'Delete')}</span>
                     </button>
                   </>
                 )}
-
-                <button
-                  type="button"
-                  className="clip-popup__action-btn"
-                  onClick={() => void handleTogglePin(selectedItem)}
-                >
-                  {selectedItem.pinned ? <PinOff size={14} aria-hidden="true" /> : <Pin size={14} aria-hidden="true" />}
-                  <span>{selectedItem.pinned ? t('clipboard.actionUnpin', 'Unpin') : t('clipboard.actionPin', 'Pin')}</span>
-                </button>
-
-                <button
-                  type="button"
-                  className="clip-popup__action-btn"
-                  onClick={() => void handleDelete(selectedItem)}
-                >
-                  <Trash2 size={14} aria-hidden="true" />
-                  <span>{t('clipboard.actionDelete', 'Delete')}</span>
-                </button>
               </div>
             </>
           ) : (
@@ -622,6 +1294,10 @@ export const ClipboardApp: FC = () => {
       <footer className="clip-popup__footer">
         <div className="clip-popup__hints">
           <span className="clip-popup__hint">
+            <CodeBadge>Alt+1..9</CodeBadge>
+            <span>{t('clipboard.hintQuickPaste', 'Quick Paste')}</span>
+          </span>
+          <span className="clip-popup__hint">
             <CodeBadge>Enter</CodeBadge>
             <span>{t('clipboard.hintPaste', 'Paste')}</span>
           </span>
@@ -630,8 +1306,8 @@ export const ClipboardApp: FC = () => {
             <span>{t('clipboard.hintPlainText', 'Plain Text')}</span>
           </span>
           <span className="clip-popup__hint">
-            <CodeBadge>Ctrl+P</CodeBadge>
-            <span>{t('clipboard.hintPin', 'Pin')}</span>
+            <CodeBadge>Ctrl+Click</CodeBadge>
+            <span>{t('clipboard.hintMultiSelect', 'Multi-Select')}</span>
           </span>
           <span className="clip-popup__hint">
             <CodeBadge>Esc</CodeBadge>

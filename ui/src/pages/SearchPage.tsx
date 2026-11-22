@@ -35,6 +35,7 @@ interface SearchSettings {
   caseSensitive: boolean;
   matchPath: boolean;
   pinyinEnabled: boolean;
+  includeBookmarks?: boolean;
   iconStyle?: 'native' | 'vector';
   autoBypassFullscreen?: boolean;
   externalApiEnabled?: boolean;
@@ -73,6 +74,7 @@ export const SearchPage: FC = () => {
     caseSensitive: false,
     matchPath: false,
     pinyinEnabled: isChineseUi,
+    includeBookmarks: true,
     iconStyle: 'native',
     autoBypassFullscreen: true,
     externalApiEnabled: false,
@@ -415,6 +417,17 @@ export const SearchPage: FC = () => {
                   id="search-case-toggle"
                   checked={settings.caseSensitive}
                   onChange={v => saveSetting('caseSensitive', v)}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label={t('searchPage.bookmarksTitle', 'Include Browser Bookmarks in General Search')}
+                description={t('searchPage.bookmarksDesc', 'Mix matching local Edge, Chrome, and Brave bookmarks into regular search results. Dedicated bm: prefix and the Bookmarks category always remain available.')}
+              >
+                <Toggle
+                  id="search-bookmarks-toggle"
+                  checked={settings.includeBookmarks ?? true}
+                  onChange={v => saveSetting('includeBookmarks', v)}
                 />
               </SettingRow>
 

@@ -271,7 +271,7 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     if (hidden || iconStyle !== 'native' || !onRequestIcon) return;
     const requestedInPass = new Set<string>();
     const requestIfMissing = (item: SearchResult | undefined) => {
-      if (!item) return;
+      if (!item || item.resultType === 'bookmark') return;
       const spec = resolveNativeIconRequest(item);
       if (requestedInPass.has(spec.cacheKey)) return;
       if (Object.prototype.hasOwnProperty.call(iconCache, spec.cacheKey)) return;

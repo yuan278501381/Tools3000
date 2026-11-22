@@ -1019,6 +1019,7 @@ const VALUE_BEARING_KEYWORD_PREFIXES = new Set([
   'file',
   'folder',
   'dir',
+  'bm',
 ]);
 
 /**

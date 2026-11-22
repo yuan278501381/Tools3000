@@ -1876,9 +1876,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         mb.registerHostHandler("clipboard.query", [](const nlohmann::json& params) -> nlohmann::json {
             const std::string q = params.is_object() ? params.value("query", "") : "";
             const std::string kind = params.is_object() ? params.value("kind", "all") : "all";
+            const std::string groupId = params.is_object() ? params.value("groupId", "") : "";
             const uint32_t limit = params.is_object() ? params.value("limit", 80u) : 80u;
             const uint32_t offset = params.is_object() ? params.value("offset", 0u) : 0u;
-            return tools3000::clipboard::ClipboardManager::instance().queryItems(q, kind, limit, offset);
+            return tools3000::clipboard::ClipboardManager::instance().queryItems(q, kind, limit, offset, groupId);
         });
 
         mb.registerHostHandler("clipboard.getItem", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1908,6 +1909,36 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             return {{"success", ok}};
         });
 
+        auto extractIdList = [](const nlohmann::json& params) -> std::vector<uint64_t> {
+            std::vector<uint64_t> out;
+            if (!params.is_object() || !params.contains("ids") || !params["ids"].is_array()) return out;
+            out.reserve((std::min<size_t>)(params["ids"].size(), 1000u));
+            for (const auto& v : params["ids"]) {
+                if (v.is_number_unsigned()) out.push_back(v.get<uint64_t>());
+                else if (v.is_number_integer() && v.get<int64_t>() > 0) out.push_back(static_cast<uint64_t>(v.get<int64_t>()));
+                if (out.size() >= 1000u) break;
+            }
+            return out;
+        };
+
+        mb.registerHostHandler("clipboard.pasteItemsBatch", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            if (ids.empty()) return {{"success", false}, {"error", "empty ids"}};
+            const auto settings = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            const std::string separator = params.is_object() ? params.value("separator", "\n") : "\n";
+            const bool autoPaste = params.is_object() ? params.value("autoPaste", settings.autoPaste) : settings.autoPaste;
+            const bool hideAfter = params.is_object() ? params.value("hideAfter", true) : true;
+            const HWND prevHwnd = tools3000::ui::ClipboardWindow::instance().previousForegroundHwnd();
+            if (hideAfter) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().hide();
+                });
+            }
+            const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItemsBatch(
+                ids, separator, autoPaste, prevHwnd);
+            return {{"success", ok}};
+        });
+
         mb.registerHostHandler("clipboard.togglePin", [](const nlohmann::json& params) -> nlohmann::json {
             const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
             const int res = tools3000::clipboard::ClipboardManager::instance().togglePin(id);
@@ -1917,6 +1948,48 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         mb.registerHostHandler("clipboard.deleteItem", [](const nlohmann::json& params) -> nlohmann::json {
             const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
             return {{"success", tools3000::clipboard::ClipboardManager::instance().deleteItem(id)}};
+        });
+
+        mb.registerHostHandler("clipboard.deleteItems", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            const bool skipPinned = params.is_object() ? params.value("skipPinned", false) : false;
+            const uint32_t removed = tools3000::clipboard::ClipboardManager::instance().deleteItems(ids, skipPinned);
+            return {{"success", true}, {"removed", removed}};
+        });
+
+        mb.registerHostHandler("clipboard.updateItemText", [](const nlohmann::json& params) -> nlohmann::json {
+            const uint64_t id = params.is_object() ? params.value("id", static_cast<uint64_t>(0)) : 0;
+            const std::string text = params.is_object() ? params.value("text", "") : "";
+            const bool ok = tools3000::clipboard::ClipboardManager::instance().updateItemText(id, text);
+            return {{"success", ok}};
+        });
+
+        mb.registerHostHandler("clipboard.listGroups", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::clipboard::ClipboardManager::instance().listGroups();
+        });
+
+        mb.registerHostHandler("clipboard.createGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string name = params.is_object() ? params.value("name", "") : "";
+            auto grp = tools3000::clipboard::ClipboardManager::instance().createGroup(name);
+            return {{"success", grp.is_object()}, {"group", std::move(grp)}};
+        });
+
+        mb.registerHostHandler("clipboard.renameGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string id = params.is_object() ? params.value("id", "") : "";
+            const std::string name = params.is_object() ? params.value("name", "") : "";
+            return {{"success", tools3000::clipboard::ClipboardManager::instance().renameGroup(id, name)}};
+        });
+
+        mb.registerHostHandler("clipboard.deleteGroup", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string id = params.is_object() ? params.value("id", "") : "";
+            return {{"success", tools3000::clipboard::ClipboardManager::instance().deleteGroup(id)}};
+        });
+
+        mb.registerHostHandler("clipboard.setItemsGroup", [extractIdList](const nlohmann::json& params) -> nlohmann::json {
+            const auto ids = extractIdList(params);
+            const std::string groupId = params.is_object() ? params.value("groupId", "") : "";
+            const uint32_t updated = tools3000::clipboard::ClipboardManager::instance().setItemsGroup(ids, groupId);
+            return {{"success", true}, {"updated", updated}};
         });
 
         mb.registerHostHandler("clipboard.clearHistory", [](const nlohmann::json& params) -> nlohmann::json {

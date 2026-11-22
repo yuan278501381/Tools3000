@@ -212,8 +212,8 @@ void ClipboardWindow::toggleMaximize() {
 
 void ClipboardWindow::applyThemeChrome() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
-    const BOOL dark = tools3000::core::NativeThemePalette::isEffectiveDarkMode() ? TRUE : FALSE;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark, sizeof(dark));
+    tools3000::core::WinUtils::applyImmersiveDarkMode(
+        m_hwnd, tools3000::core::NativeThemePalette::isEffectiveDarkMode());
     syncClipboardBackdropColor(m_controller.Get());
 }
 
@@ -314,8 +314,7 @@ bool ClipboardWindow::createWindow(HINSTANCE hInstance) {
     }
 
     applyThemeChrome();
-    DWORD backdrop = DWMSBT_TRANSIENTWINDOW;
-    DwmSetWindowAttribute(m_hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+    tools3000::core::WinUtils::applyWin11SystemBackdrop(m_hwnd, DWMSBT_TRANSIENTWINDOW);
     const MARGINS margins = {1, 1, 1, 1};
     DwmExtendFrameIntoClientArea(m_hwnd, &margins);
     const int radius = tools3000::core::dpi::scaleMetric(12, scale);

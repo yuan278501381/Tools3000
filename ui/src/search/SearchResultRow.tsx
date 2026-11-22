@@ -18,6 +18,7 @@ import {
   FileText,
   FileVideo,
   Folder,
+  Globe,
 } from 'lucide-react';
 import {
   getColumnDisplayLabel,
@@ -135,8 +136,12 @@ function renderFileIcon(
   density: SearchDensity = 'standard',
   iconStyle: SearchIconStyle = 'native',
   iconBase64?: string,
+  resultType?: SearchResult['resultType'],
 ): ReactNode {
   const iconSize = density === 'compact' ? 15 : density === 'comfortable' ? 18 : 16;
+  if (resultType === 'bookmark') {
+    return <Globe className="file-icon file-icon--bookmark" size={iconSize} aria-hidden="true" />;
+  }
   if (iconStyle === 'native' && iconBase64) {
     return (
       <img
@@ -227,11 +232,20 @@ export const SearchResultRow = memo(function SearchResultRow({
     t(key as never, defaultVal as never) as unknown as string;
 
   const renderTableCell = (colId: TableColumnId): ReactNode => {
+    const isBookmark = result.resultType === 'bookmark';
     if (colId === 'name') {
       return (
         <div key="name" data-table-col="name" className="table-cell table-cell--name" title={result.name}>
-          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64)}
+          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64, result.resultType)}
           <span className="file-name-text">{highlightMatch(result.name, queryKeywords)}</span>
+          {isBookmark && (
+            <span
+              className="file-bookmark-badge"
+              title={result.bookmarkFolder ? `${result.browserSource || 'Browser'} · ${result.bookmarkFolder}` : (result.browserSource || t('search.catBookmarks', 'Bookmarks'))}
+            >
+              {result.browserSource || t('search.catBookmarks', 'Bookmarks')}
+            </span>
+          )}
           {Boolean(result.runCount && result.runCount > 0) && (
             <span className="file-run-badge" title={t('search.runCountTip', 'Opened {{count}} times in history', { count: result.runCount })}>
               {t('search.runCountBadge', '{{count}} runs', { count: result.runCount })}
@@ -242,7 +256,7 @@ export const SearchResultRow = memo(function SearchResultRow({
     }
 
     if (colId === 'path') {
-      const directoryPath = extractParentDirectoryPath(result.path) || result.path;
+      const directoryPath = isBookmark ? result.path : (extractParentDirectoryPath(result.path) || result.path);
       return (
         <div key="path" data-table-col="path" className="table-cell table-cell--dir" title={result.path}>
           <span className="table-dir-text">

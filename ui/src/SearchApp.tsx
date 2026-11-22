@@ -97,7 +97,7 @@ const REBUILD_POLL_INTERVAL_MS = 350;
 const REBUILD_POLL_TIMEOUT_MS = 120_000;
 const ALLOWED_MAX_RESULT_LIMITS = [0, 50, 100, 200] as const;
 const VALID_COLUMN_IDS: readonly ColumnId[] = ['name', 'path', 'size', 'modified', 'created', 'snippets'];
-const BARE_OPERATOR_PREFIX_REGEX = /^(content|\u5185\u5bb9|c|ext|path|parent|p|file|folder|dir|size|dm|date|modified|regex|r|case|cs|exact|pinyin|py|nopy):$/i;
+const BARE_OPERATOR_PREFIX_REGEX = /^(content|\u5185\u5bb9|c|ext|path|parent|p|file|folder|dir|size|dm|date|modified|regex|r|case|cs|exact|pinyin|py|nopy|bm):$/i;
 const CJK_CHAR_REGEX = /[\u4e00-\u9fff]/;
 
 function isNonEmptyString(val: unknown): val is string {

@@ -625,6 +625,7 @@ if(BUILD_TESTING)
         src/ocr/OcrTableReconstructor.cpp
         src/ocr/OcrResultWindow.cpp
         src/search/SearchPropertyExtractor.cpp
+        src/search/BrowserBookmarkIndex.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>

@@ -1,4 +1,5 @@
 #include "search/SearchInteractionHandlers.h"
+#include "search/BrowserBookmarkIndex.h"
 
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -106,6 +107,9 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
         const std::string path = extractSearchRequestPath(params);
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
+            return {{"success", tools3000::core::WinUtils::openUrl(wpath)}};
+        }
         if (isSafeAppsFolderUri(wpath)) {
             return {{"success", executeShellAppsUri(wpath, nullptr)}};
         }
@@ -119,6 +123,9 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
         const std::string path = extractSearchRequestPath(params);
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
+            return {{"success", tools3000::core::WinUtils::openUrl(wpath)}};
+        }
         if (isSafeAppsFolderUri(wpath)) {
             const bool ok = executeShellAppsUri(wpath, L"runas") || executeShellAppsUri(wpath, nullptr);
             return {{"success", ok}};
@@ -133,6 +140,9 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
         const std::string path = extractSearchRequestPath(params);
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
+        if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
+            return {{"success", tools3000::core::WinUtils::openUrl(wpath)}};
+        }
         if (isSafeAppsFolderUri(wpath)) {
             const std::wstring appsFolderRoot = L"shell:AppsFolder";
             return {{"success", executeShellAppsUri(appsFolderRoot, L"open")}};
