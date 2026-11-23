@@ -10,3 +10,20 @@
 - **消除静默升级安装程序误杀自身**：此前当 Tools3000 以管理员身份运行时，点击「立即安装」直接派生安装包进程，安装器在关闭旧主程序阶段仅等待 30 ms 即执行进程树强杀（`taskkill /f /t`），导致安装器沿父子进程树终止自身、覆盖安装中止。现改为先等待最长 2500 ms 让旧版主程序优雅退场，且兜底终止严格不再递归终止进程树，确保升级 100% 稳定落地。
 - **静默更新完成后自动重拉新版**：新增专用于应用内静默更新的完成拉起规则，安装完成后自动在原用户桌面上下文中无缝重新启动新版 Tools3000（普通运维静默批量部署仍保持不自动弹窗）。
 - **客户端启动与交互体验加固**：已提权状态下通过独立进程组脱离 Job Object 零 UAC 拉起安装器，未提权状态取消 UAC 不再误弹错误提示；安装器确认启动后旧实例主动优雅退场释放文件锁，并补齐前端防双击加载态与防回退单元测试门禁。
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.4.1-Setup.exe` | `f92d238cfe5f33830a80d299ab15caceecad97959cca627a24a177eb992b36a5` | [VirusTotal 查验](https://www.virustotal.com/gui/file/f92d238cfe5f33830a80d299ab15caceecad97959cca627a24a177eb992b36a5) |
+| `Tools3000-v1.4.1-win-x64-portable.zip` | `1d99ac786d0f50b31a6e717951514a5a8f27f537399e5aa63bb6fe0429408d35` | [VirusTotal 查验](https://www.virustotal.com/gui/file/1d99ac786d0f50b31a6e717951514a5a8f27f537399e5aa63bb6fe0429408d35) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.4.1-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
