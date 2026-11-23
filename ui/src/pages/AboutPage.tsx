@@ -113,6 +113,7 @@ export const AboutPage: FC = () => {
   const [version, setVersion] = useState(__TOOLS3000_VERSION__);
   const [buildDate, setBuildDate] = useState(__TOOLS3000_BUILD_DATE__);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateResult | null>(null);
 
   useBridgeEvent('update.result', (data) => {
@@ -237,12 +238,24 @@ export const AboutPage: FC = () => {
   };
 
   const handleInstallUpdate = async () => {
+    if (installingUpdate) return;
+    setInstallingUpdate(true);
     try {
-      const res = await bridgeRequest<{ success?: boolean; error?: string }>('app.installUpdate');
+      const res = await bridgeRequest<{ success?: boolean; cancelled?: boolean; error?: string }>('app.installUpdate');
+      if (res?.cancelled || res?.error === 'cancelled') {
+        setInstallingUpdate(false);
+        return;
+      }
       if (!res?.success) {
+        setInstallingUpdate(false);
         toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
+        return;
+      }
+      if (updateResult?.isPortable) {
+        setInstallingUpdate(false);
       }
     } catch {
+      setInstallingUpdate(false);
       toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
     }
   };
@@ -303,8 +316,8 @@ export const AboutPage: FC = () => {
               <span>{t('about.exportLogs', 'Export Logs')}</span>
             </Button>
             {updateResult?.readyToInstall ? (
-              <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()}>
-                <Download size={13} />
+              <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>
+                <Download size={13} className={installingUpdate ? 'about-update-spin' : undefined} />
                 <span>
                   {updateResult.isPortable
                     ? t('about.openDownloadedPortable', 'Open Portable Package')

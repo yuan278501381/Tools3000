@@ -2090,6 +2090,7 @@ void MessageBridge::registerBuiltinHandlers() {
              "app.restartElevated",
              "app.restartDemoted",
              "app.trimMemory",
+             "app.installUpdate",
              "general.getSettings",
              "general.updateSettings",
              "autoStart.set",
@@ -2906,7 +2907,7 @@ void MessageBridge::registerBuiltinHandlers() {
     registerHostHandler("app.installUpdate", [](const json&) -> json {
         std::string err;
         const bool ok = UpdateChecker::instance().installDownloadedUpdate(err);
-        return {{"success", ok}, {"error", err}};
+        return {{"success", ok}, {"cancelled", err == "cancelled"}, {"error", err}};
     });
     // ── 应用系统信息 ─────────────────────────────────────────────────────
     registerHostHandler("app.getSystemInfo", [](const json&) -> json {
