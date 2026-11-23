@@ -21,14 +21,14 @@
 
 <br />
 
-Tools3000 unifies everyday **file & browser bookmark search (with CLI / MCP), document content search, persistent clipboard history, scrolling capture, precision markup, grouped desktop pins, high-accuracy offline OCR & in-place screenshot translation, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), global mouse gestures, and a Rust Picasa photo viewer** into one native Windows app. It idles at around a dozen MB of RAM, runs local-first with zero telemetry, and supports personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bookmark search (with Live Watch, 3 RAM tiers & CLI / MCP), document content search, persistent clipboard history, inline File Dialog search, File Locksmith, scrolling capture, precision markup, grouped desktop pins, 8-language offline OCR & clean in-place translation, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), global mouse gestures, and a Rust Picasa photo viewer** into one native Windows app. Core features run 100% locally with full support for non-English install folders and Windows usernames, idle around a dozen MB of RAM (with optional 0 MB idle search sleep), and support personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
 
 ---
 
 ## At a Glance
 
 <p align="center">
-  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Ten Core Capabilities Overview" width="100%" />
+  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Twelve Core Capabilities Overview" width="100%" />
 </p>
 
 ---
@@ -38,12 +38,12 @@ Tools3000 unifies everyday **file & browser bookmark search (with CLI / MCP), do
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/search_demo.webp" alt="Millisecond file search and instant Spacebar preview" width="100%" /><br />
-      <sub><b>Instant File Search &amp; Spacebar Preview</b> · Search millions of files in milliseconds and press Space to preview</sub>
+      <img src="docs/images/en-US/search_demo.webp" alt="Millisecond search across files, apps, commands, and real-Favicon bookmarks with Spacebar QuickLook" width="100%" /><br />
+      <sub><b>Instant Search &amp; Spacebar Preview</b> · Native app icons, real offline bookmark Favicons, Live Watch &amp; archive/font preview</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/ocr_live_text_demo.webp" alt="High-accuracy offline OCR, Live Text selection, and in-place text replacement" width="100%" /><br />
-      <sub><b>High-Accuracy Offline OCR &amp; Live Text</b> · 100% local, beats WeChat OCR on dense text/code, select/annotate/edit in place</sub>
+      <img src="docs/images/en-US/ocr_live_text_demo.webp" alt="8-language offline OCR, Live Text selection, and in-place text replacement" width="100%" /><br />
+      <sub><b>8-Language Offline OCR &amp; Live Text</b> · Auto-detects CJK/JA/KO/RU/ES/PT locally; select, annotate, or edit in place</sub>
     </td>
   </tr>
   <tr>
@@ -73,33 +73,45 @@ Tools3000 unifies everyday **file & browser bookmark search (with CLI / MCP), do
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Global mouse gestures and screen-edge wheel volume control" width="100%" /><br />
-      <sub><b>Global Mouse Gestures</b> · Right-drag to close tabs, instant trigger without release, and edge-wheel volume</sub>
+      <sub><b>Global Mouse Gestures</b> · Pause-to-cancel on by default, profile-aware window switching, instant trigger &amp; edge wheel</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/translate_demo.webp" alt="WeChat-grade 1:1 in-place screenshot translation with code protection" width="100%" /><br />
-      <sub><b>In-Place Screenshot Translation</b> · Zero-config dual free channels + BYOK LLMs, 1:1 overlay, code token protection &amp; 0ms toggle</sub>
+      <sub><b>In-Place Screenshot Translation</b> · Zero-config dual free channels + BYOK LLMs, clean 1:1 overlay &amp; 0ms toggle</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/clipboard_demo.webp" alt="Pure Rust persistent clipboard history with Shift/Ctrl ordered merge paste" width="100%" /><br />
-      <sub><b>Persistent Clipboard History (Alt + V)</b> · Pure Rust storage survives reboots, Shift/Ctrl ordered merge paste, rich text &amp; groups</sub>
+      <img src="docs/images/en-US/clipboard_demo.webp" alt="Persistent clipboard history with Shift/Ctrl ordered merge paste" width="100%" /><br />
+      <sub><b>Persistent Clipboard History (Alt + V)</b> · Survives reboots, Shift/Ctrl ordered merge paste &amp; tray toggle</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/dialog_enhancer_demo.webp" alt="File Dialog Assistant with Listary-style inline search and jump" width="100%" /><br />
+      <sub><b>File Dialog Assistant</b> · Listary-style inline folder search in Windows &amp; Tools3000 dialogs without overwriting Save-As names</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/file_locksmith_demo.webp" alt="File Locksmith with zero-RAM right-click and tray switch" width="100%" /><br />
+      <sub><b>File Locksmith</b> · Zero-RAM right-click, dedicated page picker &amp; one-click lock release</sub>
     </td>
   </tr>
 </table>
 
 | Module | Core Experience |
 | :--- | :--- |
-| **Instant File Search** | `Alt + Space` searches millions of files in milliseconds with full-pinyin & initials, `bm:` Chrome/Edge/Firefox browser bookmark search, default Open Count column, and draggable category tabs; hit `Space` on any result for instant preview (images, Office, PDF, code, CAD, PSD, and 3D models); ships a 350 KB zero-dep pure Rust `tools3000-cli.exe` (CLI & MCP server for AI agents). |
-| **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with live highlighted snippets and one-click line copying. |
-| **Persistent Clipboard History** | Press `Alt + V` (or open right from the system tray menu) for pure Rust atomic clipboard history that survives reboots; supports `Shift / Ctrl` anchored batch merge-paste & delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, and sensitive-app exclusion. |
+| **Instant File Search** | `Alt + Space` searches millions of files in ms alongside desktop/UWP apps (`app:`), 37 system tools (`cmd:env`, etc.), and Chrome/Edge/Brave/Vivaldi bookmarks (`bm:`/`b:`, showing real site icons completely offline); features **Live Watch** updates, **3 RAM tiers** (down to 0 MB idle sleep), Open Count tracking, draggable category tabs, `Space` QuickLook (Office, PDF, code, CAD, PSD, 3D, ZIP/7Z/RAR archives, TTF/OTF fonts & media preview), and a lightweight 350 KB CLI & MCP tool `tools3000-cli.exe`. |
+| **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with highlighted snippets and one-click line copy. |
+| **Persistent Clipboard History** | Press `Alt + V` (with tray menu access and quick tray toggle) for clipboard history that survives reboots; supports `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, and sensitive-app exclusion. |
+| **File Dialog Assistant** | Docks a quick-jump bar with Listary-style inline folder search directly onto Windows Open / Save As / Folder dialogs (including Tools3000's own dialogs), strictly protecting Save-As filenames from overwrite. |
+| **File Locksmith** | Find out what is locking a stubborn file and unlock it safely — via Explorer right-click (optional `Shift + Right-click`), Search right-click, or the built-in File Locksmith page. Uses zero background RAM, leaves system files untouched, and cleans up its menu automatically when disabled. |
 | **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
 | **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
 | **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with 120Hz damped zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
-| **High-Accuracy Offline OCR & In-Place Translation** | Pure local offline recognition beating WeChat screenshot OCR on dense code, JSON, and complex tables (select/copy, highlight/underline, edit in place, extract tables/QR codes); plus **WeChat-grade 1:1 in-place screenshot translation** (zero-config dual free engines + BYOK OpenAI-compatible LLMs) with automatic code-identifier protection and 0ms original/translated toggle. |
+| **8-Language Offline OCR & In-Place Translation** | Pure local auto-detect OCR across 8 languages (Chinese, English, Japanese, Korean, Russian, Spanish, and Portuguese — on-demand lightweight language packs plus right-click per-image language switch); select/copy, highlight/underline, edit in place, extract tables/QR codes; plus **clean 1:1 in-place screenshot translation** (free dual channels + BYOK LLMs) with code protection and 0ms toggle. |
 | **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
-| **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; supports instant trigger without releasing, screen-edge wheel volume, per-app profiles, and automatic fullscreen game bypass. |
-| **Presenter & Remote Boost** | Crisp keystroke OSD and double-`Ctrl` spotlight; File Dialog quick-jump bar; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery. |
+| **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; pause-to-cancel enabled by default, smart app window switching without duplicate launches (even across Chrome profiles), instant trigger without releasing, screen-edge wheel volume/brightness, 8-second easter egg, fullscreen game bypass, and Lua scripting. |
+| **Presenter, Remote Boost & Feedback** | Crisp keystroke OSD and double-`Ctrl` spotlight; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery; built-in sidebar **Feedback** button with automatic local privacy redaction before exporting diagnostics. |
 | **Picasa Photo Viewer (Rust Recreation · Optional)** | Lightweight Picasa-style image viewer recreated in Rust + Direct2D (**viewer only, not the full Google Picasa suite**). **Under 2 MB as a zero-dependency standalone executable** that works both inside Tools3000 and completely standalone on any Windows PC. Unchecked by default in the installer; enabling automatically associates all 41 supported image formats with classic Polaroid icons and a native dark/light Direct2D format manager. Alongside faithful cursor-anchored damped zoom, filmstrip wave, smooth close, and cross-dissolve slideshow animations, it **adds modern capabilities the original lacked**: native 4K High-DPI (100%–250%+) crispness, 60–240Hz VSync rendering, WebP / AVIF / HEIC / SVG / QOI / DDS / camera RAW decoding, animated GIF/WebP/APNG frame scrubbing, lossless horizontal/vertical flip, and 8-language UI. |
 
 ---
@@ -167,21 +179,35 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 | **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
 | **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
 | **Picasa Photo Viewer / FastStone / Windows Photos** | Optional under-2 MB zero-dependency Rust recreation of the classic lightweight Picasa viewer (also works completely standalone), bringing faithful animations plus 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, and lossless flip | When you need full Google Picasa album catalog management, face recognition, or dedicated batch RAW editing |
+| **Listary Dialog Jump / PowerToys File Locksmith** | Listary-style inline folder search in Windows Open/Save and internal dialogs (protecting Save-As filenames); zero-RAM File Locksmith via Explorer right-click or built-in page | Full Listary custom launcher action workflows or deep kernel handle forensics |
 
 ---
 
-## Default Shortcuts
+## Default Shortcuts & Key Paths
 
 All shortcuts can be customized in Settings with real-time conflict detection:
 
 | Shortcut | Action |
 | :--- | :--- |
-| `Alt + Space` | Toggle instant search (supports `bm:` bookmarks; `Space` on a result opens instant preview) |
-| `Alt + V` | Toggle persistent clipboard history (`Shift / Ctrl` batch merge paste & `Alt + 1..9` instant paste; also in the tray menu) |
+| `Alt + Space` | Toggle instant search (supports `app:`, `cmd:`, `bm:`, `content:`; `Space` on a result opens instant preview) |
+| `Alt + V` | Toggle persistent clipboard history (`Shift / Ctrl` ordered merge paste & `Alt + 1..9` instant paste; also in the tray menu) |
 | `F1` | Region screenshot, annotation & one-click in-place translation |
 | `F3` | Pin clipboard image or text always-on-top |
 | Double-tap `Ctrl` | Toggle cursor spotlight |
 | `Ctrl + Alt + Backspace` | Release stuck remote-desktop modifier keys (or double-tap right `Ctrl`) |
+
+### Where to Find Features & Local Data
+
+Full compatibility with install folders and Windows usernames containing Chinese, Japanese, Korean, Cyrillic, or accented characters:
+
+| Feature / Resource | UI Entry / Standard Installer Path | Portable Archive Path |
+| :--- | :--- | :--- |
+| **File Locksmith** | `System -> Modules` / `Productivity -> File Locksmith` / `Tray Control Center`; also via Explorer & Search right-click | Same (user-level menu only, zero background RAM, auto-cleaned when disabled) |
+| **Search Icons / Live Watch / RAM Tiers** | `Productivity -> File Search` (Icon Style / Live Watch / Service Memory); Live toggle also in Search status bar | Same (bookmark icons read locally offline, zero network) |
+| **8-Language Offline OCR Packs** | `Productivity -> OCR & Translation` / Pin right-click `OCR Language`; `%LOCALAPPDATA%\Tools3000\models\ocr\` | `<app-dir>\data\models\ocr\` |
+| **Persistent Clipboard Data** | Toggled in Tray Control Center; `%LOCALAPPDATA%\Tools3000\clipboard\` | `<app-dir>\data\clipboard\` |
+| **Config & Diagnostic Logs** | `%LOCALAPPDATA%\Tools3000\config\config.json` & `%LOCALAPPDATA%\Tools3000\logs\tools3000.log` (sidebar **Feedback** auto-redacts usernames, IPs, emails & tokens locally) | `<app-dir>\data\config\` & `<app-dir>\data\logs\` |
+| **Standalone CLI & Photo Viewer** | `C:\Program Files\Tools3000\tools3000-cli.exe` (CLI/MCP) & `Tools3000_Picasa_Viewer.exe` (standalone viewer) | `<app-dir>\tools3000-cli.exe` & `Tools3000_Picasa_Viewer.exe` |
 
 ---
 
@@ -203,11 +229,11 @@ All shortcuts can be customized in Settings with real-time conflict detection:
 
 ## Star History
 
-<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+<a href="https://www.star-history.com/#yuan278501381/tools3000&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
-   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
  </picture>
 </a>
 

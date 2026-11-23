@@ -388,6 +388,7 @@ public:
     void invalidate() {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_sessions.clear();
+        m_sessions.shrink_to_fit();
     }
 
     std::vector<CachedAppEntry> getSnapshot(

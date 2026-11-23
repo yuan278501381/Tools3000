@@ -106,6 +106,9 @@ private:
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
+    static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 2110;
+    static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
+
     HWND m_hwnd = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controller;

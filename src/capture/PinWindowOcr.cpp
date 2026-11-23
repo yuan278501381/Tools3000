@@ -19,6 +19,7 @@
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
+#include "ocr/DeepOcrEngine.h"
 #include "ocr/OcrEngine.h"
 #include "ocr/OcrResultWindow.h"
 #include "ocr/OcrTableReconstructor.h"
@@ -320,6 +321,11 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     }
     ++m_ocrRunCount;
     cv::Mat imgCopy = m_sourceImage.clone();
+    std::string scriptModeOverride;
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        scriptModeOverride = m_ocrScriptModeOverride;
+    }
     std::weak_ptr<PinWindow> weakSelf = shared_from_this();
     auto activeWorkers = m_ocrActiveWorkers;
     if (activeWorkers) {
@@ -434,7 +440,7 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     }
 
     try {
-        std::thread([weakSelf, imgCopy, currentVer, activeWorkers, applyRecognizedPage]() {
+        std::thread([weakSelf, imgCopy, scriptModeOverride, currentVer, activeWorkers, applyRecognizedPage]() {
             bool inFlightHandedOff = false;
             struct WorkerScopeGuard {
                 std::weak_ptr<PinWindow> weakPin;
@@ -460,7 +466,7 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                 return;
             }
             tools3000::core::TraceId::Scope traceScope;
-            auto page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy);
+            auto page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy, scriptModeOverride);
             if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 return;
             }
@@ -938,6 +944,76 @@ void PinWindow::extractText() {
     // 若后台静默预热已在途或尚未启动，直接挂载完成复制意图并复用同一条 ensureOcrExecutedAsync 推理管线
     m_pendingCopyAllOcr.store(true, std::memory_order_release);
     ensureOcrExecutedAsync(false);
+}
+
+std::string PinWindow::effectiveOcrScriptMode() const {
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        if (!m_ocrScriptModeOverride.empty()) {
+            return m_ocrScriptModeOverride;
+        }
+    }
+    return tools3000::ocr::DeepOcrEngine::instance().configuredScriptMode();
+}
+
+void PinWindow::setOcrScriptModeOverride(const std::string& scriptMode) {
+    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+
+    std::string normalized = scriptMode;
+    if (normalized != "cjk" && normalized != "japan" && normalized != "korean" &&
+        normalized != "cyrillic" && normalized != "latin") {
+        normalized = "auto";
+    }
+
+    if (normalized == "japan" || normalized == "korean" ||
+        normalized == "cyrillic" || normalized == "latin") {
+        if (!tools3000::ocr::DeepOcrEngine::instance().isScriptPackInstalled(normalized)) {
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                tools3000::core::trWCstrFor(
+                    isZh,
+                    L"该语种离线识别扩展包尚未安装，请前往「设置 -> 文字识别」按需下载",
+                    L"This offline script pack is not installed yet — download it in Settings > OCR")});
+            return;
+        }
+    }
+
+    const bool wasShowingTranslation = isShowingTranslation() || isTranslationInFlight();
+    if (wasShowingTranslation || hasTranslationResult()) {
+        clearTranslationState();
+        createRenderResources(activeDisplayImage());
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_ocrMutex);
+        m_ocrScriptModeOverride = normalized;
+    }
+
+    invalidateOcrStateAndRefreshIfSelecting();
+    if (wasShowingTranslation) {
+        m_pendingTranslateSelectedOnly.store(false, std::memory_order_release);
+        m_pendingTranslateAfterOcr.store(true, std::memory_order_release);
+    }
+
+    std::wstring scriptLabel;
+    if (normalized == "cjk") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"中文与英文", L"Chinese & English");
+    } else if (normalized == "japan") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"日语", L"Japanese");
+    } else if (normalized == "korean") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"韩语", L"Korean");
+    } else if (normalized == "cyrillic") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"俄语 (西里尔)", L"Russian (Cyrillic)");
+    } else if (normalized == "latin") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"西 / 葡 / 欧文 (拉丁)", L"Spanish / Portuguese (Latin)");
+    } else {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"自动识别", L"Auto Detect");
+    }
+    showTransientHudBadge(
+        tools3000::core::trFmtW(L"识字语种：{0}", L"OCR Script: {0}", {scriptLabel}),
+        1400);
+    ensureOcrExecutedAsync(false);
+    render();
 }
 
 void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {

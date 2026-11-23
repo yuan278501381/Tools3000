@@ -1206,9 +1206,7 @@ LRESULT CALLBACK RecordingIndicator::indicatorWndProc(HWND hwnd, UINT msg, WPARA
                     bool isGif = false;
                     if (!self->m_completedFilePath.empty()) {
                         std::filesystem::path p(tools3000::core::WinUtils::utf8ToWstring(self->m_completedFilePath));
-                        auto ext = p.extension().string();
-                        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-                        isGif = (ext == ".gif");
+                        isGif = (_wcsicmp(p.extension().c_str(), L".gif") == 0);
                     }
                     const bool isZh = isChineseLanguagePreferred();
                     if (isGif) {

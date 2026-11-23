@@ -86,6 +86,7 @@ describe('SearchCategoryBar pure ordering & pinned invariants', () => {
       'archive',
       'code',
       'folder',
+      'app',
     ]);
   });
 });
@@ -152,6 +153,7 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
       'archive',
       'code',
       'folder',
+      'app',
     ];
     expect(onReorderCategories).toHaveBeenCalledTimes(1);
     expect(onReorderCategories).toHaveBeenCalledWith(expectedCustomOrder);
@@ -180,6 +182,7 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
       'archive',
       'code',
       'folder',
+      'app',
     ]);
 
     // 5. 右键分类栏弹出菜单，点击「恢复默认分类顺序」触发回调

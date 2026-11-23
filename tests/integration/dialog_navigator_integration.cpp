@@ -1,9 +1,11 @@
 ﻿/**
  * Cross-process integration gate for DialogNavigator.
  *
- * The parent launches child-owned folder/open/save dialogs, navigates each from
- * another process, verifies the dialog remains open and keeps its bottom input,
- * then uses IFileDialogEvents to report the authoritative current folder.
+ * Launches child-owned modern IFileDialog (folder / open / save) and legacy
+ * OFN_EXPLORER (GetOpenFileNameW + hook) dialogs, verifies architecture/mode
+ * classification, millisecond folder navigation, Save As filename protection,
+ * OpenFile search-result filename fill without unintended commit, and clean
+ * window lifecycle teardown.
  */
 
 #include "dialog/DialogNavigator.h"
@@ -11,18 +13,21 @@
 #include "core/utils/WinUtils.h"
 
 #include <windows.h>
+#include <commdlg.h>
 #include <shobjidl.h>
 #include <uiautomation.h>
 #include <wrl/client.h>
 
-#include <chrono>
-#include <atomic>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <thread>
+
+#pragma comment(lib, "Comdlg32.lib")
 
 using Microsoft::WRL::ComPtr;
 
@@ -50,14 +55,19 @@ HWND findDialogForProcess(DWORD processId) {
     return context.hwnd;
 }
 
+void writeFolderFile(const std::wstring& folderW, const std::filesystem::path& resultPath) {
+    if (folderW.empty()) return;
+    std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
+    output << tools3000::core::WinUtils::wstringToUtf8(folderW);
+}
+
 void writeCurrentFolder(IFileDialog* dialog, const std::filesystem::path& resultPath) {
     if (!dialog) return;
     ComPtr<IShellItem> item;
     if (FAILED(dialog->GetFolder(item.GetAddressOf())) || !item) return;
     PWSTR rawPath = nullptr;
     if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) || !rawPath) return;
-    std::ofstream output(resultPath, std::ios::binary | std::ios::trunc);
-    output << tools3000::core::WinUtils::wstringToUtf8(rawPath);
+    writeFolderFile(rawPath, resultPath);
     CoTaskMemFree(rawPath);
 }
 
@@ -106,7 +116,49 @@ private:
     std::filesystem::path resultPath_;
 };
 
+std::filesystem::path* g_legacyResultPath = nullptr;
+
+UINT_PTR CALLBACK LegacyOfnHookProc(HWND hdlg, UINT uiMsg, WPARAM, LPARAM lParam) {
+    if (uiMsg == WM_NOTIFY && lParam && g_legacyResultPath) {
+        const auto* nm = reinterpret_cast<const OFNOTIFYW*>(lParam);
+        if (nm->hdr.code == CDN_FOLDERCHANGE || nm->hdr.code == CDN_INITDONE) {
+            HWND dlgRoot = GetParent(hdlg);
+            wchar_t buf[MAX_PATH * 4]{};
+            if (dlgRoot && CommDlg_OpenSave_GetFolderPathW(dlgRoot, buf, static_cast<int>(std::size(buf))) > 0) {
+                writeFolderFile(buf, *g_legacyResultPath);
+            }
+        }
+    }
+    return 0;
+}
+
+int runLegacyChild(const std::filesystem::path& resultPath) {
+    std::filesystem::path pathStorage = resultPath;
+    g_legacyResultPath = &pathStorage;
+
+    wchar_t fileBuf[MAX_PATH * 2] = L"legacy-draft.txt";
+    OPENFILENAMEW ofn{};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.lpstrFilter = L"All Files (*.*)\0*.*\0";
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = static_cast<DWORD>(std::size(fileBuf));
+    ofn.lpstrTitle = L"Tools3000 Legacy OFN_EXPLORER Probe";
+    ofn.Flags = OFN_EXPLORER | OFN_ENABLEHOOK | OFN_NOCHANGEDIR;
+    ofn.lpfnHook = LegacyOfnHookProc;
+    (void)GetOpenFileNameW(&ofn);
+
+    g_legacyResultPath = nullptr;
+    std::string folder;
+    std::ifstream input(resultPath, std::ios::binary);
+    std::getline(input, folder);
+    return folder.empty() ? 14 : 0;
+}
+
 int runChild(const std::filesystem::path& resultPath, const std::wstring& mode) {
+    if (mode == L"legacy_open") {
+        return runLegacyChild(resultPath);
+    }
+
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) return 10;
 
     const CLSID& dialogClass = mode == L"save" ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
@@ -140,35 +192,45 @@ int runChild(const std::filesystem::path& resultPath, const std::wstring& mode) 
 }
 
 bool pathEquals(const std::filesystem::path& left, const std::filesystem::path& right) {
-    return _wcsicmp(left.lexically_normal().c_str(), right.lexically_normal().c_str()) == 0;
+    auto norm = [](std::wstring s) {
+        while (s.size() > 3 && s.back() == L'\\') s.pop_back();
+        return s;
+    };
+    const std::wstring a = norm(left.lexically_normal().wstring());
+    const std::wstring b = norm(right.lexically_normal().wstring());
+    return _wcsicmp(a.c_str(), b.c_str()) == 0;
 }
 
 std::wstring readControlText(HWND dialogHwnd, int controlId, bool useUiaFallback) {
-    struct Search { int id; HWND hwnd; HWND lowestEdit; LONG lowestTop; }
-        search{controlId, nullptr, nullptr, LONG_MIN};
-    EnumChildWindows(dialogHwnd, [](HWND child, LPARAM parameter) -> BOOL {
-        auto* search = reinterpret_cast<Search*>(parameter);
-        wchar_t className[32]{};
-        GetClassNameW(child, className, static_cast<int>(std::size(className)));
-        if (wcscmp(className, L"Edit") != 0) return TRUE;
-        RECT rect{};
-        if (GetWindowRect(child, &rect) && rect.top > search->lowestTop) {
-            search->lowestTop = rect.top;
-            search->lowestEdit = child;
+    HWND targetEdit = tools3000::dialog::DialogNavigator::findPathEditControl(dialogHwnd);
+    if (!targetEdit) {
+        struct Search { int id; HWND hwnd; } search{controlId, nullptr};
+        EnumChildWindows(dialogHwnd, [](HWND child, LPARAM parameter) -> BOOL {
+            auto* search = reinterpret_cast<Search*>(parameter);
+            wchar_t className[32]{};
+            GetClassNameW(child, className, static_cast<int>(std::size(className)));
+            if (wcscmp(className, L"Edit") == 0 && GetDlgCtrlID(child) == search->id) {
+                search->hwnd = child;
+                return FALSE;
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&search));
+        targetEdit = search.hwnd;
+    }
+
+    if (targetEdit) {
+        DWORD_PTR rawLen = 0;
+        if (SendMessageTimeoutW(targetEdit, WM_GETTEXTLENGTH, 0, 0,
+                                SMTO_ABORTIFHUNG | SMTO_BLOCK, 300, &rawLen) && rawLen > 0) {
+            std::wstring text(static_cast<size_t>(rawLen) + 2, L'\0');
+            DWORD_PTR copied = 0;
+            if (SendMessageTimeoutW(targetEdit, WM_GETTEXT, static_cast<WPARAM>(text.size()),
+                                    reinterpret_cast<LPARAM>(text.data()),
+                                    SMTO_ABORTIFHUNG | SMTO_BLOCK, 300, &copied) && copied > 0) {
+                text.resize(static_cast<size_t>(copied));
+                return text;
+            }
         }
-        if (GetDlgCtrlID(child) == search->id) {
-            search->hwnd = child;
-            return FALSE;
-        }
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&search));
-    if (!search.hwnd) search.hwnd = search.lowestEdit;
-    if (search.hwnd) {
-        const int length = GetWindowTextLengthW(search.hwnd);
-        std::wstring text(static_cast<size_t>(std::max(0, length)) + 1, L'\0');
-        const int copied = GetWindowTextW(search.hwnd, text.data(), static_cast<int>(text.size()));
-        text.resize(static_cast<size_t>(std::max(0, copied)));
-        if (!text.empty()) return text;
     }
 
     if (!useUiaFallback) return {};
@@ -209,22 +271,7 @@ std::wstring readControlText(HWND dialogHwnd, int controlId, bool useUiaFallback
 }
 
 bool writeBottomSelectionText(HWND dialogHwnd, const std::wstring& value) {
-    struct Search { HWND exact; HWND lowestEdit; LONG lowestTop; }
-        search{nullptr, nullptr, LONG_MIN};
-    EnumChildWindows(dialogHwnd, [](HWND child, LPARAM parameter) -> BOOL {
-        auto* search = reinterpret_cast<Search*>(parameter);
-        wchar_t className[32]{};
-        GetClassNameW(child, className, static_cast<int>(std::size(className)));
-        if (wcscmp(className, L"Edit") != 0) return TRUE;
-        RECT rect{};
-        if (GetWindowRect(child, &rect) && rect.top > search->lowestTop) {
-            search->lowestTop = rect.top;
-            search->lowestEdit = child;
-        }
-        if (GetDlgCtrlID(child) == 1152) search->exact = child;
-        return TRUE;
-    }, reinterpret_cast<LPARAM>(&search));
-    const HWND edit = search.exact ? search.exact : search.lowestEdit;
+    HWND edit = tools3000::dialog::DialogNavigator::findPathEditControl(dialogHwnd);
     if (!edit) return false;
     DWORD_PTR ignored = 0;
     return SendMessageTimeoutW(
@@ -291,7 +338,7 @@ bool selectShellItemByName(HWND dialogHwnd, const std::wstring& itemName) {
     return false;
 }
 
-} // namespace
+}  // namespace
 
 int wmain(int argc, wchar_t** argv) {
     if (argc == 4 && wcscmp(argv[1], L"--dialog-child") == 0) {
@@ -305,12 +352,24 @@ int wmain(int argc, wchar_t** argv) {
                            (L"tools3000-dialog-probe-" + std::to_wstring(GetCurrentProcessId()));
     const auto target = probeRoot / L"101方案_控制";
     const auto selectedChild = target / L"平安下达生产订单方案V9306";
+    const auto searchTargetDir = probeRoot / L"搜索直达目录";
+    const auto searchTargetFile = searchTargetDir / L"sample-note.txt";
+
     std::error_code ec;
     std::filesystem::remove_all(probeRoot, ec);
     if (!std::filesystem::create_directories(selectedChild, ec)) return 21;
+    if (!std::filesystem::create_directories(searchTargetDir, ec)) return 21;
+    {
+        std::ofstream f(searchTargetFile, std::ios::binary | std::ios::trunc);
+        f << "Tools3000 integration sample";
+    }
+
+    using tools3000::dialog::DialogArchitecture;
+    using tools3000::dialog::DialogMode;
+    using tools3000::dialog::DialogNavigator;
 
     bool allSucceeded = true;
-    for (const std::wstring mode : {L"folder", L"open", L"save"}) {
+    for (const std::wstring mode : {L"folder", L"open", L"save", L"legacy_open"}) {
         const auto result = probeRoot / (mode + L"-result.txt");
         std::wstring command = quote(executable) + L" --dialog-child " +
                                quote(result.native()) + L" " + quote(mode);
@@ -328,55 +387,105 @@ int wmain(int argc, wchar_t** argv) {
             if (!dialogHwnd) std::this_thread::sleep_for(std::chrono::milliseconds(50));
         }
 
-        const bool recognized = dialogHwnd && tools3000::dialog::DialogNavigator::isFileDialog(dialogHwnd);
+        const bool recognized = dialogHwnd && DialogNavigator::isFileDialog(dialogHwnd);
         if (recognized) std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        const bool preserveSaveName = mode == L"save";
+
+        const DialogArchitecture detectedArch = dialogHwnd
+            ? DialogNavigator::detectDialogArchitecture(dialogHwnd, false)
+            : DialogArchitecture::Unknown;
+        const DialogMode detectedMode = dialogHwnd
+            ? DialogNavigator::detectDialogMode(dialogHwnd, false)
+            : DialogMode::Unknown;
+
+        const bool preserveSaveName = (mode == L"save" || mode == L"legacy_open");
         const std::wstring bottomBefore = dialogHwnd
             ? readControlText(dialogHwnd, 1152, preserveSaveName) : L"";
+
         bool navigateIssued = false;
         bool remainedOpen = false;
-        bool selectionEmpty = false;
-        bool childSelectionIssued = false;
-        bool childSelectionMatches = false;
-        std::string selectedAfterNavigation;
+        bool archAndModeOk = false;
+        bool searchResultActionOk = true;
+        bool selectionCorrect = true;
         std::string currentAfterNavigation;
         std::wstring bottomAfter;
+        std::filesystem::path expectedFinalDir = target;
+
         bool success = recognized;
         if (success) {
-            SetForegroundWindow(dialogHwnd);
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            navigateIssued = tools3000::dialog::DialogNavigator::instance().navigateToFolder(
-                dialogHwnd, tools3000::core::WinUtils::wstringToUtf8(target.native()));
-            std::this_thread::sleep_for(std::chrono::milliseconds(350));
-            remainedOpen = IsWindow(dialogHwnd);
-            currentAfterNavigation = tools3000::dialog::DialogNavigator::getCurrentDialogFolder(dialogHwnd);
             if (mode == L"folder") {
-                childSelectionIssued = selectShellItemByName(
-                    dialogHwnd, L"平安下达生产订单方案V9306");
-                if (!childSelectionIssued) {
-                    childSelectionIssued = writeBottomSelectionText(
-                        dialogHwnd, L"平安下达生产订单方案V9306");
+                archAndModeOk = (detectedArch == DialogArchitecture::ModernIFileDialog) &&
+                                (detectedMode == DialogMode::PickFolder);
+            } else if (mode == L"open") {
+                archAndModeOk = (detectedArch == DialogArchitecture::ModernIFileDialog) &&
+                                (detectedMode == DialogMode::OpenFile);
+            } else if (mode == L"save") {
+                archAndModeOk = (detectedArch == DialogArchitecture::ModernIFileDialog) &&
+                                (detectedMode == DialogMode::SaveFile);
+            } else if (mode == L"legacy_open") {
+                archAndModeOk = (detectedArch == DialogArchitecture::LegacyExplorer ||
+                                 detectedArch == DialogArchitecture::ClassicOpenFileName);
+            }
+
+            SetForegroundWindow(dialogHwnd);
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            navigateIssued = DialogNavigator::instance().navigateToFolder(
+                dialogHwnd, tools3000::core::WinUtils::pathToUtf8(target));
+            std::this_thread::sleep_for(std::chrono::milliseconds(220));
+            remainedOpen = IsWindow(dialogHwnd) != FALSE;
+            currentAfterNavigation = DialogNavigator::getCurrentDialogFolder(dialogHwnd);
+            bottomAfter = readControlText(dialogHwnd, 1152, preserveSaveName);
+
+            if (mode == L"folder") {
+                bool childSelected = selectShellItemByName(dialogHwnd, L"平安下达生产订单方案V9306");
+                if (!childSelected) {
+                    childSelected = writeBottomSelectionText(dialogHwnd, L"平安下达生产订单方案V9306");
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(150));
+                const std::string selectedPath = DialogNavigator::getSelectedPath(dialogHwnd);
+                selectionCorrect = childSelected && !selectedPath.empty() &&
+                                   pathEquals(tools3000::core::WinUtils::utf8ToPath(selectedPath), selectedChild);
+            } else if (mode == L"save") {
+                // 实机验证 Save As 选中文件（即使按住 Shift+Enter）：
+                // 强制降级为仅跳转父目录，draft.txt 毫发无损，对话框保持打开绝不自动保存提交！
+                const bool safeJumpOk = DialogNavigator::instance().navigateToSearchResult(
+                    dialogHwnd,
+                    tools3000::core::WinUtils::pathToUtf8(searchTargetFile),
+                    /*itemIsDirectory=*/false,
+                    DialogMode::SaveFile,
+                    /*ctrlPressed=*/false,
+                    /*shiftPressed=*/true);
+                std::this_thread::sleep_for(std::chrono::milliseconds(180));
+                const bool stillOpen = IsWindow(dialogHwnd) != FALSE;
+                const std::wstring saveBottomNow = readControlText(dialogHwnd, 1152, true);
+                searchResultActionOk = safeJumpOk && stillOpen && (saveBottomNow == L"draft.txt");
+                expectedFinalDir = searchTargetDir;
+            } else if (mode == L"open") {
+                // 实机验证 OpenFile 选中文件（Enter）：
+                // 先跳父目录并验证到位，再填入 sample-note.txt，且保持打开不自动关闭！
+                const bool fillOk = DialogNavigator::instance().navigateToSearchResult(
+                    dialogHwnd,
+                    tools3000::core::WinUtils::pathToUtf8(searchTargetFile),
+                    /*itemIsDirectory=*/false,
+                    DialogMode::OpenFile,
+                    /*ctrlPressed=*/false,
+                    /*shiftPressed=*/false);
+                std::this_thread::sleep_for(std::chrono::milliseconds(180));
+                const bool stillOpen = IsWindow(dialogHwnd) != FALSE;
+                const std::wstring openBottomNow = readControlText(dialogHwnd, 1152, true);
+                searchResultActionOk = fillOk && stillOpen && (openBottomNow == L"sample-note.txt");
+                expectedFinalDir = searchTargetDir;
             }
-            selectedAfterNavigation = tools3000::dialog::DialogNavigator::getSelectedPath(dialogHwnd);
-            selectionEmpty = selectedAfterNavigation.empty();
-            if (mode == L"folder" && !selectedAfterNavigation.empty()) {
-                childSelectionMatches = pathEquals(
-                    std::filesystem::path(
-                        tools3000::core::WinUtils::utf8ToWstring(selectedAfterNavigation)),
-                    selectedChild);
-            }
-            bottomAfter = readControlText(dialogHwnd, 1152, preserveSaveName);
-            const bool folderMatches = !currentAfterNavigation.empty() && pathEquals(
-                std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(currentAfterNavigation)), target);
-            const bool bottomPreserved = bottomBefore == bottomAfter &&
-                                         (mode != L"save" || bottomAfter == L"draft.txt");
-            const bool selectionCorrect = mode == L"folder"
-                ? childSelectionIssued && childSelectionMatches
-                : selectionEmpty;
-            success = navigateIssued && remainedOpen && selectionCorrect &&
-                      folderMatches && bottomPreserved;
+
+            const bool bottomPreserved = (mode != L"save" || bottomAfter == L"draft.txt") &&
+                                         (mode != L"legacy_open" || bottomAfter == bottomBefore);
+            const bool modernFolderMatches = (mode == L"legacy_open") ||
+                (!currentAfterNavigation.empty() &&
+                 pathEquals(tools3000::core::WinUtils::utf8ToPath(currentAfterNavigation), target));
+
+            success = navigateIssued && remainedOpen && archAndModeOk &&
+                      selectionCorrect && modernFolderMatches &&
+                      bottomPreserved && searchResultActionOk;
+
             PostMessageW(dialogHwnd, WM_CLOSE, 0, 0);
         }
 
@@ -390,25 +499,23 @@ int wmain(int argc, wchar_t** argv) {
         std::ifstream input(result, std::ios::binary);
         std::getline(input, reportedFolder);
         success = success && waitResult == WAIT_OBJECT_0 && childExit == 0 &&
-                  !reportedFolder.empty() && pathEquals(
-                      std::filesystem::path(tools3000::core::WinUtils::utf8ToWstring(reportedFolder)), target);
+                  !reportedFolder.empty() &&
+                  pathEquals(tools3000::core::WinUtils::utf8ToPath(reportedFolder), expectedFinalDir);
         allSucceeded = allSucceeded && success;
 
         std::cout << "mode=" << tools3000::core::WinUtils::wstringToUtf8(mode)
                   << " dialog_opened=" << (dialogHwnd != nullptr)
                   << " recognized=" << recognized
+                  << " arch=" << static_cast<int>(detectedArch)
+                  << " detected_mode=" << static_cast<int>(detectedMode)
+                  << " arch_mode_ok=" << archAndModeOk
                   << " navigate_issued=" << navigateIssued
                   << " remained_open=" << remainedOpen
-                  << " selection_empty=" << selectionEmpty
-                  << " child_selection_issued=" << childSelectionIssued
-                  << " selected_path=" << selectedAfterNavigation
-                  << " child_selection_matches=" << childSelectionMatches
+                  << " search_action_ok=" << searchResultActionOk
                   << " bottom_before=" << tools3000::core::WinUtils::wstringToUtf8(bottomBefore)
                   << " bottom_after=" << tools3000::core::WinUtils::wstringToUtf8(bottomAfter)
-                  << " navigator_folder=" << currentAfterNavigation
-                  << " child_exit=" << childExit
                   << " reported_folder=" << reportedFolder
-                  << " expected_folder=" << tools3000::core::WinUtils::wstringToUtf8(target.native())
+                  << " expected_folder=" << tools3000::core::WinUtils::pathToUtf8(expectedFinalDir)
                   << " result=" << (success ? "PASS" : "FAIL") << '\n';
     }
 

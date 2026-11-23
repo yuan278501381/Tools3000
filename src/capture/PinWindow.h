@@ -104,6 +104,11 @@ public:
     /// 提取贴图文本 (OCR)
     void extractText();
 
+    /// 单张贴图识字语种覆写（"" 表示跟随全局设置，"auto"/"cjk"/"japan"/"korean"/"cyrillic"/"latin"）
+    std::string effectiveOcrScriptMode() const;
+    bool hasOcrScriptModeOverride() const noexcept { return !m_ocrScriptModeOverride.empty(); }
+    void setOcrScriptModeOverride(const std::string& scriptMode);
+
     /// 原位无痕翻译贴图（selectedOnly=true 仅翻译当前划选文字；forceRetranslate=true 强制忽略缓存重译）
     void translateInPlace(bool selectedOnly = false, bool forceRetranslate = false);
 
@@ -511,6 +516,7 @@ private:
     std::atomic<bool> m_pendingTranslateSelectedOnly{false};
     std::string m_translatedTargetLang;
     std::string m_translatedProviderUsed;
+    std::string m_ocrScriptModeOverride; // 贴图级识字语种覆写（空表示跟随全局配置）
     std::vector<TranslationParagraph> m_translatedParagraphs;
     uint64_t m_contentFingerprint = 0; // 当前贴图内容 64-bit 指纹（供 F3 贴图防重复套娃去重）
     std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表

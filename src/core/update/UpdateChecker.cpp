@@ -629,8 +629,10 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
         return false;
     }
 
-    const std::string extLow = toLowerAscii(canonTarget.extension().string());
-    if (portableMode || extLow == ".zip") {
+    const std::wstring extW = canonTarget.extension().wstring();
+    const bool isZipExt = (_wcsicmp(extW.c_str(), L".zip") == 0);
+    const bool isExeExt = (_wcsicmp(extW.c_str(), L".exe") == 0);
+    if (portableMode || isZipExt) {
         const std::wstring params = L"/select,\"" + targetW + L"\"";
         HINSTANCE hi = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
         if (reinterpret_cast<intptr_t>(hi) <= 32) {
@@ -640,7 +642,7 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
         return true;
     }
 
-    if (extLow != ".exe") {
+    if (!isExeExt) {
         outError = "unsupported_asset";
         return false;
     }

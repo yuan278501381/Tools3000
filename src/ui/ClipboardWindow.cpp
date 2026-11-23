@@ -92,9 +92,12 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
 
     if (!m_hwnd || !IsWindow(m_hwnd)) {
         if (!createWindow(hInstance)) return;
+        m_suspendedOrCold = true;
         initializeWebView2();
     } else {
         KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+        KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+        KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
     }
 
     applyThemeChrome();
@@ -102,34 +105,84 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
     m_showTimeTick = GetTickCount64();
     m_visible.store(true, std::memory_order_release);
 
-    if (m_controller) {
-        m_suspendController.resume(m_webView.Get(), "clipboard");
-        m_controller->put_IsVisible(TRUE);
+    const bool readyToRevealNow = m_webViewReady && m_controller != nullptr;
+    if (readyToRevealNow) {
+        const bool wasSuspended = m_suspendedOrCold;
+        if (wasSuspended) {
+            m_suspendController.resume(m_webView.Get(), "clipboard");
+        }
         RECT rc{};
         GetClientRect(m_hwnd, &rc);
         m_controller->put_Bounds(rc);
+        m_controller->put_IsVisible(TRUE);
         syncWebViewDpi(m_controller.Get(), m_hwnd);
         syncClipboardBackdropColor(m_controller.Get());
+        revealWindowNow();
+        notifyShownToWeb();
+        LOG_INFO("ClipboardWindow: shown immediately (wasSuspended={})", wasSuspended);
+        return;
     }
 
-    ShowWindow(m_hwnd, SW_SHOW);
-    SetForegroundWindow(m_hwnd);
-    if (m_controller) {
-        m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
-    }
-    notifyShownToWeb();
+    // 冷启动路径（严禁对 WebView2 宿主窗口动态叠加/移除 WS_EX_LAYERED，否则会破坏 DirectComposition
+    // 子窗口合成树并导致整窗纯白无内容）：保持宿主窗 SW_HIDE 直到导航完成且前端首帧就绪（或兜底超时）。
+    m_pendingReveal = true;
+    SetTimer(
+        m_hwnd,
+        IDT_REVEAL_FALLBACK,
+        REVEAL_FALLBACK_COLD_MS,
+        nullptr);
+    LOG_INFO("ClipboardWindow: cold-start pending reveal (waiting for WebView2 navigation + first frame)");
 }
 
-void ClipboardWindow::hide() {
+void ClipboardWindow::revealWindowNow() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
-    ShowWindow(m_hwnd, SW_HIDE);
-    m_visible.store(false, std::memory_order_release);
+    KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
+    m_pendingReveal = false;
+    m_suspendedOrCold = false;
+    m_showTimeTick = GetTickCount64();
+
+    ShowWindow(m_hwnd, SW_SHOW);
+    SetWindowPos(
+        m_hwnd,
+        m_pinned ? HWND_TOPMOST : HWND_TOP,
+        0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(m_hwnd);
+    SetForegroundWindow(m_hwnd);
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
+    if (m_controller) {
+        RECT rc{};
+        GetClientRect(m_hwnd, &rc);
+        m_controller->put_Bounds(rc);
+        m_controller->put_IsVisible(TRUE);
+        syncWebViewDpi(m_controller.Get(), m_hwnd);
+        syncClipboardBackdropColor(m_controller.Get());
+        m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    }
+    LOG_INFO("ClipboardWindow: revealed window (ready={}, pinned={})", m_webViewReady, m_pinned);
+}
+
+void ClipboardWindow::enterDeferredSuspend() {
+    if (!m_hwnd || !IsWindow(m_hwnd) || m_visible.load(std::memory_order_acquire)) return;
+    KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+    m_suspendedOrCold = true;
     if (m_controller) {
         m_controller->put_IsVisible(FALSE);
     }
     if (m_webView) {
         m_suspendController.requestSuspend(m_webView.Get(), "clipboard");
     }
+}
+
+void ClipboardWindow::hide() {
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
+    m_pendingReveal = false;
+    ShowWindow(m_hwnd, SW_HIDE);
+    m_visible.store(false, std::memory_order_release);
+    // 延迟 25 秒再软挂起 WebView2：高频连续复制粘贴期间保持 GPU 帧热存活，秒开零黑屏。
+    SetTimer(m_hwnd, IDT_DEFERRED_SUSPEND, DEFERRED_SUSPEND_DELAY_MS, nullptr);
     SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
 }
 
@@ -139,6 +192,8 @@ void ClipboardWindow::destroy() {
     ++m_generation;
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+        KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+        KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
     }
     if (m_controller) {
         m_controller->Close();
@@ -153,6 +208,8 @@ void ClipboardWindow::destroy() {
     }
     m_visible.store(false, std::memory_order_release);
     m_webViewReady = false;
+    m_suspendedOrCold = true;
+    m_pendingReveal = false;
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
@@ -322,9 +379,8 @@ bool ClipboardWindow::createWindow(HINSTANCE hInstance) {
     }
 
     applyThemeChrome();
-    tools3000::core::WinUtils::applyWin11SystemBackdrop(m_hwnd, DWMSBT_TRANSIENTWINDOW);
-    const MARGINS margins = {1, 1, 1, 1};
-    DwmExtendFrameIntoClientArea(m_hwnd, &margins);
+    // 剪贴板面板采用全不透明微晶主题背景：避免叠合 DWMSBT_TRANSIENTWINDOW 与 DwmExtendFrameIntoClientArea({1,1,1,1})
+    // 导致 DirectComposition 重建空窗期产生 0-Alpha 黑屏闪帧。
     SetWindowPos(m_hwnd, nullptr, 0, 0, 0, 0,
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
     const int radius = tools3000::core::dpi::scaleMetric(12, scale);
@@ -357,7 +413,12 @@ void ClipboardWindow::initializeWebView2() {
 
                         m_controller = controller;
                         controller->get_CoreWebView2(&m_webView);
-                        m_controller->put_IsVisible(m_visible.load() ? TRUE : FALSE);
+                        // 与 SettingsWindow 对齐：宿主窗尚处于 SW_HIDE 阶段时先将 controller 置为 FALSE，
+                        // 待 revealWindowNow() 执行 ShowWindow(SW_SHOW) 后再触发真正的 FALSE -> TRUE 切换，
+                        // 确保 DirectComposition 表面必然挂载并提交首帧。
+                        const bool visibleNow =
+                            m_visible.load(std::memory_order_acquire) && !m_pendingReveal && IsWindowVisible(m_hwnd);
+                        m_controller->put_IsVisible(visibleNow ? TRUE : FALSE);
 
                         RECT bounds{};
                         GetClientRect(m_hwnd, &bounds);
@@ -488,6 +549,15 @@ void ClipboardWindow::initializeWebView2() {
                                                 sendReply({{"success", true}, {"pinned", m_pinned}, {"maximized", m_maximized}});
                                                 return S_OK;
                                             }
+                                            if (method == "clipboard.frameReady") {
+                                                if (generation == m_generation.load() &&
+                                                    m_visible.load(std::memory_order_acquire) &&
+                                                    m_pendingReveal) {
+                                                    revealWindowNow();
+                                                }
+                                                sendReply({{"success", true}});
+                                                return S_OK;
+                                            }
                                         }
                                         const std::string resp = tools3000::core::MessageBridge::instance().handleMessage(msg);
                                         const std::wstring wResp = tools3000::core::WinUtils::utf8ToWstring(resp);
@@ -508,17 +578,32 @@ void ClipboardWindow::initializeWebView2() {
                                     if (args) args->get_IsSuccess(&ok);
                                     if (ok) {
                                         m_webViewReady = true;
-                                        if (m_visible.load()) {
-                                            notifyShownToWeb();
-                                            if (m_controller) {
+                                        LOG_INFO("ClipboardWindow: WebView2 navigation succeeded (visible={}, pendingReveal={})",
+                                                 m_visible.load(std::memory_order_acquire), m_pendingReveal);
+                                        if (m_visible.load(std::memory_order_acquire)) {
+                                            if (m_pendingReveal && m_hwnd && IsWindow(m_hwnd)) {
+                                                // 与 SettingsWindow::smoothPresent 对齐：导航完成即显窗并做 FALSE->TRUE
+                                                // controller 切换，避免在 SW_HIDE 态下等待被 Chromium 节流的 JS 回调。
+                                                revealWindowNow();
+                                            } else if (m_controller) {
                                                 m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
                                             }
+                                            notifyShownToWeb();
+                                        }
+                                    } else {
+                                        COREWEBVIEW2_WEB_ERROR_STATUS status{};
+                                        if (args) args->get_WebErrorStatus(&status);
+                                        LOG_ERROR("ClipboardWindow: WebView2 navigation failed, status={}", static_cast<int>(status));
+                                        m_webViewReady = true;
+                                        if (m_visible.load(std::memory_order_acquire) && m_pendingReveal) {
+                                            revealWindowNow();
                                         }
                                     }
                                     return S_OK;
                                 }).Get(),
                             nullptr);
 
+                        LOG_INFO("ClipboardWindow: WebView2 controller ready, navigating to clipboard UI");
                         m_webView->Navigate(L"https://tools3000.local/index.html?clipboard=1");
                         tools3000::core::MessageBridge::instance().registerEventPusher(
                             "clipboard_window",
@@ -670,7 +755,7 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
             }
             case WM_ACTIVATE: {
                 if (LOWORD(wParam) == WA_INACTIVE && self->m_visible.load() &&
-                    !self->m_pinned && !self->m_inSizeMove) {
+                    !self->m_pendingReveal && !self->m_pinned && !self->m_inSizeMove) {
                     if (GetTickCount64() - self->m_showTimeTick > 200) {
                         PostMessageW(hwnd, WM_CLIPBOARD_VERIFY_DEACTIVATED, 0, 0);
                     }
@@ -678,7 +763,8 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_CLIPBOARD_VERIFY_DEACTIVATED: {
-                if (self->m_visible.load() && !self->m_pinned && !self->m_inSizeMove) {
+                if (self->m_visible.load() && !self->m_pendingReveal &&
+                    !self->m_pinned && !self->m_inSizeMove) {
                     const HWND fg = GetForegroundWindow();
                     if (fg != hwnd && (!fg || !IsChild(hwnd, fg))) {
                         self->hide();
@@ -687,7 +773,18 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_TIMER: {
-                if (wParam == IDT_IDLE_DESTROY && !self->m_visible.load()) {
+                if (wParam == IDT_REVEAL_FALLBACK) {
+                    KillTimer(hwnd, IDT_REVEAL_FALLBACK);
+                    if (self->m_visible.load(std::memory_order_acquire) && self->m_pendingReveal) {
+                        self->revealWindowNow();
+                    }
+                    return 0;
+                }
+                if (wParam == IDT_DEFERRED_SUSPEND && !self->m_visible.load(std::memory_order_acquire)) {
+                    self->enterDeferredSuspend();
+                    return 0;
+                }
+                if (wParam == IDT_IDLE_DESTROY && !self->m_visible.load(std::memory_order_acquire)) {
                     KillTimer(hwnd, IDT_IDLE_DESTROY);
                     self->destroy();
                     return 0;

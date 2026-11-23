@@ -14,6 +14,7 @@ import {
   Info,
   Eye,
   ClipboardCopy,
+  Unlock,
 } from 'lucide-react';
 import { bridgeRequest } from '../hooks/useBridge';
 import { IMAGE_EXTENSIONS } from './searchConstants';
@@ -119,6 +120,18 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
   }
 
   const res = contextMenu.result;
+  const resultType = res.resultType ?? 'file';
+  const isFileItem = resultType === 'file';
+  const isCommandItem = resultType === 'command';
+  const isBookmarkItem = resultType === 'bookmark';
+  const isAppItem = resultType === 'app';
+  const isDiskBackedItem = isFileItem || isAppItem;
+  const displayName = isCommandItem && res.titleKey
+    ? (t(res.titleKey as never, res.name as never) as unknown as string)
+    : res.name;
+  const canRunAsAdmin = isCommandItem
+    || isAppItem
+    || (!res.isDirectory && /\.(exe|bat|cmd|ps1|msi|vbs|lnk)$/i.test(res.name));
 
   return (
     <div
@@ -131,8 +144,8 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
       onContextMenu={(e) => e.preventDefault()}
     >
       <div className="search-context-menu-header">
-        <span className="search-context-menu-filename" title={res.path}>
-          {res.name}
+        <span className="search-context-menu-filename" title={res.commandHint || res.path}>
+          {displayName}
         </span>
       </div>
 
@@ -146,25 +159,35 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
           }}
         >
           <FolderOpen size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuOpen', 'Open')} {res.isDirectory ? t('search.folderLabel', 'Folder') : t('search.fileLabel', 'File')}</span>
+          <span className="menu-label">
+            {isCommandItem
+              ? t('search.menuRunCommand', 'Run Command')
+              : isAppItem
+                ? t('search.menuLaunchApp', 'Launch App')
+                : isBookmarkItem
+                  ? t('search.menuOpenBookmark', 'Open in Browser')
+                  : `${t('search.menuOpen', 'Open')} ${res.isDirectory ? t('search.folderLabel', 'Folder') : t('search.fileLabel', 'File')}`}
+          </span>
           <kbd className="menu-shortcut">Enter</kbd>
         </button>
 
-        <button
-          type="button"
-          className="search-context-menu-item"
-          onClick={() => {
-            onClose();
-            onOpenFolder(res);
-          }}
-        >
-          <HardDrive size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuOpenFolder', 'Open Containing Folder')}</span>
-          <kbd className="menu-shortcut">Ctrl+Enter</kbd>
-        </button>
+        {isDiskBackedItem && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              onOpenFolder(res);
+            }}
+          >
+            <HardDrive size={14} className="menu-icon" />
+            <span className="menu-label">{t('search.menuOpenFolder', 'Open Containing Folder')}</span>
+            <kbd className="menu-shortcut">Ctrl+Enter</kbd>
+          </button>
+        )}
 
         {/* 快速预览 */}
-        {!res.isDirectory && onQuickLook && (
+        {isFileItem && !res.isDirectory && onQuickLook && (
           <button
             type="button"
             className="search-context-menu-item"
@@ -180,7 +203,7 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
         )}
 
         {/* 在记事本中编辑 */}
-        {!res.isDirectory && (
+        {isFileItem && !res.isDirectory && (
           <button
             type="button"
             className="search-context-menu-item"
@@ -196,22 +219,40 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
         )}
 
         {/* 重命名 */}
-        <button
-          type="button"
-          className="search-context-menu-item"
-          onClick={() => {
-            onClose();
-            onStartRename(res);
-          }}
-          title={t('search.renameTooltip', 'Rename file or folder (F2)')}
-        >
-          <Pencil size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.rename', 'Rename')}</span>
-          <kbd className="menu-shortcut">F2</kbd>
-        </button>
+        {isFileItem && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              onStartRename(res);
+            }}
+            title={t('search.renameTooltip', 'Rename file or folder (F2)')}
+          >
+            <Pencil size={14} className="menu-icon" />
+            <span className="menu-label">{t('search.rename', 'Rename')}</span>
+            <kbd className="menu-shortcut">F2</kbd>
+          </button>
+        )}
+
+        {/* 查看文件占用 / 解锁（仅对普通文件/文件夹显示，由主进程 system.openFileLocksmith 托管） */}
+        {isFileItem && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              void bridgeRequest('system.openFileLocksmith', { path: res.path }).catch(() => undefined);
+            }}
+            title={t('search.menuFileLocksmithTip', 'Inspect processes locking this file and unlock it safely')}
+          >
+            <Unlock size={14} className="menu-icon" />
+            <span className="menu-label">{t('search.menuFileLocksmith', 'Check File Locks / Unlock')}</span>
+          </button>
+        )}
 
         {/* 图片独立贴图 */}
-        {!res.isDirectory && IMAGE_EXTENSIONS.test(res.name) && (
+        {isFileItem && !res.isDirectory && IMAGE_EXTENSIONS.test(res.name) && (
           <button
             type="button"
             className="search-context-menu-item"
@@ -227,7 +268,7 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
         )}
 
         {/* 以管理员身份运行 */}
-        {!res.isDirectory && /\.(exe|bat|cmd|ps1|msi|vbs)$/i.test(res.name) && (
+        {canRunAsAdmin && (
           <button
             type="button"
             className="search-context-menu-item"
@@ -251,15 +292,25 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
           className="search-context-menu-item"
           onClick={() => {
             onClose();
-            onCopyPath(res);
+            if (isCommandItem && res.commandHint) {
+              onCopyText(res.commandHint);
+            } else {
+              onCopyPath(res);
+            }
           }}
         >
           <Copy size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuCopyPath', 'Copy Full Path')}</span>
+          <span className="menu-label">
+            {isCommandItem
+              ? t('search.menuCopyCommand', 'Copy Command')
+              : isBookmarkItem
+                ? t('search.menuCopyUrl', 'Copy URL')
+                : t('search.menuCopyPath', 'Copy Full Path')}
+          </span>
           <kbd className="menu-shortcut">Ctrl+C</kbd>
         </button>
 
-        {onCopyFile && (
+        {isDiskBackedItem && onCopyFile && (
           <button
             type="button"
             className="search-context-menu-item"
@@ -279,60 +330,66 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
           className="search-context-menu-item"
           onClick={() => {
             onClose();
-            onCopyText(res.name);
+            onCopyText(displayName);
           }}
         >
           <FileText size={14} className="menu-icon" />
           <span className="menu-label">{t('search.menuCopyName', 'Copy Filename')}</span>
         </button>
 
-        <button
-          type="button"
-          className="search-context-menu-item"
-          onClick={() => {
-            onClose();
-            onCopyText(extractParentDirectoryPath(res.path));
-          }}
-        >
-          <Folder size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuCopyParent', 'Copy Parent Directory')}</span>
-        </button>
+        {isDiskBackedItem && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              onCopyText(extractParentDirectoryPath(res.path));
+            }}
+          >
+            <Folder size={14} className="menu-icon" />
+            <span className="menu-label">{t('search.menuCopyParent', 'Copy Parent Directory')}</span>
+          </button>
+        )}
       </div>
 
-      <div className="search-context-menu-divider" />
+      {isDiskBackedItem && (
+        <>
+          <div className="search-context-menu-divider" />
 
-      <div className="search-context-menu-group">
-        <button
-          type="button"
-          className="search-context-menu-item"
-          onClick={() => {
-            onClose();
-            void bridgeRequest('search.showShellContextMenu', {
-              filepath: res.path,
-              path: res.path,
-              extended: false,
-            });
-          }}
-          title={t('search.nativeExplorerTooltip', 'Open native Windows Explorer context menu (Shift+Right Click)')}
-        >
-          <AppWindow size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuNativeExplorer', 'More Windows Explorer Menu...')}</span>
-          <kbd className="menu-shortcut">{t('search.menuShortcutShiftRightClick', 'Shift+Right Click')}</kbd>
-        </button>
+          <div className="search-context-menu-group">
+            <button
+              type="button"
+              className="search-context-menu-item"
+              onClick={() => {
+                onClose();
+                void bridgeRequest('search.showShellContextMenu', {
+                  filepath: res.path,
+                  path: res.path,
+                  extended: false,
+                });
+              }}
+              title={t('search.nativeExplorerTooltip', 'Open native Windows Explorer context menu (Shift+Right Click)')}
+            >
+              <AppWindow size={14} className="menu-icon" />
+              <span className="menu-label">{t('search.menuNativeExplorer', 'More Windows Explorer Menu...')}</span>
+              <kbd className="menu-shortcut">{t('search.menuShortcutShiftRightClick', 'Shift+Right Click')}</kbd>
+            </button>
 
-        <button
-          type="button"
-          className="search-context-menu-item"
-          onClick={() => {
-            onClose();
-            onShowProperties(res);
-          }}
-        >
-          <Info size={14} className="menu-icon" />
-          <span className="menu-label">{t('search.menuProperties', 'Properties')}</span>
-          <kbd className="menu-shortcut">Alt+Enter</kbd>
-        </button>
-      </div>
+            <button
+              type="button"
+              className="search-context-menu-item"
+              onClick={() => {
+                onClose();
+                onShowProperties(res);
+              }}
+            >
+              <Info size={14} className="menu-icon" />
+              <span className="menu-label">{t('search.menuProperties', 'Properties')}</span>
+              <kbd className="menu-shortcut">Alt+Enter</kbd>
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 };

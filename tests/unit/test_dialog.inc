@@ -571,6 +571,345 @@ TEST(DialogEventAndLayoutPolicyTest, RibbonRightAlignedRelayoutShiftsLeftWhenCap
     }
 }
 
+#include "core/ipc/SearchPipeClient.h"
+
+TEST(DialogClassificationTest, FiveArchitecturesAndThreeModes) {
+    using tools3000::dialog::DialogArchitecture;
+    using tools3000::dialog::DialogMode;
+    using tools3000::dialog::DialogModeSignals;
+    using tools3000::dialog::DialogStructureSignals;
+    using tools3000::dialog::classifyDialogArchitecture;
+    using tools3000::dialog::classifyDialogMode;
+
+    // 1. MECE 5 类对话框架构分类
+    {
+        DialogStructureSignals modern{};
+        modern.hasDefView = true;
+        modern.hasDirectUI = true;
+        modern.hasAddressBand = true;
+        modern.hasOkButton = true;
+        EXPECT_EQ(classifyDialogArchitecture(modern), DialogArchitecture::ModernIFileDialog);
+    }
+    {
+        // OFN_EXPLORER: 含 SHELLDLL_DefView 但无 DirectUIHWND / Address Band
+        DialogStructureSignals ofnExplorer{};
+        ofnExplorer.hasDefView = true;
+        ofnExplorer.hasDirectUI = false;
+        ofnExplorer.hasAddressBand = false;
+        ofnExplorer.hasFileNameCombo1148 = true;
+        ofnExplorer.hasOkButton = true;
+        EXPECT_EQ(classifyDialogArchitecture(ofnExplorer), DialogArchitecture::LegacyExplorer);
+    }
+    {
+        // Classic OPENFILENAME: 仅 edt1 (1152) / cmb13 (1148)
+        DialogStructureSignals classic{};
+        classic.hasFileNameEdit1152 = true;
+        classic.hasOkButton = true;
+        EXPECT_EQ(classifyDialogArchitecture(classic), DialogArchitecture::ClassicOpenFileName);
+    }
+    {
+        // BrowseForFolder: 树形控件 + OK + Cancel + 控件总数 <= 18
+        DialogStructureSignals browse{};
+        browse.hasTreeView = true;
+        browse.hasOkButton = true;
+        browse.hasCancelButton = true;
+        browse.totalControls = 9;
+        EXPECT_EQ(classifyDialogArchitecture(browse), DialogArchitecture::BrowseForFolder);
+    }
+    {
+        // Unknown: 属性表 / 向导 / 进度弹窗一律安全排除
+        DialogStructureSignals propSheet{};
+        propSheet.hasDefView = true;
+        propSheet.hasDirectUI = true;
+        propSheet.hasOkButton = true;
+        propSheet.hasApplyButton = true;
+        EXPECT_EQ(classifyDialogArchitecture(propSheet), DialogArchitecture::Unknown);
+
+        DialogStructureSignals wizard{};
+        wizard.hasTreeView = true;
+        wizard.hasOkButton = true;
+        wizard.hasCancelButton = true;
+        wizard.hasBackButton = true;
+        wizard.totalControls = 8;
+        EXPECT_EQ(classifyDialogArchitecture(wizard), DialogArchitecture::Unknown);
+    }
+
+    // 2. 3 种业务模式分类（含 PickFolder 结构指纹、8 语种词表与 SaveFile 保守安全边界）
+    {
+        // Modern PickFolder: DirectUI + DefView 且无 ComboBox 1136
+        DialogModeSignals pick{};
+        pick.architecture = DialogArchitecture::ModernIFileDialog;
+        pick.hasDirectUI = true;
+        pick.hasDefView = true;
+        pick.hasFileTypeCombo1136 = false;
+        pick.okButtonText = L"选择文件夹(&S)";
+        EXPECT_EQ(classifyDialogMode(pick), DialogMode::PickFolder);
+    }
+    {
+        // Modern OpenFile: 有 ComboBox 1136 + 打开按钮
+        DialogModeSignals openDlg{};
+        openDlg.architecture = DialogArchitecture::ModernIFileDialog;
+        openDlg.hasDirectUI = true;
+        openDlg.hasDefView = true;
+        openDlg.hasFileTypeCombo1136 = true;
+        openDlg.okButtonText = L"&Open";
+        openDlg.systemOpenButtonText = L"&Open";
+        openDlg.systemSaveButtonText = L"&Save";
+        openDlg.dialogTitle = L"Open File";
+        EXPECT_EQ(classifyDialogMode(openDlg), DialogMode::OpenFile);
+    }
+    {
+        // Modern SaveFile: 另存为标题保护 + Save 按钮（8 语种）
+        for (const wchar_t* saveBtn : {L"保存(&S)", L"儲存(&S)", L"&Save", L"保存", L"저장(&S)",
+                                       L"Сохранить", L"Salvar", L"Guardar"}) {
+            DialogModeSignals saveDlg{};
+            saveDlg.architecture = DialogArchitecture::ModernIFileDialog;
+            saveDlg.hasDirectUI = true;
+            saveDlg.hasDefView = true;
+            saveDlg.hasFileTypeCombo1136 = true;
+            saveDlg.okButtonText = saveBtn;
+            EXPECT_EQ(classifyDialogMode(saveDlg), DialogMode::SaveFile);
+        }
+    }
+    {
+        // 防御测试：即便系统按钮与 Open 同词，但标题为“另存为”也必须归类 SaveFile
+        DialogModeSignals guarded{};
+        guarded.architecture = DialogArchitecture::ModernIFileDialog;
+        guarded.hasDirectUI = true;
+        guarded.hasDefView = true;
+        guarded.hasFileTypeCombo1136 = true;
+        guarded.okButtonText = L"&Open";
+        guarded.systemOpenButtonText = L"&Open";
+        guarded.dialogTitle = L"另存为";
+        EXPECT_EQ(classifyDialogMode(guarded), DialogMode::SaveFile);
+    }
+    {
+        // 无法明确判断时：有预填文件名保守判 SaveFile，无预填判 Unknown（两者均严禁改写文件名）
+        DialogModeSignals prefilledNeutral{};
+        prefilledNeutral.architecture = DialogArchitecture::ClassicOpenFileName;
+        prefilledNeutral.okButtonText = L"OK";
+        prefilledNeutral.dialogTitle = L"Select Target";
+        prefilledNeutral.fileNameEditHasInitialText = true;
+        EXPECT_EQ(classifyDialogMode(prefilledNeutral), DialogMode::SaveFile);
+
+        DialogModeSignals emptyNeutral = prefilledNeutral;
+        emptyNeutral.fileNameEditHasInitialText = false;
+        EXPECT_EQ(classifyDialogMode(emptyNeutral), DialogMode::Unknown);
+    }
+
+    // 3. 真实 Win32 层级验证：OFN_EXPLORER (LegacyExplorer) 与 ComboBoxEx32 -> ComboBox -> Edit 穿透
+    auto ensureClassRegistered = [](const wchar_t* className) {
+        WNDCLASSEXW wc{sizeof(WNDCLASSEXW)};
+        if (!GetClassInfoExW(GetModuleHandleW(nullptr), className, &wc)) {
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandleW(nullptr);
+            wc.lpszClassName = className;
+            RegisterClassExW(&wc);
+        }
+    };
+    ensureClassRegistered(L"SHELLDLL_DefView");
+    ensureClassRegistered(L"ComboBoxEx32");
+
+    HWND legacyDlg = CreateWindowExW(0, L"#32770", L"打开文件", WS_POPUP, 0, 0, 500, 360,
+                                     nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(legacyDlg, nullptr);
+    HWND defView = CreateWindowExW(0, L"SHELLDLL_DefView", L"", WS_CHILD | WS_VISIBLE, 0, 20, 480, 240,
+                                   legacyDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(100)),
+                                   GetModuleHandleW(nullptr), nullptr);
+    HWND comboEx = CreateWindowExW(0, L"ComboBoxEx32", L"", WS_CHILD | WS_VISIBLE, 10, 280, 320, 24,
+                                   legacyDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(1148)),
+                                   GetModuleHandleW(nullptr), nullptr);
+    HWND innerCombo = CreateWindowExW(0, L"COMBOBOX", L"", WS_CHILD | WS_VISIBLE | CBS_DROPDOWN, 0, 0, 320, 24,
+                                      comboEx, reinterpret_cast<HMENU>(static_cast<INT_PTR>(1000)),
+                                      GetModuleHandleW(nullptr), nullptr);
+    HWND nestedEdit = CreateWindowExW(0, L"EDIT", L"legacy.txt", WS_CHILD | WS_VISIBLE, 0, 0, 300, 20,
+                                      innerCombo, reinterpret_cast<HMENU>(static_cast<INT_PTR>(1001)),
+                                      GetModuleHandleW(nullptr), nullptr);
+    HWND okBtn = CreateWindowExW(0, L"BUTTON", L"打开(&O)", WS_CHILD | WS_VISIBLE, 360, 280, 75, 24,
+                                 legacyDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)),
+                                 GetModuleHandleW(nullptr), nullptr);
+    EXPECT_NE(defView, nullptr);
+    EXPECT_NE(nestedEdit, nullptr);
+    EXPECT_NE(okBtn, nullptr);
+
+    EXPECT_EQ(tools3000::dialog::DialogNavigator::detectDialogArchitecture(legacyDlg, true),
+              DialogArchitecture::LegacyExplorer);
+    EXPECT_EQ(tools3000::dialog::DialogNavigator::detectDialogType(legacyDlg),
+              tools3000::dialog::DialogType::Legacy);
+    EXPECT_EQ(tools3000::dialog::DialogNavigator::detectDialogMode(legacyDlg, true),
+              DialogMode::OpenFile);
+    HWND resolvedEdit = tools3000::dialog::DialogNavigator::findPathEditControl(legacyDlg);
+    EXPECT_NE(resolvedEdit, nullptr);
+    // 确认穿透拿到的是位于 ComboBoxEx32 -> ComboBox 内部的真实 Edit
+    wchar_t resolvedCls[32]{};
+    GetClassNameW(resolvedEdit, resolvedCls, static_cast<int>(std::size(resolvedCls)));
+    EXPECT_STREQ(resolvedCls, L"Edit");
+
+    DestroyWindow(legacyDlg);
+}
+
+TEST(DialogInlineSearchSafetyTest, SaveAsAndUnknownNeverOverwriteOrCommit) {
+    using tools3000::dialog::DialogMode;
+    using tools3000::dialog::SearchActionKind;
+    using tools3000::dialog::decideInlineSearchAction;
+
+    // 1. SaveFile 选中文件：无论 Enter / Shift+Enter / Ctrl+Enter，100% 强制降级为仅跳父目录！
+    for (bool ctrl : {false, true}) {
+        for (bool shift : {false, true}) {
+            const auto d = decideInlineSearchAction(DialogMode::SaveFile, /*isDir=*/false, ctrl, shift);
+            EXPECT_EQ(d.kind, SearchActionKind::NavigateFolderOnly);
+            EXPECT_TRUE(d.useParentDirectory);
+        }
+    }
+
+    // 2. PickFolder 与 Unknown 选中文件：同样 100% 强制降级为仅跳父目录！
+    for (DialogMode safeMode : {DialogMode::PickFolder, DialogMode::Unknown}) {
+        const auto d = decideInlineSearchAction(safeMode, /*isDir=*/false, false, true);
+        EXPECT_EQ(d.kind, SearchActionKind::NavigateFolderOnly);
+        EXPECT_TRUE(d.useParentDirectory);
+    }
+
+    // 3. OpenFile 选中文件：Enter 仅填入文件名不提交；Shift+Enter 填入并确认打开；Ctrl+Enter 仅跳父目录
+    {
+        const auto enterFile = decideInlineSearchAction(DialogMode::OpenFile, false, false, false);
+        EXPECT_EQ(enterFile.kind, SearchActionKind::NavigateAndFillFileName);
+        EXPECT_TRUE(enterFile.useParentDirectory);
+
+        const auto shiftEnterFile = decideInlineSearchAction(DialogMode::OpenFile, false, false, true);
+        EXPECT_EQ(shiftEnterFile.kind, SearchActionKind::NavigateFillAndConfirmOpen);
+        EXPECT_TRUE(shiftEnterFile.useParentDirectory);
+
+        const auto ctrlEnterFile = decideInlineSearchAction(DialogMode::OpenFile, false, true, false);
+        EXPECT_EQ(ctrlEnterFile.kind, SearchActionKind::NavigateFolderOnly);
+        EXPECT_TRUE(ctrlEnterFile.useParentDirectory);
+    }
+
+    // 4. 任意模式选中目录：永远只跳目录本身
+    for (DialogMode m : {DialogMode::OpenFile, DialogMode::SaveFile, DialogMode::PickFolder, DialogMode::Unknown}) {
+        const auto d = decideInlineSearchAction(m, /*isDir=*/true, false, true);
+        EXPECT_EQ(d.kind, SearchActionKind::NavigateFolderOnly);
+        EXPECT_FALSE(d.useParentDirectory);
+    }
+}
+
+TEST(DialogEventAndLayoutPolicyTest, DpiUnawareMixedMonitorAndBottomDockPlacement) {
+    // 1. DPI-Unaware 老程序在高分屏下使用 max(windowScale, monitorScale) 防止胶囊过小
+    EXPECT_FLOAT_EQ(tools3000::dialog::computeEffectiveDialogDpiScale(1.0f, 1.5f), 1.5f);
+    EXPECT_FLOAT_EQ(tools3000::dialog::computeEffectiveDialogDpiScale(1.0f, 2.0f), 2.0f);
+    EXPECT_FLOAT_EQ(tools3000::dialog::computeEffectiveDialogDpiScale(1.75f, 1.25f), 1.75f);
+
+    // 2. 底部停靠模式基于 DWM 可见边框计算，空间充裕时置于下缘外侧，贴近任务栏底边时自动内收不溢出
+    const RECT frameRect{100, 120, 700, 560};
+    const RECT normalWork{0, 0, 1920, 1040};
+    int posX = 0;
+    int posY = 0;
+    int maxAvail = 0;
+    EXPECT_TRUE(tools3000::dialog::computeSafeRibbonPlacement(
+        frameRect, normalWork, 1.5f, 360, 38, "bottom-right", posX, posY, maxAvail));
+    EXPECT_GT(posY, frameRect.bottom);
+    EXPECT_LE(posY + 38, normalWork.bottom);
+    EXPECT_GT(maxAvail, 500);  // 底部停靠不扣标题栏 257px 按钮死区
+
+    // 当对话框底边紧贴屏幕工作区下缘时，自动内收至工作区内
+    const RECT tightWork{0, 0, 1920, 565};
+    EXPECT_TRUE(tools3000::dialog::computeSafeRibbonPlacement(
+        frameRect, tightWork, 1.0f, 320, 25, "bottom-center", posX, posY, maxAvail));
+    EXPECT_LE(posY + 25, tightWork.bottom);
+    EXPECT_GE(posY, tightWork.top);
+}
+
+TEST(DialogInlineSearchPipePolicyTest, QueryBuilderAndDemandStartGuard) {
+    using tools3000::core::ipc::SearchPipeClient;
+    using tools3000::core::ipc::SearchPipeStatus;
+
+    // 1. folder: 过滤语法自动拼接与幂等去重
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("   ", true), "");
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("Tools3000", false), "Tools3000");
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("Tools3000", true), "folder: Tools3000");
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("folder: Tools3000", true), "folder: Tools3000");
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("dir:docs", true), "dir:docs");
+    EXPECT_EQ(SearchPipeClient::buildEffectiveQuery("file:readme.md", true), "file:readme.md");
+
+    // 2. DEMAND_START 硬守卫：空白输入、非显式打字、autoStart=false 一律禁止拉起搜索服务
+    EXPECT_FALSE(SearchPipeClient::shouldAllowAutoStart("", true, true));
+    EXPECT_FALSE(SearchPipeClient::shouldAllowAutoStart("   \t ", true, true));
+    EXPECT_FALSE(SearchPipeClient::shouldAllowAutoStart("abc", false, true));
+    EXPECT_FALSE(SearchPipeClient::shouldAllowAutoStart("abc", true, false));
+    EXPECT_TRUE(SearchPipeClient::shouldAllowAutoStart("abc", true, true));
+
+    // 3. autoStart=false 零副作用调用验证：服务未运行时绝不触发拉起且毫秒级返回
+    const bool runningBefore = SearchPipeClient::instance().isServiceRunningNow(1);
+    const auto resp = SearchPipeClient::instance().queryFiles(
+        "tools3000_unit_probe", 999, 5, true, {}, /*autoStart=*/false, 150);
+    if (!runningBefore) {
+        EXPECT_EQ(resp.status, SearchPipeStatus::ServiceNotRunning);
+        EXPECT_FALSE(SearchPipeClient::instance().isWarmupInFlight());
+    }
+}
+
+TEST(PathMemoryManagerTest, InlineSearchAndBottomPositionPersistence) {
+    auto& mgr = tools3000::dialog::PathMemoryManager::instance();
+    const bool prevInline = mgr.isInlineSearchEnabled();
+    const std::string prevPos = mgr.getRibbonPosition();
+
+    mgr.setInlineSearchEnabled(false);
+    EXPECT_FALSE(mgr.isInlineSearchEnabled());
+    mgr.setInlineSearchEnabled(true);
+    EXPECT_TRUE(mgr.isInlineSearchEnabled());
+
+    mgr.setRibbonPosition("bottom-right");
+    EXPECT_EQ(mgr.getRibbonPosition(), "bottom-right");
+    mgr.setRibbonPosition("bottom-center");
+    EXPECT_EQ(mgr.getRibbonPosition(), "bottom-center");
+    mgr.setRibbonPosition("invalid-position");
+    EXPECT_EQ(mgr.getRibbonPosition(), "top-right");
+
+    mgr.setInlineSearchEnabled(prevInline);
+    mgr.setRibbonPosition(prevPos);
+}
+
+TEST(DialogNavigatorTest, AllowsSelfProcessFileDialogWhenEnabled) {
+    auto ensureClassRegistered = [](const wchar_t* className) {
+        WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+        if (!GetClassInfoExW(GetModuleHandle(nullptr), className, &wc)) {
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandle(nullptr);
+            wc.lpszClassName = className;
+            RegisterClassExW(&wc);
+        }
+    };
+    ensureClassRegistered(L"SHELLDLL_DefView");
+    ensureClassRegistered(L"Address Band Root");
+
+    HWND selfFileDlg = CreateWindowExW(
+        0, L"#32770", L"打开", WS_POPUP, 0, 0, 640, 460,
+        nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+    ASSERT_NE(selfFileDlg, nullptr);
+    HWND defView = CreateWindowExW(
+        0, L"SHELLDLL_DefView", L"", WS_CHILD, 0, 40, 620, 340,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(100)), GetModuleHandle(nullptr), nullptr);
+    HWND addrBand = CreateWindowExW(
+        0, L"Address Band Root", L"", WS_CHILD, 0, 0, 620, 32,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(41477)), GetModuleHandle(nullptr), nullptr);
+    HWND okBtn = CreateWindowExW(
+        0, L"BUTTON", L"打开(&O)", WS_CHILD, 460, 400, 80, 28,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), GetModuleHandle(nullptr), nullptr);
+    ASSERT_NE(defView, nullptr);
+    ASSERT_NE(addrBand, nullptr);
+    ASSERT_NE(okBtn, nullptr);
+
+    // 默认 allowSelfProcess=false 时过滤当前进程；允许同进程时必须精确识别 Tools3000 自身弹出的 #32770 文件对话框
+    EXPECT_FALSE(tools3000::dialog::DialogNavigator::isFileDialog(selfFileDlg, false));
+    const auto rejected = tools3000::dialog::DialogNavigator::inspectDialog(selfFileDlg, false);
+    EXPECT_EQ(rejected.architecture, tools3000::dialog::DialogArchitecture::Unknown);
+
+    EXPECT_TRUE(tools3000::dialog::DialogNavigator::isFileDialog(selfFileDlg, true));
+    const auto accepted = tools3000::dialog::DialogNavigator::inspectDialog(selfFileDlg, true);
+    EXPECT_EQ(accepted.architecture, tools3000::dialog::DialogArchitecture::ModernIFileDialog);
+
+    DestroyWindow(selfFileDlg);
+}
+
 // -----------------------------------------------------------------------------
 // 56. 选区圆角手柄交互与实时调节测试套件
 // -----------------------------------------------------------------------------

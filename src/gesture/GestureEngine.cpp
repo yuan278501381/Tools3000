@@ -795,6 +795,17 @@ void GestureEngine::setInitialTimeoutMs(int ms) {
     LOG_INFO("手势起始超时已设置: initialTimeoutMs={}ms", clamped);
 }
 
+void GestureEngine::setPauseCancelEnabled(bool enabled) {
+    m_pauseCancelEnabled.store(enabled, std::memory_order_release);
+    LOG_INFO("Gesture pause-to-cancel updated: enabled={}", enabled);
+}
+
+void GestureEngine::setPauseCancelMs(int ms) {
+    const int clamped = clampPauseCancelMs(ms);
+    m_pauseCancelMs.store(clamped, std::memory_order_release);
+    LOG_INFO("Gesture pause-to-cancel timeout updated: pauseCancelMs={}ms", clamped);
+}
+
 void GestureEngine::setMinSegmentDistance(int px) {
     const int clamped = std::clamp(px, 5, 100);
     m_minSegmentDistance.store(clamped, std::memory_order_release);
@@ -1159,7 +1170,54 @@ void GestureEngine::watchdogWorkerLoop(std::stop_token stopToken) {
                     continue;
                 }
 
-                if (elapsedMs > 8000) {
+                // 划动中途停顿超时自动取消 (Pause-to-Cancel，零鼠标钩子热路径开销)
+                const auto pausedElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_pauseAnchorTime).count();
+                if (shouldTriggerPauseCancel(
+                        m_pauseCancelEnabled.load(std::memory_order_relaxed),
+                        m_hasMovedBeyondThreshold,
+                        m_instantExecutedDuringTracking,
+                        m_wheelExecutedDuringTracking,
+                        m_pauseCanceledDuringTracking,
+                        pausedElapsedMs,
+                        m_pauseCancelMs.load(std::memory_order_relaxed))) {
+                    m_pauseCanceledDuringTracking = true;
+                    m_gestureConsumed = true;
+                    LOG_INFO("Gesture pause-to-cancel triggered after {}ms hold", pausedElapsedMs);
+                    if (m_trailOverlayActivated && hasOverlayVisuals()) {
+                        auto& trail = GestureTrailOverlay::instance();
+                        trail.setRecognized(false);
+                        trail.setLiveAction("");
+                        trail.endTrail("");
+                        m_trailOverlayActivated = false;
+                    }
+                    continue;
+                }
+
+                // 连续乱画满 10 秒拟人「无语」彩蛋：即使停在原地未再抖动鼠标，看门狗也准时弹出红底白三点
+                if (!m_speechlessShownDuringTracking &&
+                    shouldTriggerGestureSpeechless(
+                        m_hasMovedBeyondThreshold,
+                        m_instantExecutedDuringTracking,
+                        m_wheelExecutedDuringTracking,
+                        m_pauseCanceledDuringTracking,
+                        elapsedMs)) {
+                    m_speechlessShownDuringTracking = true;
+                    m_gestureConsumed = true;
+                    if (hasOverlayVisuals()) {
+                        if (!m_trailOverlayActivated) {
+                            activateOverlayIfNeededLocked(true);
+                        }
+                        auto& trail = GestureTrailOverlay::instance();
+                        trail.setRecognized(false);
+                        trail.setLiveAction(kGestureSpeechlessMarker);
+                    }
+                    LOG_INFO("Gesture speechless easter egg triggered after {}ms continuous drawing", elapsedMs);
+                }
+
+                const auto idleSinceLastEventMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    now - m_lastHookEventTime).count();
+                if (shouldWatchdogAbortGesture(elapsedMs, idleSinceLastEventMs)) {
                     LOG_WARN("手势看门狗触发超时强制熔断，自动重置状态机: elapsed={}ms", elapsedMs);
                     cancelTracking();
                 }
@@ -1195,6 +1253,8 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
     m_activeDownWasSuppressed = (event.type != MouseEventType::LeftDown) && event.downWasSuppressed;
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
+    m_pauseCanceledDuringTracking = false;
+    m_speechlessShownDuringTracking = false;
     m_hasMovedBeyondThreshold = false;
     m_trailOverlayActivated = false;
     m_pendingTrailPoints.clear();
@@ -1206,6 +1266,8 @@ void GestureEngine::beginTracking(const MouseEvent& event) {
          (GetAsyncKeyState(trigVk) & 0x8000) != 0);
     m_trackingStartTime = std::chrono::steady_clock::now();
     m_lastHookEventTime = m_trackingStartTime;
+    m_pauseAnchorPt = { event.position.x, event.position.y };
+    m_pauseAnchorTime = m_trackingStartTime;
     m_trackingStartEventTimestamp = event.timestamp.time_since_epoch().count() > 0
         ? event.timestamp
         : m_trackingStartTime;
@@ -1269,8 +1331,8 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     }
     m_lastHookEventTime = now;
 
-    // 若本次追踪已通过 instantExecute 立即执行完毕，忽略松手前的所有后续移动
-    if (m_instantExecutedDuringTracking) {
+    // 若本次追踪已通过 instantExecute 立即执行完毕或已停顿取消，忽略松手前的所有后续移动
+    if (m_instantExecutedDuringTracking || m_pauseCanceledDuringTracking) {
         return;
     }
 
@@ -1319,9 +1381,19 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
     const int startDx = event.position.x - m_gestureStartPt.x;
     const int startDy = event.position.y - m_gestureStartPt.y;
     const int minSegDist = m_minSegmentDistance.load(std::memory_order_relaxed);
+    const bool wasBeyondThreshold = m_hasMovedBeyondThreshold;
     if (!m_hasMovedBeyondThreshold &&
         (startDx * startDx + startDy * startDy >= minSegDist * minSegDist)) {
         m_hasMovedBeyondThreshold = true;
+        // 首次跨过最小识别距离时重置停顿锚点与计时起点，避免把起笔前停留计入停顿取消时长
+        m_pauseAnchorPt = { event.position.x, event.position.y };
+        m_pauseAnchorTime = now;
+    } else if (wasBeyondThreshold &&
+               hasMovedBeyondPauseAnchor(event.position.x, event.position.y,
+                                         m_pauseAnchorPt.x, m_pauseAnchorPt.y)) {
+        // 仅当光标移动超过 6px 抗抖半径 (dx*dx + dy*dy >= 36) 时刷新停顿锚点
+        m_pauseAnchorPt = { event.position.x, event.position.y };
+        m_pauseAnchorTime = now;
     }
 
     // B5.1: 起始静止超时检查（尚未跨过起始识别阈值进入正式划线追踪前，超过 initialTimeoutMs 自动退回原生右键）
@@ -1363,14 +1435,16 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         m_lastLiveEvalPt = { event.position.x, event.position.y };
         m_lastLiveEvalTime = now;
         m_cachedLiveDirs = m_recognizer.currentDirections();
-        if (!m_cachedLiveDirs.empty()) {
+        if (!m_cachedLiveDirs.empty() && !m_hasMovedBeyondThreshold) {
             m_hasMovedBeyondThreshold = true;
+            m_pauseAnchorPt = { event.position.x, event.position.y };
+            m_pauseAnchorTime = now;
         }
     }
     const std::vector<Direction>& dirs = m_cachedLiveDirs;
 
-    // 尚未跨过最小识别距离（且未满 10s）前绝不唤醒轨迹覆盖层，只缓冲起笔与途经坐标
-    if (!m_hasMovedBeyondThreshold && elapsed < 10000) {
+    // 尚未跨过最小识别距离（且未满无语彩蛋阈值）前绝不唤醒轨迹覆盖层，只缓冲起笔与途经坐标
+    if (!m_hasMovedBeyondThreshold && elapsed < kGestureSpeechlessThresholdMs) {
         if (showOverlay && showTrailLine && m_pendingTrailPoints.size() < 128) {
             if (m_pendingTrailPoints.empty()) {
                 m_pendingTrailPoints.push_back({event.position.x, event.position.y});
@@ -1401,11 +1475,14 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
         );
     }
 
-    if (elapsed >= 10000) {
-        if (showOverlay && m_trailOverlayActivated) {
-            // 连续画了 10 秒仍未松手：弹出红底 3 个大圆点调侃状态，并持续停留，直到用户真正松手
+    if (elapsed >= kGestureSpeechlessThresholdMs) {
+        m_gestureConsumed = true;
+        if (showOverlay && m_trailOverlayActivated && !m_speechlessShownDuringTracking) {
+            // 连续画了 10 秒仍未松手：弹出红底 3 个大白点「无语」对话彩蛋，持续停留直到用户松手
+            m_speechlessShownDuringTracking = true;
             trail.setRecognized(false);
-            trail.setLiveAction("•••");
+            trail.setLiveAction(kGestureSpeechlessMarker);
+            LOG_INFO("Gesture speechless easter egg triggered on move ({}ms)", elapsed);
         }
     } else {
         const std::string bareCode = directionsToCode(dirs);
@@ -1556,6 +1633,10 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     auto clearTrackingSessionFields = [this]() {
         m_wheelExecutedDuringTracking = false;
         m_instantExecutedDuringTracking = false;
+        m_pauseCanceledDuringTracking = false;
+        m_speechlessShownDuringTracking = false;
+        m_pauseAnchorPt = {0, 0};
+        m_pauseAnchorTime = {};
         m_hasMovedBeyondThreshold = false;
         m_trailOverlayActivated = false;
         m_pendingTrailPoints.clear();
@@ -1582,6 +1663,13 @@ void GestureEngine::endTracking(const MouseEvent& event) {
         clearTrackingSessionFields();
         m_state = GestureState::Idle;
         LOG_DEBUG("Gesture tracking ended after instantExecute; release suppressed");
+        return;
+    }
+
+    if (m_pauseCanceledDuringTracking) {
+        clearTrackingSessionFields();
+        m_state = GestureState::Idle;
+        LOG_DEBUG("Gesture tracking ended after pause-to-cancel; action and context menu suppressed");
         return;
     }
 
@@ -1650,9 +1738,10 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     auto now = std::chrono::steady_clock::now();
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_trackingStartTime).count();
 
-    // 如果连续绘制超过 10 秒用户才松手：结束手势，红底 3 个大圆点闪现并平滑淡出，不执行任何动作，且已消费手势不回放点击
-    if (elapsed >= 10000) {
-        LOG_WARN("手势绘制超过 10 秒后松手结束 ({}ms)，红底调侃淡出", elapsed);
+    // 如果连续绘制超过 8 秒（或追踪期间已触发红底三白点无语态）用户才松手：
+    // 结束手势，红底 3 个大白点「无语」彩蛋停留并平滑淡出，不执行任何动作，且已消费手势不回放点击
+    if (m_speechlessShownDuringTracking || elapsed >= kGestureSpeechlessThresholdMs) {
+        LOG_WARN("Gesture exceeded speechless threshold ({}ms) on release; fading out red-dots indicator", elapsed);
         clearTrackingSessionFields();
         m_state = GestureState::Idle;
         if (hasOverlayVisuals()) {
@@ -1661,7 +1750,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
                 trail.beginTrail();
             }
             trail.setRecognized(false);
-            trail.endTrail("•••");
+            trail.endTrail(kGestureSpeechlessMarker);
         }
         return;
     }
@@ -1929,6 +2018,9 @@ void GestureEngine::executeActionInternal(
 
 bool GestureEngine::handleWheelGesture(const MouseEvent& event) {
     const bool isTracking = (m_state.load(std::memory_order_relaxed) != GestureState::Idle);
+    if (isTracking && m_pauseCanceledDuringTracking) {
+        return false;
+    }
 
     // 等待异步上下文解析就绪 (最多等待 50ms)
     // 仅在手势追踪中才需等待异步上下文解析就绪；
@@ -2245,6 +2337,10 @@ void GestureEngine::cancelTracking() {
     m_recognizer.reset();
     m_wheelExecutedDuringTracking = false;
     m_instantExecutedDuringTracking = false;
+    m_pauseCanceledDuringTracking = false;
+    m_speechlessShownDuringTracking = false;
+    m_pauseAnchorPt = {0, 0};
+    m_pauseAnchorTime = {};
     m_hasMovedBeyondThreshold = false;
     m_trailOverlayActivated = false;
     m_pendingTrailPoints.clear();
@@ -2321,6 +2417,8 @@ void GestureEngine::loadFromConfig() {
         config.set<bool>("/gesture/initialTimeoutV2Migrated", true);
     }
     setInitialTimeoutMs(rawTimeoutMs);
+    setPauseCancelEnabled(config.get<bool>("/gesture/pauseCancelEnabled", true));
+    setPauseCancelMs(config.get<int>("/gesture/pauseCancelMs", kDefaultPauseCancelMs));
     const int legacyMinSeg = config.get<int>("/gesture/recognizer/minSegmentDistance", 24);
     const auto minSegJson = config.get<nlohmann::json>("/gesture/minSegmentDistance");
     const int resolvedMinSeg = minSegJson.is_number_integer()
@@ -2413,6 +2511,8 @@ bool GestureEngine::saveToConfig() {
             {"enableScribbleCancel", recCfg.enableScribbleCancel},
             {"targetMode", targetMode()},
             {"initialTimeoutMs", m_initialTimeoutMs.load()},
+            {"pauseCancelEnabled", m_pauseCancelEnabled.load()},
+            {"pauseCancelMs", m_pauseCancelMs.load()},
             {"minSegmentDistance", m_minSegmentDistance.load()},
             {"shapeMatchThreshold", m_shapeMatchThreshold.load()}
         }}

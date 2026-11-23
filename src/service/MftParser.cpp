@@ -304,6 +304,12 @@ uint64_t MftParser::getApproximateIndexBytes() const {
     return m_Store.approximateBytes();
 }
 
+void MftParser::shrinkIndexCapacity() {
+    std::unique_lock lock(m_MapMutex);
+    m_Store.shrinkExcessCapacity();
+    m_FileCount.store(m_Store.size(), std::memory_order_release);
+}
+
 bool MftParser::queryFrnDiskMetadata(
     uint64_t frn,
     const std::wstring& fallbackPath,
@@ -732,26 +738,26 @@ bool MftParser::Initialize(char driveLetter) {
         }
     }
 
-    std::string volumePath = "\\\\.\\";
-    volumePath += driveLetter;
-    volumePath += ":";
+    std::wstring volumePath = L"\\\\.\\";
+    volumePath += static_cast<wchar_t>(driveLetter);
+    volumePath += L":";
 
     // 优先尝试以直接 NTFS 卷设备句柄打开以实现 100ms 级 MFT 全盘枚举
-    m_hVolume = CreateFileA(volumePath.c_str(), 
-                            GENERIC_READ | GENERIC_WRITE, 
-                            FILE_SHARE_READ | FILE_SHARE_WRITE, 
-                            NULL, 
-                            OPEN_EXISTING, 
-                            FILE_ATTRIBUTE_NORMAL, 
+    m_hVolume = CreateFileW(volumePath.c_str(),
+                            GENERIC_READ | GENERIC_WRITE,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE,
+                            NULL,
+                            OPEN_EXISTING,
+                            FILE_ATTRIBUTE_NORMAL,
                             NULL);
 
     if (m_hVolume == INVALID_HANDLE_VALUE) {
-        m_hVolume = CreateFileA(volumePath.c_str(), 
-                                GENERIC_READ, 
-                                FILE_SHARE_READ | FILE_SHARE_WRITE, 
-                                NULL, 
-                                OPEN_EXISTING, 
-                                FILE_ATTRIBUTE_NORMAL, 
+        m_hVolume = CreateFileW(volumePath.c_str(),
+                                GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                NULL,
+                                OPEN_EXISTING,
+                                FILE_ATTRIBUTE_NORMAL,
                                 NULL);
     }
 
@@ -899,6 +905,7 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
         std::unique_lock lock(m_MapMutex);
         m_Store.recomputeHierarchyMetadata();
         m_Store.releaseBuildScratch();
+        m_Store.shrinkExcessCapacity();
     }
     spdlog::info("Directory walk enumeration completed. Indexed {} files on drive {}:", count, driveLetter);
 }
@@ -1014,6 +1021,7 @@ void MftParser::EnumerateFiles() {
         // during enumeration; afterwards only a trickle of USN updates arrives
         // and the lookup table is no longer worth its footprint.
         m_Store.releaseBuildScratch();
+        m_Store.shrinkExcessCapacity();
         // `MED-14`: Read `m_Store.size()` and `m_Store.approximateBytes()` strictly BEFORE
         // releasing `m_MapMutex` so concurrent USN listener / snapshot readers never race.
         storeCount = m_Store.size();
@@ -1145,6 +1153,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
         m_ScanPhase.store(static_cast<uint8_t>(ScanPhase::BuildingHierarchy), std::memory_order_release);
         m_Store.recomputeHierarchyMetadata();
         m_Store.releaseBuildScratch();
+        m_Store.shrinkExcessCapacity();
         m_FileCount.store(m_Store.size(), std::memory_order_release);
         m_InitialScanDone.store(true, std::memory_order_release);
     }

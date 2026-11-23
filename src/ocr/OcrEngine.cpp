@@ -2195,7 +2195,7 @@ std::vector<OcrResult> OcrEngine::extractWithWindowsOcr(const cv::Mat& image) {
     return results;
 }
 
-std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
+std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image, const std::string& scriptModeOverride) {
     tools3000::core::TraceId::Scope scope;
     if (image.empty()) {
         LOG_WARN("OCR 输入图像为空");
@@ -2218,7 +2218,11 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
     } catch (...) {
     }
     const std::string tierTag = deepInstalled ? DeepOcrEngine::instance().effectiveModelTier() : "none";
-    const std::string routeTag = ((allowDeepOcr && deepInstalled) ? ("deep:" + tierTag + ":") : "win:") + enginePref + ":" + langPref;
+    const std::string scriptTag = deepInstalled
+        ? ((scriptModeOverride.empty() ? DeepOcrEngine::instance().configuredScriptMode() : scriptModeOverride) + "@" +
+           DeepOcrEngine::instance().installedScriptPacksSignature())
+        : "none";
+    const std::string routeTag = ((allowDeepOcr && deepInstalled) ? ("deep:" + tierTag + ":" + scriptTag + ":") : "win:") + enginePref + ":" + langPref;
     const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
 
     OcrPageExtraction cached{};
@@ -2227,7 +2231,7 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
     }
 
     if (allowDeepOcr && deepInstalled) {
-        auto deepResults = DeepOcrEngine::instance().extractText(image);
+        auto deepResults = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
         if (!deepResults.empty() || enginePref == "ppocr_v4") {
             OcrPageExtraction entry;
             entry.lines = deepResults;
@@ -2247,7 +2251,7 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image) {
     return winResults;
 }
 
-OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
+OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image, const std::string& scriptModeOverride) {
     OcrPageExtraction page{};
     if (image.empty()) {
         return page;
@@ -2270,7 +2274,11 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
     } catch (...) {
     }
     const std::string tierTag = preferDeep ? DeepOcrEngine::instance().effectiveModelTier() : "none";
-    const std::string routeTag = (preferDeep ? ("deep:" + tierTag + ":") : "win:") + enginePref + ":" + langPref;
+    const std::string scriptTag = preferDeep
+        ? ((scriptModeOverride.empty() ? DeepOcrEngine::instance().configuredScriptMode() : scriptModeOverride) + "@" +
+           DeepOcrEngine::instance().installedScriptPacksSignature())
+        : "none";
+    const std::string routeTag = (preferDeep ? ("deep:" + tierTag + ":" + scriptTag + ":") : "win:") + enginePref + ":" + langPref;
     const uint64_t cacheKey = computeImageOcrCacheKey(image, routeTag);
 
     if (lookupRecentOcrCache(cacheKey, image.cols, image.rows, /*requireQr=*/true, page)) {
@@ -2290,7 +2298,7 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image) {
     });
 
     if (preferDeep) {
-        page.lines = DeepOcrEngine::instance().extractText(image);
+        page.lines = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
         if (!page.lines.empty() || enginePref == "ppocr_v4") {
             page.qrCodes = qrFuture.get();
             page.activeEngine = "ppocr_v4";

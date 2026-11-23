@@ -72,6 +72,7 @@ describe('TrayApp Bento Control Center', () => {
             { id: 'clipboard', active: true, enabled: true },
             { id: 'spotlight', active: true, enabled: true },
             { id: 'dialogenhancer', active: true, enabled: true },
+            { id: 'file_locksmith', active: true, enabled: true },
             { id: 'remote_boost', active: true, enabled: true },
           ];
         case 'gesture.getState':
@@ -103,7 +104,9 @@ describe('TrayApp Bento Control Center', () => {
     });
 
     expect(screen.getByText('Tools3000')).toBeDefined();
-    expect(screen.getByText('7/7 Active')).toBeDefined();
+    expect(screen.getByText('9/9 Active')).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /Clipboard/i })).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /File Locksmith/i })).toBeDefined();
     expect(screen.getByText('Remote Boost')).toBeDefined();
     expect(screen.getByText('Hotkey passthrough')).toBeDefined();
     expect(screen.getByText('F1')).toBeDefined();

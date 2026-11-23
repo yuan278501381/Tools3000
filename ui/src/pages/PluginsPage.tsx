@@ -8,6 +8,7 @@ import {
   FolderSymlink,
   Image as ImageIcon,
   Keyboard,
+  LockOpen,
   Mouse,
   Puzzle,
   RotateCw,
@@ -58,6 +59,8 @@ const ICONS = {
   spotlight: Sparkles,
   dialogenhancer: FolderSymlink,
   dialog_enhancer: FolderSymlink,
+  file_locksmith: LockOpen,
+  filelocksmith: LockOpen,
   remote_boost: Cast,
   remote: Cast,
   picasa_viewer: ImageIcon,
@@ -72,12 +75,14 @@ const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
   capture: 4,
   dialogenhancer: 5,
   dialog_enhancer: 5,
-  keycast: 6,
-  spotlight: 7,
-  remote_boost: 8,
-  remote: 8,
-  picasa_viewer: 9,
-  picasaviewer: 9,
+  file_locksmith: 6,
+  filelocksmith: 6,
+  keycast: 7,
+  spotlight: 8,
+  remote_boost: 9,
+  remote: 9,
+  picasa_viewer: 10,
+  picasaviewer: 10,
 };
 
 const PLUGIN_NAV_MAP: Record<string, NavId> = {
@@ -87,6 +92,8 @@ const PLUGIN_NAV_MAP: Record<string, NavId> = {
   capture: 'capture',
   dialogenhancer: 'dialog_enhancer',
   dialog_enhancer: 'dialog_enhancer',
+  file_locksmith: 'file_locksmith',
+  filelocksmith: 'file_locksmith',
   keycast: 'keycast',
   spotlight: 'spotlight',
   remote_boost: 'remote_boost',
@@ -146,7 +153,9 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
           ? ['remote_boost', 'remote']
           : (id === 'picasa_viewer' || id === 'picasaviewer')
             ? ['picasa_viewer', 'picasaviewer']
-            : [id];
+            : (id === 'file_locksmith' || id === 'filelocksmith')
+              ? ['file_locksmith', 'filelocksmith']
+              : [id];
       const next = items.map((item) => {
         if (!aliases.includes(item.id)) return item;
         // 若二进制缺失处于 unavailable 状态，绝不被外部状态事件误覆写为 disabled 并解锁开关
@@ -206,6 +215,13 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
     const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
     if (payload && typeof payload.enabled === 'boolean') {
       updatePluginState('picasa_viewer', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('fileLocksmith:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('file_locksmith', payload.enabled);
     }
   });
 

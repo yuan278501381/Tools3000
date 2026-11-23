@@ -367,31 +367,36 @@ bool PluginManager::initializeSinglePluginLocked(PluginInstance& inst) {
 }
 
 bool PluginManager::loadPlugins(const std::string& directory) {
+    return loadPlugins(tools3000::core::WinUtils::utf8ToPath(directory));
+}
+
+bool PluginManager::loadPlugins(const std::filesystem::path& directory) {
     std::lock_guard lock(m_mutex);
     if (!m_plugins.empty()) {
         LOG_WARN("插件已加载，拒绝重复扫描");
         return false;
     }
     reconcilePluginConfigs();
-    std::filesystem::path dirPath = tools3000::core::WinUtils::utf8ToWstring(directory);
+    std::filesystem::path dirPath = directory;
 
     // 如果是相对路径，则相对于 exe 所在目录
     if (dirPath.is_relative()) {
         dirPath = tools3000::core::WinUtils::getExeDirectory() / dirPath;
     }
     dirPath = dirPath.lexically_normal();
+    const std::string dirUtf8 = tools3000::core::WinUtils::pathToUtf8(dirPath);
 
     std::error_code filesystemError;
     if (!std::filesystem::is_directory(dirPath, filesystemError)) {
-        LOG_WARN("插件目录不存在: {}", directory);
+        LOG_WARN("插件目录不存在: {}", dirUtf8);
         return false;
     }
     if (hasReparsePointAttribute(dirPath)) {
-        LOG_ERROR("Rejected plugin directory with reparse point attribute: {}", directory);
+        LOG_ERROR("Rejected plugin directory with reparse point attribute: {}", dirUtf8);
         return false;
     }
 
-    LOG_INFO("开始扫描插件目录: {}", directory);
+    LOG_INFO("开始扫描插件目录: {}", dirUtf8);
 
     std::vector<std::filesystem::path> pluginPaths;
     std::filesystem::directory_iterator pluginIt(dirPath, filesystemError);
@@ -413,7 +418,7 @@ bool PluginManager::loadPlugins(const std::string& directory) {
         }
     }
     if (filesystemError) {
-        LOG_ERROR("扫描插件目录失败: {}, error={}", directory, filesystemError.message());
+        LOG_ERROR("扫描插件目录失败: {}, error={}", dirUtf8, filesystemError.message());
         return false;
     }
     std::sort(pluginPaths.begin(), pluginPaths.end());

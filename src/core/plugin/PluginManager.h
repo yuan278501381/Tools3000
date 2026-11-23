@@ -57,7 +57,10 @@ class TOOLS3000CORE_API PluginManager {
 public:
     static PluginManager& instance();
 
-    /// 从指定目录扫描并加载所有以 Plugin_ 开头的 DLL
+    /// 从指定目录扫描并加载所有以 Plugin_ 开头的 DLL（优先宽路径重载，免疫全 8 语种跨代码页乱码）
+    bool loadPlugins(const std::filesystem::path& directory);
+
+    /// 从指定 UTF-8 目录字符串扫描并加载所有以 Plugin_ 开头的 DLL（兼容旧调用方）
     bool loadPlugins(const std::string& directory);
 
     /// 初始化所有已加载的插件

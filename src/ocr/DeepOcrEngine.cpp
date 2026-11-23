@@ -101,6 +101,16 @@ struct DeepOcrEngine::WinMlContext {
     winrt::hstring serverRecInName;
     winrt::hstring serverRecOutName;
 
+    // 多语种扩展识别单一互斥轻量槽位（CPU SIMD 动态 32 对齐微批，冷启 ~30ms，0 DirectML 显存峰增量，切语种即释放旧槽）
+    struct ExtRecSlot {
+        std::string scriptId;
+        waml::LearningModelSession session{nullptr};
+        winrt::hstring inName;
+        winrt::hstring outName;
+        std::vector<std::string> dictKeys;
+    };
+    ExtRecSlot extRec;
+
     bool usingDirectMLGpu = false;
     bool supportsBatchEval = false;
     winrt::hstring detInName;
@@ -123,6 +133,9 @@ struct DeepOcrEngine::WinMlContext {
                 m = nullptr;
             }
         };
+        closeSession(extRec.session);
+        extRec.scriptId.clear();
+        extRec.dictKeys.clear();
         closeSession(serverRecSession);
         closeSession(cpuFallbackRecSession);
         for (auto& s : recBucketSessions) closeSession(s);
@@ -159,7 +172,98 @@ struct DeepOcrEngine::WinMlContext {
         }
         if (cpuFallbackRecSession) ++total;
         if (serverRecSession) ++total;
+        if (extRec.session) ++total;
         return total;
+    }
+
+    ExtRecSlot* ensureExtRecSlot(const std::filesystem::path& modelDir, const std::string& scriptId) {
+        if (scriptId.empty() || scriptId == "cjk" || scriptId == "auto") return nullptr;
+        if (extRec.session && extRec.scriptId == scriptId && !extRec.dictKeys.empty()) {
+            return &extRec;
+        }
+        const std::filesystem::path packPath = deep_ocr_detail::resolveScriptPackModelPath(modelDir, scriptId);
+        if (packPath.empty() || !deep_ocr_detail::isScriptPackModelPresent(modelDir, scriptId)) {
+            return nullptr;
+        }
+
+        // 互斥单活：切换扩展语种前先释放旧槽位，严防多语种模型内存堆积
+        if (extRec.session) {
+            try { extRec.session.Close(); } catch (...) {}
+            extRec.session = nullptr;
+        }
+        extRec.scriptId.clear();
+        extRec.dictKeys.clear();
+
+        std::vector<uint8_t> rawBytes;
+        if (!deep_ocr_detail::readFileBytes(packPath, rawBytes) ||
+            !DeepOcrEngine::isValidOnnxBuffer(rawBytes.data(), rawBytes.size(), DeepOcrConstants::kMinRecModelBytes)) {
+            return nullptr;
+        }
+        std::vector<std::string> keys;
+        if (!DeepOcrEngine::extractEmbeddedCharacterDictFromOnnx(rawBytes.data(), rawBytes.size(), keys) ||
+            keys.size() < 64) {
+            return nullptr;
+        }
+
+        // 兼容手动放入的 PP-OCRv5 (ir_version=10)：若超过 IR 8 则原位或临时路径无损钳位至 IR 8 再交由 WinML 加载
+        std::filesystem::path loadPath = packPath;
+        if (DeepOcrEngine::clampOnnxIrVersionForWinMl(rawBytes)) {
+            bool updatedInPlace = false;
+            try {
+                std::ofstream ofs(packPath, std::ios::binary | std::ios::trunc);
+                if (ofs) {
+                    ofs.write(reinterpret_cast<const char*>(rawBytes.data()),
+                              static_cast<std::streamsize>(rawBytes.size()));
+                    ofs.flush();
+                    updatedInPlace = static_cast<bool>(ofs);
+                }
+            } catch (...) {
+                updatedInPlace = false;
+            }
+            if (!updatedInPlace) {
+                std::error_code ec;
+                const auto tmpDir = std::filesystem::temp_directory_path(ec);
+                if (!ec && !tmpDir.empty()) {
+                    const auto compatPath = tmpDir / (L"t3k_ocr_" + packPath.filename().wstring());
+                    std::ofstream ofs(compatPath, std::ios::binary | std::ios::trunc);
+                    if (ofs) {
+                        ofs.write(reinterpret_cast<const char*>(rawBytes.data()),
+                                  static_cast<std::streamsize>(rawBytes.size()));
+                        ofs.flush();
+                        if (ofs) loadPath = compatPath;
+                    }
+                }
+            }
+        }
+
+        try {
+            if (!cpuDevice) {
+                cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
+            }
+            auto model = waml::LearningModel::LoadFromFilePath(loadPath.wstring());
+            if (!model || model.InputFeatures().Size() == 0 || model.OutputFeatures().Size() == 0) {
+                if (model) { try { model.Close(); } catch (...) {} }
+                return nullptr;
+            }
+            const winrt::hstring inN = model.InputFeatures().GetAt(0).Name();
+            const winrt::hstring outN = model.OutputFeatures().GetAt(0).Name();
+            waml::LearningModelSessionOptions opts;
+            opts.CloseModelOnSessionCreation(true);
+            auto sess = waml::LearningModelSession(model, cpuDevice, opts);
+            try { model.Close(); } catch (...) {}
+
+            extRec.scriptId = scriptId;
+            extRec.session = std::move(sess);
+            extRec.inName = inN;
+            extRec.outName = outN;
+            extRec.dictKeys = std::move(keys);
+            LOG_INFO("DeepOcrEngine: loaded script extension rec slot ({}, dict={} keys)",
+                     extRec.scriptId, extRec.dictKeys.size());
+            return &extRec;
+        } catch (...) {
+            LOG_WARN("DeepOcrEngine: failed to initialize script extension rec slot ({})", scriptId);
+            return nullptr;
+        }
     }
 
     waml::LearningModelSession* ensureClsSession() {
@@ -182,6 +286,18 @@ struct DeepOcrEngine::WinMlContext {
     waml::LearningModelSession* ensureDetSession(size_t idx) {
         if (idx >= kDetSpecs.size()) return nullptr;
         if (!detBucketSessions[idx]) {
+            // DirectML 大尺寸检测桶（[1]=1280x1024 横屏大图 与 [2]=960x1280 竖屏长图）实施互斥单活：
+            // 桌面连拍 99% 同方向 0 重编开销，跨横/竖切换时释放旧大桶并触发 DXGI Trim，削减 ~400-500MB 峰值提交内存
+            if (usingDirectMLGpu && (idx == 1 || idx == 2)) {
+                const size_t otherLargeIdx = (idx == 1) ? 2 : 1;
+                if (detBucketSessions[otherLargeIdx]) {
+                    try { detBucketSessions[otherLargeIdx].Close(); } catch (...) {}
+                    detBucketSessions[otherLargeIdx] = nullptr;
+                    if (ownedDxgiDevice) {
+                        ownedDxgiDevice->Trim();
+                    }
+                }
+            }
             waml::LearningModelSessionOptions opts;
             opts.CloseModelOnSessionCreation(false);
             detBucketSessions[idx] = waml::LearningModelSession(detModel, device, opts);
@@ -685,13 +801,305 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     }
 }
 
-std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
+namespace {
+
+struct ScriptGlyphProfile {
+    size_t hangul = 0;
+    size_t kana = 0;
+    size_t japaneseNo = 0;
+    size_t cyrillic = 0;
+    size_t latinDiacritic = 0;
+    size_t cjkHan = 0;
+    size_t asciiAlpha = 0;
+    size_t totalChars = 0;
+    float visualUnits = 0.0f;
+    size_t asciiWordCount = 0;
+    size_t mixedCaseAnomalousWords = 0;
+};
+
+ScriptGlyphProfile analyzeScriptGlyphs(const std::string& utf8) noexcept {
+    ScriptGlyphProfile p{};
+    const size_t n = utf8.size();
+    size_t i = 0;
+
+    // 同步扫描纯 ASCII 伪拉丁大小写畸变词（俄文西里尔被中文字典强拼成 ABToHOMHOe / pacno3HaBaHne 的显著特征）
+    auto flushAsciiWord = [&](const std::string& word) {
+        if (word.size() < 5) return;
+        bool hasAlpha = false;
+        for (char c : word) {
+            if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+                hasAlpha = true;
+                break;
+            }
+        }
+        if (!hasAlpha) return;
+        ++p.asciiWordCount;
+        // 将字母连续同大小写段拆解为 runs，严格排除标准 CamelCase/PascalCase（单大写接 >=2 小写，如 getUserProfile / ContentType），
+        // 仅将真实伪拉丁畸变（如 ABToHOMHOe / CoxpaHnTb / pacno3HaBaHne：单字母小写夹心或大写连块夹单小写）记为异常词
+        struct CaseRun { int sign; int len; };
+        std::vector<CaseRun> runs;
+        runs.reserve(8);
+        bool hasInteriorDigitInAlpha = false;
+        for (size_t k = 0; k < word.size(); ++k) {
+            const char c = word[k];
+            const int curCase = (c >= 'A' && c <= 'Z') ? 1 : ((c >= 'a' && c <= 'z') ? -1 : 0);
+            if (curCase == 0) {
+                if (c >= '0' && c <= '9' && !runs.empty() && k + 1 < word.size()) {
+                    const char nxt = word[k + 1];
+                    if ((nxt >= 'A' && nxt <= 'Z') || (nxt >= 'a' && nxt <= 'z')) {
+                        hasInteriorDigitInAlpha = true;
+                    }
+                }
+                continue;
+            }
+            if (!runs.empty() && runs.back().sign == curCase) {
+                ++runs.back().len;
+            } else {
+                runs.push_back({curCase, 1});
+            }
+        }
+        const int flips = runs.empty() ? 0 : static_cast<int>(runs.size() - 1);
+        if (flips >= 2) {
+            int singleLowerRuns = 0;
+            bool multiUpperToSingleLower = false;
+            bool pureCamelCase = true;
+            for (size_t r = 0; r < runs.size(); ++r) {
+                if (runs[r].sign == -1 && runs[r].len == 1) {
+                    ++singleLowerRuns;
+                    if (r > 0 && runs[r - 1].sign == 1 && runs[r - 1].len >= 2) {
+                        multiUpperToSingleLower = true;
+                    }
+                }
+                // 标准驼峰特征：每次大写段若后面还有小写段，大写长度为 1 且紧跟小写长度 >= 2（或词尾全大写缩写如 BaseURL / UserID）
+                if (runs[r].sign == 1 && r + 1 < runs.size()) {
+                    if (runs[r].len > 1 || runs[r + 1].len < 2) {
+                        pureCamelCase = false;
+                    }
+                }
+            }
+            if (!pureCamelCase &&
+                (multiUpperToSingleLower ||
+                 (flips >= 3 && singleLowerRuns >= 2) ||
+                 (flips >= 3 && hasInteriorDigitInAlpha))) {
+                ++p.mixedCaseAnomalousWords;
+            }
+        }
+    };
+
+    std::string curWord;
+    while (i < n) {
+        const uint8_t b0 = static_cast<uint8_t>(utf8[i]);
+        uint32_t cp = 0;
+        size_t adv = 1;
+        if (b0 < 0x80) {
+            cp = b0;
+        } else if ((b0 & 0xE0) == 0xC0 && i + 1 < n) {
+            cp = ((b0 & 0x1Fu) << 6) | (static_cast<uint8_t>(utf8[i + 1]) & 0x3Fu);
+            adv = 2;
+        } else if ((b0 & 0xF0) == 0xE0 && i + 2 < n) {
+            cp = ((b0 & 0x0Fu) << 12) | ((static_cast<uint8_t>(utf8[i + 1]) & 0x3Fu) << 6) |
+                 (static_cast<uint8_t>(utf8[i + 2]) & 0x3Fu);
+            adv = 3;
+        } else if ((b0 & 0xF8) == 0xF0 && i + 3 < n) {
+            cp = ((b0 & 0x07u) << 18) | ((static_cast<uint8_t>(utf8[i + 1]) & 0x3Fu) << 12) |
+                 ((static_cast<uint8_t>(utf8[i + 2]) & 0x3Fu) << 6) | (static_cast<uint8_t>(utf8[i + 3]) & 0x3Fu);
+            adv = 4;
+        }
+        i += adv;
+
+        if (cp < 0x80 && ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= '0' && cp <= '9'))) {
+            curWord.push_back(static_cast<char>(cp));
+        } else {
+            if (!curWord.empty()) {
+                flushAsciiWord(curWord);
+                curWord.clear();
+            }
+        }
+
+        if (cp == 0x20) {
+            p.visualUnits += 0.30f; // 空格在图像行中占据真实水平像素宽度，避免英文/代码行密度被误判塌方
+            continue;
+        }
+        if (cp < 0x20) continue;
+        ++p.totalChars;
+        if ((cp >= 0xAC00 && cp <= 0xD7A3) || (cp >= 0x1100 && cp <= 0x11FF) || (cp >= 0x3130 && cp <= 0x318F)) {
+            ++p.hangul;
+            p.visualUnits += 1.0f;
+        } else if ((cp >= 0x3040 && cp <= 0x30FF) || (cp >= 0x31F0 && cp <= 0x31FF)) {
+            ++p.kana;
+            if (cp == 0x306E) ++p.japaneseNo;
+            p.visualUnits += 1.0f;
+        } else if (cp >= 0x0400 && cp <= 0x04FF) {
+            ++p.cyrillic;
+            p.visualUnits += 0.58f;
+        } else if ((cp >= 0x00C0 && cp <= 0x024F) || cp == 0x00BF || cp == 0x00A1) {
+            ++p.latinDiacritic;
+            p.visualUnits += 0.56f;
+        } else if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF)) {
+            ++p.cjkHan;
+            p.visualUnits += 1.0f;
+        } else if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z')) {
+            ++p.asciiAlpha;
+            p.visualUnits += 0.55f;
+        } else {
+            p.visualUnits += 0.55f;
+        }
+    }
+    if (!curWord.empty()) flushAsciiWord(curWord);
+    return p;
+}
+
+bool hasIberianOrExtendedLatinHint(const std::string& utf8) noexcept {
+    std::string lower;
+    lower.reserve(utf8.size());
+    for (unsigned char c : utf8) {
+        lower.push_back((c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : static_cast<char>(c));
+    }
+    // 严格剔除 3 字母域名/代码碰撞词（如 ".com" / "del" / "con" / "die"），仅匹配高区分度欧陆词尾与 >=5 字母词汇
+    int score = 0;
+    size_t i = 0;
+    const size_t n = lower.size();
+    static constexpr const char* kStrongWords[] = {
+        "espanol", "portugues", "francais", "deutsch", "italiano",
+        "configuracion", "configuracao", "traduccion", "traducao",
+        "aplicacion", "aplicacao", "informacion", "informacao",
+        "automatica", "automatico", "einstellungen", "ubersicht",
+        "preferencias", "definicoes", "atualizacao", "deteccao", "protecao", "cancelacao",
+        "rapido", "rapida", "tambien", "tambem", "entao", "guardar", "cambios",
+        "desea", "actuales", "confirmar", "cancelar", "idioma", "idiomas",
+        "configurar", "reconocimiento", "instantanea", "senalizacion", "diseno"
+    };
+    static constexpr const char* kMediumWords[] = {
+        "sobre", "desde", "cuando", "donde", "todos", "todas", "entre",
+        "estos", "estas", "voce", "mais", "pelo", "pela", "nicht", "avec", "pour", "dans"
+    };
+
+    while (i < n) {
+        while (i < n && !(lower[i] >= 'a' && lower[i] <= 'z')) ++i;
+        const size_t start = i;
+        while (i < n && (lower[i] >= 'a' && lower[i] <= 'z')) ++i;
+        const size_t len = i - start;
+        if (len < 4) continue;
+        const std::string_view w(lower.data() + start, len);
+
+        if (len >= 6 && (w.ends_with("cion") || w.ends_with("cao") || w.ends_with("sao") ||
+                         w.ends_with("oes") || w.ends_with("mente"))) {
+            score += 2;
+        }
+        for (const char* sw : kStrongWords) {
+            if (w == sw) {
+                score += 2;
+                break;
+            }
+        }
+        for (const char* mw : kMediumWords) {
+            if (w == mw) {
+                score += 1;
+                break;
+            }
+        }
+        if (score >= 2) return true;
+    }
+    return false;
+}
+
+/// 西里尔-拉丁视觉同形字上下文净化（仅在 detectedScript == "cyrillic" 时调用）：
+/// 当拉丁英文词内部混入 1~2 个视觉完全相同的西里尔字母（如 "DireсtML" 中的 U+0441 'с'）时，
+/// 同步将 dec.chars 与 dec.text 还原为对应 ASCII 拉丁字母，确保复制与检索 100% 纯净。
+void normalizeCyrillicLatinHomoglyphs(CtcDecodeOutput& dec) {
+    if (dec.chars.size() < 3) return;
+
+    auto cyrHomoglyphToAscii = [](const std::string& ch) -> char {
+        if (ch == "\xD0\xB0") return 'a'; // а
+        if (ch == "\xD0\xB5") return 'e'; // е
+        if (ch == "\xD0\xBE") return 'o'; // о
+        if (ch == "\xD1\x80") return 'p'; // р
+        if (ch == "\xD1\x81") return 'c'; // с
+        if (ch == "\xD1\x83") return 'y'; // у
+        if (ch == "\xD1\x85") return 'x'; // х
+        if (ch == "\xD0\x90") return 'A'; // А
+        if (ch == "\xD0\x92") return 'B'; // В
+        if (ch == "\xD0\x95") return 'E'; // Е
+        if (ch == "\xD0\x9A") return 'K'; // К
+        if (ch == "\xD0\x9C") return 'M'; // М
+        if (ch == "\xD0\x9D") return 'H'; // Н
+        if (ch == "\xD0\x9E") return 'O'; // О
+        if (ch == "\xD0\xA0") return 'P'; // Р
+        if (ch == "\xD0\xA1") return 'C'; // С
+        if (ch == "\xD0\xA2") return 'T'; // Т
+        if (ch == "\xD0\xA5") return 'X'; // Х
+        return '\0';
+    };
+    auto isAsciiAlphaNum = [](const std::string& ch) -> bool {
+        if (ch.size() != 1) return false;
+        const unsigned char c = static_cast<unsigned char>(ch[0]);
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+    };
+    auto isCyrillicGlyph = [](const std::string& ch) -> bool {
+        if (ch.size() != 2) return false;
+        const uint8_t b0 = static_cast<uint8_t>(ch[0]);
+        const uint8_t b1 = static_cast<uint8_t>(ch[1]);
+        if ((b0 & 0xE0) != 0xC0) return false;
+        const uint32_t cp = ((b0 & 0x1Fu) << 6) | (b1 & 0x3Fu);
+        return cp >= 0x0400 && cp <= 0x04FF;
+    };
+
+    bool changed = false;
+    const size_t n = dec.chars.size();
+    size_t i = 0;
+    while (i < n) {
+        while (i < n && !isAsciiAlphaNum(dec.chars[i].utf8Char) && !isCyrillicGlyph(dec.chars[i].utf8Char)) {
+            ++i;
+        }
+        const size_t start = i;
+        size_t latinCnt = 0;
+        size_t cyrCnt = 0;
+        size_t cyrHomoglyphCnt = 0;
+        while (i < n && (isAsciiAlphaNum(dec.chars[i].utf8Char) || isCyrillicGlyph(dec.chars[i].utf8Char))) {
+            if (isAsciiAlphaNum(dec.chars[i].utf8Char)) {
+                ++latinCnt;
+            } else {
+                ++cyrCnt;
+                if (cyrHomoglyphToAscii(dec.chars[i].utf8Char) != '\0') {
+                    ++cyrHomoglyphCnt;
+                }
+            }
+            ++i;
+        }
+        if (latinCnt >= 2 && cyrCnt >= 1 && cyrCnt == cyrHomoglyphCnt && latinCnt >= cyrCnt) {
+            for (size_t k = start; k < i; ++k) {
+                const char mapped = cyrHomoglyphToAscii(dec.chars[k].utf8Char);
+                if (mapped != '\0') {
+                    dec.chars[k].utf8Char.assign(1, mapped);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    if (changed) {
+        std::string rebuilt;
+        rebuilt.reserve(dec.text.size());
+        for (const auto& ch : dec.chars) {
+            rebuilt += ch.utf8Char;
+        }
+        dec.text = std::move(rebuilt);
+    }
+}
+
+} // namespace
+
+std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const std::string& scriptModeOverride) {
     tools3000::core::TraceId::Scope traceScope;
     if (image.empty()) return {};
 
     bool installed = false;
     const std::filesystem::path modelDir = resolveModelDirectory(&installed);
     if (!installed) return {};
+
+    const std::string effectiveScriptMode = scriptModeOverride.empty()
+        ? configuredScriptMode()
+        : normalizeScriptMode(scriptModeOverride);
 
     cv::Mat bgr = ensureBgr3(image);
     if (bgr.empty()) return {};
@@ -706,6 +1114,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                 bgr,
                 modelDir,
                 effectiveModelTier(),
+                effectiveScriptMode,
                 workerResults,
                 workerStats,
                 workerActiveTier)) {
@@ -746,6 +1155,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
     size_t detectedQuadCount = 0;
     size_t packedStripCount = 0;
     std::string bucketProfile;
+    std::string detectedScript = "cjk";
     bool pageRotated90Or270 = false;
     bool pageRotated270Ccw = false;
     try {
@@ -1495,11 +1905,12 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             std::vector<float> hostOutBuf;
 
             // 统一零拷贝原位解码器：直接映射 TensorFloat 主机缓冲 + 多核并行数学精确提前终止 CTC Greedy 解码
-            auto decodeWinMlRecEval = [&](const waml::LearningModelEvaluationResult& evalRes,
-                                          int actualB,
-                                          const winrt::hstring& outName,
-                                          auto&& getValidRatio,
-                                          auto&& onDecoded) {
+            auto decodeWinMlRecEvalWithDict = [&](const waml::LearningModelEvaluationResult& evalRes,
+                                                  int actualB,
+                                                  const winrt::hstring& outName,
+                                                  const std::vector<std::string>& dictKeys,
+                                                  auto&& getValidRatio,
+                                                  auto&& onDecoded) {
                 auto outTensor = evalRes.Outputs().Lookup(outName).as<waml::TensorFloat>();
                 if (!outTensor) return;
                 const auto outShape = outTensor.Shape();
@@ -1533,7 +1944,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                     cv::parallel_for_(cv::Range(0, actualB), [&](const cv::Range& br) {
                         for (int b = br.start; b < br.end; ++b) {
                             cv::Mat logits2d(seqT, numClasses, CV_32FC1, decodeBasePtr + static_cast<size_t>(b) * oneOutFloats);
-                            tmpDec[static_cast<size_t>(b)] = decodeCtcGreedy(logits2d, m_dictKeys, getValidRatio(b));
+                            tmpDec[static_cast<size_t>(b)] = decodeCtcGreedy(logits2d, dictKeys, getValidRatio(b));
                         }
                     });
                     for (int b = 0; b < actualB; ++b) {
@@ -1541,11 +1952,107 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                     }
                 } else {
                     cv::Mat logits2d(seqT, numClasses, CV_32FC1, decodeBasePtr);
-                    onDecoded(0, decodeCtcGreedy(logits2d, m_dictKeys, getValidRatio(0)));
+                    onDecoded(0, decodeCtcGreedy(logits2d, dictKeys, getValidRatio(0)));
                 }
             };
 
-            if (!m_winMl->usingDirectMLGpu) {
+            auto decodeWinMlRecEval = [&](const waml::LearningModelEvaluationResult& evalRes,
+                                          int actualB,
+                                          const winrt::hstring& outName,
+                                          auto&& getValidRatio,
+                                          auto&& onDecoded) {
+                decodeWinMlRecEvalWithDict(evalRes, actualB, outName, m_dictKeys, getValidRatio, onDecoded);
+            };
+
+            // 轻量 CPU SIMD 扩展语种批推理原语（动态 32 对齐精确宽度，0 DirectML 显存增长，低配本友好）
+            auto evalExtRecOnIndices = [&](WinMlContext::ExtRecSlot& slot,
+                                           const std::vector<size_t>& targetIndices,
+                                           int maxProbeWidthCap,
+                                           std::vector<CtcDecodeOutput>& outVec) {
+                outVec.resize(targetIndices.size());
+                if (targetIndices.empty() || !slot.session) return;
+                std::vector<size_t> order(targetIndices.size());
+                std::iota(order.begin(), order.end(), 0u);
+                std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+                    return pieces[targetIndices[a]].contentW < pieces[targetIndices[b]].contentW;
+                });
+
+                constexpr size_t kExtBatch = 4;
+                size_t pos = 0;
+                while (pos < order.size()) {
+                    const size_t rem = order.size() - pos;
+                    const size_t actualB = (std::min)(rem, kExtBatch);
+                    const int rawMaxW = pieces[targetIndices[order[pos + actualB - 1]]].contentW;
+                    const int cappedMaxW = (maxProbeWidthCap > 0) ? (std::min)(rawMaxW, maxProbeWidthCap) : rawMaxW;
+                    const int evalW = std::clamp(((cappedMaxW + 31) / 32) * 32, 32, DeepOcrConstants::kRecLongBucketWidth);
+                    const size_t planeFloats = static_cast<size_t>(H) * static_cast<size_t>(evalW);
+                    const size_t sampleFloats = 3u * planeFloats;
+                    const size_t batchFloats = actualB * sampleFloats;
+
+                    try {
+                        auto recTensor = waml::TensorFloat::Create(
+                            winrt::single_threaded_vector<int64_t>({static_cast<int64_t>(actualB), 3, H, evalW}));
+                        {
+                            WinMlTensorBufferLock inLock(recTensor);
+                            if (inLock.data && inLock.floatCount >= batchFloats) {
+                                std::memset(inLock.data, 0, batchFloats * sizeof(float));
+                                float* basePtr = inLock.data;
+                                cv::parallel_for_(cv::Range(0, static_cast<int>(actualB)), [&](const cv::Range& br) {
+                                    constexpr float kScale = 2.0f / 255.0f;
+                                    for (int b = br.start; b < br.end; ++b) {
+                                        const auto& pc = pieces[targetIndices[order[pos + static_cast<size_t>(b)]]];
+                                        float* sampleBase = basePtr + static_cast<size_t>(b) * sampleFloats;
+                                        const int copyW = (std::min)(pc.contentW, evalW);
+                                        float* c0 = sampleBase;
+                                        float* c1 = sampleBase + planeFloats;
+                                        float* c2 = sampleBase + planeFloats * 2;
+                                        for (int y = 0; y < H; ++y) {
+                                            const auto* row = pc.stripBgr.ptr<cv::Vec3b>(y);
+                                            const size_t rowBase = static_cast<size_t>(y) * static_cast<size_t>(evalW);
+                                            for (int x = 0; x < copyW; ++x) {
+                                                c0[rowBase + x] = static_cast<float>(row[x][0]) * kScale - 1.0f;
+                                                c1[rowBase + x] = static_cast<float>(row[x][1]) * kScale - 1.0f;
+                                                c2[rowBase + x] = static_cast<float>(row[x][2]) * kScale - 1.0f;
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                        }
+
+                        waml::LearningModelBinding binding(slot.session);
+                        binding.Bind(slot.inName, recTensor);
+                        auto evalRes = slot.session.Evaluate(binding, L"");
+                        decodeWinMlRecEvalWithDict(
+                            evalRes, static_cast<int>(actualB),
+                            slot.outName, slot.dictKeys,
+                            [&](int b) -> float {
+                                const auto& pc = pieces[targetIndices[order[pos + static_cast<size_t>(b)]]];
+                                return static_cast<float>((std::min)(pc.contentW, evalW)) / static_cast<float>(evalW);
+                            },
+                            [&](int b, CtcDecodeOutput&& dec) {
+                                outVec[order[pos + static_cast<size_t>(b)]] = std::move(dec);
+                            });
+                    } catch (...) {
+                    }
+                    pos += actualB;
+                }
+            };
+
+            // 分支 A：用户显式指定了某个多语种扩展包（且本地已安装）时，零浪费一步直通该扩展语种！
+            bool usedExplicitExtPack = false;
+            if (effectiveScriptMode != "auto" && effectiveScriptMode != "cjk") {
+                if (auto* extSlot = m_winMl->ensureExtRecSlot(modelDir, effectiveScriptMode)) {
+                    m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
+                    std::vector<size_t> allIndices(pieces.size());
+                    std::iota(allIndices.begin(), allIndices.end(), 0u);
+                    evalExtRecOnIndices(*extSlot, allIndices, /*maxProbeWidthCap=*/0, pieceDecoded);
+                    detectedScript = effectiveScriptMode;
+                    usedExplicitExtPack = true;
+                }
+            }
+
+            if (!usedExplicitExtPack && !m_winMl->usingDirectMLGpu) {
                 std::vector<size_t> sortedIdx(pieces.size());
                 std::iota(sortedIdx.begin(), sortedIdx.end(), 0u);
                 std::sort(sortedIdx.begin(), sortedIdx.end(), [&](size_t a, size_t b) {
@@ -1614,7 +2121,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
                         pos += actualB;
                     }
                 }
-            } else {
+            } else if (!usedExplicitExtPack) {
             // DirectML GPU 4 档紧致甜点桶：[0]=16x160, [1]=16x320, [2]=4x640, [3]=2x960
             std::array<std::vector<size_t>, 4> tierPieces;
             for (size_t pi = 0; pi < pieces.size(); ++pi) {
@@ -1733,10 +2240,253 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
             LOG_DEBUG("DeepOcrEngine: rec buckets {}", bucketProfile);
             }
 
-            // 2) 二阶高精度 Server 精准复核（仅当用户开启 server 增强档位且存在低置信度疑难行时触发）：
+            // 1.5) 世界级跨语种零配置自动嗅探与早停路由（Auto Script Probe & Cascade）：
+            //      - 仅在 scriptMode == "auto" 且用户至少安装了 1 个扩展语种包时启用；
+            //      - 正常中/英文清晰截图 0.02ms 四重门控直接短路放行（0ms 额外开销、0 扩展模型加载）；
+            //      - 命中异常信号时按特征排序候选 + Top-3 限宽(<=480px) CPU 轻探针 + 命中即早停 + 650ms 低配机预算硬护栏；
+            //      - 胜出语种免重跑 det，直接全页重识并切换 detectedScript，实现「中文用户截韩/日/俄/西葡图零切换自动识译」。
+            if (!usedExplicitExtPack && effectiveScriptMode == "auto" && !pieces.empty()) {
+                std::vector<std::string> installedExtPacks;
+                installedExtPacks.reserve(4);
+                for (const char* pid : allScriptPackIds()) {
+                    if (isScriptPackModelPresent(modelDir, pid)) {
+                        installedExtPacks.emplace_back(pid);
+                    }
+                }
+                auto hasPack = [&](std::string_view id) -> bool {
+                    return std::find(installedExtPacks.begin(), installedExtPacks.end(), id) != installedExtPacks.end();
+                };
+
+                if (!installedExtPacks.empty()) {
+                    size_t validPieces = 0;
+                    float confSum = 0.0f;
+                    float expectedUnitsSum = 0.0f;
+                    float actualUnitsSum = 0.0f;
+                    size_t totalCjkHan = 0;
+                    size_t totalAsciiAlpha = 0;
+                    size_t totalJapaneseNo = 0;
+                    size_t totalKana = 0;
+                    size_t totalLatinDiac = 0;
+                    size_t totalAsciiWords = 0;
+                    size_t totalMixedCaseAnom = 0;
+                    bool iberianHint = false;
+
+                    for (size_t pi = 0; pi < pieces.size(); ++pi) {
+                        const float expU = (std::max)(1.0f, static_cast<float>((std::max)(1, pieces[pi].resizedW)) / 42.0f);
+                        expectedUnitsSum += expU;
+                        const auto& dec = pieceDecoded[pi];
+                        if (dec.chars.empty() || dec.confidence < DeepOcrConstants::kRecMinLineConfidence) {
+                            continue;
+                        }
+                        ++validPieces;
+                        confSum += dec.confidence;
+                        const auto gp = analyzeScriptGlyphs(dec.text);
+                        actualUnitsSum += gp.visualUnits;
+                        totalCjkHan += gp.cjkHan;
+                        totalAsciiAlpha += gp.asciiAlpha;
+                        totalJapaneseNo += gp.japaneseNo;
+                        totalKana += gp.kana;
+                        totalLatinDiac += gp.latinDiacritic;
+                        totalAsciiWords += gp.asciiWordCount;
+                        totalMixedCaseAnom += gp.mixedCaseAnomalousWords;
+                        if (!iberianHint && hasIberianOrExtendedLatinHint(dec.text)) {
+                            iberianHint = true;
+                        }
+                    }
+
+                    const float survivalRatio = static_cast<float>(validPieces) / static_cast<float>(pieces.size());
+                    const float mainAvgConf = (validPieces > 0) ? (confSum / static_cast<float>(validPieces)) : 0.0f;
+                    const float densityRatio = (expectedUnitsSum > 0.0f) ? (actualUnitsSum / expectedUnitsSum) : 1.0f;
+                    const float mixedCaseRatio = (totalAsciiWords >= 3)
+                        ? (static_cast<float>(totalMixedCaseAnom) / static_cast<float>(totalAsciiWords))
+                        : 0.0f;
+
+                    // 四重正交异常信号门控（高汉字占比且无真实日文假名/坍塌线索的中文表格/界面直接短路放行，0 额外开销）
+                    const bool sigJapaneseCue      = (totalKana >= 2) ||
+                                                     (totalJapaneseNo >= 1 && (densityRatio < 0.65f || totalCjkHan < 20));
+                    const bool clearlyChineseDoc   = (totalCjkHan >= 15 && survivalRatio >= 0.72f &&
+                                                      mainAvgConf >= 0.74f && densityRatio >= 0.45f &&
+                                                      !sigJapaneseCue);
+                    const bool sigSurvivalCollapse = (survivalRatio < 0.72f);
+                    const bool sigDensityCollapse  = (expectedUnitsSum >= 6.0f && densityRatio < 0.58f);
+                    const bool sigCyrillicGlitch   = (mixedCaseRatio >= 0.22f && totalCjkHan <= 2);
+                    const bool sigLowConf          = (!clearlyChineseDoc && (validPieces == 0 || mainAvgConf < 0.85f));
+                    const bool sigLatinCue         = (totalCjkHan <= 2 && totalAsciiAlpha >= 16 &&
+                                                      (iberianHint || totalLatinDiac >= 1));
+
+                    const bool shouldProbe = !clearlyChineseDoc && (
+                        (sigSurvivalCollapse && (hasPack("korean") || hasPack("japan") || hasPack("cyrillic"))) ||
+                        ((sigDensityCollapse || sigJapaneseCue) && (hasPack("japan") || hasPack("korean"))) ||
+                        (sigCyrillicGlitch && hasPack("cyrillic")) ||
+                        (sigLatinCue && hasPack("latin")) ||
+                        (sigLowConf && !installedExtPacks.empty()));
+
+                    if (shouldProbe) {
+                        // 信号导向候选优先级排序（先试最可能 1 个 + 热槽复用，命中即早停，对低配本极其友好）
+                        std::vector<std::string> probeOrder;
+                        auto pushIfInstalled = [&](std::string_view id) {
+                            if (hasPack(id) && std::find(probeOrder.begin(), probeOrder.end(), id) == probeOrder.end()) {
+                                probeOrder.emplace_back(id);
+                            }
+                        };
+                        if (sigCyrillicGlitch) pushIfInstalled("cyrillic");
+                        if (sigJapaneseCue || (sigDensityCollapse && totalCjkHan >= 2)) pushIfInstalled("japan");
+                        if (sigSurvivalCollapse) pushIfInstalled("korean");
+                        if (sigLatinCue) pushIfInstalled("latin");
+                        // 若有已热驻留的扩展槽，紧随强信号后优先复用以省 ~25ms 加载
+                        if (m_winMl->extRec.session && !m_winMl->extRec.scriptId.empty()) {
+                            pushIfInstalled(m_winMl->extRec.scriptId);
+                        }
+                        for (const auto& pid : installedExtPacks) {
+                            pushIfInstalled(pid);
+                        }
+                        // 纯高置信拉丁西/葡线索只探 latin，绝不白探韩/日/俄
+                        if (sigLatinCue && !sigSurvivalCollapse && !sigDensityCollapse && !sigCyrillicGlitch && !sigLowConf && !sigJapaneseCue) {
+                            probeOrder.clear();
+                            pushIfInstalled("latin");
+                        }
+
+                        // 挑选 Top-3 最具代表性的清晰宽行作为轻探针（低配机算力硬约束）
+                        std::vector<size_t> probeIndices(pieces.size());
+                        std::iota(probeIndices.begin(), probeIndices.end(), 0u);
+                        std::sort(probeIndices.begin(), probeIndices.end(), [&](size_t a, size_t b) {
+                            const int scoreA = (pieces[a].contentW <= 560) ? pieces[a].contentW : (560 - (pieces[a].contentW - 560) / 8);
+                            const int scoreB = (pieces[b].contentW <= 560) ? pieces[b].contentW : (560 - (pieces[b].contentW - 560) / 8);
+                            return scoreA > scoreB;
+                        });
+                        if (probeIndices.size() > 3u) probeIndices.resize(3u);
+
+                        auto scoreSubset = [&](const std::vector<CtcDecodeOutput>& decs,
+                                               std::string_view scriptId,
+                                               float& outAvgConf,
+                                               bool& outHasTargetScript,
+                                               size_t& outLatinDiac) -> float {
+                            size_t okLines = 0;
+                            float cSum = 0.0f;
+                            float expU = 0.0f;
+                            float actU = 0.0f;
+                            size_t targetHits = 0;
+                            size_t words = 0;
+                            size_t anom = 0;
+                            outLatinDiac = 0;
+                            for (size_t k = 0; k < probeIndices.size() && k < decs.size(); ++k) {
+                                const auto& pc = pieces[probeIndices[k]];
+                                const int effW = (std::min)(pc.resizedW, 480);
+                                expU += (std::max)(1.0f, static_cast<float>((std::max)(1, effW)) / 42.0f);
+                                const auto& d = decs[k];
+                                if (d.chars.empty() || d.confidence < DeepOcrConstants::kRecMinLineConfidence) continue;
+                                ++okLines;
+                                cSum += d.confidence;
+                                const auto gp = analyzeScriptGlyphs(d.text);
+                                actU += gp.visualUnits;
+                                words += gp.asciiWordCount;
+                                anom += gp.mixedCaseAnomalousWords;
+                                outLatinDiac += gp.latinDiacritic;
+                                if (scriptId == "korean") targetHits += gp.hangul;
+                                else if (scriptId == "japan") targetHits += gp.kana;
+                                else if (scriptId == "cyrillic") targetHits += gp.cyrillic;
+                                else if (scriptId == "latin") targetHits += gp.latinDiacritic;
+                            }
+                            outAvgConf = (okLines > 0) ? (cSum / static_cast<float>(okLines)) : 0.0f;
+                            const float surv = probeIndices.empty() ? 0.0f : (static_cast<float>(okLines) / static_cast<float>(probeIndices.size()));
+                            const float dens = (expU > 0.0f) ? (std::min)(1.0f, actU / expU) : 0.0f;
+                            const float glitch = (words >= 2) ? (static_cast<float>(anom) / static_cast<float>(words)) : 0.0f;
+                            if (scriptId == "korean") outHasTargetScript = (targetHits >= 2);
+                            else if (scriptId == "japan") outHasTargetScript = (targetHits >= 2);
+                            else if (scriptId == "cyrillic") outHasTargetScript = (targetHits >= 4);
+                            else if (scriptId == "latin") outHasTargetScript = (targetHits >= 2);
+                            else outHasTargetScript = true;
+                            return outAvgConf * (0.35f + 0.35f * surv + 0.30f * dens) - 0.25f * glitch;
+                        };
+
+                        std::vector<CtcDecodeOutput> mainProbeDecs;
+                        mainProbeDecs.reserve(probeIndices.size());
+                        for (size_t idx : probeIndices) mainProbeDecs.push_back(pieceDecoded[idx]);
+                        float mainSubConf = 0.0f;
+                        bool mainHasTarget = true;
+                        size_t mainSubDiac = 0;
+                        const float mainScore = scoreSubset(mainProbeDecs, "cjk", mainSubConf, mainHasTarget, mainSubDiac);
+
+                        constexpr long long kAutoProbeBudgetMs = 650;
+                        const auto tProbeStart = std::chrono::steady_clock::now();
+                        std::string winnerScript;
+                        float bestScore = mainScore;
+
+                        for (const auto& candId : probeOrder) {
+                            const long long elapsedProbeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::steady_clock::now() - tProbeStart).count();
+                            if (elapsedProbeMs >= kAutoProbeBudgetMs && !winnerScript.empty()) {
+                                break;
+                            }
+                            if (elapsedProbeMs >= kAutoProbeBudgetMs + 250) {
+                                break;
+                            }
+                            auto* extSlot = m_winMl->ensureExtRecSlot(modelDir, candId);
+                            if (!extSlot) continue;
+                            m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
+
+                            std::vector<CtcDecodeOutput> candDecs;
+                            const int probeWidthCap = (candId == "latin") ? 640 : 480;
+                            evalExtRecOnIndices(*extSlot, probeIndices, /*maxProbeWidthCap=*/probeWidthCap, candDecs);
+
+                            float candConf = 0.0f;
+                            bool candHasTarget = false;
+                            size_t candDiac = 0;
+                            const float rawCandScore = scoreSubset(candDecs, candId, candConf, candHasTarget, candDiac);
+                            if (!candHasTarget || candConf < 0.78f) continue;
+
+                            // 拉丁扩展包专项加权：基础 ch_PP-OCRv4 词表不含西/葡/法/德变音符（ñ/ç/ã/¿ 等），
+                            // 即使主包输出高置信去音 ASCII，只要 latin 扩展包以高置信真实还原 >=2 个变音符即可胜出。
+                            float effectiveCandScore = rawCandScore;
+                            bool beatMain = false;
+                            if (candId == "latin") {
+                                const size_t diacGain = (candDiac > mainSubDiac) ? (candDiac - mainSubDiac) : 0;
+                                if (diacGain >= 2 && candConf >= 0.90f &&
+                                    candConf >= mainSubConf - 0.035f &&
+                                    rawCandScore >= mainScore - 0.035f) {
+                                    effectiveCandScore = (std::max)(rawCandScore, mainScore) +
+                                                         0.025f * static_cast<float>((std::min<size_t>)(diacGain, 6u));
+                                    beatMain = true;
+                                }
+                            } else {
+                                beatMain = (rawCandScore >= mainScore + 0.06f);
+                            }
+
+                            if (beatMain && effectiveCandScore > bestScore) {
+                                bestScore = effectiveCandScore;
+                                winnerScript = candId;
+                                // 强早停门禁：单次命中压倒性高置信即刻锁定胜者，绝不浪费低配机 CPU 试跑其余包
+                                if (candConf >= 0.90f && (effectiveCandScore >= mainScore + 0.12f || candId == "latin")) {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (!winnerScript.empty()) {
+                            if (auto* winSlot = m_winMl->ensureExtRecSlot(modelDir, winnerScript)) {
+                                m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
+                                std::vector<size_t> allIndices(pieces.size());
+                                std::iota(allIndices.begin(), allIndices.end(), 0u);
+                                evalExtRecOnIndices(*winSlot, allIndices, /*maxProbeWidthCap=*/0, pieceDecoded);
+                                detectedScript = winnerScript;
+                                LOG_INFO("DeepOcrEngine: auto script router switched to '{}' (mainScore={:.3f} -> extScore={:.3f})",
+                                         winnerScript, mainScore, bestScore);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (detectedScript == "cyrillic") {
+                for (auto& dec : pieceDecoded) {
+                    normalizeCyrillicLatinHomoglyphs(dec);
+                }
+            }
+
+            // 2) 二阶高精度 Server 精准复核（仅当用户开启 server 增强档位、处于中英主语种且存在低置信度疑难行时触发）：
             //    GPU 优先使用唯一 1 个轻量 2x640 甜点固定桶；无 GPU 优雅回退单 CPU 会话；
             //    严格执行单向择优门禁，且同样受 120s 闲置自动卸载守护线程 100% 回收归零
-            if (m_winMl->serverCascadeEnabled) {
+            if (m_winMl->serverCascadeEnabled && detectedScript == "cjk") {
                 const auto tRefineStart = std::chrono::steady_clock::now();
                 struct HardPieceCandidate {
                     size_t pieceIdx = 0;
@@ -2064,10 +2814,11 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image) {
         runStats.serverRefinedCount = serverRefinedCount;
         runStats.activeSessions = sessCnt;
         runStats.bucketProfile = bucketProfile;
+        runStats.detectedScript = detectedScript;
         m_lastRunStats = std::move(runStats);
     }
-    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
-             assembled.size(), detectedQuadCount, packedStripCount, serverRefinedCount,
+    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, script={}, serverRefined={}) on {}x{} in {} ms (load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
+             assembled.size(), detectedQuadCount, packedStripCount, detectedScript, serverRefinedCount,
              bgr.cols, bgr.rows, totalMs, loadMs, detMs, packMs, recMs - refineMs, refineMs, sessCnt);
     return assembled;
 }

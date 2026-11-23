@@ -18,6 +18,7 @@ const STATIC_GATE_SCRIPTS = [
   'check-css-variables.js',
   'check-typography.js',
   'check-trim-workingset.js',
+  'check-path-encoding.mjs',
 ];
 
 function runGateScript(scriptName) {
@@ -80,7 +81,7 @@ async function main() {
     console.error(`[ERROR] 共 ${failedCount}/${STATIC_GATE_SCRIPTS.length} 项静态门禁失败 (${wallMs}ms)`);
     process.exit(1);
   }
-  console.log(`[OK] 6 重并发静态规范门禁全部通过 (${wallMs}ms)`);
+  console.log(`[OK] ${STATIC_GATE_SCRIPTS.length} 重并发静态规范门禁全部通过 (${wallMs}ms)`);
 }
 
 main();

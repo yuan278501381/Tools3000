@@ -6,6 +6,79 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 社区综合十项旗舰升级全栈落地：8 语种跨代码页路径治理、剪贴板零黑屏、QuickLook Win11 根治、手势切窗与 8 秒无语彩蛋、DialogEnhancer 除 Bug 与按需内搜、File Locksmith、搜索 3 档内存与 Live Watch 实时刷新、应用/命令融合排序、方案 C 脱敏反馈通道
+- **核心架构决策与实机排坑控制点**：
+  1. **全 8 语种跨代码页 Unicode 路径全链路治理 + 第 7 重 CI 静态门禁 (`WinUtils.{h,cpp}`, `PluginManager.{h,cpp}`, `service/main.cpp`, `MftParser.cpp`, `CaptureDelayLoadHook.cpp`, `ui/scripts/check-path-encoding.mjs`)**：
+     - *根因*：Windows 非 UTF-8 ACP 代码页（如 GBK 936 / Shift-JIS 932）下对含中文/日韩/俄语的 `std::filesystem::path` 调用 `.string()` 会产出本地 ANSI 字节或抛 `EILSEQ`，随后再被 `utf8ToWstring` 解码成乱码导致插件目录消失；同时 `LoadLibraryA`/`CreateFileA` 及 spdlog 窄路径打开均无法兼容跨代码页路径；
+     - *根治*：统一沉淀 `WinUtils::pathToUtf8()` / `utf8ToPath()` 与 `PluginManager::loadPlugins(const std::filesystem::path&)`，全库替换全部 ANSI 路径/库调用并新增纯 `CreateFileW` 的 `WideServiceRotatingFileSink`；接入第 7 重并发门禁 `check-path-encoding.mjs`（382 个原生源码文件 0 违规）。
+  2. **剪贴板历史呼出黑屏 1~2 秒根治 + SearchWindow 防黑闪 (`ClipboardWindow.{h,cpp}`, `ClipboardApp.tsx`, `SearchWindow.{h,cpp}`)**：
+     - *实锤根因*：旧 `ClipboardWindow::hide()` 立即 `put_IsVisible(FALSE)` + `TrySuspend()` + `trimWorkingSet()` 拆毁 SwapChain 换出物理页，下次 `show()` 未等首帧提交就 `ShowWindow(SW_SHOW)` 且叠加 `DWMSBT_TRANSIENTWINDOW` + `DwmExtendFrameIntoClientArea({1,1,1,1})` 造成 0-Alpha 死黑屏；
+     - *根治*：`ClipboardWindow` 与 `SearchWindow` 统一改为隐藏后 25s 延迟挂起（`IDT_DEFERRED_SUSPEND`）保活高频秒开、`ClipboardWindow` 5 分钟闲置再深度销毁；冷启或挂起唤醒走 `WS_EX_LAYERED` `alpha=0` + `SW_SHOWNOACTIVATE` 等前端双 `rAF` 回告 `clipboard.frameReady` 后再原子显形（附 450ms/1200ms 兜底定时器），并移除 `DWMSBT_TRANSIENTWINDOW` 冲突。
+  3. **QuickLook Win11 7 项根因彻底根治 + 压缩包/字体预览 + FFmpeg 短命抽帧 (`WinUtils.cpp`, `ArchivePreview.*`, `FontPreview.*`, `MediaProbeWorker.*`, `QuickLookWindow.*`, `QuickLookArchiveViewer.tsx`, `QuickLookFontViewer.tsx`)**：
+     - 彻底重写 `getSelectedExplorerFile()`（`IFolderView2::GetSelection` + `SIGDN_FILESYSPATH` + `FindWindowSW(SWC_DESKTOP)` + 沿 `gti.hwndFocus` 溯源 `ShellTabWindowClass` 兼容 Win11 多标签/图库/主页/桌面/超长路径，移除 `SysTreeView32` 误拦截）；
+     - 废除运行期动态 `SetVirtualHostNameToFolderMapping` + `DENY_CORS`，改为 `Navigate()` 前一次性注册 `WebResourceRequested` + 零锁 `BoundedFileIStream` / `MemoryBufferIStream`（完整支持 HTTP `Range/206`、单文件防越权 token、`.ttc` 内存单字形抽离、WIC 扩展图兜底），并新增短命隔离 `--worker=media-probe` 复用已有 FFmpeg DLL 探测音视频与抽帧（退场即 100% 释放内存）。
+  4. **鼠标手势原生 `<3ms` 切窗 + 停顿取消 + 8 秒红底白三点无语彩蛋复活 + Lua 字节码缓存 (`WinUtils.*`, `GestureAction.*`, `GestureInputPolicy.h`, `GestureEngine.*`, `GestureTrailOverlay.*`, `LuaEngine.*`, `tests/unit/test_gesture.inc`)**：
+     - `RunProgram` 支持「激活已有窗口或启动 / 聚焦切换」+ 命令行参数特征匹配（精准区分 Chrome `--user-data-dir` 多开实例）；新增 0 鼠标钩子开销 `Pause-to-Cancel` 停顿取消；`LuaEngine` 落地 64 条 LRU `lua_dump` 字节码缓存与原生切窗 API；
+     - **8 秒无语彩蛋复盘与修复**：查明旧代码看门狗 `elapsedMs > 8000` 提前无条件砍断手势致使红底白三点永远无法触达；改为「10 秒无新事件僵死熔断 + 30 秒总上限兜底」，校准阈值 `kGestureSpeechlessThresholdMs = 8000`，补齐 `m_speechlessShownDuringTracking` 防 1ms 竞态误执行、穿透普通提示/渐隐开关与 680ms 清晰停留，并在 `WatchdogAllows8sSpeechlessEasterEggAndAbortsStale` 锁死防回退。
+  5. **`DialogEnhancer` 除 Bug + 0 空闲唤醒优化 + 按需内嵌即搜即跳 (`SearchPipeClient.*`, `DialogEventAndLayoutPolicy.h`, `DialogNavigator.*`, `DialogEngine.*`, `DialogRibbonOverlay.*`, `ExplorerTracker.*`, `DialogEnhancerPage.tsx`, `tests/integration/dialog_navigator_integration.cpp`)**：
+     - 实机 E2E 暴露并根治 3 处关键 Win11 真机暗坑：① `normalizeDialogUiLabel` 用无 C-locale 依赖的 `foldUnicodeLowerInvariant` 替代 `std::towlower`，修复 `"C"` locale 下俄语大写 `Сохранить` 匹配失败；② `classifyDialogMode` 调整为确定按钮文案优先于 `!hasFileTypeCombo1136`，修复 Win11 现代 `IFileOpenDialog`/`IFileSaveDialog` 未设 `SetFileTypes` 时被误判为 `PickFolder`；③ `navigateModernDialog` 恢复零前台焦点 `Edit 41477` 直达通道并配 20ms 步进实测面包屑验证闭环（失败再激活可见 `Edit 41477`），真机跨进程四模式（Folder / Open / Save / Legacy `OFN_EXPLORER`）4/4 PASS 且 Save As `draft.txt` 铁壁无损；内嵌搜索经独立 `SearchPipeClient` 严守 `DEMAND_START`，解除设置页对 `capture.browseDirectory` 的跨模块耦合改用 `dialog.browseDirectory`。
+  6. **File Locksmith 文件占用解锁 (`FileLocksmithEngine.*`, `FileLocksmithWindow.*`, `GeneralPage.tsx`, `installer.iss`)**：
+     - 零常驻双引擎内核（Restart Manager + `CancelSynchronousIo` 护栏 `NtQuerySystemInformation(64)` + `TH32CS_SNAPMODULE` + 系统关键进程保护）+ 纯原生 Direct2D 独立弹窗 `--unlock "<path>"`（0 常驻）+ 纯 HKCU 右键菜单（支持「仅按住 Shift+右键显示」开关与卸载清理）+ 搜索结果右键直达。
+  7. **搜索服务 3 档内存策略 + Live Watch 实时显示新增文件 + 应用/37 条极客命令/`b:` 书签与 Frecency 融合排序 (`service/main.cpp`, `MftParser.*`, `FileIndexStore.*`, `ExternalApiPolicy.h`, `SystemCommandCatalog.*`, `InstalledAppIndex.*`, `BrowserBookmarkIndex.*`, `SearchPlugin.cpp`, `useSearchEngine.ts`, `SearchApp.tsx`, `SearchFooter.tsx`, `SearchPage.tsx`)**：
+     - 3 档可配置内存策略：`full_resident` / `idle_trim`（默认，释缓缩容保持 USN 常驻 0 漏变更）/ `idle_stop`（刷盘最新 `NextUsn` 退场归零 0 MB，下次唤醒毫秒增量追平），配实时内存观测与手动释放/停服（修复 `SearchPage` 合并 `running ?? available` 状态回显 Bug）；
+     - 新增 **Live Watch 实时刷新**：服务端零额外开销暴露只读 `getIndexGeneration`（不触 `markUserActivity()`，不破坏内存休眠），插件严守 `autoStart=false`，前端以 6 重零打扰护栏（仅窗口可见/非全文/非输入法/非右键菜单）850ms 轻量探测并原地无闪刷新（保留选中行与滚动位置），同时在设置页与搜索底栏提供开关；
+     - 离线轻索引开始菜单/便携应用 + 37 条系统极客命令（含 `env`）+ `b:`/`bm:` 书签前缀（保留 `b:\` 盘符）+ 3 档优先级策略与 Frecency 衰减，修复 `SearchApp.tsx` 旧默认 `sortField='modified'` 覆盖后端融合排序的暗坑。
+  8. **应用内问题反馈与 10 维隐私脱敏诊断通道 — 方案 C 双轨 (`FeedbackDiagnosticService.*`, `FeedbackModal.{tsx,css}`, `scripts/feedback-worker/`)**：
+     - 本地零依赖生成脱敏 `.zip` 诊断包（10 维正则脱敏覆盖凭证/Token/邮箱/手机号/内网 IP/用户名路径/剪贴板零采集）+ 透明预览；支持配置 Cloudflare Worker 中继（附 `scripts/feedback-worker/` 3 步部署参考脚本与 SHA-256 PoW 防刷）实现无需登录一键直交 GitHub Issue，未配置中继时自动降级本地 ZIP + 预填 GitHub Issue 链接。
+  9. **全栈回归基线**：前端 `tsc -b` + ESLint + **7 重并发静态门禁**（8 套前端 JSON、6 套 956 条原生词典、738 日志模板、210 CSS 变量、排版底线、28 处 `trimWorkingSet`、382 文件零跨代码页路径违规）+ Vitest **37/37 文件 / 247/247 PASS** + Vite 构建全绿；新增特性实机 E2E 门禁 (`scripts/verify-new-features-e2e.ps1`) 含 14 套件 17 组新单测、真机 Win32 对话框 4/4 模式、8 语种 Unicode 路径 `MediaProbeWorker` 实测全部 PASS。
+
+### [2026-11-23] 全 8 语种跨语种零切换离线 OCR 与原位翻译系统 + 低配机单槽互斥架构落地 (`DeepOcrEngine*`, `OcrEngine*`, `OcrWorker*`, `PluginEntry.cpp`, `PinContextMenuModel*`, `PinWindow*`, `OcrPage.tsx`, 8 套前端 JSON, 6 套原生词典, `tests/fixtures/ocr/multilang/`)
+- **核心产品与架构权衡（彻底解耦「软件界面语言」与「屏幕源图语种」，兼顾低配办公本）**：
+  1. **主力基座零退化选型**：实机对比 `ch_PP-OCRv4_rec` (10.35MB, `885ms`, `1420MB`) 与 `ch_PP-OCRv5_rec_mobile` (18,383 词表, `1011ms +14%`, `1753MB +333MB`)，确立 **保留 `ch_PP-OCRv4_rec` 为简中/繁中/英主力基座**，避免拖累普通中英用户与低配机；按文字体系 MECE 新增 4 个复用同一套 `det+cls`、内嵌完整词典的按需轻扩展包：`japan` (`japan_PP-OCRv4_rec_mobile.onnx`, 9.3MB, IR8)、`korean` (`korean_PP-OCRv5_rec_mobile.onnx`, 12.9MB, IR10->8)、`cyrillic` (`cyrillic_PP-OCRv5_rec_mobile.onnx`, 7.7MB, IR10->8)、`latin` (`latin_PP-OCRv5_rec_mobile.onnx`, 7.5MB, IR10->8)，双源 ModelScope（`modelscope.cn` / `modelscope.ai`）按需下载；
+  2. **WinML 加载 PP-OCRv5 ONNX 关键兼容突破 (`DeepOcrEngine::clampOnnxIrVersionForWinMl`)**：实测官方 PP-OCRv5 ONNX 均为 `ir_version=10, opset=14`（25 个基础算子），直接加载被 Win10/11 原生 WinML 拒绝 (`rc=1`)；下载落盘校验阶段原位将顶层 Protobuf field 1 `ir_version` 无损钳位至 `8` (`0x08 0x0A -> 0x08 0x08`)，100% 原生 WinML 满速运行；
+  3. **低配机护航架构与四重正交自动嗅探 (`DeepOcrEngine.cpp`)**：
+     - 扩展识别槽采用单一互斥 CPU SIMD 动态 32 对齐微批会话（`CloseModelOnSessionCreation(true)`，加载新扩展包先释放旧槽，0 DirectML 显存峰增量）；
+     - `scriptMode="auto"` 下以四重正交异常门控（存活率坍塌、密度坍塌含空格 `0.30f` 视觉宽、多假名/低汉字日文线索防图标单 `の` 误触、西里尔伪拉丁畸变排除标准 CamelCase/PascalCase、去 3 字母域名碰撞词的欧陆变音符词形）+ 高汉字占比中文主文档零探针短路 + 信号导向排序 + Top-3 限宽探针 + 命中即早停 + `650ms` 低配机时间预算护栏；胜出语种免重跑 `det` 直接全页重识；俄语路径内置西里尔-拉丁视觉同形字上下文净化（如 `DireсtML -> DirectML`）；
+  4. **全栈透传与极客兜底体验**：
+     - 独立短命 `OcrWorker` 二进制协议升级至 `kProtocolVersion = 3u`，透传 `scriptMode` 并回传 `detectedScript`；`OcrEngine` 缓存键编入 `scriptMode + installedScriptPacksSignature()` 严防装包/切语种串缓存；
+     - 贴图右键「文字划选与翻译 -> 识字语种」新增 3 级直切子菜单（单张覆写并自动重识/自动无缝重译）；设置页 `OcrPage.tsx` 新增多语种识别路由与 4 扩展包微晶管理卡（支持一键全下/单包下删），并补齐 Windows OCR 下拉遗漏的 `ru-RU`/`pt-BR`/`es-ES`（8 语种 100% 对齐）；
+  5. **实机端到端全维验收数据**：
+     - 真实 HTTPS 下载全部 4 扩展包 + IR 钳位 100% 通过；
+     - 全 5 张多语种样本（`tests/fixtures/ocr/multilang/`）在默认 `auto` 零切换下 5/5 精确路由（繁中 `cjk` 0.944、日文 `japan` 0.980、韩文 `korean` 0.998、俄文 `cyrillic` 0.998、西葡 `latin` 0.9995），连续横跨 5 套模型内存恒定平坦（`~1410 MB`）、卸载归落 `~77~116 MB`；
+     - 中国用户 `zh-CN` 环境零切换将韩/日/俄/西葡 4 张外语图端到端原位翻译为简体中文，4 张译图均经亲眼视觉终审达标；
+     - 安装全部 4 扩展包后重跑原 18 张高清中/英基准图：**18/18 全部 `cjk`（0 误切、0 扩展会话加载）**，峰值私有内存 **`1423.5 MB`**（0 抬升），工作集卸载归落 `3.2 MB`，`postman` 热跑 `821 ms`（`sessions=5`）；关联 C++ 回归 **217/217 PASS**（含协议 v3 `WorkerIsolationTest`），前端 Vitest + 6 重并发静态门禁 + Vite 生产包全绿。
+
+### [2026-11-23] 18 图双维全量实测基准 + 8 张 2K/1080p 原生高清样本升级 + DirectML 互斥大桶省 495 MB + 高分屏原位翻译通用精修 (`DeepOcrEngine.cpp`, `InPlaceTranslateEngine.cpp`, `tests/fixtures/translate/`, `tests/unit/test_live_ocr.inc`, `tests/unit/test_capture.inc`)
+- **测试样本高清化溯源与实测验证**：
+  1. **样本模糊成因与真实用户体验定性**：此前聊天窗口上传的大屏截图被压缩为最长边 `1024px`，将 12px 桌面汉字压成 `6~8px` 糊点；Tools3000 真实截图/贴图/剪贴板直读 1:1 物理像素，不受影响。已从本机 `%LOCALAPPDATA%\Tools3000` 找回并视觉终审确认 **8 张原生 2K/1080p 无损原图**（`522x1683` ~ `2572x1896`，含 `2512x1560` 全区域零泄密无痕脱敏版 `postman_api_dark_sanitized.png`）替换入库 `tests/fixtures/translate/`；升级后该 8 图核心锚点命中率达 **48/48 (100%)**，`hackernews` 均置信度 `0.847 -> 0.985`、`sap_b1_form_designer` `0.736 -> 0.885`、`postman` `0.872 -> 0.949`。
+  2. **离线 OCR DirectML 峰值内存削减 ~495 MB (`src/ocr/DeepOcrEngine.cpp`)**：`WinMlContext::ensureDetSession` 对横屏大图 (`1280x1024`) 与竖屏长图 (`960x1280`) 两个重型 DirectML 检测桶实施互斥单活 + `IDXGIDevice3::Trim()`（小桶 `960x640` 永久常驻），将全 18 图进程内峰值私有提交由 **`1915.7 MB` 直降至 `1420.5 MB`（-25.8%）**，卸载后回落至 `Private=92.6 MB`（回收 94.5%）/`WS=3.0 MB`（回收 99.5%）；线上主进程经短命 `OcrWorker` 进程隔离继续维持 `0` DirectML 会话。
+  3. **高分屏 2K 原位翻译 5 项通用底层精修 (`src/capture/InPlaceTranslateEngine.cpp`, `tests/unit/test_capture.inc`)**：
+     - 4 向墨水封顶擦除上限升级为行高自适应（`maxExpandX = clamp(0.45*h, 8, 22)`，`maxExpandY = clamp(0.25*h, 4, 12)`），根治 2K 高分屏首尾汉字残影；
+     - 截断省略号（`...`/`…`）结尾行紧邻单空格时间戳无条件剥离右列时间戳（根治 `... 8d` 粘连）；
+     - 段落聚类中短 UI/独立动作词宽限度全部改为行高比例（DPI 无关）并拦截列表符与带 `>`/`v` 树形折叠箭头的 API 节点（如 `> POST ProductionOrders Copy`）；
+     - 新增 3D 垂直渐变按钮/光照渐变逐行左右扫描线保真擦除（`tryFillRectWithScanlineGradient`）与平缓渐变步进差分探边防误刹；
+     - `fitParagraphTextLayout` 新增单无空格拉丁词防腰斩铁律（`isSingleUnbreakableLatinWord`），根治窄框 `question` 被拦腰劈断成 `quest / ion`。
+  4. **已识别的多语种 OCR 模型包演进缺口（待产品决策）**：当前 3 个按需下载模型包为 ① PP-OCRv4 基础识别包（`mobile`, 15.5MB）、② PP-OCRv4 高精度增强包（`server`, 86.3MB）、③ MI-GAN 512 AI 改字背景修复包（26.8MB）；`ppocr_keys_v1.txt`（6,623 字符）100% 覆盖简中/繁中/英语，西/葡缺 6 个变音字母（`ñ/ç/ã/õ/Á/Ñ`），日文假名/韩文谚文/俄文西里尔字母几乎未覆盖，且 `OcrPage.tsx` 语种下拉未含 `ru-RU/pt-BR/es-ES`。
+  5. **全量验证**：`InPlaceTranslateEngineTest` + `*Capture*` + `*Pin*` + `LiveTextOcrTest` + `WorkerIsolationTest` **214/214 PASSED**，18 图高清 OCR 基准 **100% PASS**，6 重并发静态门禁 **604ms 全绿**。
+
+### [2026-11-23] 截图原位翻译人因排版 6 维世界级架构重构 + 9 场景合规回归样本集入库 (`InPlaceTranslateEngine.{h,cpp}`, `tests/unit/test_capture.inc`, `tests/fixtures/translate/`)
+- **实机四场景对比图暴露的 6 大底层通用根因与第一性原理根治（零硬编码、零过拟合）**：
+  1. **对齐失控与满宽行误居中（侧边栏红框行 / NYTimes / Yahoo 卡片飘移）**：
+     - *根因*：`computeSafeLayoutRect` 曾把触及画布左右边缘 (`x=2` / `x=W-2`) 直接置为 `leftObstacleHit/rightObstacleHit = true`，令满宽左对齐列表行触发 `boundedSymmetricCenter` 飞向正中；且未利用垂直列结构；
+     - *根治*：彻底禁止画布边缘充当按钮边框；确立**格式塔左对齐列守恒定律 (`hasLeftAlignedColumnPeer`)**（只要垂直邻近 `<=450px` 存在左边缘对齐 `<=8px` 且非同宽同轴居中堆叠的兄弟块，强制 `isCentered=false` 锚定 `baseRect.x`）+ 满宽行禁居中门限；对称扩大纯色大留白居中探测半径至 `240px` 并新增低反差纯色容器边缘检测（`complexity<=4.0f` 全列 `>=88%` 跃变 `>=14`）与 1px UI 按钮/表格细边框刹车（`complexity<=7.5f` 全列 `>=70%` 偏离 `>=26`）。
+  2. **擦除残渣「毛边」与单行渲染「腰斩截底」（NYTimes 顶栏 / 图表 / 侧边栏 / Yahoo Logo）**：
+     - *根因*：① `eraseParagraphBackground` 硬编码 `padX=2, padY=1`，无法覆盖 OCR 紧包框漏掉的首尾字母外延墨水（如 `W` 左撇、`B` 竖杆、`e` 右缘、`!` 感叹号）；② 单行渲染用含 35% 透明 leading 的 `DWRITE_TEXT_METRICS.height` 死卡 OCR 紧包框，导致英文译中文系统性缩水 25% 且字形下缘被 `PushAxisAlignedClip` 截断；
+     - *根治*：纯色/渐变背景全面升级为 **4 向像素级墨水连通封顶擦除 (`computeInkSealedEraseRect`)**（受障碍物硬界与贯穿型竖/横边框墙刹车保护，自动吸收首尾外延残墨至纯背景空白封顶，既 100% 清零毛边又零误伤下拉箭头 `v`、文件夹图标与表格线）；单行 `fitParagraphTextLayout` 改用可见墨水高度 `min(m.height, fontPx * 1.02f)` 判定溢出，`renderParagraphOntoBgr` 通过 `IDWriteTextLayout::GetLineMetrics` 将可见字形墨水中轴精确对齐原图 `(inkTopY + inkBottomY) * 0.5f`，并借用上下最多 4px 洁净透明缓冲垫（`alpha=0` 零污染背景）彻底杜绝截底。
+  3. **多行大标题字号/字重腰斩 + DirectWrite 双重行高虚胖截断**：
+     - *根因*：① `renderTranslatedCanvas` 原先传 `sampleRect = lineRects.front()` 却误传整段多行 `para.originalText` 与全段 `para.charBoxes` 给 `TextReplaceEngine::extractStyle`，致 `emFromW` 被严重拉低、所有多行大标题缩成小细字；② 多行布局调用 `SetLineSpacing(PROPORTIONAL, 1.24f)` 叠乘雅黑自带 `1.34x` 变成荒诞 `1.66x` 行距，致双行紧凑卡片标题被冤枉判定溢出而打省略号丢字；
+     - *根治*：`TranslationParagraph` 新增逐行 `lineTexts` / `lineCharBoxes`，`extractParagraphStyle` 逐行独立采样取稳健中位数 + 施加几何行高物理上限（`<=1.06x`，短徽章 `<=0.94x` 杜绝图标污染变巨无霸）+ 英文->CJK 克制视觉等高补偿 + **同列未翻译原生目标语兄弟行字号标尺** + 层级保护字号归一；多行行距切换为确定性 `DWRITE_LINE_SPACING_METHOD_UNIFORM(fontPx * 1.22f, fontPx * 0.96f)`；复杂照片背景圆角托底改贴实际排版文字包围盒消除长黑尾巴。
+  4. **多栏卡片穿插撕裂 + 居中多行标题分裂 + 眉标误吞 + 照片背景误断**：
+     - *根治*：`buildTranslationParagraphs` 由仅查 `result.back()` 升级为同 `layoutRegionId` 内倒序回溯近 12 段寻找最佳父段；`canMergeIntoParagraph` 新增同中轴居中多行标题合并（`preferCentered=true`）与全大写短眉标防火墙（`OPINION` 绝不向下吞并大标题）；`hasVisualSeamBetween` 对高方差照片纹理背景（`stdDev > 18`）自动免疫背景跳变、小字全行逐行中位数前景采样防 JPEG 噪点误断。
+  5. **同行尾部时间戳剥离 + 微重叠去重 + 次级灰字无损保色 + 噪声防火墙**：
+     - *根治*：预处理自动剥离同行尾部独立紧凑时间戳（如 `...Artwork C...  8d` 剥出 `8d` 写入 `detachedObstacleRects` 自动避障）与 OCR 切片微重叠前缀（如 `...Voted` + `ed  Precinct Maps`）；`ensureReadableTextBgr` 保色阈值由 `0.32f -> 0.16f` 并在低对比时温和插值推升至 `0.28f`（根治深色模式次级灰字变刺眼纯白）；`looksLikeIdentifierOrSerialCode` 增补首字母大写产品名+尾数字（`Tools3000`/`Win11`，排除小写 `for2026`），`isTranslatableText` 拦截无多字母单词的孤立单字母噪声/坐标（`"Q"`/`"s"`/`"257 D, 178 R"`）。
+  6. **合规翻译回归样本集入库 (`tests/fixtures/translate/`)**：
+     - 归档 10 张涵盖暗色侧边栏、NYTimes、Yahoo、SAP B1、Hacker News、AlternativeTo、暗色技术文档、云联管理端、工业装箱卡与脱敏版暗色 Postman API 界面的合规测试原图及说明文档（Postman 样本已将所有公/私网 IP、用户名、密码、SessionId 与项目名全面替换为 RFC 5737 测试网段 `192.0.2.10`/`198.51.100.x` 与虚构占位符，零泄密风险），并在 `tests/unit/test_capture.inc` 新增回归断言 2.10~2.12 与全场景实图验收闭环。
+
 ### [2026-11-23] 应用内一键更新「点安装闪退且版本未升」根治（`taskkill /t` 进程树自爆 + `skipifsilent` 不重启）
 - **实机黑匣子根因（100% 日志实锤）**：
   1. **安装器递归强杀自己 (`installer.iss` `StopAndKillAllTools3000ProcessesForDir`)**：当旧版 `Tools3000.exe` 以管理员身份运行时，点击「立即安装」直接派生子进程 `Setup.exe -> Setup.tmp`（父进程树 `Tools3000.exe -> Setup.exe -> Setup.tmp`）；1 秒后安装器在 `PrepareToInstall` 向主程序发 `WM_CLOSE` 后仅 `Sleep(30)`（主程序优雅退出约需 258ms），随即执行 **`taskkill /f /t /im Tools3000.exe`**，`/t` 沿父子进程树递归把安装程序自身连同旧版进程一起当场强杀自爆，文件一字节未覆盖，用户体感为“点安装直接闪退”；
@@ -2656,3 +2729,24 @@
 4. **全局搜索零冲突浏览器书签直达 (`src/search/BrowserBookmarkIndex.{h,cpp}`, `SearchPlugin.cpp`, `SearchInteractionHandlers.cpp`, `ui/src/search/*`, `SearchPage.tsx`)**:
    - **零语法冲突三重直达**：绝不占用单字母 `b ` 前缀，采用与 `ext:`/`content:` 统一的独立 `bm:` 前缀 + 分类栏「书签」胶囊 + 可控常规搜索混排（`/search/includeBookmarks` 默认开启，自动避让显式文件操作符与盘符路径）；
    - **零常驻线程与超低内存**：纯离线只读解析本地 Edge / Chrome / Brave / Vivaldi / Chromium 多 Profile `Bookmarks` JSON，按文件 `mtime` + 10s stat 节流惰性刷新（单文件上限 8 MB、全局 8000 条 URL 去重封顶，常规内存 `< 300 KB`），纯 `bm:` 查询 `< 0.5ms` 瞬出且绝不违背搜索服务 `DEMAND_START` 契约；安全校验仅放行 `http://` / `https://` 网址直开默认浏览器。
+
+
+---
+
+## 2026-11-23 实机体验深度打磨：剪贴板白屏根治、提权启动降权、离线原站 Favicon、自身对话框增强与文件解锁一等模块化
+1. **根治 `Alt+V` 剪贴板白屏无内容 (`src/ui/ClipboardWindow.cpp`, `ui/src/ClipboardApp.tsx`, `ui/src/hooks/useAppearance.ts`)**:
+   - **架构铁律**：严禁对 WebView2 宿主顶层 HWND 动态施加/移除 `WS_EX_LAYERED` + `SetLayeredWindowAttributes(LWA_ALPHA=0)`。该操作会直接破坏 Chromium DirectComposition 子窗口合成管线，导致整个剪贴板窗口只剩 `WM_PAINT` 底色 `RGB(248,250,252)` 完全不显示 Web 内容。
+   - **终局方案**：彻底移除全部 `WS_EX_LAYERED` 逻辑，并与 `SettingsWindow::smoothPresent()` 1:1 对齐——冷启动宿主窗处于 `SW_HIDE` 时先令 `controller->put_IsVisible(FALSE)`，待 `NavigationCompleted` 完成后立即执行 `ShowWindow(SW_SHOW)` + `SetActiveWindow/SetFocus` 再做真正的 `put_IsVisible(FALSE -> TRUE)` 切换并投递 `clipboard:shown`；前端 `ClipboardApp` 接入 `useAppearance()`（同时对无 `window.matchMedia` 环境做防御性保护）。
+2. **根治管理员态打开 Chrome 等浏览器/桌面应用卡死 (`src/core/utils/WinUtils.{h,cpp}`, `SearchInteractionHandlers.cpp`, `GestureAction.cpp`)**:
+   - **根因**：`Tools3000.exe` 以管理员高权限运行且已有普通权限（Medium IL）Chrome 存活时，在无 COM 的后台线程直接 `ShellExecuteW` 拉起 `Google Chrome.lnk` 会令子进程继承高权限与嵌套 Job Object，引发 ProcessSingleton / UIPI / 沙箱死锁。
+   - **终局方案**：新增 `WinUtils::openProgram(filePath, args, workingDir)` 与统一底层 `launchShellTargetBoundedSta`：独立 STA COM 线程 + 超时脱离保护（UI 线程 180ms / Worker 1500ms）；管理员态非 `runas` 普通启动优先通过微软官方桌面 Explorer 降权协议（`IShellWindows(SWC_DESKTOP)` -> `IShellBrowser` -> `IShellView` -> `IShellFolderViewDual` -> `IShellDispatch2::ShellExecute`）以 Medium IL 启动，失败回退 `ShellExecuteExW(SEE_MASK_ASYNCOK | SEE_MASK_FLAG_NO_UI)`。
+3. **Windows 原生图标模式全面覆盖应用、离线书签 Favicon 与系统命令 (`WinUtils.cpp`, `BrowserBookmarkIndex.{h,cpp}`, `SystemCommandCatalog.{h,cpp}`, `SearchPlugin.cpp`, `ui/src/search/*`)**:
+   - **应用图标**：前端 `resolveNativeIconRequest` 从 `item.path` 兜底识别 `.lnk`/`.exe`（规避 `shell:AppsFolder\...` AUMID 点号误切扩展名）；后端新增 `IShellItemImageFactory::GetImage(32x32)` 支持 UWP/MSIX 应用原生图标。
+   - **书签真实原站 Favicon（0 网络请求、0 第三方依赖、原生 x64/ARM64）**：动态加载系统内置 `winsqlite3.dll`，以 `mode=ro&nolock=1` / `immutable=1` 纯只读查询本机 Chrome/Edge/Brave/Vivaldi/Chromium 的 `Favicons` SQLite 库（精确 URL -> Origin B-Tree 范围 -> 子域回退 -> 浏览器 `.exe` 原图标，512 条内存缓存上限）。
+   - **系统命令**：`SystemCommandCatalog::resolveNativeIconPath` 通过 `SearchPathW` 映射 `cmd.exe`/`taskmgr.exe`/`sysdm.cpl` 等原生二进制图标；前端 `iconStyle === 'native'` 时优先渲染真实原图标。
+4. **Tools3000 自身 `#32770` 文件对话框支持 `DialogEnhancer` (`src/dialog/DialogEngine.cpp`, `src/dialog/DialogRibbonOverlay.cpp`)**:
+   - 移除 `DialogEngine` 对 `GetCurrentProcessId()` 的无条件拦截并传入 `inspectDialog(hwnd, true)`，配合 `DialogRibbonOverlay` 的 `owner=nullptr` 与严格 `#32770` 宿主过滤，确保如「问题反馈 -> 附带截图」等自身文件选择器也能享受一键目录跳转与内置搜索条，且不误挂普通窗口。
+5. **「文件占用解锁 (`file_locksmith`)」晋升一等模块 + 托盘补全开关 + 手势停顿取消默认开启**:
+   - `file_locksmith` 正式纳入 `plugins.getAll`/`plugins.setEnabled` 核心模块契约、左侧「效率工具」独立菜单与专属配置页 `FileLocksmithPage.tsx`（含页内直接选文件/文件夹即时检测占用），并从 `GeneralPage` 迁出保持 SSOT；
+   - 托盘控制中心（`trayRegistry.ts`）补齐「剪贴板 (`clipboard`)」与「文件解锁 (`file_locksmith`)」，形成对称 `2×4`（8 格）+ 宽卡 `remote_boost`（9 模块）；
+   - 鼠标手势「划动中途停顿自动取消 (`pauseCancelEnabled`)」前后端默认值统一调整为 `true`。

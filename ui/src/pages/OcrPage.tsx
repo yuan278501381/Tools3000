@@ -15,11 +15,12 @@ import { InPlaceTranslateCard } from '../components/InPlaceTranslateCard';
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { FileText, Download, X, Sparkles, Loader2, Trash2 } from 'lucide-react';
+import { FileText, Download, X, Sparkles, Loader2, Trash2, Languages } from 'lucide-react';
 
 interface OcrSettings {
   engine: string;
   modelTier: string;
+  scriptMode: string;
   language: string;
   copyResult: boolean;
   showResultWindow: boolean;
@@ -27,17 +28,28 @@ interface OcrSettings {
   pinLiveTextOnCapture: boolean;
 }
 
+interface DeepOcrScriptPackStatus {
+  id: string;
+  installed: boolean;
+  downloading: boolean;
+  fileBytes: number;
+  estimatedBytes: number;
+}
+
 interface DeepOcrModelStatus {
   installed: boolean;
   serverInstalled?: boolean;
   downloading: boolean;
   downloadingServer?: boolean;
+  downloadingScriptPack?: string;
   progressPercent: number;
   downloadedBytes: number;
   totalBytes: number;
   serverTotalBytes?: number;
   modelTier?: string;
   activeModelTier?: string;
+  scriptMode?: string;
+  scriptPacks?: DeepOcrScriptPackStatus[];
   state: 'installed' | 'downloading' | 'not_installed' | 'error' | string;
   currentFile: string;
   modelDir: string;
@@ -73,17 +85,39 @@ interface OperationResult {
   conflictWith?: string;
 }
 
+const DEFAULT_SCRIPT_PACKS: DeepOcrScriptPackStatus[] = [
+  { id: 'japan', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 9752000 },
+  { id: 'korean', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 13485000 },
+  { id: 'cyrillic', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 8075000 },
+  { id: 'latin', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 7907000 },
+];
+
+const SCRIPT_PACK_CATALOG = [
+  { id: 'japan', nameKey: 'ocr.scriptPackJapanName', descKey: 'ocr.scriptPackJapanDesc' },
+  { id: 'korean', nameKey: 'ocr.scriptPackKoreanName', descKey: 'ocr.scriptPackKoreanDesc' },
+  { id: 'cyrillic', nameKey: 'ocr.scriptPackCyrillicName', descKey: 'ocr.scriptPackCyrillicDesc' },
+  { id: 'latin', nameKey: 'ocr.scriptPackLatinName', descKey: 'ocr.scriptPackLatinDesc' },
+] as const;
+
+const formatPackSizeMb = (bytes: number): string => {
+  const mb = Math.max(0.1, bytes / (1024 * 1024));
+  return `${mb.toFixed(1)} MB`;
+};
+
 const DEFAULT_MODEL_STATUS: DeepOcrModelStatus = {
   installed: false,
   serverInstalled: false,
   downloading: false,
   downloadingServer: false,
+  downloadingScriptPack: '',
   progressPercent: 0,
   downloadedBytes: 0,
   totalBytes: 16600000,
   serverTotalBytes: 90530732,
   modelTier: 'mobile',
   activeModelTier: 'mobile',
+  scriptMode: 'auto',
+  scriptPacks: DEFAULT_SCRIPT_PACKS,
   state: 'not_installed',
   currentFile: '',
   modelDir: '',
@@ -107,6 +141,7 @@ export const OcrPage: FC = () => {
   const [settings, setSettings] = useState<OcrSettings>({
     engine: 'auto',
     modelTier: 'mobile',
+    scriptMode: 'auto',
     language: 'auto',
     copyResult: true,
     showResultWindow: true,
@@ -123,6 +158,7 @@ export const OcrPage: FC = () => {
   const [shortcut, setShortcut] = useState('Ctrl+Shift+O');
   const wasDownloadingRef = useRef(false);
   const wasDownloadingServerRef = useRef(false);
+  const wasDownloadingScriptPackRef = useRef('');
   const wasInpaintDownloadingRef = useRef(false);
   const { t } = useTranslation();
 
@@ -157,11 +193,17 @@ export const OcrPage: FC = () => {
         typeof data?.modelTier === 'string' && ['mobile', 'server'].includes(data.modelTier)
           ? data.modelTier
           : 'mobile';
+      const resolvedScriptMode =
+        typeof data?.scriptMode === 'string' &&
+        ['auto', 'cjk', 'japan', 'korean', 'cyrillic', 'latin'].includes(data.scriptMode)
+          ? data.scriptMode
+          : 'auto';
       setSettings(prev => ({
         ...prev,
         ...data,
         engine: resolvedEngine,
         modelTier: resolvedModelTier,
+        scriptMode: resolvedScriptMode,
         language: resolvedLanguage,
       }));
       setAvailable(Boolean(status?.available));
@@ -169,6 +211,7 @@ export const OcrPage: FC = () => {
         setModelStatus(status.modelStatus);
         wasDownloadingRef.current = Boolean(status.modelStatus.downloading);
         wasDownloadingServerRef.current = Boolean(status.modelStatus.downloadingServer);
+        wasDownloadingScriptPackRef.current = status.modelStatus.downloadingScriptPack ?? '';
       }
       if (inpaintPayload) {
         setInpaintStatus(inpaintPayload);
@@ -214,6 +257,7 @@ export const OcrPage: FC = () => {
     }
     wasDownloadingRef.current = true;
     wasDownloadingServerRef.current = Boolean(modelStatus.downloadingServer);
+    wasDownloadingScriptPackRef.current = modelStatus.downloadingScriptPack ?? '';
     const timer = window.setInterval(() => {
       bridgeRequest<DeepOcrModelStatus>('ocr.getModelStatus', undefined, { silent: true })
         .then((next) => {
@@ -221,10 +265,18 @@ export const OcrPage: FC = () => {
           setModelStatus(next);
           if (!next.downloading && wasDownloadingRef.current) {
             const finishedServer = wasDownloadingServerRef.current;
+            const finishedScriptPack = wasDownloadingScriptPackRef.current;
             wasDownloadingRef.current = false;
             wasDownloadingServerRef.current = false;
+            wasDownloadingScriptPackRef.current = '';
             void syncStatusFromBackend();
-            if (finishedServer) {
+            if (finishedScriptPack) {
+              if (!next.error) {
+                toast.success(t('ocr.scriptPackDownloadCompleted'));
+              } else {
+                toast.error(t('ocr.scriptPackDownloadFailed'), { description: next.error });
+              }
+            } else if (finishedServer) {
               if (next.serverInstalled && !next.error) {
                 setSettings(prev => ({ ...prev, modelTier: 'server' }));
                 toast.success(t('ocr.serverDownloadCompleted'));
@@ -241,7 +293,7 @@ export const OcrPage: FC = () => {
         .catch(() => { /* ignore transient poll error */ });
     }, 380);
     return () => window.clearInterval(timer);
-  }, [modelStatus.downloading, modelStatus.downloadingServer, syncStatusFromBackend, t]);
+  }, [modelStatus.downloading, modelStatus.downloadingServer, modelStatus.downloadingScriptPack, syncStatusFromBackend, t]);
 
   const updateSetting = useCallback((key: keyof OcrSettings, value: unknown) => {
     setSettings(prev => ({ ...prev, [key]: value }));
@@ -291,6 +343,7 @@ export const OcrPage: FC = () => {
     try {
       wasDownloadingRef.current = false;
       wasDownloadingServerRef.current = false;
+      wasDownloadingScriptPackRef.current = '';
       const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>('ocr.cancelModelDownload');
       if (res?.modelStatus) {
         setModelStatus(res.modelStatus);
@@ -321,6 +374,53 @@ export const OcrPage: FC = () => {
       }
     } catch (error) {
       toast.error(t('ocr.serverDeleteFailed'), { description: String(error) });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDownloadScriptPack = async (packId: string) => {
+    if (actionBusy || modelStatus.downloading) return;
+    setActionBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>(
+        'ocr.downloadScriptPack',
+        { packId },
+      );
+      if (res?.modelStatus) {
+        setModelStatus(res.modelStatus);
+        wasDownloadingRef.current = Boolean(res.modelStatus.downloading);
+        wasDownloadingServerRef.current = Boolean(res.modelStatus.downloadingServer);
+        wasDownloadingScriptPackRef.current = res.modelStatus.downloadingScriptPack ?? packId;
+      }
+      if (res?.success) {
+        toast.info(t('ocr.scriptPackDownloadStarted'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.scriptPackDownloadFailed'), { description: String(error) });
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDeleteScriptPack = async (packId: string) => {
+    if (actionBusy || modelStatus.downloading) return;
+    setActionBusy(true);
+    try {
+      const res = await bridgeRequest<{ success: boolean; modelStatus?: DeepOcrModelStatus }>(
+        'ocr.deleteScriptPack',
+        { packId },
+      );
+      if (res?.modelStatus) {
+        setModelStatus(res.modelStatus);
+      }
+      if (res?.success) {
+        toast.success(t('ocr.scriptPackDeleteSuccess'));
+      } else {
+        toast.error(t('ocr.scriptPackDeleteFailed'));
+      }
+    } catch (error) {
+      toast.error(t('ocr.scriptPackDeleteFailed'), { description: String(error) });
     } finally {
       setActionBusy(false);
     }
@@ -436,6 +536,46 @@ export const OcrPage: FC = () => {
       );
     }
     return <Badge text={t('ocr.tierServerNotInstalled')} variant="muted" />;
+  };
+
+  const scriptPacksList: DeepOcrScriptPackStatus[] =
+    Array.isArray(modelStatus.scriptPacks) && modelStatus.scriptPacks.length > 0
+      ? modelStatus.scriptPacks
+      : DEFAULT_SCRIPT_PACKS;
+  const scriptPackMap = new Map(scriptPacksList.map(p => [p.id, p]));
+  const installedScriptPackCount = scriptPacksList.filter(p => p.installed).length;
+  const missingScriptPackBytes = scriptPacksList
+    .filter(p => !p.installed)
+    .reduce((sum, p) => sum + (p.estimatedBytes || 0), 0);
+  const isDownloadingScriptPack = Boolean(modelStatus.downloading && modelStatus.downloadingScriptPack);
+  const selectedScriptMissingPack =
+    ['japan', 'korean', 'cyrillic', 'latin'].includes(settings.scriptMode) &&
+    !scriptPackMap.get(settings.scriptMode)?.installed;
+
+  const renderScriptPacksBadge = () => {
+    if (isDownloadingScriptPack) {
+      return (
+        <Badge
+          text={t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
+          variant="primary"
+        />
+      );
+    }
+    if (installedScriptPackCount === scriptPacksList.length && scriptPacksList.length > 0) {
+      return <Badge text={t('ocr.scriptPackBadgeAllReady')} variant="success" />;
+    }
+    if (installedScriptPackCount > 0) {
+      return (
+        <Badge
+          text={t('ocr.scriptPackBadgeCount', {
+            count: installedScriptPackCount,
+            total: scriptPacksList.length,
+          })}
+          variant="primary"
+        />
+      );
+    }
+    return <Badge text={t('ocr.scriptPackBadgeBaseOnly')} variant="muted" />;
   };
 
   const renderInpaintStatusBadge = () => {
@@ -675,6 +815,183 @@ export const OcrPage: FC = () => {
             layout="vertical"
             label={
               <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
+                <Languages size={16} strokeWidth={2.2} aria-hidden="true" style={{ color: 'var(--primary)' }} />
+                <span>{t('ocr.scriptPackTitle')}</span>
+                {renderScriptPacksBadge()}
+              </div>
+            }
+            description={t('ocr.scriptPackDesc')}
+          >
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--spacing-sm)', width: '100%' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 'var(--spacing-md)', flexWrap: 'wrap' }}>
+                <Select
+                  id="ocr-script-mode"
+                  value={settings.scriptMode || 'auto'}
+                  onChange={(val) => updateSetting('scriptMode', val)}
+                  options={[
+                    { value: 'auto', label: t('ocr.scriptModeAuto') },
+                    { value: 'cjk', label: t('ocr.scriptModeCjk') },
+                    { value: 'japan', label: t('ocr.scriptModeJapan') },
+                    { value: 'korean', label: t('ocr.scriptModeKorean') },
+                    { value: 'cyrillic', label: t('ocr.scriptModeCyrillic') },
+                    { value: 'latin', label: t('ocr.scriptModeLatin') },
+                  ]}
+                />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
+                  {isDownloadingScriptPack ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionBusy}
+                      onClick={() => void handleCancelDownload()}
+                    >
+                      <X size={15} strokeWidth={2.2} aria-hidden="true" />
+                      <span>{t('ocr.cancelDownload')}</span>
+                    </Button>
+                  ) : installedScriptPackCount < scriptPacksList.length ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionBusy || modelStatus.downloading}
+                      onClick={() => void handleDownloadScriptPack('all')}
+                    >
+                      {actionBusy ? (
+                        <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                      ) : (
+                        <Download size={15} strokeWidth={2.2} aria-hidden="true" />
+                      )}
+                      <span>
+                        {t('ocr.scriptPackDownloadAll', {
+                          size: formatPackSizeMb(missingScriptPackBytes),
+                        })}
+                      </span>
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))',
+                  gap: 'var(--spacing-sm)',
+                  width: '100%',
+                }}
+              >
+                {SCRIPT_PACK_CATALOG.map((meta) => {
+                  const pack = scriptPackMap.get(meta.id) ?? {
+                    id: meta.id,
+                    installed: false,
+                    downloading: false,
+                    fileBytes: 0,
+                    estimatedBytes: 0,
+                  };
+                  const packSizeLabel = formatPackSizeMb(
+                    pack.installed && pack.fileBytes > 0 ? pack.fileBytes : pack.estimatedBytes,
+                  );
+                  const thisPackDownloading =
+                    isDownloadingScriptPack &&
+                    (pack.downloading || modelStatus.downloadingScriptPack === meta.id);
+
+                  return (
+                    <div
+                      key={meta.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        gap: 'var(--spacing-sm)',
+                        padding: '10px 12px',
+                        borderRadius: 'var(--radius-sm)',
+                        background: 'var(--bg-elevated)',
+                        border: '1px solid var(--card-border)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                          <span
+                            style={{
+                              fontSize: 'var(--text-sm)',
+                              fontWeight: 'var(--font-semibold)',
+                              color: 'var(--text-primary)',
+                              lineHeight: 'var(--leading-normal)',
+                            }}
+                          >
+                            {t(meta.nameKey)}
+                          </span>
+                          <span
+                            style={{
+                              fontSize: 'var(--text-xs)',
+                              fontWeight: 'var(--font-medium)',
+                              color: 'var(--text-muted)',
+                              fontVariantNumeric: 'tabular-nums lining-nums',
+                              lineHeight: 'var(--leading-normal)',
+                            }}
+                          >
+                            {packSizeLabel}
+                          </span>
+                        </div>
+                        <span
+                          style={{
+                            fontSize: 'var(--text-xs)',
+                            fontWeight: 'var(--font-medium)',
+                            color: 'var(--text-secondary)',
+                            lineHeight: 'var(--leading-normal)',
+                          }}
+                        >
+                          {t(meta.descKey)}
+                        </span>
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexShrink: 0 }}>
+                        {thisPackDownloading ? (
+                          <Badge
+                            text={t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
+                            variant="primary"
+                          />
+                        ) : pack.installed ? (
+                          <>
+                            <Badge text={t('ocr.scriptPackInstalled')} variant="success" />
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              disabled={actionBusy || modelStatus.downloading}
+                              aria-label={t('ocr.scriptPackDeleteBtn')}
+                              onClick={() => void handleDeleteScriptPack(meta.id)}
+                            >
+                              <Trash2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant={settings.scriptMode === meta.id ? 'primary' : 'secondary'}
+                            size="sm"
+                            disabled={actionBusy || modelStatus.downloading}
+                            onClick={() => void handleDownloadScriptPack(meta.id)}
+                          >
+                            <Download size={14} strokeWidth={2.2} aria-hidden="true" />
+                            <span>{t('ocr.scriptPackInstallBtn')}</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {selectedScriptMissingPack && !modelStatus.downloading && (
+                <div style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-medium)', color: 'var(--text-secondary)', lineHeight: 'var(--leading-normal)' }}>
+                  {t('ocr.scriptPackNotInstalledHint')}
+                </div>
+              )}
+            </div>
+          </SettingRow>
+
+          <SettingRow
+            layout="vertical"
+            label={
+              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
                 <span>{t('ocr.inpaintPackTitle')}</span>
                 {renderInpaintStatusBadge()}
               </div>
@@ -791,6 +1108,9 @@ export const OcrPage: FC = () => {
                   { value: 'en-US', label: t('ocr.langEnUs') },
                   { value: 'ja-JP', label: t('ocr.langJaJp') },
                   { value: 'ko-KR', label: t('ocr.langKoKr') },
+                  { value: 'ru-RU', label: t('ocr.langRuRu') },
+                  { value: 'pt-BR', label: t('ocr.langPtBr') },
+                  { value: 'es-ES', label: t('ocr.langEsEs') },
                 ]}
               />
             </SettingRow>

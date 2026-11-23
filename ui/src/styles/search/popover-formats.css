@@ -603,6 +603,41 @@
     color: var(--primary);
 }
 
+.search-footer-live-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 18px;
+    padding: 0 6px;
+    margin-left: 4px;
+    border-radius: 999px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.83rem;
+    font-weight: 500;
+    line-height: 1.4;
+    cursor: pointer;
+    transition: background-color 140ms ease, color 140ms ease, border-color 140ms ease;
+}
+
+.search-footer-live-btn:hover {
+    background: var(--primary-dim);
+    color: var(--primary);
+}
+
+.search-footer-live-btn--active {
+    background: var(--primary-dim);
+    color: var(--primary);
+    border-color: color-mix(in srgb, var(--primary) 28%, transparent);
+}
+
+.search-footer-live-btn:focus,
+.search-footer-live-btn:focus-visible {
+    outline: none;
+    border-color: var(--primary);
+}
+
 /* ── 顶部轻量索引维护卡片 (高定克制中性卡 + 白瓷/曜石微立体刷新按钮) ───────── */
 .popover-top-rebuild-card {
     display: flex;

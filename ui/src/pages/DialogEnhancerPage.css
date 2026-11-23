@@ -7,6 +7,7 @@
   flex-direction: column;
   gap: 1.5rem;
   padding-bottom: 2rem;
+  container-type: inline-size;
 }
 
 .dialog-page-loading {
@@ -16,6 +17,7 @@
   height: 240px;
   color: var(--text-secondary);
   font-size: 0.92rem;
+  font-weight: 500;
 }
 
 .dialog-ribbon-options {
@@ -38,6 +40,7 @@
   font-weight: 700;
   letter-spacing: 0.04em;
 }
+
 .dialog-add-row {
   display: flex;
   align-items: center;
@@ -50,6 +53,7 @@
   height: 36px;
   padding: 0 0.85rem;
   font-size: 0.88rem;
+  font-weight: 500;
   line-height: 1.5;
   color: var(--text-primary);
   background: var(--input-bg);
@@ -89,6 +93,7 @@
 .dialog-item-text {
   flex: 1;
   font-size: 0.88rem;
+  font-weight: 500;
   color: var(--text-primary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -104,6 +109,13 @@
   text-align: center;
   color: var(--text-muted);
   font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.dialog-memories-toolbar {
+  margin-bottom: 1rem;
+  display: flex;
+  justify-content: flex-end;
 }
 
 .dialog-memories-table {
@@ -137,6 +149,7 @@
 .dialog-memory-path {
   flex: 1;
   font-size: 0.88rem;
+  font-weight: 500;
   color: var(--text-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -145,7 +158,15 @@
 
 .dialog-memory-time {
   font-size: 0.83rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
   color: var(--text-muted);
+}
+
+.dialog-memory-action {
+  display: flex;
+  gap: 0.25rem;
 }
 
 .dialog-chips {
@@ -164,6 +185,7 @@
   border: 1px solid var(--card-border);
   border-radius: 6px;
   font-size: 0.84rem;
+  font-weight: 500;
   color: var(--text-secondary);
 }
 
@@ -174,6 +196,7 @@
   cursor: pointer;
   padding: 0 0.1rem;
   font-size: 1rem;
+  font-weight: 500;
   line-height: 1;
 }
 
@@ -202,4 +225,14 @@
   border-radius: 50%;
   background: var(--success);
   flex-shrink: 0;
+}
+
+@container (max-width: 560px) {
+  .dialog-add-row {
+    flex-wrap: wrap;
+  }
+
+  .dialog-memory-row {
+    flex-wrap: wrap;
+  }
 }

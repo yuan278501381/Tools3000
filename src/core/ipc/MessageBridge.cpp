@@ -15,6 +15,7 @@
 #include "core/hotkey/KeyboardHook.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/FileLocksmithEngine.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
@@ -1169,6 +1170,7 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
     if (method == "config.export" ||
         method == "config.import" ||
         method == "capture.browseDirectory" ||
+        method == "system.browseFileLocksmithTarget" ||
         method == "app.exportLogs" ||
         method == "capture.saveHistoryItemAs" ||
         method == "system.pickForegroundWindow" ||
@@ -1667,7 +1669,8 @@ bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
            id == "spotlight" || id == "clipboard" || id == "remote_boost" || id == "remote" ||
-           id == "picasa_viewer" || id == "picasaviewer";
+           id == "picasa_viewer" || id == "picasaviewer" ||
+           id == "file_locksmith" || id == "filelocksmith";
 }
 
 constexpr wchar_t PicasaViewerExeName[] = L"Tools3000_Picasa_Viewer.exe";
@@ -2246,6 +2249,28 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("clipboard");
+
+        // 内置零常驻模块：文件占用解锁 (file_locksmith，纯 HKCU 右键菜单 + 按需原生解锁窗口，0 后台常驻内存)
+        bool locksmithShiftOnly = false;
+        const bool locksmithEnabled =
+            FileLocksmithEngine::isExplorerContextMenuRegistered(&locksmithShiftOnly);
+        plugins.push_back({
+            {"id", "file_locksmith"},
+            {"name", "文件占用解锁"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"context-menu", "lock-inspector", "safe-unlock", "zero-resident"}},
+            {"permissions", {"hkcu-context-menu"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", locksmithEnabled},
+            {"active", locksmithEnabled},
+            {"restartRequired", false},
+            {"state", locksmithEnabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("file_locksmith");
         return plugins;
     });
 
@@ -2287,6 +2312,33 @@ void MessageBridge::registerBuiltinHandlers() {
             MessageBridge::instance().pushEvent("plugins:changed", {{"id", "remote_boost"}, {"enabled", enabled}});
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "file_locksmith" || id == "filelocksmith") {
+            auto& cfg = ConfigManager::instance();
+            bool regShiftOnly = false;
+            const bool wasRegistered = FileLocksmithEngine::isExplorerContextMenuRegistered(&regShiftOnly);
+            const bool shiftOnly = wasRegistered
+                ? regShiftOnly
+                : cfg.get<bool>("/general/shellMenuShiftOnly", true);
+            cfg.set<bool>("/general/shellMenuLocksmithEnabled", enabled);
+            cfg.set<bool>("/plugins/file_locksmith/enabled", enabled);
+            const std::wstring verbLabel = tools3000::core::trW(
+                L"使用 Tools3000 查看文件占用/解锁",
+                L"Inspect File Locks with Tools3000");
+            const bool ok = FileLocksmithEngine::syncExplorerContextMenu(
+                enabled, shiftOnly, WinUtils::getExePath().wstring(), verbLabel);
+            if (ok) {
+                MessageBridge::instance().pushEvent("fileLocksmith:stateChanged", {
+                    {"enabled", enabled},
+                    {"shiftOnly", shiftOnly}
+                });
+                MessageBridge::instance().pushEvent("plugins:changed", {
+                    {"id", "file_locksmith"},
+                    {"enabled", enabled}
+                });
+            }
+            return {{"success", ok}, {"restartRequired", false}};
         }
 
         if (id == "picasa_viewer" || id == "picasaviewer") {

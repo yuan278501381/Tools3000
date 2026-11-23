@@ -5297,3 +5297,148 @@ TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
     EXPECT_EQ(stats.value("pinnedCount", 0), 1);
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8 语种跨代码页 Unicode 路径、ArchivePreview、FontPreview、FileLocksmith 与
+// FeedbackDiagnosticService 10 维隐私脱敏防回退单元测试
+// ─────────────────────────────────────────────────────────────────────────────
+#include "core/utils/ArchivePreview.h"
+#include "core/utils/FontPreview.h"
+#include "core/utils/FileLocksmithEngine.h"
+#include "core/diagnostics/FeedbackDiagnosticService.h"
+
+TEST(CrossCodepagePathTest, EightLanguagesRoundTripAndFilesystemExists) {
+    using tools3000::core::WinUtils;
+    // 同时混合简中、繁中、日语、韩语、俄语、西语、葡语字符，验证在任意 Windows ACP 下 100% 无损往返
+    const std::wstring multiLangFolder =
+        L"Tools3000_PathTest_工具_繁體_ツール_도구_Инструмент_Herramienta_Configuração_" +
+        std::to_wstring(GetCurrentProcessId());
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / multiLangFolder;
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(dir, ec));
+
+    const std::string utf8 = WinUtils::pathToUtf8(dir);
+    const std::filesystem::path restored = WinUtils::utf8ToPath(utf8);
+    EXPECT_EQ(restored.wstring(), dir.wstring());
+    EXPECT_TRUE(std::filesystem::is_directory(restored, ec));
+
+    // 在 8 国混合目录中调用 atomicWriteFileWithFlush 验证真实文件落盘
+    const std::filesystem::path probeFile = restored / L"测试_テスト_테스트_тест.txt";
+    EXPECT_TRUE(WinUtils::atomicWriteFileWithFlush(probeFile.wstring(), "ok-8-languages"));
+    EXPECT_TRUE(std::filesystem::is_regular_file(probeFile, ec));
+
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST(FeedbackAndArchiveTest, TenRulePrivacyRedactionAndZipRoundTrip) {
+    using tools3000::core::FeedbackDiagnosticService;
+    using tools3000::core::FeedbackSubmissionInput;
+    using tools3000::core::ArchivePreview;
+
+    const std::string dirty =
+        "UserPath=C:\\Users\\坏女孩\\AppData\\Local\\Tools3000\\config.json\n"
+        "Auth=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.abcdef1234567890\n"
+        "GitHub=ghp_1234567890abcdef1234567890abcdef1234\n"
+        "SecretKV=password=SuperSecret99\n"
+        "Email=tester.alice@example.org\n"
+        "Url=https://admin:MyPass123@intranet.local/api\n"
+        "PublicIP=198.51.100.42 LocalIP=127.0.0.1\n"
+        "Phone=13812345678\n"
+        "IdCard=110101199003071234\n"
+        "SID=S-1-5-21-3623811015-3361044348-30300820-1013\n";
+
+    const auto report = FeedbackDiagnosticService::redactSensitiveText(dirty);
+    EXPECT_GE(report.totalReplacements, 10u);
+    EXPECT_EQ(report.redactedText.find("坏女孩"), std::string::npos);
+    EXPECT_NE(report.redactedText.find("C:\\Users\\<USER>\\AppData"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("ghp_1234567890"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("SuperSecret99"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("tester.alice@example.org"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("MyPass123"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("198.51.100.42"), std::string::npos);
+    EXPECT_NE(report.redactedText.find("127.0.0.1"), std::string::npos);  // 保留回环地址便于本地排障
+    EXPECT_EQ(report.redactedText.find("13812345678"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("110101199003071234"), std::string::npos);
+    EXPECT_EQ(report.redactedText.find("3623811015-3361044348"), std::string::npos);
+
+    // 验证轻量 PoW 计算
+    const std::string nonce = FeedbackDiagnosticService::computeLightweightPowNonce("t3k-test", 2);
+    EXPECT_FALSE(nonce.empty());
+
+    // 真实导出脱敏诊断包 .zip 并用 ArchivePreview 回读校验内部条目
+    const std::filesystem::path zipPath =
+        std::filesystem::temp_directory_path() /
+        (L"tools3000_feedback_test_" + std::to_wstring(GetCurrentProcessId()) + L".zip");
+    std::error_code ec;
+    std::filesystem::remove(zipPath, ec);
+
+    FeedbackSubmissionInput input;
+    input.feedbackType = "bug";
+    input.title = "Unit Test Feedback";
+    input.description = "Path C:\\Users\\TesterBob\\secret.txt failed";
+    input.includeLogs = false;
+    std::string err;
+    uint32_t redactions = 0;
+    ASSERT_TRUE(FeedbackDiagnosticService::exportDiagnosticZipBundle(input, zipPath, err, &redactions)) << err;
+    EXPECT_GE(redactions, 1u);
+
+    const auto arch = ArchivePreview::inspectArchive(zipPath.wstring(), 100);
+    EXPECT_TRUE(arch.ok);
+    EXPECT_EQ(arch.format, "ZIP");
+    EXPECT_GE(arch.totalFiles, 2u);
+    bool sawReport = false;
+    bool sawEnv = false;
+    for (const auto& entry : arch.entries) {
+        if (entry.path == "report.md") sawReport = true;
+        if (entry.path == "environment.json") sawEnv = true;
+    }
+    EXPECT_TRUE(sawReport);
+    EXPECT_TRUE(sawEnv);
+
+    std::filesystem::remove(zipPath, ec);
+}
+
+TEST(FileLocksmithTest, RiskClassificationAndProtection) {
+    using tools3000::core::FileLocksmithEngine;
+    using tools3000::core::LockProcessRisk;
+
+    EXPECT_EQ(FileLocksmithEngine::classifyProcessRisk(4, L"System"), LockProcessRisk::CriticalSystem);
+    EXPECT_EQ(FileLocksmithEngine::classifyProcessRisk(500, L"csrss.exe"), LockProcessRisk::CriticalSystem);
+    EXPECT_EQ(FileLocksmithEngine::classifyProcessRisk(600, L"LSASS.EXE"), LockProcessRisk::CriticalSystem);
+    EXPECT_EQ(FileLocksmithEngine::classifyProcessRisk(1234, L"explorer.exe"), LockProcessRisk::Explorer);
+    EXPECT_EQ(FileLocksmithEngine::classifyProcessRisk(9999, L"notepad.exe"), LockProcessRisk::Normal);
+
+    // 严禁终止系统关键进程或自身进程
+    std::string err;
+    EXPECT_FALSE(FileLocksmithEngine::terminateProcessSafely(4, err));
+    EXPECT_EQ(err, "protected_process");
+    EXPECT_FALSE(FileLocksmithEngine::terminateProcessSafely(GetCurrentProcessId(), err));
+    EXPECT_EQ(err, "protected_process");
+}
+
+TEST(FontPreviewTest, SystemWindowsFontInspection) {
+    using tools3000::core::FontPreview;
+    wchar_t winDir[MAX_PATH]{};
+    ASSERT_GT(GetWindowsDirectoryW(winDir, MAX_PATH), 0u);
+    const std::filesystem::path fontsDir = std::filesystem::path(winDir) / L"Fonts";
+    const std::filesystem::path segoe = fontsDir / L"segoeui.ttf";
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(segoe, ec)) {
+        const auto info = FontPreview::inspectFont(segoe.wstring());
+        EXPECT_TRUE(info.ok);
+        EXPECT_EQ(info.format, "TTF");
+        EXPECT_FALSE(info.familyName.empty());
+        EXPECT_GT(info.glyphCount, 100u);
+    }
+    const std::filesystem::path msyhTtc = fontsDir / L"msyh.ttc";
+    if (std::filesystem::is_regular_file(msyhTtc, ec)) {
+        const auto ttcInfo = FontPreview::inspectFont(msyhTtc.wstring());
+        EXPECT_TRUE(ttcInfo.ok);
+        EXPECT_EQ(ttcInfo.format, "TTC");
+        EXPECT_GE(ttcInfo.faceCount, 1u);
+        std::vector<uint8_t> extracted;
+        EXPECT_TRUE(FontPreview::extractStandaloneTtfFromTtc(msyhTtc.wstring(), 0, extracted));
+        EXPECT_GT(extracted.size(), 1024u);
+    }
+}

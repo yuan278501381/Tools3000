@@ -26,15 +26,19 @@ namespace tools3000::capture {
 
 /// 聚合后的单个原位翻译段落模型
 struct TranslationParagraph {
-    cv::Rect unionRect;               // 段落整体包络框
-    std::vector<cv::Rect> lineRects;  // 原始逐行文字框（供精准擦底，不误伤外围边框图标）
-    std::vector<cv::Rect> charBoxes;  // 字符框集合（供 TextReplaceEngine 提取视觉字号与字重）
+    cv::Rect unionRect;                             // 段落整体包络框
+    std::vector<cv::Rect> lineRects;                // 原始逐行文字框（供精准擦底，不误伤外围边框图标）
+    std::vector<cv::Rect> charBoxes;                // 字符框集合（供 TextReplaceEngine 提取视觉字号与字重）
+    std::vector<std::string> lineTexts;             // 逐行原始单行文本（避免多行段传整段文本导致字号/字重反解腰斩）
+    std::vector<std::vector<cv::Rect>> lineCharBoxes; // 逐行字符框（与 lineRects / lineTexts 一一对应）
+    std::vector<cv::Rect> detachedObstacleRects;    // 从同一 OCR 行中剥离出的尾部独立元信息框（如右对齐时间戳 8d），渲染时自动避障
     int layoutRegionId = 0;
     int alignedRowId = -1;
     bool isSingleLine = true;
+    bool preferCentered = false;                    // 多行居中标题等显式居中聚类标志
     std::string originalText;
     std::string translatedText;
-    cv::Rect renderedRect;            // 实际渲染覆盖矩形
+    cv::Rect renderedRect;                          // 实际渲染覆盖矩形
 };
 
 /// 完整原位译图合成结果

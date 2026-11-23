@@ -8,7 +8,8 @@
 //   easy.clipboard getText / setText
 //   easy.shell     open / run / runAsync
 //   easy.window    getForeground / getTitle / getClass / getProcess /
-//                  minimize / maximize / restore / close / setTopmost
+//                  minimize / maximize / restore / close / setTopmost /
+//                  activateByExe / toggleByExe / focusByTitle
 //   easy.screen    getPixelColor
 //   easy.fs        readFile / writeFile / exists
 //   easy.http      get / post
@@ -32,6 +33,7 @@
 #include <cctype>
 #include <fstream>
 #include <sstream>
+#include <string_view>
 #include <utility>
 
 namespace tools3000::core {
@@ -487,19 +489,49 @@ HttpResult httpRequest(const std::wstring& method, const std::string& url, const
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace {
+
+constexpr uint64_t kFnv1aOffsetBasis64 = 14695981039346656037ULL;
+constexpr uint64_t kFnv1aPrime64 = 1099511628211ULL;
+
+uint64_t computeFnv1a64(std::string_view text) noexcept {
+    uint64_t hash = kFnv1aOffsetBasis64;
+    for (unsigned char ch : text) {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= kFnv1aPrime64;
+    }
+    return hash;
+}
+
+}  // namespace
+
+LuaEngine::LuaEngine() = default;
+
+LuaEngine::~LuaEngine() {
+    clearChunkCacheLocked();
+    m_lua.reset();
+}
+
 LuaEngine& LuaEngine::instance() {
     static LuaEngine inst;
     return inst;
 }
 
-bool LuaEngine::initialize() {
-    std::unique_lock<std::mutex> lock(m_mutex);
+void LuaEngine::clearChunkCacheLocked() noexcept {
+    m_chunkCacheIndex.clear();
+    m_chunkCacheLru.clear();
+    m_chunkCacheHits = 0;
+}
+
+bool LuaEngine::initializeLocked() {
     if (m_executing) {
         LOG_WARN("Rejected LuaEngine::initialize while a script is actively executing.");
         return false;
     }
     m_shutdownPending = false;
     try {
+        // 先清空旧虚拟机关联的已编译字节码引用，防止旧 lua_State 析构后出现悬空 registry 引用
+        clearChunkCacheLocked();
         m_lua = std::make_unique<sol::state>();
         // 沙箱: 仅开放安全标准库; 不开放 io / debug / package (杜绝 C-DLL 动态载入攻击)
         m_lua->open_libraries(sol::lib::base, sol::lib::string,
@@ -516,9 +548,84 @@ bool LuaEngine::initialize() {
         return true;
     } catch (const std::exception& e) {
         LOG_ERROR("Lua 引擎初始化失败: {}", e.what());
+        clearChunkCacheLocked();
         m_lua.reset();
         return false;
     }
+}
+
+bool LuaEngine::initialize() {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    return initializeLocked();
+}
+
+bool LuaEngine::ensureInitialized() {
+    std::unique_lock<std::mutex> lock(m_mutex);
+    if (m_lua && !m_shutdownPending) {
+        return true;
+    }
+    if (m_shutdownPending) {
+        return false;
+    }
+    return initializeLocked();
+}
+
+bool LuaEngine::isInitialized() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_lua != nullptr && !m_shutdownPending;
+}
+
+size_t LuaEngine::chunkCacheSizeForTesting() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_chunkCacheLru.size();
+}
+
+uint64_t LuaEngine::chunkCacheHitsForTesting() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_chunkCacheHits;
+}
+
+bool LuaEngine::compileOrFetchChunkLocked(const std::string& script,
+                                          sol::protected_function& outChunk,
+                                          std::string& outError) {
+    const uint64_t hash = computeFnv1a64(script);
+    if (auto it = m_chunkCacheIndex.find(hash); it != m_chunkCacheIndex.end()) {
+        auto listIt = it->second;
+        if (listIt->source == script && listIt->chunk.valid()) {
+            // 命中字节码 LRU 缓存：O(1) 提升至表头，彻底消除高频手势脚本重复编译开销
+            m_chunkCacheLru.splice(m_chunkCacheLru.begin(), m_chunkCacheLru, listIt);
+            ++m_chunkCacheHits;
+            outChunk = listIt->chunk;
+            return true;
+        }
+        // 极端哈希冲突或句柄失效：淘汰旧项后重新编译
+        m_chunkCacheLru.erase(listIt);
+        m_chunkCacheIndex.erase(it);
+    }
+
+    sol::load_result loaded = m_lua->load(script, "", sol::load_mode::text);
+    if (!loaded.valid()) {
+        sol::error err = loaded;
+        outError = err.what();
+        return false;
+    }
+
+    sol::protected_function fn = loaded.get<sol::protected_function>();
+    if (!fn.valid()) {
+        outError = "compiled Lua chunk is invalid";
+        return false;
+    }
+
+    if (m_chunkCacheLru.size() >= kChunkCacheCapacity) {
+        const uint64_t evictedHash = m_chunkCacheLru.back().hash;
+        m_chunkCacheIndex.erase(evictedHash);
+        m_chunkCacheLru.pop_back();
+    }
+
+    m_chunkCacheLru.push_front(CachedChunkEntry{hash, script, fn});
+    m_chunkCacheIndex.emplace(hash, m_chunkCacheLru.begin());
+    outChunk = std::move(fn);
+    return true;
 }
 
 namespace {
@@ -570,6 +677,7 @@ void LuaEngine::shutdown() {
         }
     }
     m_shutdownPending = false;
+    clearChunkCacheLocked();
     m_lua.reset();
     LOG_INFO("Lua 脚本引擎已关闭");
 }
@@ -638,12 +746,22 @@ bool LuaEngine::executeScript(const std::string& script,
     }
 
     m_executing = true;
-    const bool ok = runProtected(
-        [&] { return m_lua->safe_script(script, sol::script_pass_on_error); },
-        "executeScript", permissions, timeout, cancelToken);
+    bool ok = false;
+    {
+        sol::protected_function chunk;
+        std::string compileError;
+        if (!compileOrFetchChunkLocked(script, chunk, compileError)) {
+            LOG_ERROR("[Lua] {} 执行错误: {}", "executeScript", compileError);
+        } else {
+            ok = runProtected(
+                [&] { return chunk(); },
+                "executeScript", permissions, timeout, cancelToken);
+        }
+    }
     m_executing = false;
     if (m_shutdownPending) {
         m_shutdownPending = false;
+        clearChunkCacheLocked();
         m_lua.reset();
     }
     lock.unlock();
@@ -949,6 +1067,35 @@ void LuaEngine::bindWindow(sol::table& easy) {
         if (HWND w = resolveHwnd(h))
             SetWindowPos(w, topmost ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
                          SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    });
+    t.set_function("activateByExe", [this](const std::string& exeName,
+                                           sol::optional<std::string> cmdLineContains) -> bool {
+        requirePermission(m_lua->lua_state(), LuaPermission::Window, "easy.window");
+        const auto outcome = WinUtils::activateOrToggleWindowByExe(
+            WinUtils::utf8ToWstring(exeName),
+            /*toggleIfForeground=*/false,
+            WinUtils::utf8ToWstring(cmdLineContains.value_or("")));
+        return outcome == WinUtils::WindowActivateOutcome::Activated;
+    });
+    t.set_function("toggleByExe", [this](const std::string& exeName,
+                                         sol::optional<std::string> cmdLineContains) -> std::string {
+        requirePermission(m_lua->lua_state(), LuaPermission::Window, "easy.window");
+        const auto outcome = WinUtils::activateOrToggleWindowByExe(
+            WinUtils::utf8ToWstring(exeName),
+            /*toggleIfForeground=*/true,
+            WinUtils::utf8ToWstring(cmdLineContains.value_or("")));
+        switch (outcome) {
+            case WinUtils::WindowActivateOutcome::Activated: return "activated";
+            case WinUtils::WindowActivateOutcome::Minimized: return "minimized";
+            default: return "not_found";
+        }
+    });
+    t.set_function("focusByTitle", [this](const std::string& titleSubstr,
+                                          sol::optional<std::string> optionalExeName) -> bool {
+        requirePermission(m_lua->lua_state(), LuaPermission::Window, "easy.window");
+        return WinUtils::focusWindowByTitle(
+            WinUtils::utf8ToWstring(titleSubstr),
+            WinUtils::utf8ToWstring(optionalExeName.value_or("")));
     });
 }
 

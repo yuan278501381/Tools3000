@@ -154,7 +154,12 @@ public:
     uint64_t getCurrentUsn() const;
     uint32_t getVolumeSerialNumber() const;
     size_t getFileCount() const;
+    uint64_t getIndexGeneration() const noexcept {
+        return m_IndexGeneration.load(std::memory_order_acquire);
+    }
     uint64_t getApproximateIndexBytes() const;
+    void releaseQueryCaches();
+    void shrinkIndexCapacity();
     size_t getLastSearchPathBuildCount() const noexcept {
         return m_LastSearchPathBuildCount.load(std::memory_order_relaxed);
     }

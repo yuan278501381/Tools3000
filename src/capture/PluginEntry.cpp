@@ -1540,6 +1540,7 @@ public:
             return {
                 {"engine", config.get<std::string>("/ocr/engine", "auto")},
                 {"modelTier", config.get<std::string>("/ocr/modelTier", "mobile")},
+                {"scriptMode", config.get<std::string>("/ocr/scriptMode", "auto")},
                 {"language", config.get<std::string>("/ocr/language", "auto")},
                 {"copyResult", config.get<bool>("/ocr/copyResult", true)},
                 {"showResultWindow", config.get<bool>("/ocr/showResultWindow", true)},
@@ -1570,6 +1571,13 @@ public:
                     const std::string tier = value.get<std::string>();
                     if (tier != "mobile" && tier != "server")
                         return {{"success", false}, {"error", "unsupported OCR modelTier: " + tier}};
+                } else if (key == "scriptMode") {
+                    if (!value.is_string())
+                        return {{"success", false}, {"error", "invalid OCR scriptMode"}};
+                    const std::string sm = value.get<std::string>();
+                    if (sm != "auto" && sm != "cjk" && sm != "japan" &&
+                        sm != "korean" && sm != "cyrillic" && sm != "latin")
+                        return {{"success", false}, {"error", "unsupported OCR scriptMode: " + sm}};
                 } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
                 }
@@ -1749,17 +1757,30 @@ public:
 
         auto serializeModelStatus = []() -> nlohmann::json {
             const auto st = tools3000::ocr::DeepOcrEngine::instance().getModelStatus();
+            nlohmann::json packsJson = nlohmann::json::array();
+            for (const auto& p : st.scriptPacks) {
+                packsJson.push_back({
+                    {"id", p.id},
+                    {"installed", p.installed},
+                    {"downloading", p.downloading},
+                    {"fileBytes", p.fileBytes},
+                    {"estimatedBytes", p.estimatedBytes}
+                });
+            }
             return {
                 {"installed", st.installed},
                 {"serverInstalled", st.serverInstalled},
                 {"downloading", st.downloading},
                 {"downloadingServer", st.downloadingServer},
+                {"downloadingScriptPack", st.downloadingScriptPack},
                 {"progressPercent", st.progressPercent},
                 {"downloadedBytes", st.downloadedBytes},
                 {"totalBytes", st.totalBytes},
                 {"serverTotalBytes", st.serverTotalBytes},
                 {"modelTier", st.modelTier},
                 {"activeModelTier", st.activeModelTier},
+                {"scriptMode", st.scriptMode},
+                {"scriptPacks", std::move(packsJson)},
                 {"state", st.state},
                 {"currentFile", st.currentFile},
                 {"modelDir", st.modelDir},
@@ -1812,6 +1833,32 @@ public:
 
         mb.registerHandler("ocr.deleteServerModel", [serializeModelStatus](const nlohmann::json&) -> nlohmann::json {
             const bool deleted = tools3000::ocr::DeepOcrEngine::instance().deleteServerModel();
+            return {
+                {"success", deleted},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.downloadScriptPack", [serializeModelStatus](const nlohmann::json& params) -> nlohmann::json {
+            std::string packId;
+            if (params.is_object() && params.contains("packId") && params["packId"].is_string()) {
+                packId = params["packId"].get<std::string>();
+            }
+            const bool started = !packId.empty() &&
+                                 tools3000::ocr::DeepOcrEngine::instance().startScriptPackDownload(packId);
+            return {
+                {"success", started},
+                {"modelStatus", serializeModelStatus()}
+            };
+        });
+
+        mb.registerHandler("ocr.deleteScriptPack", [serializeModelStatus](const nlohmann::json& params) -> nlohmann::json {
+            std::string packId;
+            if (params.is_object() && params.contains("packId") && params["packId"].is_string()) {
+                packId = params["packId"].get<std::string>();
+            }
+            const bool deleted = !packId.empty() &&
+                                 tools3000::ocr::DeepOcrEngine::instance().deleteScriptPack(packId);
             return {
                 {"success", deleted},
                 {"modelStatus", serializeModelStatus()}

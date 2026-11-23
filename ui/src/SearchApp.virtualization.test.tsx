@@ -240,7 +240,11 @@ describe('VirtualSearchResults (Unified Table View)', () => {
     );
 
     expect(onRequestIcon).toHaveBeenCalledTimes(1);
-    expect(onRequestIcon).toHaveBeenCalledWith('.pdf', false);
+    expect(onRequestIcon).toHaveBeenCalledWith('.pdf', false, undefined, {
+      cacheKey: '.pdf',
+      resultType: undefined,
+      browserSource: undefined,
+    });
   });
 
   it('requests per-file native icons with full paths for executables and shortcuts (.exe, .lnk) and uses semantic vector icon classes', () => {
@@ -268,8 +272,17 @@ describe('VirtualSearchResults (Unified Table View)', () => {
       '.exe',
       false,
       'C:\\repo\\Tools3000\\build\\bin\\Release\\Tools3000Tests.exe',
+      {
+        cacheKey: 'path:c:\\repo\\tools3000\\build\\bin\\release\\tools3000tests.exe',
+        resultType: undefined,
+        browserSource: undefined,
+      },
     );
-    expect(onRequestIcon).toHaveBeenNthCalledWith(2, '.mp4', false);
+    expect(onRequestIcon).toHaveBeenNthCalledWith(2, '.mp4', false, undefined, {
+      cacheKey: '.mp4',
+      resultType: undefined,
+      browserSource: undefined,
+    });
 
     // 切换极简矢量图标时，exe 与视频图标类名与 CSS 配色规则 100% 匹配
     rerender(

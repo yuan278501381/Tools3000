@@ -40,6 +40,17 @@ namespace DeepOcrConstants {
     inline constexpr const wchar_t* kRecServerModelFileName = L"ch_PP-OCRv4_rec_server.onnx";
     inline constexpr const wchar_t* kKeysDictFileName = L"ppocr_keys_v1.txt";
 
+    // 多语种按需扩展识别模型包（复用同一套 det + cls，内置 character 字典 0 外部文件）
+    inline constexpr const wchar_t* kScriptJapanRecFileName    = L"japan_PP-OCRv4_rec_mobile.onnx";
+    inline constexpr const wchar_t* kScriptKoreanRecFileName   = L"korean_PP-OCRv5_rec_mobile.onnx";
+    inline constexpr const wchar_t* kScriptCyrillicRecFileName = L"cyrillic_PP-OCRv5_rec_mobile.onnx";
+    inline constexpr const wchar_t* kScriptLatinRecFileName    = L"latin_PP-OCRv5_rec_mobile.onnx";
+
+    inline constexpr uint64_t kEstimatedScriptJapanBytes    = 9753344ULL;  // ~9.30 MiB
+    inline constexpr uint64_t kEstimatedScriptKoreanBytes   = 13484032ULL; // ~12.86 MiB
+    inline constexpr uint64_t kEstimatedScriptCyrillicBytes = 8074035ULL;  // ~7.70 MiB
+    inline constexpr uint64_t kEstimatedScriptLatinBytes    = 7906263ULL;  // ~7.54 MiB
+
     inline constexpr int kDetMaxSideLen = 1280;
     inline constexpr int kDetStrideAlign = 32;
     inline constexpr int kDetBucketAlign = 64;
@@ -90,17 +101,28 @@ namespace DeepOcrConstants {
     inline constexpr uint64_t kEstimatedServerAddOnBytes = 90530732ULL;  // ~90.5 MB (server rec)
 } // namespace DeepOcrConstants
 
+struct DeepOcrScriptPackStatus {
+    std::string id;            // "japan" | "korean" | "cyrillic" | "latin"
+    bool installed = false;
+    bool downloading = false;
+    uint64_t fileBytes = 0;
+    uint64_t estimatedBytes = 0;
+};
+
 struct DeepOcrModelStatus {
     bool installed = false;
     bool serverInstalled = false;
     bool downloading = false;
     bool downloadingServer = false;
+    std::string downloadingScriptPack; // "" | "japan" | "korean" | "cyrillic" | "latin" | "all"
     int progressPercent = 0;
     uint64_t downloadedBytes = 0;
     uint64_t totalBytes = DeepOcrConstants::kEstimatedBundleBytes;
     uint64_t serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
     std::string modelTier = "mobile";       // "mobile" | "server" (configured preference)
     std::string activeModelTier = "mobile"; // "mobile" | "server" (actually effective tier)
+    std::string scriptMode = "auto";        // "auto" | "cjk" | "japan" | "korean" | "cyrillic" | "latin"
+    std::vector<DeepOcrScriptPackStatus> scriptPacks;
     std::string state; // "installed" | "downloading" | "not_installed" | "error"
     std::string currentFile;
     std::string modelDir;
@@ -119,6 +141,7 @@ struct DeepOcrRunStats {
     size_t serverRefinedCount = 0;
     size_t activeSessions = 0;
     std::string bucketProfile;
+    std::string detectedScript = "cjk"; // "cjk" | "japan" | "korean" | "cyrillic" | "latin"
 };
 
 struct DbDetectedQuad {
@@ -170,8 +193,29 @@ public:
     /// 供独立短命 Worker 进程或测试在纯内存中覆盖模型档位（零触碰磁盘 config.json）
     void setModelTierOverrideForWorker(const std::string& tier);
 
-    /// 使用 PP-OCRv4 执行端到端离线高精度文字检测 + 方向矫正 + CTC 字符级识别
-    std::vector<OcrResult> extractText(const cv::Mat& image);
+    /// 读取当前配置的识别语种路由模式 ("auto" | "cjk" | "japan" | "korean" | "cyrillic" | "latin")
+    std::string configuredScriptMode() const;
+
+    /// 供独立短命 Worker 进程或贴图临时覆写识别语种模式（传空恢复读取配置）
+    void setScriptModeOverrideForWorker(const std::string& scriptMode);
+
+    /// 检查某个多语种扩展识别包是否已在本地就绪
+    bool isScriptPackInstalled(const std::string& packId) const;
+
+    /// 获取已安装的多语种扩展识别包紧凑指纹（用于 OCR 缓存键防陈旧命中）
+    std::string installedScriptPacksSignature() const;
+
+    /// 启动单个或全部多语种扩展识别包后台下载（packId: "japan" | "korean" | "cyrillic" | "latin" | "all"）
+    bool startScriptPackDownload(const std::string& packId);
+
+    /// 安全删除指定多语种扩展识别包释放磁盘空间
+    bool deleteScriptPack(const std::string& packId);
+
+    /// 兼容 Win10/11 原生 WinML：将 ONNX 顶层 ir_version (> 8) 原位无损钳位至 8
+    static bool clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) noexcept;
+
+    /// 使用 PP-OCRv4 执行端到端离线高精度文字检测 + 方向矫正 + CTC 字符级识别（支持显式指定单次识字语种覆写）
+    std::vector<OcrResult> extractText(const cv::Mat& image, const std::string& scriptModeOverride = {});
 
     /// 查询模型安装与后台下载实时状态
     DeepOcrModelStatus getModelStatus() const;
@@ -328,7 +372,10 @@ private:
     void precompileFixedBucketsLocked();
     void touchActivityAndScheduleIdleUnload();
     void idleUnloadWorkerLoop(std::stop_token stopToken);
-    void downloadWorkerLoop(std::stop_token stopToken, std::filesystem::path targetDir, bool includeServerRec);
+    void downloadWorkerLoop(std::stop_token stopToken,
+                            std::filesystem::path targetDir,
+                            bool includeServerRec,
+                            std::string scriptPackTarget);
 
     mutable std::mutex m_inferMutex;
     std::atomic<bool> m_modelsLoadedAtomic{false};
@@ -357,6 +404,7 @@ private:
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;
     std::string m_workerModelTierOverride;
+    std::string m_workerScriptModeOverride;
 
     mutable std::mutex m_statsMutex;
     DeepOcrRunStats m_lastRunStats{};
@@ -369,6 +417,7 @@ private:
     std::atomic<int> m_progressPercent{0};
     std::atomic<uint64_t> m_downloadedBytes{0};
     std::atomic<uint64_t> m_totalBytes{DeepOcrConstants::kEstimatedBundleBytes};
+    std::string m_downloadingScriptPack;
     std::string m_currentDownloadFile;
     std::string m_lastDownloadError;
 };

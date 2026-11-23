@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureWorkerCommon.h"
+#include "capture/MediaProbeWorker.h"
 #include "capture/RecordEncodeWorker.h"
 #include "capture/StudioExportWorker.h"
 #include "core/plugin/IPlugin.h"
@@ -28,10 +29,11 @@ struct WorkerStrategyEntry {
     WorkerHandlerFn handler;
 };
 
-constexpr std::array<WorkerStrategyEntry, 3> kWorkerStrategies = {{
+constexpr std::array<WorkerStrategyEntry, 4> kWorkerStrategies = {{
     {tools3000::worker::Constants::kModeOcr,          &tools3000::ocr::runOcrWorkerProcess},
     {tools3000::worker::Constants::kModeStudioExport, &tools3000::capture::runStudioExportWorkerProcess},
     {tools3000::worker::Constants::kModeRecordEncode, &tools3000::capture::runRecordEncodeWorkerProcess},
+    {tools3000::worker::Constants::kModeMediaProbe,   &tools3000::capture::runMediaProbeWorkerProcess},
 }};
 
 } // namespace

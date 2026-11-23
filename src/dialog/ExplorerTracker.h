@@ -1,8 +1,8 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
@@ -27,6 +27,9 @@ public:
 
     void start();
     void shutdown();
+
+    // 按需监控开关：无活动文件对话框时置 false 使后台线程无限期休眠（0% 空闲 CPU）
+    void setActiveMonitoring(bool active);
     void requestRefresh();
     void setPathChangedCallback(std::function<void()> callback);
 
@@ -52,9 +55,10 @@ private:
     std::condition_variable m_doneCv;
     std::thread m_worker;
     std::atomic<bool> m_running{false};
-    bool m_refreshRequested = false;
-    uint64_t m_snapshotEpoch = 0;
-    uint64_t m_lastRefreshTick = 0;
+    bool m_activeMonitoring{false};
+    bool m_refreshRequested{false};
+    uint64_t m_snapshotEpoch{0};
+    uint64_t m_lastRefreshTick{0};
 
     // 按顶层 Explorer HWND 缓存其当前激活 Tab 的真实文件夹路径
     std::vector<std::pair<HWND, std::string>> m_perWindowActivePaths;

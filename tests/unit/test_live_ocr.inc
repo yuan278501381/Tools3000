@@ -1317,7 +1317,15 @@ TEST(LiveTextOcrTest, PinInPlaceTextAnnotationSupportsStackingColorSwitchAndUndo
         SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(cfx + 5, cfy + 2));
         SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(cfx + 5, cfy + 2));
 
-        ASSERT_TRUE(OpenClipboard(nullptr));
+        bool opened = false;
+        for (int attempt = 0; attempt < 15; ++attempt) {
+            if (OpenClipboard(nullptr)) {
+                opened = true;
+                break;
+            }
+            Sleep(15);
+        }
+        ASSERT_TRUE(opened);
         const bool hasImage = (IsClipboardFormatAvailable(CF_DIB) != FALSE) ||
                               (IsClipboardFormatAvailable(CF_BITMAP) != FALSE);
         const bool hasText = (IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);
@@ -2912,6 +2920,294 @@ TEST(LiveTextOcrTest, RealWorldOcrFixtureCatalogIntegrity) {
     }
 }
 
+TEST(LiveTextOcrTest, TranslateFixtureCatalogIntegrity) {
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto trDir = ocrDir.parent_path() / "translate";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_directory(trDir, ec)) << "Missing tests/fixtures/translate directory";
+
+    constexpr const char* kTranslateFixtures[] = {
+        "dark_sidebar_list.png",
+        "nytimes_homepage.png",
+        "yahoo_portal_cards.png",
+        "sap_b1_form_designer.png",
+        "hackernews_nested_comments.png",
+        "alternativeto_web_grid.png",
+        "dark_markdown_codebadges.png",
+        "gnway_admin_dialog.jpg",
+        "packing_card_handheld.jpg",
+        "postman_api_dark_sanitized.png",
+    };
+
+    for (const char* name : kTranslateFixtures) {
+        const auto p = trDir / name;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing translate regression fixture: " << name;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to decode translate regression fixture: " << name;
+        EXPECT_GT(img.cols, 200) << name;
+        EXPECT_GT(img.rows, 200) << name;
+    }
+}
+
+TEST(LiveTextOcrTest, Full18FixturesOcrAccuracyLatencyMemoryBenchmark) {
+    const char* runEnv = std::getenv("TOOLS3000_RUN_OCR_18_BENCHMARK");
+    if (!runEnv || !*runEnv || std::string(runEnv) == "0") {
+        GTEST_SKIP() << "Set TOOLS3000_RUN_OCR_18_BENCHMARK=1 to run full 18-fixture OCR benchmark";
+    }
+
+    using namespace tools3000::ocr;
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto fixturesRoot = ocrDir.parent_path();
+
+    struct FixtureSpec {
+        const char* relPath;
+        const char* category;
+        std::vector<const char*> anchors; // 核心 Ground-Truth 锚点词（不区分大小写可选，此处严格或小写子串匹配）
+        int expectedMinQr = 0;
+    };
+
+    const std::vector<FixtureSpec> specs = {
+        // 8 张 OCR 实景回归集
+        {"ocr/sap_form_table.jpg", "OCR-ERP多栏表",
+         {"G16611", "JX0200-00680", "62,376.00", "RMB", "物料", "数量"}, 0},
+        {"ocr/release_notes_dense_doc.png", "OCR-高密中英文档",
+         {"本次版本核心亮点", "Direct2D", "Tools3000-Setup.exe", "OCR", "WinML", "Windows"}, 0},
+        {"ocr/pda_screen_photo.jpg", "OCR-PDA斜拍屏摄",
+         {"PL202610150024", "周转箱编码", "ZZ30003665", "生产箱单"}, 0},
+        {"ocr/meeting_tv_photo.jpg", "OCR-会议大屏实拍",
+         {"SAP待解决问题", "5%", "开票", "税务局"}, 0},
+        {"ocr/erp_table_screen_photo.jpg", "OCR-ERP摩尔纹表",
+         {"物料名称", "仓库名称", "数量", "ZZ00443481", "自制落料片仓库"}, 0},
+        {"ocr/packing_card_photo.jpg", "OCR-贴纸装箱卡+QR",
+         {"瑞鹄浩博产品装箱卡", "501010567AA", "右前纵梁后部加强板", "ZZ30001332"}, 1},
+        {"ocr/apifox_json_pretty.png", "OCR-Apifox格式化JSON",
+         {"DocTotalFC", "Comments", "U_BillType", "WddStatus", "90411", "69355.20"}, 0},
+        {"ocr/apifox_json_compact.jpg", "OCR-Apifox超宽单行JSON",
+         {"U_PLM_Categ2", "BCP0300", "ItemPrices", "RMB", "PriceList", "Internal error"}, 0},
+
+        // 10 张新增原位翻译全场景原图集（8 张已升级为 2K/1080p 原生无损高清原图）
+        {"translate/dark_sidebar_list.png", "TR-暗色双语侧边栏",
+         {"Pinned Conversations", "Tools3000", "SAP_B1_10.0", "民间借贷纠纷法律咨询", "Subproject Migration", "SSL Certificate Renewal Failure"}, 0},
+        {"translate/nytimes_homepage.png", "TR-NYTimes多栏报纸",
+         {"Business", "Lifestyle", "Alice Huang", "Nvidia", "Democrats", "House of Representatives"}, 0},
+        {"translate/yahoo_portal_cards.png", "TR-Yahoo卡片+大图",
+         {"Search the web", "Trending", "Alaska", "Seattle", "Los Angeles", "Advertisement"}, 0},
+        {"translate/sap_b1_form_designer.png", "TR-SAP高密小字ERP",
+         {"平台注册", "基本设置", "单据对象控制", "自定义窗口", "字段权限", "624"}, 0},
+        {"translate/hackernews_nested_comments.png", "TR-HN多级嵌套评论",
+         {"Hacker News", "Show HN", "LLM", "reply", "add comment", "factory"}, 0},
+        {"translate/alternativeto_web_grid.png", "TR-AlternativeTo网格",
+         {"AlternativeTo", "Planner", "NGINX", "PostgreSQL", "Cryptomator", "More tech news"}, 0},
+        {"translate/dark_markdown_codebadges.png", "TR-暗色Markdown胶囊",
+         {"侧边栏信息架构", "MECE", "App.tsx", "standardPluginIds", "Sidebar.tsx", "OCR"}, 0},
+        {"translate/gnway_admin_dialog.jpg", "TR-Win32管理端弹窗",
+         {"V8.6.0.724", "用户管理", "安全配置", "AS0002", "创建新用户失败", "确定"}, 0},
+        // 注：该手持实拍图二维码仅 ~85px 且左下定位点受强反光物理缺损，不作 QR 强门禁（QR 硬门禁由 ocr/packing_card_photo.jpg 守护）
+        {"translate/packing_card_handheld.jpg", "TR-手持装箱卡+强反光QR",
+         {"瑞鹄浩博产品装箱卡", "ZZ00445707", "501023856AA", "HB0502000441", "奇瑞T1Q项目", "原材料箱"}, 0},
+        {"translate/postman_api_dark_sanitized.png", "TR-暗色Postman脱敏",
+         {"COLLECTIONS", "BaseUrl", "CmpnyDB", "DEMO_SAP", "Demo@24Pass", "UserObjectsMD"}, 0},
+    };
+
+    auto queryMem = []() -> std::tuple<double, double, double> {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (::K32GetProcessMemoryInfo(::GetCurrentProcess(),
+                                      reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+                                      sizeof(pmc))) {
+            constexpr double kMb = 1024.0 * 1024.0;
+            return {static_cast<double>(pmc.PrivateUsage) / kMb,
+                    static_cast<double>(pmc.WorkingSetSize) / kMb,
+                    static_cast<double>(pmc.PeakWorkingSetSize) / kMb};
+        }
+        return {0.0, 0.0, 0.0};
+    };
+
+    auto queryCpuMs = []() -> double {
+        FILETIME ct{}, et{}, kt{}, ut{};
+        if (::GetProcessTimes(::GetCurrentProcess(), &ct, &et, &kt, &ut)) {
+            ULARGE_INTEGER ku{}, uu{};
+            ku.LowPart = kt.dwLowDateTime; ku.HighPart = kt.dwHighDateTime;
+            uu.LowPart = ut.dwLowDateTime; uu.HighPart = ut.dwHighDateTime;
+            return static_cast<double>(ku.QuadPart + uu.QuadPart) / 10000.0;
+        }
+        return 0.0;
+    };
+
+    auto toLowerAscii = [](std::string s) {
+        for (char& ch : s) {
+            if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+        }
+        return s;
+    };
+
+    // 统计英文疑似漏空格粘连词（连续 >=18 个纯 ASCII 字母且非驼峰/全大写常量/含点斜杠下划线）
+    auto countGluedAsciiTokens = [](const std::vector<OcrResult>& lines) -> int {
+        int glued = 0;
+        for (const auto& ln : lines) {
+            size_t i = 0;
+            while (i < ln.text.size()) {
+                while (i < ln.text.size() && std::isspace(static_cast<unsigned char>(ln.text[i]))) ++i;
+                const size_t start = i;
+                while (i < ln.text.size() && !std::isspace(static_cast<unsigned char>(ln.text[i]))) ++i;
+                const std::string_view tok = std::string_view(ln.text).substr(start, i - start);
+                if (tok.size() < 18) continue;
+                bool pureAlpha = true;
+                size_t upperCnt = 0, lowerCnt = 0;
+                for (unsigned char c : tok) {
+                    if (c >= 'A' && c <= 'Z') ++upperCnt;
+                    else if (c >= 'a' && c <= 'z') ++lowerCnt;
+                    else { pureAlpha = false; break; }
+                }
+                if (pureAlpha && lowerCnt >= 12 && upperCnt <= 3) {
+                    ++glued;
+                }
+            }
+        }
+        return glued;
+    };
+
+    auto& deep = DeepOcrEngine::instance();
+    deep.releaseLoadedModels();
+    tools3000::core::WinUtils::trimWorkingSet();
+    Sleep(150);
+
+    const auto [basePriv, baseWs, basePeakWs] = queryMem();
+    std::ofstream detailFile;
+    const char* detailPath = std::getenv("TOOLS3000_OCR_BENCH_DETAIL_OUT");
+    if (detailPath && *detailPath) {
+        detailFile.open(detailPath, std::ios::out | std::ios::trunc);
+    }
+
+    std::cout << "[OCR-BENCH-BASE] priv=" << basePriv << "MB ws=" << baseWs << "MB peakWs=" << basePeakWs << "MB\n";
+    std::cout << "[OCR-BENCH-TABLE] file | size | engine | wallMs | cpuMs | lines | blocks | chars | qr | avgConf | p10Conf | low(<0.75) | anchors | gluedEn | privMB | wsMB\n";
+
+    double totalWarmWallMs = 0.0;
+    double totalWarmCpuMs = 0.0;
+    size_t totalLines = 0;
+    size_t totalChars = 0;
+    size_t totalAnchorsHit = 0;
+    size_t totalAnchorsAll = 0;
+    double maxPrivMb = basePriv;
+    double maxWsMb = baseWs;
+
+    for (size_t idx = 0; idx < specs.size(); ++idx) {
+        const auto& sp = specs[idx];
+        const auto fullPath = fixturesRoot / sp.relPath;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(fullPath.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to load: " << sp.relPath;
+
+        // 第 1 张图同时记录冷启耗时，再对副本左上角 1px 做 1-bit 无感扰动绕开 LRU 缓存以精确测量热态无缓存真实耗时
+        double coldMs = -1.0;
+        cv::Mat warmImg = img;
+        if (idx == 0) {
+            const auto t0Cold = std::chrono::steady_clock::now();
+            const auto coldPage = OcrEngine::instance().extractPage(img);
+            const auto t1Cold = std::chrono::steady_clock::now();
+            coldMs = std::chrono::duration<double, std::milli>(t1Cold - t0Cold).count();
+            const auto [cPriv, cWs, cPeak] = queryMem();
+            std::cout << "[OCR-BENCH-COLD] first=" << sp.relPath << " coldWallMs=" << coldMs
+                      << " engine=" << coldPage.activeEngine
+                      << " priv=" << cPriv << "MB ws=" << cWs << "MB peakWs=" << cPeak << "MB\n";
+            warmImg = img.clone();
+            warmImg.at<cv::Vec3b>(0, 0)[0] ^= 1;
+        }
+
+        const double cpuBefore = queryCpuMs();
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto page = OcrEngine::instance().extractPage(warmImg);
+        const auto t1 = std::chrono::steady_clock::now();
+        const double wallMs = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const double cpuMs = queryCpuMs() - cpuBefore;
+        const auto [privMb, wsMb, peakWsMb] = queryMem();
+        maxPrivMb = (std::max)(maxPrivMb, privMb);
+        maxWsMb = (std::max)(maxWsMb, wsMb);
+
+        const auto atomic = OcrEngine::splitIntoAtomicBlocks(page.lines);
+        std::vector<float> confs;
+        confs.reserve(page.lines.size());
+        size_t chars = 0;
+        size_t lowConfCnt = 0;
+        double confSum = 0.0;
+        for (const auto& ln : page.lines) {
+            confs.push_back(ln.confidence);
+            confSum += ln.confidence;
+            if (ln.confidence < 0.75f) ++lowConfCnt;
+            chars += OcrEngine::countUtf8Codepoints(ln.text);
+        }
+        double avgConf = confs.empty() ? 0.0 : (confSum / static_cast<double>(confs.size()));
+        float p10Conf = 0.0f;
+        if (!confs.empty()) {
+            std::sort(confs.begin(), confs.end());
+            p10Conf = confs[confs.size() / 10];
+        }
+
+        const std::string allTextLower = toLowerAscii(joinOcrLines(page.lines));
+        size_t hitCnt = 0;
+        std::string missedAnchors;
+        for (const char* a : sp.anchors) {
+            if (allTextLower.find(toLowerAscii(a)) != std::string::npos) {
+                ++hitCnt;
+            } else {
+                if (!missedAnchors.empty()) missedAnchors += ", ";
+                missedAnchors += a;
+            }
+        }
+        const int gluedEn = countGluedAsciiTokens(page.lines);
+
+        totalWarmWallMs += wallMs;
+        totalWarmCpuMs += cpuMs;
+        totalLines += page.lines.size();
+        totalChars += chars;
+        totalAnchorsHit += hitCnt;
+        totalAnchorsAll += sp.anchors.size();
+
+        const auto deepStats = DeepOcrEngine::instance().lastRunStats();
+        std::printf("  [%02zu] %-36s | %4dx%-4d | %-8s | %-8s | %6.1f | %6.1f | %3zu | %3zu | %4zu | %zu | %.3f | %.3f | %2zu | %zu/%zu | %2d | %5.1f | %5.1f\n",
+                    idx + 1, sp.relPath, img.cols, img.rows, page.activeEngine.c_str(),
+                    deepStats.detectedScript.empty() ? "-" : deepStats.detectedScript.c_str(),
+                    wallMs, cpuMs, page.lines.size(), atomic.size(), chars, page.qrCodes.size(),
+                    avgConf, p10Conf, lowConfCnt, hitCnt, sp.anchors.size(), gluedEn, privMb, wsMb);
+
+        if (detailFile.is_open()) {
+            detailFile << "=== [" << (idx + 1) << "] " << sp.relPath << " (" << sp.category << ") "
+                       << img.cols << "x" << img.rows << " wall=" << wallMs << "ms cpu=" << cpuMs
+                       << "ms lines=" << page.lines.size() << " avgConf=" << avgConf
+                       << " anchors=" << hitCnt << "/" << sp.anchors.size();
+            if (!missedAnchors.empty()) detailFile << " MISSED=[" << missedAnchors << "]";
+            detailFile << " ===\n";
+            for (size_t k = 0; k < page.lines.size(); ++k) {
+                const auto& ln = page.lines[k];
+                detailFile << "  L" << k << " (" << ln.confidence << ") [" << ln.text << "]\n";
+            }
+            for (const auto& q : page.qrCodes) {
+                detailFile << "  [QR:" << q.format << "] " << q.text << "\n";
+            }
+            detailFile << "\n";
+        }
+
+        EXPECT_FALSE(page.lines.empty()) << sp.relPath;
+        if (sp.expectedMinQr > 0) {
+            EXPECT_GE(static_cast<int>(page.qrCodes.size()), sp.expectedMinQr) << sp.relPath;
+        }
+    }
+
+    const auto [beforeRelPriv, beforeRelWs, peakWsAll] = queryMem();
+    deep.releaseLoadedModels();
+    tools3000::core::WinUtils::trimWorkingSet();
+    Sleep(250);
+    const auto [afterRelPriv, afterRelWs, afterPeakWs] = queryMem();
+
+    std::printf("[OCR-BENCH-SUMMARY] images=%zu totalWarmWall=%.1fms avgWall=%.1fms totalCpu=%.1fms totalLines=%zu totalChars=%zu anchors=%zu/%zu (%.1f%%)\n",
+                specs.size(), totalWarmWallMs, totalWarmWallMs / static_cast<double>(specs.size()),
+                totalWarmCpuMs, totalLines, totalChars, totalAnchorsHit, totalAnchorsAll,
+                totalAnchorsAll > 0 ? (100.0 * static_cast<double>(totalAnchorsHit) / static_cast<double>(totalAnchorsAll)) : 0.0);
+    std::printf("[OCR-BENCH-MEM] base=(priv=%.1fMB ws=%.1fMB) peak=(priv=%.1fMB ws=%.1fMB peakWs=%.1fMB) afterRelease=(priv=%.1fMB ws=%.1fMB)\n",
+                basePriv, baseWs, maxPrivMb, maxWsMb, peakWsAll, afterRelPriv, afterRelWs);
+}
+
 TEST(LiveTextOcrTest, FixtureApifoxPrettyJsonAndDropdownChevronRegression) {
     using namespace tools3000::ocr;
     auto& deep = DeepOcrEngine::instance();
@@ -3723,4 +4019,239 @@ TEST(WorkerIsolationTest, RecordEncodeAndStudioExportWorkersOutOfProcessEndToEnd
     EXPECT_FALSE(decodedFrame.empty());
     reader.close();
     StudioVideoCompositor::clearGlobalCaches();
+}
+
+#include "capture/PinContextMenuModel.h"
+#include "ocr/OcrWorkerProtocol.h"
+
+TEST(LiveTextOcrTest, MultilingualOcrFixtureCatalogIntegrity) {
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto multiDir = ocrDir / "multilang";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_directory(multiDir, ec)) << "Missing tests/fixtures/ocr/multilang directory";
+
+    constexpr const char* kMultilangFixtures[] = {
+        "zh_tw_settings_card.png",
+        "ja_settings_card.png",
+        "ko_dark_settings_card.png",
+        "ru_settings_card.png",
+        "es_pt_settings_card.png",
+    };
+
+    for (const char* name : kMultilangFixtures) {
+        const auto p = multiDir / name;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing multilingual OCR fixture: " << name;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to decode multilingual OCR fixture: " << name;
+        EXPECT_GT(img.cols, 400) << name;
+        EXPECT_GT(img.rows, 150) << name;
+    }
+}
+
+TEST(LiveTextOcrTest, OnnxIrClampAndMultilingualScriptPackContract) {
+    using namespace tools3000::ocr;
+    using namespace tools3000::capture;
+
+    // 1. 验证 ONNX ir_version > 8 精准钳位至 8 且后部负载字节 100% 比特无损
+    std::vector<uint8_t> payloadV10 = {
+        0x08, 0x0A,                               // field 1 (ir_version) = 10
+        0x12, 0x06, 'p', 'a', 'd', 'd', 'l', 'e', // field 2 (producer_name)
+        0x22, 0x04, 0xDE, 0xAD, 0xBE, 0xEF        // payload guard bytes (>= 16 bytes)
+    };
+    const auto originalCopy = payloadV10;
+    EXPECT_TRUE(DeepOcrEngine::clampOnnxIrVersionForWinMl(payloadV10));
+    ASSERT_EQ(payloadV10.size(), originalCopy.size());
+    EXPECT_EQ(payloadV10[0], 0x08u);
+    EXPECT_EQ(payloadV10[1], 0x08u);
+    for (size_t i = 2; i < originalCopy.size(); ++i) {
+        EXPECT_EQ(payloadV10[i], originalCopy[i]) << "Byte corrupted at offset " << i;
+    }
+    // 幂等校验：已为 ir_version=8 再次调用返回 false（未改写）且字节不变
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(payloadV10));
+    EXPECT_EQ(payloadV10[1], 0x08u);
+
+    // 截断异常缓冲区安全返回 false
+    std::vector<uint8_t> tinyBuf = {0x08, 0x0A};
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(tinyBuf));
+
+    // 2. 验证模型状态契约返回完整 4 个轻量语种扩展包元数据
+    const auto status = DeepOcrEngine::instance().getModelStatus();
+    ASSERT_EQ(status.scriptPacks.size(), 4u);
+    EXPECT_EQ(status.scriptPacks[0].id, "japan");
+    EXPECT_EQ(status.scriptPacks[1].id, "korean");
+    EXPECT_EQ(status.scriptPacks[2].id, "cyrillic");
+    EXPECT_EQ(status.scriptPacks[3].id, "latin");
+    for (const auto& sp : status.scriptPacks) {
+        EXPECT_GT(sp.estimatedBytes, 5ULL * 1024ULL * 1024ULL) << sp.id;
+    }
+
+    // 3. 验证 OcrWorkerProtocol 协议升级至 v3
+    EXPECT_EQ(worker_proto::kProtocolVersion, 3u);
+
+    // 4. 验证贴图右键「文字划选与翻译 -> 识字语种」3 级子菜单结构与状态微标回显
+    PinContextMenuSnapshot snap;
+    snap.isChinese = true;
+    snap.activeOcrScriptMode = "korean";
+    snap.hasOcrScriptOverride = true;
+    snap.scriptPackJapanInstalled = true;
+    snap.scriptPackKoreanInstalled = true;
+    snap.scriptPackCyrillicInstalled = false;
+    snap.scriptPackLatinInstalled = false;
+
+    const auto rootMenu = PinContextMenuBuilder::buildRootMenu(snap);
+    const PinMenuItem* ocrSub = nullptr;
+    for (const auto& item : rootMenu.items) {
+        if (item.hasSubmenu() && item.icon == CaptureIconId::ActionExtractText) {
+            ocrSub = &item;
+            break;
+        }
+    }
+    ASSERT_NE(ocrSub, nullptr);
+
+    const PinMenuItem* scriptSub = nullptr;
+    for (const auto& sub : ocrSub->submenu) {
+        if (sub.hasSubmenu() && sub.submenu.size() >= 6u) {
+            scriptSub = &sub;
+            break;
+        }
+    }
+    ASSERT_NE(scriptSub, nullptr);
+    EXPECT_FALSE(scriptSub->statusBadge.empty());
+
+    int checkedKorean = 0;
+    int missingPackBadges = 0;
+    for (const auto& opt : scriptSub->submenu) {
+        if (opt.isSeparator) continue;
+        if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
+            opt.command.param == PinOcrScriptParam::kKorean && opt.isChecked) {
+            ++checkedKorean;
+        }
+        if (!opt.statusBadge.empty()) {
+            ++missingPackBadges;
+        }
+    }
+    EXPECT_EQ(checkedKorean, 1);
+    EXPECT_EQ(missingPackBadges, 2); // cyrillic + latin marked as not installed
+}
+
+TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
+    using namespace tools3000::ocr;
+
+    auto& deep = DeepOcrEngine::instance();
+    const char* dlEnv = std::getenv("TOOLS3000_TEST_DOWNLOAD_SCRIPT_PACKS");
+    if (dlEnv && *dlEnv && std::string(dlEnv) != "0") {
+        ASSERT_TRUE(deep.startScriptPackDownload("all"));
+        bool finished = false;
+        for (int i = 0; i < 600; ++i) {
+            const auto st = deep.getModelStatus();
+            if (!st.downloading) {
+                finished = true;
+                EXPECT_TRUE(st.error.empty()) << "Download error: " << st.error;
+                break;
+            }
+            Sleep(250);
+        }
+        ASSERT_TRUE(finished) << "Timed out downloading multilingual script packs";
+        EXPECT_TRUE(deep.isModelInstalled());
+        EXPECT_TRUE(deep.isScriptPackInstalled("japan"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("korean"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("cyrillic"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("latin"));
+    }
+
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "Base PP-OCRv4 model bundle not installed";
+    }
+
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto multiDir = ocrDir / "multilang";
+
+    struct MultiSpec {
+        const char* file;
+        const char* expectedScript;
+        bool requiresPack;
+        std::vector<const char*> anchors;
+    };
+    const std::vector<MultiSpec> specs = {
+        {"zh_tw_settings_card.png", "cjk", false, {"繁體中文", "Tools3000", "95.2%"}},
+        {"ja_settings_card.png", "japan", true, {"オフライン文字認識", "スクリーンショット", "Tools3000", "キャンセル"}},
+        {"ko_dark_settings_card.png", "korean", true, {"오프라인", "스크린샷을", "네트워크", "v1.4.0"}},
+        {"ru_settings_card.png", "cyrillic", true, {"Автономное", "русский", "DirectML GPU", "26%"}},
+        {"es_pt_settings_card.png", "latin", true, {"Configuración", "Español", "Português", "¿Desea"}},
+    };
+
+    auto queryPrivMb = []() -> double {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+            return static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+        }
+        return 0.0;
+    };
+
+    const double privStart = queryPrivMb();
+    std::cout << "\n[MULTILANG-OCR-BENCH] Start PrivateMB=" << privStart << "\n";
+
+    for (const auto& sp : specs) {
+        if (sp.requiresPack && !deep.isScriptPackInstalled(sp.expectedScript)) {
+            std::cout << "  [SKIP] " << sp.file << " (pack '" << sp.expectedScript << "' not installed)\n";
+            continue;
+        }
+        const auto p = multiDir / sp.file;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << sp.file;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        // 显式传入 "auto" 模拟中文用户在默认自动模式零切换截外语图
+        const auto lines = deep.extractText(img, "auto");
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const auto st = deep.lastRunStats();
+        const double privNow = queryPrivMb();
+
+        std::string joined;
+        double confSum = 0.0;
+        for (const auto& l : lines) {
+            if (!joined.empty()) joined += "\n";
+            joined += l.text;
+            confSum += l.confidence;
+        }
+        const double avgConf = lines.empty() ? 0.0 : (confSum / static_cast<double>(lines.size()));
+
+        std::cout << "  [" << sp.expectedScript << "] " << sp.file
+                  << " -> detected=" << st.detectedScript
+                  << " wallMs=" << ms
+                  << " lines=" << lines.size()
+                  << " avgConf=" << avgConf
+                  << " privMB=" << privNow << "\n";
+        for (const auto& l : lines) {
+            std::cout << "      (" << l.confidence << ") " << l.text << "\n";
+        }
+
+        EXPECT_EQ(st.detectedScript, sp.expectedScript) << sp.file << " joined=" << joined;
+        EXPECT_GE(avgConf, 0.90) << sp.file;
+        for (const char* anchor : sp.anchors) {
+            EXPECT_NE(joined.find(anchor), std::string::npos)
+                << sp.file << " missing anchor '" << anchor << "' in: " << joined;
+        }
+    }
+
+    // 验证 OcrEngine 缓存键随 scriptMode 严格隔离（同一张韩文图在 "cjk" 与 "korean" 覆写下绝不互串缓存）
+    if (deep.isScriptPackInstalled("korean")) {
+        const auto koPath = multiDir / "ko_dark_settings_card.png";
+        const cv::Mat koImg = cv::imread(tools3000::core::WinUtils::wstringToUtf8(koPath.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(koImg.empty());
+        const auto cjkPage = OcrEngine::instance().extractPage(koImg, "cjk");
+        const auto koPage = OcrEngine::instance().extractPage(koImg, "korean");
+        std::string koJoined;
+        for (const auto& l : koPage.lines) koJoined += l.text + "\n";
+        EXPECT_NE(koJoined.find("오프라인"), std::string::npos);
+        EXPECT_GT(koPage.lines.size(), cjkPage.lines.size());
+    }
+
+    deep.releaseLoadedModels();
+    const double privAfterRelease = queryPrivMb();
+    std::cout << "[MULTILANG-OCR-BENCH] After releaseLoadedModels PrivateMB=" << privAfterRelease << "\n";
 }

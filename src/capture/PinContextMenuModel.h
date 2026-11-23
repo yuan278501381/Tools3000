@@ -94,6 +94,7 @@ enum class PinMenuAction {
     CopyTranslatedText,
     ToggleTextSelectionMode,
     SelectAllText,
+    SetOcrScriptMode,       // param = PinOcrScriptParam (0=auto, 1=cjk, 2=japan, 3=korean, 4=cyrillic, 5=latin)
     SaveImage,
     ResetScale,
     RotateRight90,
@@ -125,6 +126,28 @@ enum class PinMenuAction {
     GroupResetMeta,
 };
 
+/// 贴图右键「识字语种」强类型命令参数常量（零魔术字面量）
+namespace PinOcrScriptParam {
+    inline constexpr int kAuto = 0;
+    inline constexpr int kCjk = 1;
+    inline constexpr int kJapan = 2;
+    inline constexpr int kKorean = 3;
+    inline constexpr int kCyrillic = 4;
+    inline constexpr int kLatin = 5;
+
+    inline const char* toModeString(int param) noexcept {
+        switch (param) {
+            case kCjk:      return "cjk";
+            case kJapan:    return "japan";
+            case kKorean:   return "korean";
+            case kCyrillic: return "cyrillic";
+            case kLatin:    return "latin";
+            case kAuto:
+            default:        return "auto";
+        }
+    }
+} // namespace PinOcrScriptParam
+
 /// 强类型菜单指令载荷
 struct PinMenuCommand {
     PinMenuAction action = PinMenuAction::None;
@@ -149,6 +172,12 @@ struct PinContextMenuSnapshot {
     bool hasTranslation = false;
     bool isShowingTranslation = false;
     bool isTranslationInFlight = false;
+    std::string activeOcrScriptMode = "auto";
+    bool hasOcrScriptOverride = false;
+    bool scriptPackJapanInstalled = false;
+    bool scriptPackKoreanInstalled = false;
+    bool scriptPackCyrillicInstalled = false;
+    bool scriptPackLatinInstalled = false;
     float scale = 1.0f;
     float opacity = 1.0f;
 

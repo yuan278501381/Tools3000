@@ -18,7 +18,7 @@
 namespace tools3000::ocr::worker_proto {
 
 inline constexpr uint32_t kProtocolMagic   = 0x54334F52u; // "T3OR"
-inline constexpr uint32_t kProtocolVersion = 2u;
+inline constexpr uint32_t kProtocolVersion = 3u;
 inline constexpr uint32_t kMaxOcrLines     = 100000u;
 inline constexpr uint32_t kMaxCharBoxes    = 100000u;
 
@@ -104,6 +104,7 @@ inline bool writeOcrResults(
     wireStats.activeSessions = static_cast<uint32_t>(stats.activeSessions);
     if (!worker::writePod(pipe, wireStats, overlappedHandle)) return false;
     if (!worker::writeString(pipe, stats.bucketProfile, overlappedHandle)) return false;
+    if (!worker::writeString(pipe, stats.detectedScript, overlappedHandle)) return false;
     if (!worker::writeString(pipe, activeTier, overlappedHandle)) return false;
 
     for (const auto& line : lines) {
@@ -164,6 +165,7 @@ inline bool readOcrResults(
     outStats.serverRefinedCount = wireStats.serverRefinedCount;
     outStats.activeSessions = wireStats.activeSessions;
     if (!worker::readString(pipe, outStats.bucketProfile, overlappedHandle, timeoutMs)) return false;
+    if (!worker::readString(pipe, outStats.detectedScript, overlappedHandle, timeoutMs)) return false;
     if (!worker::readString(pipe, outActiveTier, overlappedHandle, timeoutMs)) return false;
 
     outLines.reserve(hdr.lineCount);

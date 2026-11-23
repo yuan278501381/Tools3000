@@ -1,19 +1,21 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
 #pragma once
 
+#include "DialogEventAndLayoutPolicy.h"
+
 #include <windows.h>
-#include <string>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <unordered_map>
 
@@ -53,10 +55,10 @@ private:
     void handleDialogInvoked(HWND hwnd, LONG idObject, LONG idChild);
     void monitorThreadMain();
     void finalizeDialog(HWND hwnd, bool windowStillReadable = false);
+    void syncDynamicHooksAndTracker(bool hasActiveSessions);
+    void applyDynamicHooksOnHookThread(bool enable);
     static HWND rootWindow(HWND hwnd);
 
-    // 专用钩子线程：SetWinEventHook(WINEVENT_OUTOFCONTEXT) 必须在有消息循环的线程注册
-    // 独立线程自己跑 GetMessage 循环，完全脱离主线程的限制
     void hookThreadMain();
 
     std::atomic<bool> m_running{false};
@@ -65,10 +67,11 @@ private:
     std::atomic<HWINEVENTHOOK> m_hookLocation{nullptr};
     std::atomic<HWINEVENTHOOK> m_hookInvoke{nullptr};
     std::atomic<HWINEVENTHOOK> m_hookNameChange{nullptr};
+    std::atomic<bool> m_dynamicHooksWanted{false};
 
-    std::thread m_hookThread;             // 专用钩子线程
-    std::atomic<DWORD> m_hookThreadId{0}; // 钩子线程 tid，用于 PostThreadMessage
-    std::atomic<bool> m_hookReady{false}; // 钩子注册完毕信号
+    std::thread m_hookThread;
+    std::atomic<DWORD> m_hookThreadId{0};
+    std::atomic<bool> m_hookReady{false};
     std::mutex m_hookStartupMutex;
     std::condition_variable m_hookStartupCv;
 
@@ -76,21 +79,27 @@ private:
         HWND hwnd{nullptr};
         HWND okButtonHwnd{nullptr};
         HWND cancelButtonHwnd{nullptr};
+        HWND shellViewHwnd{nullptr};
+        HWND addressToolbarHwnd{nullptr};
+        HWND fileNameEditHwnd{nullptr};
         RECT okButtonRect{};
         RECT cancelButtonRect{};
         RECT dialogRect{};
         RECT shellViewRect{};
         float dpiScale{1.0f};
         DWORD processId{0};
-        int dialogType{0};
+        DialogArchitecture architecture{DialogArchitecture::Unknown};
+        DialogMode mode{DialogMode::Unknown};
         std::string processName;
         std::string restorePath;
         std::string initialFolder;
         std::string currentFolder;
         std::string initialSelection;
         std::string lastSelection;
+        std::string enterObservedFolder;
         std::chrono::steady_clock::time_point discoveredAt{};
         std::chrono::steady_clock::time_point lastPoll{};
+        std::chrono::steady_clock::time_point enterObservedAt{};
         unsigned detectionAttempts{0};
         bool initialized{false};
         bool isInstaller{false};

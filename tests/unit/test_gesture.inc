@@ -679,6 +679,30 @@ TEST(GestureInputPolicyTest, ResultToastRequiresRecognitionOrExcessive) {
     EXPECT_TRUE(shouldShowGestureResultToast(false, true, true));
 }
 
+TEST(GestureInputPolicyTest, WatchdogAllows8sSpeechlessEasterEggAndAbortsStale) {
+    EXPECT_TRUE(isGestureSpeechlessMarker(kGestureSpeechlessMarker));
+    EXPECT_FALSE(isGestureSpeechlessMarker("..."));
+    EXPECT_FALSE(isGestureSpeechlessMarker(""));
+
+    // 持续活跃乱画（距离上次移动仅 50ms）：第 8~15 秒绝不得被看门狗提前熔断，保障 8 秒彩蛋必达
+    EXPECT_FALSE(shouldWatchdogAbortGesture(8000, 50));
+    EXPECT_FALSE(shouldWatchdogAbortGesture(10500, 50));
+    EXPECT_FALSE(shouldWatchdogAbortGesture(15000, 120));
+
+    // 丢松手僵死（超过 10 秒无任何钩子事件）或超过 30 秒绝对上限：必须安全熔断防卡键
+    EXPECT_TRUE(shouldWatchdogAbortGesture(10200, 10000));
+    EXPECT_TRUE(shouldWatchdogAbortGesture(30000, 10));
+
+    // 8 秒乱画无语红底三白点触发策略校验
+    EXPECT_FALSE(shouldTriggerGestureSpeechless(true, false, false, false, 7999));
+    EXPECT_FALSE(shouldTriggerGestureSpeechless(false, false, false, false, 8500));
+    EXPECT_FALSE(shouldTriggerGestureSpeechless(true, true, false, false, 8500));
+    EXPECT_FALSE(shouldTriggerGestureSpeechless(true, false, true, false, 8500));
+    EXPECT_FALSE(shouldTriggerGestureSpeechless(true, false, false, true, 8500));
+    EXPECT_TRUE(shouldTriggerGestureSpeechless(true, false, false, false, 8000));
+    EXPECT_TRUE(shouldTriggerGestureSpeechless(true, false, false, false, 12500));
+}
+
 TEST(GestureInputPolicyTest, OverlaySurfaceGrowsOnly) {
     int left = 100, top = 100, right = 200, bottom = 200;
     growOverlayRect(left, top, right, bottom, 0, 0, 256, 256);
@@ -4616,6 +4640,275 @@ TEST(MouseGesture, RapidCloseTabSafetyAndRealUserVShapeRegression) {
     BuiltinCommandDispatcher::instance().clearHandlers();
     DestroyWindow(hostWnd);
 }
+
+TEST(GestureActionUpgradeTest, RunProgramJsonRoundTripAndLegacyCompatibility) {
+    // 1. activate_or_run + matchCmdLine + matchTitle 完整序列化往返
+    GestureAction actActivate;
+    actActivate.type = ActionType::RunProgram;
+    actActivate.name = "Work Chrome";
+    actActivate.description = "Activate or launch portable Chrome";
+    actActivate.programPath = R"(L:\02_Chrome\Chrome\App\chrome.exe)";
+    actActivate.programArgs = R"(--user-data-dir="L:\02_Chrome\Chrome\Data")";
+    actActivate.runMode = "activate_or_run";
+    actActivate.matchCmdLine = R"(L:\02_Chrome\Chrome\Data)";
+    actActivate.matchTitle = "Google Chrome";
+
+    const auto jActivate = actActivate.toJson();
+    EXPECT_EQ(jActivate.value("runMode", ""), "activate_or_run");
+    EXPECT_EQ(jActivate.value("matchCmdLine", ""), R"(L:\02_Chrome\Chrome\Data)");
+    EXPECT_EQ(jActivate.value("matchTitle", ""), "Google Chrome");
+
+    const auto restoredActivate = GestureAction::fromJson(jActivate);
+    EXPECT_EQ(restoredActivate.type, ActionType::RunProgram);
+    EXPECT_EQ(restoredActivate.programPath, actActivate.programPath);
+    EXPECT_EQ(restoredActivate.programArgs, actActivate.programArgs);
+    EXPECT_EQ(restoredActivate.runMode, "activate_or_run");
+    EXPECT_EQ(restoredActivate.matchCmdLine, actActivate.matchCmdLine);
+    EXPECT_EQ(restoredActivate.matchTitle, actActivate.matchTitle);
+
+    // 2. toggle_or_run 往返（无可选过滤词时 JSON 保持精简）
+    GestureAction actToggle;
+    actToggle.type = ActionType::RunProgram;
+    actToggle.name = "Toggle Terminal";
+    actToggle.programPath = "wt.exe";
+    actToggle.runMode = "toggle_or_run";
+    const auto jToggle = actToggle.toJson();
+    EXPECT_EQ(jToggle.value("runMode", ""), "toggle_or_run");
+    EXPECT_FALSE(jToggle.contains("matchCmdLine"));
+    EXPECT_FALSE(jToggle.contains("matchTitle"));
+    const auto restoredToggle = GestureAction::fromJson(jToggle);
+    EXPECT_EQ(restoredToggle.runMode, "toggle_or_run");
+    EXPECT_TRUE(restoredToggle.matchCmdLine.empty());
+    EXPECT_TRUE(restoredToggle.matchTitle.empty());
+
+    // 3. 旧版 JSON 配置（不含 runMode/matchCmdLine/matchTitle）向后兼容默认 always_new
+    const nlohmann::json legacyJson = {
+        {"type", static_cast<int>(ActionType::RunProgram)},
+        {"name", "Legacy Notepad"},
+        {"programPath", "notepad.exe"},
+        {"programArgs", "notes.txt"},
+    };
+    const auto restoredLegacy = GestureAction::fromJson(legacyJson);
+    EXPECT_EQ(restoredLegacy.type, ActionType::RunProgram);
+    EXPECT_EQ(restoredLegacy.programPath, "notepad.exe");
+    EXPECT_EQ(restoredLegacy.programArgs, "notes.txt");
+    EXPECT_EQ(restoredLegacy.runMode, "always_new");
+    EXPECT_TRUE(restoredLegacy.matchCmdLine.empty());
+    EXPECT_TRUE(restoredLegacy.matchTitle.empty());
+
+    // 4. 非法 runMode 自动回落至 always_new
+    nlohmann::json invalidModeJson = legacyJson;
+    invalidModeJson["runMode"] = "invalid_mode_xyz";
+    const auto restoredInvalid = GestureAction::fromJson(invalidModeJson);
+    EXPECT_EQ(restoredInvalid.runMode, "always_new");
+}
+
+TEST(GestureActionUpgradeTest, ExtractProfileMatchHintFromArgsVariants) {
+    using tools3000::core::WinUtils;
+
+    // 1. Chrome --user-data-dir 带引号
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(
+            LR"(--lang=zh-CN --user-data-dir="L:\02_Chrome\Chrome\Data" --disable-gpu)"),
+        LR"(L:\02_Chrome\Chrome\Data)");
+
+    // 2. Chrome --user-data-dir 无引号
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(
+            LR"(--user-data-dir=D:\PortableApps\ChromeData --incognito)"),
+        LR"(D:\PortableApps\ChromeData)");
+
+    // 3. 含中文目录与空格的引号路径
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(
+            LR"(--USER-DATA-DIR="D:\便携软件\工作 浏览器\用户数据")"),
+        LR"(D:\便携软件\工作 浏览器\用户数据)");
+
+    // 4. Chrome --profile-directory
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(
+            LR"(--profile-directory="Profile 2" https://example.com)"),
+        L"Profile 2");
+
+    // 5. Firefox -P（带引号与不带引号）及 -profile
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(LR"(-no-remote -P "Work Profile")"),
+        L"Work Profile");
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(LR"(-P DevUser)"),
+        L"DevUser");
+    EXPECT_EQ(
+        WinUtils::extractProfileMatchHintFromArgs(LR"(-profile "C:\FirefoxProfiles\Work")"),
+        LR"(C:\FirefoxProfiles\Work)");
+
+    // 6. 空参数或不含 Profile 标识的参数返回空串
+    EXPECT_TRUE(WinUtils::extractProfileMatchHintFromArgs(L"").empty());
+    EXPECT_TRUE(WinUtils::extractProfileMatchHintFromArgs(L"--incognito --new-window").empty());
+}
+
+TEST(GestureInputPolicyTest, PauseToCancelPolicyMatrixAndJitterReset) {
+    // 1. 超时时长范围夹紧 [400, 2000]
+    EXPECT_EQ(clampPauseCancelMs(100), 400);
+    EXPECT_EQ(clampPauseCancelMs(400), 400);
+    EXPECT_EQ(clampPauseCancelMs(700), 700);
+    EXPECT_EQ(clampPauseCancelMs(2000), 2000);
+    EXPECT_EQ(clampPauseCancelMs(5000), 2000);
+
+    // 2. 6px 抗抖半径判定 (dx*dx + dy*dy >= 36)
+    EXPECT_FALSE(hasMovedBeyondPauseAnchor(100, 100, 100, 100));
+    EXPECT_FALSE(hasMovedBeyondPauseAnchor(105, 100, 100, 100)); // 25 < 36
+    EXPECT_FALSE(hasMovedBeyondPauseAnchor(104, 104, 100, 100)); // 32 < 36
+    EXPECT_TRUE(hasMovedBeyondPauseAnchor(106, 100, 100, 100));  // 36 >= 36
+    EXPECT_TRUE(hasMovedBeyondPauseAnchor(105, 104, 100, 100));  // 41 >= 36
+
+    // 3. 未启用不触发
+    EXPECT_FALSE(shouldTriggerPauseCancel(false, true, false, false, false, 1500, 700));
+
+    // 4. 未过起始识别阈值不触发（严格区分 initialTimeoutMs）
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, false, false, false, false, 1500, 700));
+
+    // 5. 超时前不触发，达到或超过阈值触发
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, false, false, 699, 700));
+    EXPECT_TRUE(shouldTriggerPauseCancel(true, true, false, false, false, 700, 700));
+    EXPECT_TRUE(shouldTriggerPauseCancel(true, true, false, false, false, 950, 700));
+
+    // 6. 已瞬发 / 已滚轮 / 已停顿取消不重复触发
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, true, false, false, 1500, 700));
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, true, false, 1500, 700));
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, false, true, 1500, 700));
+
+    // 7. 抖动位移模拟：半径内微抖不刷新锚点，跨出 6px 后刷新锚点并重置计时
+    POINT anchor{200, 200};
+    int64_t anchorTs = 1000;
+    auto feedMove = [&](int x, int y, int64_t ts) {
+        if (hasMovedBeyondPauseAnchor(x, y, anchor.x, anchor.y)) {
+            anchor = {x, y};
+            anchorTs = ts;
+        }
+    };
+    feedMove(203, 202, 1300); // dx^2+dy^2 = 13 < 36，不刷新
+    EXPECT_EQ(anchorTs, 1000);
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, false, false, 1650 - anchorTs, 700));
+    feedMove(207, 200, 1650); // dx^2+dy^2 = 49 >= 36，刷新锚点至 1650ms
+    EXPECT_EQ(anchorTs, 1650);
+    EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, false, false, 2000 - anchorTs, 700));
+    EXPECT_TRUE(shouldTriggerPauseCancel(true, true, false, false, false, 2350 - anchorTs, 700));
+
+    // 8. GestureEngine 配置默认值（pauseCancelEnabled 默认开启 true）与 ConfigManager 持久化往返
+    auto& engine = GestureEngine::instance();
+    const bool oldEnabled = engine.pauseCancelEnabled();
+    const int oldMs = engine.pauseCancelMs();
+
+    const auto tempRoot = std::filesystem::temp_directory_path() /
+        (L"tools3000_pause_cancel_cfg_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(tempRoot, ec);
+    std::filesystem::create_directories(tempRoot, ec);
+
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    ASSERT_TRUE(cfg.initialize(tempRoot));
+    // 未显式配置时默认开启划动中途停顿自动取消
+    engine.loadFromConfig();
+    EXPECT_TRUE(engine.pauseCancelEnabled());
+    cfg.set<bool>("/gesture/pauseCancelEnabled", false);
+    engine.loadFromConfig();
+    EXPECT_FALSE(engine.pauseCancelEnabled());
+    cfg.set<bool>("/gesture/pauseCancelEnabled", true);
+    cfg.set<int>("/gesture/pauseCancelMs", 950);
+    engine.loadFromConfig();
+    EXPECT_TRUE(engine.pauseCancelEnabled());
+    EXPECT_EQ(engine.pauseCancelMs(), 950);
+
+    engine.setPauseCancelMs(120);
+    EXPECT_EQ(engine.pauseCancelMs(), 400);
+    engine.setPauseCancelMs(9999);
+    EXPECT_EQ(engine.pauseCancelMs(), 2000);
+
+    cfg.shutdown();
+    std::filesystem::remove_all(tempRoot, ec);
+    engine.setPauseCancelEnabled(oldEnabled);
+    engine.setPauseCancelMs(oldMs);
+}
+
+TEST(LuaEngineUpgradeTest, WindowSwitchApisChunkCacheAndLocalGestureExecution) {
+    using tools3000::core::LuaEngine;
+    using tools3000::core::LuaPermission;
+
+    auto& lua = LuaEngine::instance();
+    ASSERT_TRUE(lua.initialize());
+    EXPECT_TRUE(lua.isInitialized());
+    EXPECT_EQ(lua.chunkCacheSizeForTesting(), 0u);
+    EXPECT_EQ(lua.chunkCacheHitsForTesting(), 0u);
+
+    // 1. easy.window 三个原生切窗 API 在 Window 权限下已注册且返回预期类型/值
+    const std::string apiCheckScript = R"(
+        assert(type(easy.window.activateByExe) == "function")
+        assert(type(easy.window.toggleByExe) == "function")
+        assert(type(easy.window.focusByTitle) == "function")
+        assert(easy.window.activateByExe("__t3k_nonexistent_app_9999.exe") == false)
+        assert(easy.window.activateByExe("__t3k_nonexistent_app_9999.exe", "ProfileX") == false)
+        assert(easy.window.toggleByExe("__t3k_nonexistent_app_9999.exe") == "not_found")
+        assert(easy.window.toggleByExe("__t3k_nonexistent_app_9999.exe", "ProfileX") == "not_found")
+        assert(easy.window.focusByTitle("__t3k_nonexistent_window_title_9999__") == false)
+        assert(easy.window.focusByTitle("__t3k_nonexistent_window_title_9999__", "chrome.exe") == false)
+    )";
+    EXPECT_TRUE(lua.executeScript(apiCheckScript, LuaPermission::Window));
+
+    // 2. Safe 模式下依然拦截 Window 权限调用（保持沙箱边界不破）
+    EXPECT_FALSE(lua.executeScript(
+        R"(easy.window.activateByExe("__t3k_nonexistent_app_9999.exe"))", LuaPermission::Safe));
+    EXPECT_FALSE(lua.executeScript(
+        R"(easy.window.toggleByExe("__t3k_nonexistent_app_9999.exe"))", LuaPermission::Safe));
+    EXPECT_FALSE(lua.executeScript(
+        R"(easy.window.focusByTitle("__t3k_nonexistent_window_title_9999__"))", LuaPermission::Safe));
+
+    // 3. 字节码 Chunk LRU 缓存：同一脚本多次执行命中缓存且正确累加执行效果
+    ASSERT_TRUE(lua.initialize());
+    const std::string counterScript = R"(
+        __t3k_cache_counter = (__t3k_cache_counter or 0) + 1
+    )";
+    EXPECT_TRUE(lua.executeScript(counterScript, LuaPermission::Safe));
+    EXPECT_EQ(lua.chunkCacheSizeForTesting(), 1u);
+    EXPECT_EQ(lua.chunkCacheHitsForTesting(), 0u);
+
+    EXPECT_TRUE(lua.executeScript(counterScript, LuaPermission::Safe));
+    EXPECT_TRUE(lua.executeScript(counterScript, LuaPermission::Safe));
+    EXPECT_EQ(lua.chunkCacheSizeForTesting(), 1u);
+    EXPECT_EQ(lua.chunkCacheHitsForTesting(), 2u);
+    EXPECT_TRUE(lua.executeScript("assert(__t3k_cache_counter == 3)", LuaPermission::Safe));
+
+    // 语法错误脚本绝不入缓存
+    const size_t sizeBeforeSyntaxErr = lua.chunkCacheSizeForTesting();
+    EXPECT_FALSE(lua.executeScript("if then end ===", LuaPermission::Safe));
+    EXPECT_EQ(lua.chunkCacheSizeForTesting(), sizeBeforeSyntaxErr);
+
+    // LRU 容量上限 64 校验：注入 70 个不同脚本后容量严格不超过 64
+    for (int i = 0; i < 70; ++i) {
+        const std::string s = "local v = " + std::to_string(i);
+        EXPECT_TRUE(lua.executeScript(s, LuaPermission::Safe));
+    }
+    EXPECT_EQ(lua.chunkCacheSizeForTesting(), 64u);
+
+    // 4. GestureAction 执行本地无显式 permissions 的 Lua 脚本：
+    //    能够自动惰性初始化 LuaEngine、具备 Window 权限且不弹阻塞授权框
+    lua.shutdown();
+    EXPECT_FALSE(lua.isInitialized());
+
+    GestureAction localLuaAction;
+    localLuaAction.type = ActionType::LuaScript;
+    localLuaAction.name = "Local Window Toggle Script";
+    localLuaAction.luaScript = R"(
+        __t3k_gesture_lua_res = easy.window.toggleByExe("__t3k_nonexistent_app_9999.exe")
+    )";
+    localLuaAction.execute(nullptr);
+
+    EXPECT_TRUE(lua.isInitialized());
+    EXPECT_TRUE(lua.executeScript(
+        R"(assert(__t3k_gesture_lua_res == "not_found"))", LuaPermission::Safe));
+
+    lua.shutdown();
+}
+
 
 
 

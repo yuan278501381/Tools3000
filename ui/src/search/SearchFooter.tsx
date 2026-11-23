@@ -1,6 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
-import { PauseCircle, Play, RefreshCw, Square } from 'lucide-react';
+import { PauseCircle, Play, Radio, RefreshCw, Square } from 'lucide-react';
 import type {
   DbStatsSnapshot,
   SearchMode,
@@ -31,6 +31,8 @@ export interface SearchFooterProps {
   selectedIndex: number;
   searchElapsedMs?: number;
   isRebuilding: boolean;
+  liveRefreshEnabled?: boolean;
+  onToggleLiveRefresh?: () => void;
   onRebuildIndex: () => void;
   onOpenResult: (result: SearchResult) => void;
   onOpenFolderResult: (result: SearchResult) => void;
@@ -61,6 +63,8 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
   selectedIndex,
   searchElapsedMs,
   isRebuilding,
+  liveRefreshEnabled = true,
+  onToggleLiveRefresh,
   onRebuildIndex,
   onOpenResult,
   onOpenFolderResult,
@@ -239,6 +243,23 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
               >
                 <RefreshCw size={11} className={(isRebuilding || isServiceStarting) ? 'spin-animation' : ''} />
               </button>
+              {onToggleLiveRefresh && (
+                <button
+                  type="button"
+                  className={`search-footer-live-btn ${liveRefreshEnabled ? 'search-footer-live-btn--active' : ''}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleLiveRefresh();
+                  }}
+                  aria-pressed={liveRefreshEnabled}
+                  title={liveRefreshEnabled
+                    ? t('search.liveWatchOnTitle', 'Live file refresh enabled (click to pause automatic updates when new files appear)')
+                    : t('search.liveWatchOffTitle', 'Live file refresh paused (click to automatically display newly added files)')}
+                >
+                  <Radio size={11} aria-hidden="true" />
+                  <span>{liveRefreshEnabled ? t('search.liveWatchOn', 'Live') : t('search.liveWatchOff', 'Paused')}</span>
+                </button>
+              )}
             </div>
 
             {/* 2. 当前匹配结果总大小 */}

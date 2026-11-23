@@ -23,6 +23,7 @@ import {
   Cast,
   Image as ImageIcon,
   ClipboardList,
+  LockOpen,
   Puzzle,
   type LucideIcon,
 } from 'lucide-react';
@@ -40,6 +41,7 @@ export type BuiltinNavId =
   | 'keycast'
   | 'spotlight'
   | 'dialog_enhancer'
+  | 'file_locksmith'
   | 'remote_boost'
   | 'picasa_viewer'
   | 'stats'
@@ -61,7 +63,7 @@ export interface RouteItemConfig {
   toneEnd: string;       // 精工 Squircle 模块徽标渐变终止色
   canvasWidth?: PageCanvasWidth; // 内容画布语义天花板: reading (960px) / workspace (1280px)
   fallbackLabel?: string;
-  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'clipboard' | 'dialogenhancer' | 'dialog_enhancer' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
+  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'clipboard' | 'dialogenhancer' | 'dialog_enhancer' | 'file_locksmith' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
 }
 
 export const APP_ROUTES: readonly RouteItemConfig[] = [
@@ -80,6 +82,7 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
   { id: 'keycast', labelKey: 'nav.keycast', subtitleKey: 'navSubtitle.keycast', category: 'core_tools', icon: Keyboard, toneStart: '#eab308', toneEnd: '#ca8a04', canvasWidth: 'reading', requiresPlugin: 'keycast' },
   { id: 'spotlight', labelKey: 'nav.spotlight', subtitleKey: 'navSubtitle.spotlight', category: 'core_tools', icon: Sparkles, toneStart: '#ec4899', toneEnd: '#db2777', canvasWidth: 'reading', requiresPlugin: 'spotlight' },
   { id: 'dialog_enhancer', labelKey: 'nav.dialog_enhancer', subtitleKey: 'navSubtitle.dialog_enhancer', category: 'core_tools', icon: FolderSymlink, toneStart: '#3b82f6', toneEnd: '#2563eb', canvasWidth: 'reading', requiresPlugin: 'dialogenhancer' },
+  { id: 'file_locksmith', labelKey: 'nav.file_locksmith', subtitleKey: 'navSubtitle.file_locksmith', category: 'core_tools', icon: LockOpen, toneStart: '#f59e0b', toneEnd: '#ea580c', canvasWidth: 'reading', requiresPlugin: 'file_locksmith' },
   { id: 'remote_boost', labelKey: 'nav.remote_boost', subtitleKey: 'navSubtitle.remote_boost', category: 'core_tools', icon: Cast, toneStart: '#14b8a6', toneEnd: '#0d9488', canvasWidth: 'reading', requiresPlugin: 'remote_boost' },
   { id: 'picasa_viewer', labelKey: 'nav.picasa_viewer', subtitleKey: 'navSubtitle.picasa_viewer', category: 'core_tools', icon: ImageIcon, toneStart: '#f97316', toneEnd: '#ea580c', canvasWidth: 'reading', requiresPlugin: 'picasa_viewer' },
 

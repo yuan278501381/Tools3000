@@ -1,4 +1,5 @@
 import {
+  AppWindow,
   Bookmark,
   FileArchive,
   FileAudio,
@@ -43,7 +44,8 @@ export const CATEGORY_DEFS = [
   { id: 'archive', labelKey: 'search.catArchives', defaultLabel: 'Archives', prefix: 'ext:zip;rar;7z;tar;gz ', icon: FileArchive },
   { id: 'code', labelKey: 'search.catCode', defaultLabel: 'Code', prefix: 'ext:cpp;h;ts;tsx;js;py;rs;go;java;lua;json ', icon: FileCode },
   { id: 'folder', labelKey: 'search.catFolders', defaultLabel: 'Folders', prefix: 'folder: ', icon: Folder },
-  { id: 'bookmark', labelKey: 'search.catBookmarks', defaultLabel: 'Bookmarks', prefix: 'bm:', icon: Bookmark },
+  { id: 'app', labelKey: 'search.catApps', defaultLabel: 'Apps', prefix: 'app:', icon: AppWindow },
+  { id: 'bookmark', labelKey: 'search.catBookmarks', defaultLabel: 'Bookmarks', prefix: 'b:', icon: Bookmark },
 ] as const;
 
 export type SearchCategoryId = (typeof CATEGORY_DEFS)[number]['id'];
@@ -95,7 +97,9 @@ export const SYNTAX_EXAMPLES: SyntaxExampleItem[] = [
   { category: 'logic', syntax: 'nopy:wx', descKey: 'search.syntaxExNoPinyin', defaultDesc: 'Disable Pinyin matching for this term to match literal English letters only' },
   { category: 'logic', syntax: 'size:>10mb', descKey: 'search.syntaxExSize', defaultDesc: 'Filter by file size (supports kb / mb / gb and > < >= <=)' },
   { category: 'logic', syntax: 'dm:today', descKey: 'search.syntaxExDate', defaultDesc: 'Filter by modified date (today / yesterday / thisweek / 2026-09)' },
-  { category: 'logic', syntax: 'bm:github', descKey: 'search.syntaxExBookmark', defaultDesc: 'Search local Edge / Chrome / Brave browser bookmarks directly with zero file-syntax conflict', highlight: true },
+  { category: 'logic', syntax: 'b:github', descKey: 'search.syntaxExBookmark', defaultDesc: 'Search local Edge / Chrome / Brave browser bookmarks offline (supports b: and bm:; b:\\ still targets drive B)', highlight: true },
+  { category: 'logic', syntax: 'app:code', descKey: 'search.syntaxExApp', defaultDesc: 'Search installed Start Menu, App Paths, and portable apps offline without waking the file index service', highlight: true },
+  { category: 'logic', syntax: 'cmd:env', descKey: 'search.syntaxExCommand', defaultDesc: 'Launch 35+ built-in Windows system commands offline (e.g. env, services, devmgmt, hosts, taskmgr)', highlight: true },
 ];
 
 export const CONTENT_FORMAT_CATEGORIES: FormatCategory[] = [

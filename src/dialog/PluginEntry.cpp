@@ -1,8 +1,8 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
@@ -12,17 +12,76 @@
 #include "core/ipc/MessageBridge.h"
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
+#include "core/i18n/UiI18n.h"
+#include "core/utils/WinUtils.h"
 #include "DialogEngine.h"
 #include "DialogRibbonOverlay.h"
 #include "PathMemoryManager.h"
 #include "ExplorerTracker.h"
 #include "DialogNavigator.h"
+
 #include <windows.h>
+#include <shobjidl.h>
+#include <wrl/client.h>
 #include <nlohmann/json.hpp>
 
+#include <filesystem>
+#include <optional>
+#include <string>
+
 using json = nlohmann::json;
+using Microsoft::WRL::ComPtr;
 
 namespace tools3000::dialog {
+
+namespace {
+
+// 独立文件夹选择器（彻底消除前端跨插件调用 capture.browseDirectory 的耦合）
+std::optional<std::string> browseDirectoryDialogUtf8() {
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool needUninit = SUCCEEDED(comHr);
+    struct ScopedCom {
+        bool active;
+        ~ScopedCom() noexcept {
+            if (active) CoUninitialize();
+        }
+    } comGuard{needUninit};
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+        return std::nullopt;
+    }
+
+    ComPtr<IFileOpenDialog> dialog;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(dialog.GetAddressOf()))) || !dialog) {
+        return std::nullopt;
+    }
+
+    DWORD options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    const std::wstring title = tools3000::core::trW(L"选择常用文件夹", L"Select Favorite Folder");
+    dialog->SetTitle(title.c_str());
+
+    // 后台 STA 线程严禁绑定主 UI 线程窗口句柄作为 owner，杜绝隐式 AttachThreadInput 死锁
+    if (FAILED(dialog->Show(nullptr))) {
+        return std::nullopt;
+    }
+
+    ComPtr<IShellItem> item;
+    if (FAILED(dialog->GetResult(item.GetAddressOf())) || !item) {
+        return std::nullopt;
+    }
+
+    PWSTR rawPath = nullptr;
+    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) || !rawPath) {
+        return std::nullopt;
+    }
+    const std::filesystem::path fsPath(rawPath);
+    CoTaskMemFree(rawPath);
+    return tools3000::core::WinUtils::pathToUtf8(fsPath);
+}
+
+}  // namespace
 
 class DialogEnhancerPlugin : public tools3000::core::IPlugin {
 public:
@@ -31,6 +90,7 @@ public:
 
     bool initialize() override {
         LOG_INFO("初始化文件对话框增强插件 (DialogEnhancerPlugin)");
+        PathMemoryManager::instance().loadConfig();
 
         if (PathMemoryManager::instance().isEnabled()) {
             if (!DialogEngine::instance().start()) {
@@ -71,30 +131,40 @@ private:
                 {"perAppMemory", mgr.isPerAppMemoryEnabled()},
                 {"quickSwitch", mgr.isQuickSwitchEnabled()},
                 {"ribbonEnabled", mgr.isRibbonEnabled()},
+                {"inlineSearchEnabled", mgr.isInlineSearchEnabled()},
                 {"ribbonPosition", mgr.getRibbonPosition()}
             };
         });
 
         bridge.registerHandler("dialog.updateConfig", [](const json& params) -> json {
+            if (!params.is_object()) {
+                return {{"success", false}};
+            }
             auto& mgr = PathMemoryManager::instance();
-            if (params.contains("enabled")) {
-                bool enabled = params["enabled"].get<bool>();
+            if (params.contains("enabled") && params["enabled"].is_boolean()) {
+                const bool enabled = params["enabled"].get<bool>();
                 mgr.setEnabled(enabled);
                 if (enabled) {
                     DialogEngine::instance().start();
                 } else {
                     DialogEngine::instance().stop();
                 }
-                tools3000::core::ConfigManager::instance().set<bool>("/dialog/enabled", enabled);
-                tools3000::core::ConfigManager::instance().set<bool>("/plugins/dialogenhancer/enabled", enabled);
-                tools3000::core::ConfigManager::instance().set<bool>("/plugins/dialog_enhancer/enabled", enabled);
-                tools3000::core::MessageBridge::instance().pushEvent("dialog:configChanged", {{"enabled", enabled}});
-                tools3000::core::MessageBridge::instance().pushEvent("plugins:changed", {{"id", "dialogenhancer"}, {"enabled", enabled}});
             }
-            if (params.contains("perAppMemory")) mgr.setPerAppMemoryEnabled(params["perAppMemory"].get<bool>());
-            if (params.contains("quickSwitch")) mgr.setQuickSwitchEnabled(params["quickSwitch"].get<bool>());
-            if (params.contains("ribbonEnabled")) mgr.setRibbonEnabled(params["ribbonEnabled"].get<bool>());
-            if (params.contains("ribbonPosition")) mgr.setRibbonPosition(params["ribbonPosition"].get<std::string>());
+            if (params.contains("perAppMemory") && params["perAppMemory"].is_boolean()) {
+                mgr.setPerAppMemoryEnabled(params["perAppMemory"].get<bool>());
+            }
+            if (params.contains("quickSwitch") && params["quickSwitch"].is_boolean()) {
+                mgr.setQuickSwitchEnabled(params["quickSwitch"].get<bool>());
+            }
+            if (params.contains("ribbonEnabled") && params["ribbonEnabled"].is_boolean()) {
+                mgr.setRibbonEnabled(params["ribbonEnabled"].get<bool>());
+            }
+            if (params.contains("inlineSearchEnabled") && params["inlineSearchEnabled"].is_boolean()) {
+                mgr.setInlineSearchEnabled(params["inlineSearchEnabled"].get<bool>());
+            }
+            if (params.contains("ribbonPosition") && params["ribbonPosition"].is_string()) {
+                mgr.setRibbonPosition(params["ribbonPosition"].get<std::string>());
+            }
             const bool reEnabledRibbon =
                 params.contains("ribbonEnabled") && params["ribbonEnabled"].is_boolean() &&
                 params["ribbonEnabled"].get<bool>();
@@ -102,9 +172,13 @@ private:
             return {{"success", true}};
         });
 
+        bridge.registerAsyncHandler("dialog.browseDirectory", [](const json&) -> json {
+            const auto selected = browseDirectoryDialogUtf8();
+            return selected ? json(*selected) : json(nullptr);
+        });
+
         bridge.registerHandler("dialog.getRecentPaths", [](const json&) -> json {
-            auto paths = PathMemoryManager::instance().getRecentPaths(20);
-            return paths;
+            return PathMemoryManager::instance().getRecentPaths(20);
         });
 
         bridge.registerHandler("dialog.clearRecentPaths", [](const json&) -> json {
@@ -113,8 +187,7 @@ private:
         });
 
         bridge.registerHandler("dialog.getFavorites", [](const json&) -> json {
-            auto favs = PathMemoryManager::instance().getFavorites();
-            return favs;
+            return PathMemoryManager::instance().getFavorites();
         });
 
         bridge.registerHandler("dialog.setFavorites", [](const json& params) -> json {
@@ -161,9 +234,9 @@ private:
 
         bridge.registerHandler("dialog.setAppFixedWorkspace", [](const json& params) -> json {
             if (params.is_object() && params.contains("processName")) {
-                std::string proc = params["processName"].get<std::string>();
-                std::string path = params.value("workspacePath", "");
-                bool isFixed = params.value("isFixed", false);
+                const std::string proc = params["processName"].get<std::string>();
+                const std::string path = params.value("workspacePath", "");
+                const bool isFixed = params.value("isFixed", false);
                 PathMemoryManager::instance().setAppFixedWorkspace(proc, path, isFixed);
             }
             return {{"success", true}};
@@ -197,7 +270,7 @@ private:
         });
 
         bridge.registerHandler("dialog.getActiveExplorerPath", [](const json&) -> json {
-            std::string path = ExplorerTracker::instance().getActiveExplorerPath();
+            const std::string path = ExplorerTracker::instance().getActiveExplorerPath();
             return {{"path", path}};
         });
     }
@@ -219,17 +292,16 @@ extern "C" __declspec(dllexport) std::uint32_t GetPluginAbiVersion() {
     return tools3000::core::CurrentPluginAbiVersion;
 }
 
-} // namespace tools3000::dialog
+}  // namespace tools3000::dialog
 
-// 全局保存本 DLL 的 HMODULE，供 SetWinEventHook 使用
-// SetWinEventHook 从 DLL 调用时必须传入本 DLL 的 hModule，否则返回 ERROR_HOOK_NEEDS_HMOD(1426)
+// 全局保存本 DLL 的 HMODULE，供 SetWinEventHook 与 DialogRibbonOverlay 窗口类注册/注销成对使用
 HMODULE g_hDialogEnhancerModule = nullptr;
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH:
             DisableThreadLibraryCalls(hModule);
-            g_hDialogEnhancerModule = hModule;  // 保存供 SetWinEventHook 使用
+            g_hDialogEnhancerModule = hModule;
             break;
         case DLL_PROCESS_DETACH:
             g_hDialogEnhancerModule = nullptr;

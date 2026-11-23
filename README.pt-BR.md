@@ -21,14 +21,14 @@
 
 <br />
 
-O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas essenciais do dia a dia: **busca instantânea de arquivos e favoritos (com CLI / MCP), busca no conteúdo de documentos, histórico persistente da área de transferência, captura com rolagem, anotação precisa de capturas, fixação na tela com grupos de pins, OCR offline de alta precisão e tradução no local, gravação de tela com Estúdio de zoom automático (exportando MP4, GIF otimizado para mensageiros/WeChat e WebP animado), gestos globais do mouse e visualizador leve Picasa em Rust**. Consome cerca de uma dúzia de MB de RAM em repouso, opera localmente sem telemetria e atende tanto PCs pessoais (`x64` e `ARM64`) quanto ambientes Windows Server com múltiplos usuários simultâneos.
+O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas essenciais do dia a dia: **busca instantânea de arquivos, apps, comandos do sistema e favoritos com ícones reais dos sites (com Live Watch, 3 modos de RAM e CLI / MCP), busca no conteúdo de documentos, histórico da área de transferência que sobrevive a reinícios, busca inline nas janelas Abrir/Salvar, desbloqueio de arquivos travados, captura com rolagem, anotação precisa de capturas, fixação na tela com grupos de pins, OCR offline em 8 idiomas e tradução limpa no local, gravação de tela com Estúdio de zoom automático (MP4, GIF para mensageiros e WebP animado), gestos globais do mouse e visualizador leve Picasa em Rust**. Funciona localmente sem telemetria, suporta integralmente pastas e nomes de usuário com acentos ou outros alfabetos, consome apenas cerca de uma dúzia de MB de RAM em repouso (com modo sono de 0 MB para o serviço de busca) e atende PCs pessoais (`x64` e `ARM64`) e ambientes Windows Server multiusuário.
 
 ---
 
 ## Visão geral
 
 <p align="center">
-  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos dez recursos principais do Tools3000" width="100%" />
+  <img src="docs/images/pt-BR/feature_bento_overview.png" alt="Visão geral dos doze recursos principais do Tools3000" width="100%" />
 </p>
 
 ---
@@ -38,12 +38,12 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/pt-BR/search_demo.webp" alt="Busca instantânea de arquivos e pré-visualização com Espaço" width="100%" /><br />
-      <sub><b>Busca Instantânea e Pré-visualização</b> · Encontre arquivos em milissegundos e visualize com a barra de Espaço</sub>
+      <img src="docs/images/pt-BR/search_demo.webp" alt="Busca instantânea de arquivos, apps, comandos e favoritos com Favicon e pré-visualização com Espaço" width="100%" /><br />
+      <sub><b>Busca Instantânea e Pré-visualização</b> · Apps, favoritos com Favicons reais, Live Watch e preview de ZIP e fontes com Espaço</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/pt-BR/ocr_live_text_demo.webp" alt="OCR offline de alta precisão, seleção de texto e edição no local" width="100%" /><br />
-      <sub><b>OCR Offline de Alta Precisão</b> · 100% local; arraste para copiar, sublinhe com linha ondulada ou edite no local</sub>
+      <img src="docs/images/pt-BR/ocr_live_text_demo.webp" alt="OCR offline em 8 idiomas, seleção de texto e edição no local" width="100%" /><br />
+      <sub><b>OCR Offline em 8 Idiomas</b> · Detecta idiomas automaticamente offline; copie, sublinhe com linha ondulada ou edite no local</sub>
     </td>
   </tr>
   <tr>
@@ -73,33 +73,45 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/pt-BR/mouse_gesture_demo.webp" alt="Gestos globais do mouse e controle de volume na borda da tela" width="100%" /><br />
-      <sub><b>Gestos Globais do Mouse</b> · Arraste com o botão direito para fechar abas, disparo instantâneo e volume na borda</sub>
+      <sub><b>Gestos Globais do Mouse</b> · Cancelar ao pausar ativo por padrão, alternância inteligente de janelas abertas e volume na borda</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/pt-BR/translate_demo.webp" alt="Tradução de captura no local 1:1 com proteção de código" width="100%" /><br />
-      <sub><b>Tradução de Captura no Local</b> · Motores gratuitos sem chave + BYOK, sobreposição 1:1, proteção de código e alternância em 0 ms</sub>
+      <sub><b>Tradução de Captura no Local</b> · Motores gratuitos sem chave + BYOK, sobreposição limpa 1:1, proteção de código e alternância em 0 ms</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/pt-BR/clipboard_demo.webp" alt="Histórico persistente da área de transferência em Rust com mesclagem Shift/Ctrl" width="100%" /><br />
-      <sub><b>Histórico de Transferência (Alt + V)</b> · Núcleo Rust sobrevive a reinícios, colagem mesclada Shift/Ctrl, Rich Text e grupos</sub>
+      <img src="docs/images/pt-BR/clipboard_demo.webp" alt="Histórico persistente da área de transferência com mesclagem Shift/Ctrl" width="100%" /><br />
+      <sub><b>Histórico de Transferência (Alt + V)</b> · Sobrevive a reinícios, colagem mesclada Shift/Ctrl, Rich Text e controle na bandeja</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/pt-BR/dialog_enhancer_demo.webp" alt="Assistente de Diálogos com busca inline estilo Listary" width="100%" /><br />
+      <sub><b>Assistente de Diálogos</b> · Busca e salto de pastas estilo Listary nas janelas Abrir/Salvar sem sobrescrever o nome do arquivo</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/pt-BR/file_locksmith_demo.webp" alt="Desbloqueio de Arquivos e botão rápido na bandeja" width="100%" /><br />
+      <sub><b>Desbloqueio de Arquivos</b> · Veja quem trava um arquivo pelo menu direito, busca ou página própria e libere em 1 clique</sub>
     </td>
   </tr>
 </table>
 
 | Módulo | O que faz |
 | :--- | :--- |
-| **Busca Instantânea de Arquivos** | Pressione `Alt + Space` para localizar arquivos entre milhões de itens em ms; inclui favoritos do Chrome/Edge/Firefox (`bm:`), coluna Aberturas padrão, abas de categoria arrastáveis, prévia com `Space` (imagens, Office, PDFs, código, CAD, PSD e 3D) e o binário Rust `tools3000-cli.exe` de 350 KB (CLI e servidor MCP para agentes de IA). |
+| **Busca Instantânea de Arquivos** | Pressione `Alt + Space` para localizar arquivos entre milhões de itens em ms junto com apps instalados (`app:`), 37 ferramentas do Windows (`cmd:env` etc.) e favoritos do Edge/Chrome/Brave/Vivaldi (`bm:`/`b:`, exibindo ícones reais dos sites totalmente offline). Traz **Live Watch**, **3 modos de RAM** (até 0 MB em repouso), contador de aberturas, abas arrastáveis, prévia com `Space` (Office, PDF, código, CAD, PSD, 3D, arquivos ZIP/7Z/RAR, fontes TTF/OTF e mídia) e a ferramenta CLI/MCP `tools3000-cli.exe` (350 KB). |
 | **Busca no Conteúdo** | Use `content:` para pesquisar dentro de Word, Excel, PDF, PowerPoint, CAD e código-fonte com trechos destacados e cópia da linha em um clique. |
-| **Histórico Persistente de Transferência** | Acione com `Alt + V` (ou pelo menu de contexto da bandeja) com armazenamento atômico em Rust que sobrevive a reinícios; suporta seleção com âncora `Shift / Ctrl` para colagem mesclada na ordem e exclusão em lote, HTML/RTF, grupos personalizados, edição no local, colagem rápida `Alt + 1..9` e exclusão de apps sensíveis. |
+| **Histórico Persistente de Transferência** | Acione com `Alt + V` (ou pelo menu e central rápida da bandeja) mantendo todo o histórico após reiniciar; suporta seleção `Shift / Ctrl` para colagem mesclada na ordem e exclusão em lote, HTML/RTF, grupos personalizados, edição no local, colagem rápida `Alt + 1..9` e exclusão de apps sensíveis. |
+| **Assistente de Diálogos** | Acopla automaticamente uma barra de acesso rápido com busca inline de pastas estilo Listary nas janelas Abrir / Salvar Como / Escolher Pasta do Windows e nos diálogos do próprio Tools3000, protegendo o nome preenchido ao salvar. |
+| **Desbloqueio de Arquivos** | Quando um arquivo não pode ser excluído, descubra qual programa o está travando e libere com segurança — pelo menu direito do Explorer (opcionalmente apenas com `Shift + Clique Direito`), nos resultados da busca ou na página própria em Configurações. Consome 0 MB ocioso, não altera o sistema e remove o menu automaticamente ao desativar. |
 | **Captura com Rolagem** | Costure automaticamente páginas longas, chats e documentos com prévia lateral ao vivo, recorte não destrutivo de topo/rodapé e anotação direta na imagem longa. |
 | **Anotação Precisa** | `F1` encaixa automaticamente em janelas e controles de interface; inclui seletor de cor por pixel, lupa óptica tracejada, 6 estilos de seta, numeração autoajustável, mosaico e molduras. |
 | **Pins na Tela e Grupos** | Fixe capturas ou trechos da área de transferência sempre no topo (`F3`) com zoom fluido 120Hz, opacidade e clique transparente; organize em grupos por cor, alterne visibilidade na barra superior ou alinhe em grade em um clique. |
-| **OCR Offline e Tradução no Local** | Reconhecimento 100% local (copiar texto, marcação ondulada, edição no local, tabelas e QR Codes) somado à **tradução 1:1 diretamente sobre a captura** (dois canais gratuitos sem chave + BYOK compatível com OpenAI), proteção automática de código e alternância em 0 ms com o original. |
+| **OCR Offline (8 Idiomas) e Tradução no Local** | OCR 100% local com detecção automática de 8 idiomas sem troca manual (pacotes leves extras sob demanda e troca de idioma com clique direito no pin); copie, sublinhe, edite no local e extraia tabelas/QR Codes, mais **tradução limpa 1:1 diretamente sobre a captura** (canais gratuitos + BYOK LLM), proteção de código e alternância em 0 ms. |
 | **Gravador de Tela e Estúdio** | Grave a tela com sobreposição de teclas/cliques e entre direto no Estúdio: zoom automático nos cliques, papéis de parede selecionados, edição por forma de onda e exportação em **MP4**, **GIF pronto para mensageiros/WeChat** e **WebP animado**. |
-| **Gestos Globais do Mouse** | Segure o botão direito e deslize para alternar abas, voltar ou fechar janelas; suporta disparo instantâneo, volume pela roda na borda da tela, regras por aplicativo e pausa automática em jogos em tela cheia. |
-| **Apresentação e Acesso Remoto** | Exibição limpa de teclas e holofote de cursor com duplo toque em `Ctrl`; barra de acesso rápido nas janelas Abrir/Salvar do Windows; passagem de atalhos para mstsc, RustDesk, ToDesk e AnyDesk com desbloqueio de teclas presas. |
+| **Gestos Globais do Mouse** | Segure o botão direito e deslize para alternar abas, voltar ou fechar janelas; cancelar ao pausar ativo por padrão, alternância inteligente para janelas já abertas (inclusive perfis distintos do Chrome), disparo instantâneo, volume/brilho na borda, easter egg de 8s, pausa em jogos e scripts Lua. |
+| **Apresentação, Acesso Remoto e Feedback** | Exibição limpa de teclas e holofote com duplo toque em `Ctrl`; passagem de atalhos para mstsc, RustDesk, ToDesk e AnyDesk com desbloqueio de teclas presas; botão **Feedback** no canto inferior esquerdo com mascaramento automático local de usuário, IP, e-mail e tokens antes de exportar diagnósticos. |
 | **Visualizador de Fotos Picasa (Rust · Opcional)** | Visualizador leve no estilo Picasa recriado em Rust + Direct2D (**apenas visualizador, não o pacote completo Google Picasa**). **Executável único com menos de 2 MB e zero dependências externas — funciona junto ao Tools3000 ou totalmente independente em qualquer Windows.** Desmarcado por padrão no instalador; ao ativar, associa automaticamente todos os 41 formatos suportados (com ícones Polaroid e painel Direct2D nativo com tema claro/escuro). Além do zoom amortecido no cursor, tira de miniaturas e apresentação com fundido cruzado, **adiciona recursos ausentes no original**: nitidez 4K High-DPI (100%–250%+), VSync 60–240 Hz, WebP / AVIF / HEIC / SVG / QOI / DDS / RAW de câmeras, controle de quadros animados, espelhamento sem perdas e 8 idiomas. |
 
 ---
@@ -167,21 +179,35 @@ Cada utilitário clássico tem seus pontos fortes avançados. O Tools3000 reúne
 | **WGestures / StrokesPlus** | Gestos com botão direito, disparo imediato, volume na borda, cantos ativos, pausa automática em jogos e scripts Lua | Quando utiliza gestos com múltiplos botões simultâneos, condições complexas de janela ou macros legados |
 | **Gravadores (ex.: ShareX)** | Gravação de tela, exibição de teclas, Estúdio (edição por forma de onda e zoom do cursor), exportação em MP4, GIF e WebP | Quando depende de upload automático para 80+ serviços de nuvem/S3/FTP/Webhook ou pipelines FFmpeg personalizados |
 | **Picasa Photo Viewer / FastStone / Fotos do Windows** | Visualizador leve Picasa opcional em Rust (< 2 MB, zero dependências, executável independente): animações clássicas com 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW e espelhamento sem perdas | Quando precisa da biblioteca de álbuns e reconhecimento facial do Google Picasa completo ou edição RAW avançada em lote |
+| **Listary Dialog Jump / PowerToys File Locksmith** | Busca inline estilo Listary nas janelas Abrir/Salvar do Windows protegendo o nome do arquivo; Desbloqueio de Arquivos com 0 MB ocioso via menu direito ou página dedicada | Fluxos personalizados completos do Listary ou inspeção profunda de handles do kernel |
 
 ---
 
-## Atalhos padrão
+## Atalhos padrão e onde encontrar dados
 
 Todos os atalhos podem ser personalizados nas Configurações com detecção de conflitos em tempo real:
 
 | Atalho | Ação |
 | :--- | :--- |
-| `Alt + Space` | Abrir / ocultar busca instantânea (suporta favoritos `bm:`; `Space` abre pré-visualização) |
+| `Alt + Space` | Abrir / ocultar busca instantânea (suporta `app:`, `cmd:`, `bm:`, `content:`; `Space` abre pré-visualização) |
 | `Alt + V` | Abrir / ocultar histórico persistente de transferência (`Shift / Ctrl` colagem mesclada e `Alt + 1..9`; também no menu da bandeja) |
 | `F1` | Captura de área, anotação e tradução no local em 1 clique |
 | `F3` | Fixar imagem ou texto da área de transferência no topo |
 | Duplo toque em `Ctrl` | Ativar / desativar holofote do cursor |
 | `Ctrl + Alt + Backspace` | Liberar teclas modificadoras presas em acesso remoto (ou duplo toque no `Ctrl` direito) |
+
+### Onde encontrar cada recurso e arquivos locais
+
+Compatibilidade total com pastas de instalação e nomes de usuário do Windows com acentos, ç ou caracteres não latinos:
+
+| Recurso / Arquivo | Onde acessar / Instalação padrão | Versão portátil |
+| :--- | :--- | :--- |
+| **Desbloqueio de Arquivos** | Configurações: `Sistema -> Módulos`, `Produtividade -> Desbloqueio de Arquivos`; central da bandeja, clique direito no Explorer e na Busca | Igual (menu apenas do usuário, 0 MB ocioso, limpeza automática ao desligar) |
+| **Ícones da Busca / Live / RAM** | `Produtividade -> Busca de Arquivos` (estilo de ícones / Live Watch / memória); alternador Live também na barra inferior da Busca | Igual (ícones de favoritos lidos localmente offline, zero rede) |
+| **Pacotes de OCR Offline (8 idiomas)** | `Produtividade -> OCR e Tradução` / clique direito no pin `Idioma OCR`; `%LOCALAPPDATA%\Tools3000\models\ocr\` | `<pasta do app>\data\models\ocr\` |
+| **Dados da Área de Transferência** | Alternador na central da bandeja; `%LOCALAPPDATA%\Tools3000\clipboard\` | `<pasta do app>\data\clipboard\` |
+| **Configurações e Logs de Diagnóstico** | `%LOCALAPPDATA%\Tools3000\config\config.json` e `%LOCALAPPDATA%\Tools3000\logs\tools3000.log` (o botão **Feedback** mascara dados pessoais localmente) | `<pasta do app>\data\config\` e `<pasta do app>\data\logs\` |
+| **CLI e Visualizador Independentes** | `C:\Program Files\Tools3000\tools3000-cli.exe` (CLI/MCP) e `Tools3000_Picasa_Viewer.exe` | `<pasta do app>\tools3000-cli.exe` e `Tools3000_Picasa_Viewer.exe` |
 
 ---
 
@@ -203,11 +229,11 @@ Todos os atalhos podem ser personalizados nas Configurações com detecção de 
 
 ## Star History
 
-<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+<a href="https://www.star-history.com/#yuan278501381/tools3000&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
-   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
  </picture>
 </a>
 

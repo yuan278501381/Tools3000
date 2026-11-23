@@ -1,8 +1,8 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
@@ -25,6 +25,10 @@ using Microsoft::WRL::ComPtr;
 namespace tools3000::dialog {
 
 namespace {
+
+constexpr uint64_t kMinRefreshIntervalMs = 180;
+constexpr uint64_t kActivePollingIntervalMs = 1500;
+constexpr uint64_t kStaleReadThresholdMs = 350;
 
 struct ScopedComApartment {
     HRESULT hr = E_FAIL;
@@ -101,19 +105,15 @@ std::wstring decodePercentUtf8Segment(const std::wstring& encoded) {
 std::wstring decodeFileUriFallback(const std::wstring& uri) {
     if (!startsWithFileScheme(uri)) return {};
 
-    // Strip query or fragment if present
     size_t endPos = uri.find_first_of(L"?#");
     std::wstring body = uri.substr(7, endPos == std::wstring::npos ? std::wstring::npos : (endPos - 7));
 
-    // Handle file://localhost/... or file:///... vs UNC file://server/share/...
     bool isUnc = false;
     if (!body.empty() && (body[0] == L'/' || body[0] == L'\\')) {
-        // Count leading slashes after "file://"
         size_t slashCount = 0;
         while (slashCount < body.size() && (body[slashCount] == L'/' || body[slashCount] == L'\\')) {
             ++slashCount;
         }
-        // file:////server/share -> slashCount >= 2 means UNC; file:///C:/... -> slashCount == 1
         if (slashCount >= 2) {
             isUnc = true;
         }
@@ -127,7 +127,6 @@ std::wstring decodeFileUriFallback(const std::wstring& uri) {
             isUnc = true;
         }
     } else if (!body.empty()) {
-        // Check if body starts with drive letter like C:/ or C|/
         if (!(body.size() >= 2 && std::iswalpha(body[0]) && (body[1] == L':' || body[1] == L'|'))) {
             isUnc = true;
         }
@@ -136,7 +135,6 @@ std::wstring decodeFileUriFallback(const std::wstring& uri) {
     std::wstring decoded = decodePercentUtf8Segment(body);
     if (decoded.empty()) return {};
 
-    // Support legacy file:///C|/path notation
     if (!isUnc && decoded.size() >= 2 && std::iswalpha(decoded[0]) && decoded[1] == L'|') {
         decoded[1] = L':';
     }
@@ -149,7 +147,6 @@ std::wstring decodeFileUriFallback(const std::wstring& uri) {
         decoded = L"\\\\" + decoded;
     }
 
-    // Trim redundant trailing backslash except root like "C:\"
     while (decoded.size() > 3 && decoded.back() == L'\\') {
         decoded.pop_back();
     }
@@ -190,15 +187,14 @@ ExplorerTracker::~ExplorerTracker() {
 void ExplorerTracker::start() {
     std::lock_guard<std::mutex> lock(m_stateMutex);
     if (m_running.load(std::memory_order_acquire)) {
-        m_refreshRequested = true;
-        m_wakeCv.notify_one();
         return;
     }
     if (m_worker.joinable()) {
         m_worker.join();
     }
     m_running.store(true, std::memory_order_release);
-    m_refreshRequested = true;
+    // 惰性启动：初始化时不主动轮询，等待首次活动对话框会话或显式 requestRefresh() 再唤醒，保障 0% 空闲 CPU
+    m_refreshRequested = false;
     m_worker = std::thread(&ExplorerTracker::workerLoop, this);
 }
 
@@ -208,6 +204,7 @@ void ExplorerTracker::shutdown() {
         if (!m_running.exchange(false, std::memory_order_acq_rel) && !m_worker.joinable()) {
             return;
         }
+        m_activeMonitoring = false;
         m_refreshRequested = false;
     }
     m_wakeCv.notify_all();
@@ -223,10 +220,32 @@ void ExplorerTracker::ensureStarted() {
     }
 }
 
+void ExplorerTracker::setActiveMonitoring(bool active) {
+    if (active) {
+        ensureStarted();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_stateMutex);
+        if (m_activeMonitoring == active) {
+            return;
+        }
+        m_activeMonitoring = active;
+        if (active) {
+            m_refreshRequested = true;
+        }
+    }
+    m_wakeCv.notify_one();
+}
+
 void ExplorerTracker::requestRefresh() {
     ensureStarted();
     {
         std::lock_guard<std::mutex> lock(m_stateMutex);
+        const uint64_t now = GetTickCount64();
+        if (m_snapshotEpoch > 0 && now >= m_lastRefreshTick &&
+            (now - m_lastRefreshTick) < kMinRefreshIntervalMs) {
+            return;
+        }
         m_refreshRequested = true;
     }
     m_wakeCv.notify_one();
@@ -242,11 +261,25 @@ void ExplorerTracker::workerLoop() {
     while (m_running.load(std::memory_order_acquire)) {
         {
             std::unique_lock<std::mutex> lock(m_stateMutex);
-            m_wakeCv.wait_for(lock, std::chrono::milliseconds(1500), [this]() {
-                return !m_running.load(std::memory_order_acquire) || m_refreshRequested;
-            });
+            if (!m_activeMonitoring && !m_refreshRequested) {
+                // 无活动对话框时无限期休眠：彻底消除 24/7 空闲唤醒与 COM 轮询开销
+                m_wakeCv.wait(lock, [this]() {
+                    return !m_running.load(std::memory_order_acquire) ||
+                           m_activeMonitoring ||
+                           m_refreshRequested;
+                });
+            } else if (!m_refreshRequested) {
+                m_wakeCv.wait_for(lock, std::chrono::milliseconds(kActivePollingIntervalMs), [this]() {
+                    return !m_running.load(std::memory_order_acquire) ||
+                           !m_activeMonitoring ||
+                           m_refreshRequested;
+                });
+            }
             if (!m_running.load(std::memory_order_acquire)) {
                 break;
+            }
+            if (!m_activeMonitoring && !m_refreshRequested) {
+                continue;
             }
             m_refreshRequested = false;
         }
@@ -293,9 +326,6 @@ void ExplorerTracker::refreshSnapshotOnStaThread() {
                             }
 
                             if (topHwnd) {
-                                // Windows 11 多标签页资源管理器精准匹配：
-                                // FindWindowExW 返回排在 Z-Order 最顶部的当前激活 ShellTabWindowClass 句柄，
-                                // 严格比对 browserHwnd == activeTabHwnd，绝不使用 || IsWindowVisible 误抓后台标签页。
                                 HWND activeTabHwnd = FindWindowExW(topHwnd, nullptr, L"ShellTabWindowClass", nullptr);
                                 bool isExactActiveTab = false;
                                 if (activeTabHwnd) {
@@ -310,7 +340,6 @@ void ExplorerTracker::refreshSnapshotOnStaThread() {
                                         }
                                     }
                                 } else {
-                                    // Windows 10 经典无标签页资源管理器窗口
                                     isExactActiveTab = true;
                                 }
 
@@ -370,7 +399,6 @@ std::string ExplorerTracker::normalizeFolderPath(const std::wstring& rawPath) {
     if (rawPath.empty()) return "";
 
     if (startsWithFileScheme(rawPath)) {
-        // 1. 先用自适应扩容缓冲调用 PathCreateFromUrlW（突破 MAX_PATH 260 字符限制）
         DWORD cap = static_cast<DWORD>((std::max<size_t>)(MAX_PATH + 1, rawPath.size() + 32));
         std::wstring localBuf(cap, L'\0');
         DWORD pathLen = cap;
@@ -390,7 +418,6 @@ std::string ExplorerTracker::normalizeFolderPath(const std::wstring& rawPath) {
             }
         }
 
-        // 2. 超 INTERNET_MAX_URL_LENGTH (2084) 或 PathCreateFromUrlW 失败时，走无上限 UTF-8 百分号解码器，严禁返回 "file:///..."
         std::wstring fallbackDecoded = decodeFileUriFallback(rawPath);
         if (!fallbackDecoded.empty()) {
             return tools3000::core::WinUtils::wstringToUtf8(fallbackDecoded);
@@ -398,7 +425,6 @@ std::string ExplorerTracker::normalizeFolderPath(const std::wstring& rawPath) {
         return "";
     }
 
-    // 本地或 UNC 路径仅做纯内存分隔符规范化，严禁在调用侧执行可能阻塞 20s 的离线网络盘 GetFileAttributesW
     std::wstring normalized = rawPath;
     for (auto& ch : normalized) {
         if (ch == L'/') ch = L'\\';
@@ -415,10 +441,9 @@ std::string ExplorerTracker::getActiveExplorerPath() {
 
     {
         std::unique_lock<std::mutex> lock(m_stateMutex);
-        if (m_snapshotEpoch == 0 || (now - m_lastRefreshTick) > 350) {
+        if (m_snapshotEpoch == 0 || (now - m_lastRefreshTick) > kStaleReadThresholdMs) {
             m_refreshRequested = true;
             m_wakeCv.notify_one();
-            // 非主 UI 线程在冷启动尚未产出首帧快照时短暂等待最多 80ms；主线程绝对 0ms 返回永不阻塞
             if (!onUiThread && m_snapshotEpoch == 0) {
                 const uint64_t targetEpoch = m_snapshotEpoch + 1;
                 m_doneCv.wait_for(lock, std::chrono::milliseconds(80), [this, targetEpoch]() {
@@ -453,7 +478,7 @@ std::vector<std::string> ExplorerTracker::getAllOpenExplorerPaths() {
     const uint64_t now = GetTickCount64();
 
     std::unique_lock<std::mutex> lock(m_stateMutex);
-    if (m_snapshotEpoch == 0 || (now - m_lastRefreshTick) > 350) {
+    if (m_snapshotEpoch == 0 || (now - m_lastRefreshTick) > kStaleReadThresholdMs) {
         m_refreshRequested = true;
         m_wakeCv.notify_one();
         if (!onUiThread && m_snapshotEpoch == 0) {

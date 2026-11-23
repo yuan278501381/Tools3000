@@ -29,12 +29,16 @@ import {
   Layers,
   ChevronLeft,
   ChevronRight,
+  Archive,
+  Type,
 } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { QuickLookCadViewer, type DxfPreviewPayload } from './components/QuickLookCadViewer';
 import { QuickLook3dViewer, type Mesh3dPreviewPayload } from './components/QuickLook3dViewer';
+import { QuickLookArchiveViewer, type ArchivePreviewPayload } from './components/QuickLookArchiveViewer';
+import { QuickLookFontViewer, type FontPreviewPayload } from './components/QuickLookFontViewer';
 import { countTextLines, highlightCodeLines, highlightSingleCodeLine, renderMarkdownToHtml, splitNormalizedLines } from './quickLookMarkup';
 import './QuickLookApp.css';
 
@@ -50,6 +54,38 @@ interface SpreadsheetSheetData {
   rows: string[][];
   truncatedRows?: boolean;
   truncatedCols?: boolean;
+}
+
+interface VideoProbeThumbnail {
+  timestampSec: number;
+  dataUri: string;
+}
+
+interface VideoProbePayload {
+  ok?: boolean;
+  durationSec?: number;
+  width?: number;
+  height?: number;
+  fps?: number;
+  bitrateKbps?: number;
+  videoCodec?: string;
+  audioCodec?: string;
+  audioChannels?: number;
+  audioSampleRate?: number;
+  containerFormat?: string;
+  thumbnails?: VideoProbeThumbnail[];
+}
+
+function formatDurationClock(totalSec: number | undefined): string {
+  if (!totalSec || !Number.isFinite(totalSec) || totalSec <= 0) return '-';
+  const rounded = Math.round(totalSec);
+  const h = Math.floor(rounded / 3600);
+  const m = Math.floor((rounded % 3600) / 60);
+  const s = rounded % 60;
+  if (h > 0) {
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+  }
+  return `${m}:${String(s).padStart(2, '0')}`;
 }
 
 interface FilePreviewData {
@@ -75,6 +111,8 @@ interface FilePreviewData {
     | 'video'
     | 'audio'
     | 'pdf'
+    | 'archive'
+    | 'font'
     | 'folder'
     | 'binary';
   isDirectory: boolean;
@@ -99,6 +137,11 @@ interface FilePreviewData {
   pdfPasswordProtected?: boolean;
   dataUri?: string;
   imagePages?: string[];
+  imageFallbackFailed?: boolean;
+  videoFallbackOnly?: boolean;
+  videoProbe?: VideoProbePayload;
+  archiveData?: ArchivePreviewPayload;
+  fontData?: FontPreviewPayload;
   dxfData?: DxfPreviewPayload;
   meshData?: Mesh3dPreviewPayload;
   mediaUrl?: string;
@@ -250,6 +293,8 @@ export default function QuickLookApp() {
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [copiedFeedback, setCopiedFeedback] = useState(false);
   const [pinnedFeedback, setPinnedFeedback] = useState(false);
+  const [imageFallbackState, setImageFallbackState] = useState<'idle' | 'loading' | 'failed'>('idle');
+  const [videoFallbackState, setVideoFallbackState] = useState<'idle' | 'loading' | 'ready' | 'failed'>('idle');
   const [codeScrollTop, setCodeScrollTop] = useState(0);
   const [codeViewportHeight, setCodeViewportHeight] = useState(DEFAULT_CODE_VIEWPORT_HEIGHT);
   const [codeViewportWidth, setCodeViewportWidth] = useState(860);
@@ -332,6 +377,8 @@ export default function QuickLookApp() {
     setShowHexDump(false);
     setCopiedFeedback(false);
     setPinnedFeedback(false);
+    setImageFallbackState('idle');
+    setVideoFallbackState('idle');
     setCodeScrollTop(0);
     if (contentRef.current) {
       contentRef.current.scrollTop = 0;
@@ -339,6 +386,43 @@ export default function QuickLookApp() {
     if (codeScrollRef.current) {
       codeScrollRef.current.scrollTop = 0;
     }
+  });
+
+  useBridgeEvent('quicklook.mediaFallbackReady', (raw: unknown) => {
+    const patch = raw as {
+      path?: string;
+      kind?: string;
+      ok?: boolean;
+      dataUri?: string;
+      designMeta?: string;
+      videoProbe?: VideoProbePayload;
+    } | null;
+    if (!patch || !patch.path) return;
+    setData((prev) => {
+      if (!prev || prev.path !== patch.path) return prev;
+      if (patch.kind === 'image') {
+        if (patch.ok && patch.dataUri) {
+          setImageFallbackState('idle');
+          return {
+            ...prev,
+            dataUri: patch.dataUri,
+            designMeta: patch.designMeta || prev.designMeta,
+            imageFallbackFailed: false,
+          };
+        }
+        setImageFallbackState('failed');
+        return { ...prev, imageFallbackFailed: true };
+      }
+      if (patch.kind === 'video') {
+        if (patch.ok && patch.videoProbe) {
+          setVideoFallbackState('ready');
+          return { ...prev, videoProbe: patch.videoProbe, videoFallbackOnly: true };
+        }
+        setVideoFallbackState('failed');
+        return { ...prev, videoFallbackOnly: true };
+      }
+      return prev;
+    });
   });
 
   // 组件挂载后主动通知原生层推送初始预览文件数据（防止首次懒加载 chunk 晚于 NavigationCompleted 导致首帧丢包）
@@ -598,6 +682,10 @@ export default function QuickLookApp() {
         return <Film size={18} />;
       case 'audio':
         return <Music size={18} />;
+      case 'archive':
+        return <Archive size={18} />;
+      case 'font':
+        return <Type size={18} />;
       case 'code':
         return <Code size={18} />;
       default:
@@ -656,6 +744,10 @@ export default function QuickLookApp() {
         return t('quicklook.typeCode', '{{ext}} Source Code', { ext: upperExt });
       case 'pdf':
         return t('quicklook.typePdf', 'PDF Document');
+      case 'archive':
+        return t('quicklook.typeArchive', '{{ext}} Archive', { ext: upperExt || 'ZIP' });
+      case 'font':
+        return t('quicklook.typeFont', '{{ext}} Font', { ext: upperExt || 'FONT' });
       default:
         return t('quicklook.typeFile', 'File');
     }
@@ -865,6 +957,9 @@ export default function QuickLookApp() {
       !data.dataUri &&
       !data.dxfData &&
       !data.meshData &&
+      !data.archiveData &&
+      !data.fontData &&
+      !data.videoProbe &&
       (!data.sheets || data.sheets.length === 0) &&
       (!data.pdfPages || data.pdfPages.length === 0) &&
       !data.mediaUrl &&
@@ -1398,7 +1493,7 @@ export default function QuickLookApp() {
           </div>
         )}
 
-        {data.type === 'image' && (
+        {!isAsyncLoadingSkeleton && data.type === 'image' && (
           <div
             className={`ql-image-view ${imageScale > 1 ? 'ql-image-view--zoomed' : ''} ${isDraggingImage ? 'ql-image-view--dragging' : ''}`}
             onWheel={handleImageWheel}
@@ -1408,34 +1503,159 @@ export default function QuickLookApp() {
             onPointerUp={handleImagePointerEnd}
             onPointerCancel={handleImagePointerEnd}
           >
-            <div className="ql-image-canvas">
-              {resolvedImageSrc && (
-                <img
-                  key={resolvedImageSrc}
-                  src={resolvedImageSrc}
-                  alt={data.name}
-                  draggable={false}
-                  style={{ transform: `translate3d(${imagePan.x}px, ${imagePan.y}px, 0) scale(${imageScale})` }}
-                  className={`ql-image-element ${isDraggingImage ? 'ql-image-element--dragging' : ''}`}
-                />
-              )}
-            </div>
-          </div>
-        )}
-
-        {data.type === 'video' && (
-          <div className="ql-media-view">
-            {resolvedMediaSrc ? (
-              <video ref={videoRef} key={resolvedMediaSrc} controls autoPlay src={resolvedMediaSrc} className="ql-video-player">
-                <p>{t('quicklook.videoNotSupported', 'Your browser does not support this video format')}</p>
-              </video>
-            ) : (
+            {data.imageFallbackFailed || imageFallbackState === 'failed' ? (
               <div className="ql-binary-card">
-                <div className="ql-binary-icon"><Film size={36} /></div>
+                <div className="ql-binary-icon"><Image size={36} aria-hidden="true" /></div>
                 <div className="ql-binary-name">{data.name}</div>
+                <div className="ql-binary-meta">{data.formattedSize} · {typeLabel}</div>
+                <p className="ql-binary-hint">
+                  {t('quicklook.imageFallbackHint', 'Unable to decode this image format directly. Press Enter to open it in your default image viewer.')}
+                </p>
+                <div className="ql-binary-actions">
+                  <button
+                    type="button"
+                    className="ql-btn ql-btn-primary"
+                    onClick={() => void bridgeRequest('quicklook.open', { path: data.path })}
+                  >
+                    <ExternalLink size={14} aria-hidden="true" />
+                    <span>{t('quicklook.openInDefaultApp', 'Open with Default App (Enter)')}</span>
+                  </button>
+                </div>
+              </div>
+            ) : imageFallbackState === 'loading' ? (
+              <div className="ql-loading-skeleton" role="status">
+                <Loader2 size={24} className="ql-spinner" aria-hidden="true" />
+                <span>{t('quicklook.imageFallbackLoading', 'Decoding image via native codec...')}</span>
+              </div>
+            ) : (
+              <div className="ql-image-canvas">
+                {resolvedImageSrc && (
+                  <img
+                    key={resolvedImageSrc}
+                    src={resolvedImageSrc}
+                    alt={data.name}
+                    draggable={false}
+                    style={{ transform: `translate3d(${imagePan.x}px, ${imagePan.y}px, 0) scale(${imageScale})` }}
+                    className={`ql-image-element ${isDraggingImage ? 'ql-image-element--dragging' : ''}`}
+                    onError={() => {
+                      if (!data.dataUri && imageFallbackState === 'idle') {
+                        setImageFallbackState('loading');
+                        void bridgeRequest('quicklook.fallbackMedia', { path: data.path, kind: 'image' });
+                      } else {
+                        setImageFallbackState('failed');
+                      }
+                    }}
+                  />
+                )}
               </div>
             )}
           </div>
+        )}
+
+        {!isAsyncLoadingSkeleton && data.type === 'video' && (
+          <div className="ql-media-view">
+            {!data.videoFallbackOnly && resolvedMediaSrc && videoFallbackState === 'idle' ? (
+              <video
+                ref={videoRef}
+                key={resolvedMediaSrc}
+                controls
+                autoPlay
+                src={resolvedMediaSrc}
+                className="ql-video-player"
+                onError={() => {
+                  setVideoFallbackState('loading');
+                  void bridgeRequest('quicklook.fallbackMedia', { path: data.path, kind: 'video' });
+                }}
+                onLoadedMetadata={(e) => {
+                  const vid = e.currentTarget;
+                  if (vid.videoWidth === 0 && vid.videoHeight === 0) {
+                    setVideoFallbackState('loading');
+                    void bridgeRequest('quicklook.fallbackMedia', { path: data.path, kind: 'video' });
+                  }
+                }}
+              />
+            ) : videoFallbackState === 'loading' ? (
+              <div className="ql-loading-skeleton" role="status">
+                <Loader2 size={24} className="ql-spinner" aria-hidden="true" />
+                <span>{t('quicklook.videoProbeLoading', 'Extracting video metadata and keyframes...')}</span>
+              </div>
+            ) : (
+              <div className="ql-video-probe-card">
+                <div className="ql-video-probe-header">
+                  <div className="ql-video-probe-title-row">
+                    <Film size={20} aria-hidden="true" />
+                    <span className="ql-video-probe-title">{data.name}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="ql-btn ql-btn-primary"
+                    onClick={() => void bridgeRequest('quicklook.open', { path: data.path })}
+                  >
+                    <ExternalLink size={14} aria-hidden="true" />
+                    <span>{t('quicklook.openInDefaultApp', 'Open with Default App (Enter)')}</span>
+                  </button>
+                </div>
+
+                {data.videoProbe && data.videoProbe.ok && (
+                  <div className="ql-video-probe-meta-grid">
+                    {(data.videoProbe.width ?? 0) > 0 && (data.videoProbe.height ?? 0) > 0 && (
+                      <span className="ql-archive-pill">{data.videoProbe.width} × {data.videoProbe.height}</span>
+                    )}
+                    {(data.videoProbe.durationSec ?? 0) > 0 && (
+                      <span className="ql-archive-pill">{formatDurationClock(data.videoProbe.durationSec)}</span>
+                    )}
+                    {(data.videoProbe.fps ?? 0) > 0 && (
+                      <span className="ql-archive-pill">{data.videoProbe.fps} FPS</span>
+                    )}
+                    {data.videoProbe.videoCodec && (
+                      <span className="ql-archive-pill">Video: {data.videoProbe.videoCodec.toUpperCase()}</span>
+                    )}
+                    {data.videoProbe.audioCodec && (
+                      <span className="ql-archive-pill">Audio: {data.videoProbe.audioCodec.toUpperCase()}</span>
+                    )}
+                    {(data.videoProbe.bitrateKbps ?? 0) > 0 && (
+                      <span className="ql-archive-pill">{data.videoProbe.bitrateKbps} kbps</span>
+                    )}
+                  </div>
+                )}
+
+                {data.videoProbe?.thumbnails && data.videoProbe.thumbnails.length > 0 ? (
+                  <div className="ql-video-filmstrip">
+                    {data.videoProbe.thumbnails.map((thumb, idx) => (
+                      <figure key={idx} className="ql-video-thumb-card">
+                        <img src={thumb.dataUri} alt={`${data.name} #${idx + 1}`} draggable={false} />
+                        <figcaption>{formatDurationClock(thumb.timestampSec)}</figcaption>
+                      </figure>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="ql-binary-hint">
+                    {t('quicklook.videoCodecFallbackHint', 'This video container or codec cannot be played inline by Chromium. Press Enter to launch your system media player.')}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {!isAsyncLoadingSkeleton && data.type === 'archive' && data.archiveData && (
+          <QuickLookArchiveViewer
+            key={data.path}
+            filePath={data.path}
+            fileName={data.name}
+            formattedFileSize={data.formattedSize}
+            archiveSizeBytes={data.size}
+            archiveData={data.archiveData}
+          />
+        )}
+
+        {!isAsyncLoadingSkeleton && data.type === 'font' && data.fontData && (
+          <QuickLookFontViewer
+            key={data.path}
+            filePath={data.path}
+            mediaUrl={data.mediaUrl}
+            fontData={data.fontData}
+          />
         )}
 
         {data.type === 'audio' && (

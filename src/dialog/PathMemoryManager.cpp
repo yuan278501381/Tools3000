@@ -1,8 +1,8 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
@@ -48,7 +48,7 @@ std::string normalizePathUtf8(const std::string& value) {
 
     std::filesystem::path path(wide);
     path = path.lexically_normal();
-    return tools3000::core::WinUtils::wstringToUtf8(path.native());
+    return tools3000::core::WinUtils::pathToUtf8(path);
 }
 
 bool isExistingDirectory(const std::filesystem::path& path) {
@@ -78,6 +78,15 @@ PathMemoryManager::PathMemoryManager() {
     loadConfig();
 }
 
+std::string PathMemoryManager::sanitizeRibbonPosition(const std::string& pos) {
+    if (pos == "top-right" || pos == "top-center" ||
+        pos == "bottom-right" || pos == "bottom-center" ||
+        pos == "top" || pos == "bottom") {
+        return pos;
+    }
+    return "top-right";
+}
+
 void PathMemoryManager::loadConfig() {
     std::lock_guard lock(m_mutex);
     auto& cfg = tools3000::core::ConfigManager::instance();
@@ -90,7 +99,8 @@ void PathMemoryManager::loadConfig() {
     m_perAppMemory = cfg.get<bool>("/dialog/perAppMemory", true);
     m_quickSwitch = cfg.get<bool>("/dialog/quickSwitch", true);
     m_ribbonEnabled = cfg.get<bool>("/dialog/ribbonEnabled", true);
-    m_ribbonPosition = cfg.get<std::string>("/dialog/ribbonPosition", "top-right");
+    m_inlineSearchEnabled = cfg.get<bool>("/dialog/enableInlineSearch", true);
+    m_ribbonPosition = sanitizeRibbonPosition(cfg.get<std::string>("/dialog/ribbonPosition", "top-right"));
 
     std::vector<std::string> defaultFavs;
     std::string desktop = getKnownFolderUtf8(CSIDL_DESKTOPDIRECTORY);
@@ -129,8 +139,10 @@ void PathMemoryManager::loadConfig() {
 
 void PathMemoryManager::saveConfig() {
     nlohmann::json dialogJson;
+    bool enabledSnapshot = true;
     {
         std::lock_guard lock(m_mutex);
+        enabledSnapshot = m_enabled;
         nlohmann::json memJson = nlohmann::json::object();
         for (const auto& [key, item] : m_appMemories) {
             memJson[key] = {
@@ -146,6 +158,7 @@ void PathMemoryManager::saveConfig() {
             {"perAppMemory", m_perAppMemory},
             {"quickSwitch", m_quickSwitch},
             {"ribbonEnabled", m_ribbonEnabled},
+            {"enableInlineSearch", m_inlineSearchEnabled},
             {"ribbonPosition", m_ribbonPosition},
             {"favorites", m_favorites},
             {"recentPaths", m_recentPaths},
@@ -157,9 +170,10 @@ void PathMemoryManager::saveConfig() {
     // DialogEnhancer owns the complete /dialog subtree. Replacing that subtree
     // atomically removes legacy differently-cased EXE keys (for example
     // Code.exe/code.exe) that JSON merge-patch would otherwise retain forever.
-    tools3000::core::ConfigManager::instance().set("/dialog", std::move(dialogJson));
-    tools3000::core::ConfigManager::instance().set<bool>("/plugins/dialogenhancer/enabled", m_enabled);
-    tools3000::core::ConfigManager::instance().set<bool>("/plugins/dialog_enhancer/enabled", m_enabled);
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    cfg.set("/dialog", std::move(dialogJson));
+    cfg.set<bool>("/plugins/dialogenhancer/enabled", enabledSnapshot);
+    cfg.set<bool>("/plugins/dialog_enhancer/enabled", enabledSnapshot);
 }
 
 bool PathMemoryManager::isEnabled() const {
@@ -180,6 +194,11 @@ bool PathMemoryManager::isQuickSwitchEnabled() const {
 bool PathMemoryManager::isRibbonEnabled() const {
     std::lock_guard lock(m_mutex);
     return m_ribbonEnabled;
+}
+
+bool PathMemoryManager::isInlineSearchEnabled() const {
+    std::lock_guard lock(m_mutex);
+    return m_inlineSearchEnabled;
 }
 
 std::string PathMemoryManager::getRibbonPosition() const {
@@ -219,10 +238,18 @@ void PathMemoryManager::setRibbonEnabled(bool enabled) {
     saveConfig();
 }
 
+void PathMemoryManager::setInlineSearchEnabled(bool enabled) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_inlineSearchEnabled = enabled;
+    }
+    saveConfig();
+}
+
 void PathMemoryManager::setRibbonPosition(const std::string& pos) {
     {
         std::lock_guard lock(m_mutex);
-        m_ribbonPosition = pos;
+        m_ribbonPosition = sanitizeRibbonPosition(pos);
     }
     saveConfig();
 }
@@ -239,7 +266,7 @@ void PathMemoryManager::recordAppPath(const std::string& processName, const std:
         std::lock_guard lock(m_mutex);
         uint64_t now = std::chrono::duration_cast<std::chrono::seconds>(
             std::chrono::system_clock::now().time_since_epoch()).count();
-        
+
         auto& item = m_appMemories[key];
         item.processName = processName;
         item.lastPath = normalizedFolder;
@@ -276,7 +303,6 @@ std::string PathMemoryManager::getEffectiveAppPath(const std::string& processNam
         if (it->second.isFixed && !it->second.fixedWorkspace.empty()) {
             return it->second.fixedWorkspace;
         }
-
         return it->second.lastPath;
     }
     return "";
@@ -285,13 +311,14 @@ std::string PathMemoryManager::getEffectiveAppPath(const std::string& processNam
 void PathMemoryManager::setAppFixedWorkspace(const std::string& processName, const std::string& workspacePath, bool isFixed) {
     if (processName.empty()) return;
     const std::string key = canonicalProcessKey(processName);
+    const std::string normalized = normalizePathUtf8(workspacePath);
     {
         std::lock_guard lock(m_mutex);
         auto& item = m_appMemories[key];
         item.processName = processName;
-        item.fixedWorkspace = workspacePath;
+        item.fixedWorkspace = normalized;
         item.isFixed = isFixed;
-        if (item.lastPath.empty()) item.lastPath = workspacePath;
+        if (item.lastPath.empty()) item.lastPath = normalized;
     }
     saveConfig();
 }
@@ -369,11 +396,15 @@ void PathMemoryManager::setFavorites(const std::vector<std::string>& favorites) 
 }
 
 void PathMemoryManager::addFavorite(const std::string& folderPath) {
-    if (folderPath.empty()) return;
+    const std::string normalized = normalizePathUtf8(folderPath);
+    if (normalized.empty()) return;
     {
         std::lock_guard lock(m_mutex);
-        if (std::find(m_favorites.begin(), m_favorites.end(), folderPath) == m_favorites.end()) {
-            m_favorites.push_back(folderPath);
+        const bool exists = std::any_of(m_favorites.begin(), m_favorites.end(), [&](const std::string& existing) {
+            return stringEqualsIgnoreCase(existing, normalized);
+        });
+        if (!exists) {
+            m_favorites.push_back(normalized);
         }
     }
     saveConfig();
@@ -382,7 +413,9 @@ void PathMemoryManager::addFavorite(const std::string& folderPath) {
 void PathMemoryManager::removeFavorite(const std::string& folderPath) {
     {
         std::lock_guard lock(m_mutex);
-        auto it = std::remove(m_favorites.begin(), m_favorites.end(), folderPath);
+        auto it = std::remove_if(m_favorites.begin(), m_favorites.end(), [&](const std::string& existing) {
+            return stringEqualsIgnoreCase(existing, folderPath);
+        });
         m_favorites.erase(it, m_favorites.end());
     }
     saveConfig();
@@ -428,23 +461,20 @@ std::string PathMemoryManager::directoryForSelection(const std::string& selected
                                                      const std::string& currentFolder) {
     if (selectedPath.empty()) {
         if (!currentFolder.empty()) {
-            std::filesystem::path current(
-                tools3000::core::WinUtils::utf8ToWstring(currentFolder));
+            std::filesystem::path current = tools3000::core::WinUtils::utf8ToPath(currentFolder);
             if (isExistingDirectory(current)) {
-                return tools3000::core::WinUtils::wstringToUtf8(current.lexically_normal().native());
+                return tools3000::core::WinUtils::pathToUtf8(current.lexically_normal());
             }
         }
         return {};
     }
 
-    std::filesystem::path selected(
-        tools3000::core::WinUtils::utf8ToWstring(selectedPath));
+    std::filesystem::path selected = tools3000::core::WinUtils::utf8ToPath(selectedPath);
     if (selected.empty()) return {};
 
     std::filesystem::path current;
     if (!currentFolder.empty()) {
-        current = std::filesystem::path(
-            tools3000::core::WinUtils::utf8ToWstring(currentFolder)).lexically_normal();
+        current = tools3000::core::WinUtils::utf8ToPath(currentFolder).lexically_normal();
     }
     if (selected.is_relative()) {
         if (current.empty()) return {};
@@ -456,9 +486,6 @@ std::string PathMemoryManager::directoryForSelection(const std::string& selected
     std::filesystem::path directory;
     if (attrs != INVALID_FILE_ATTRIBUTES) {
         if ((attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-            // A folder picker confirms a child shown inside currentFolder. The
-            // useful recall location is that containing folder so the next
-            // dialog opens at the same choice level, not inside the old child.
             const std::filesystem::path parent = selected.parent_path().lexically_normal();
             const bool selectedChildOfCurrent = !current.empty() &&
                 _wcsicmp(parent.c_str(), current.c_str()) == 0;
@@ -478,7 +505,7 @@ std::string PathMemoryManager::directoryForSelection(const std::string& selected
     }
 
     if (directory.empty()) return {};
-    return tools3000::core::WinUtils::wstringToUtf8(directory.lexically_normal().native());
+    return tools3000::core::WinUtils::pathToUtf8(directory.lexically_normal());
 }
 
 } // namespace tools3000::dialog

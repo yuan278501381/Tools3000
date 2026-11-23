@@ -1,5 +1,6 @@
 #include "search/SearchInteractionHandlers.h"
 #include "search/BrowserBookmarkIndex.h"
+#include "search/SystemCommandCatalog.h"
 
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
@@ -73,9 +74,15 @@ json makeFileNotFoundError() {
 }
 
 bool executeShellAppsUri(const std::wstring& uri, const wchar_t* verb) noexcept {
+    if (verb == nullptr || _wcsicmp(verb, L"open") == 0) {
+        return tools3000::core::WinUtils::openProgram(uri);
+    }
+    if (_wcsicmp(verb, L"runas") == 0) {
+        return tools3000::core::WinUtils::openFileAsAdmin(uri);
+    }
     SHELLEXECUTEINFOW sei{};
     sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_ASYNCOK;
     sei.lpVerb = verb;
     sei.lpFile = uri.c_str();
     sei.nShow = SW_SHOWNORMAL;
@@ -84,6 +91,37 @@ bool executeShellAppsUri(const std::wstring& uri, const wchar_t* verb) noexcept 
 
 std::string extractSearchRequestPath(const json& params) {
     return params.value("filepath", params.value("path", ""));
+}
+
+bool isCommandSchemeUri(std::string_view path) noexcept {
+    return path.size() >= 6 &&
+           (path[0] == 'c' || path[0] == 'C') &&
+           (path[1] == 'm' || path[1] == 'M') &&
+           (path[2] == 'd' || path[2] == 'D') &&
+           path[3] == ':' && path[4] == '/' && path[5] == '/';
+}
+
+bool isSystemCommandRequest(const json& params, std::string_view path, std::string& outCommandId) {
+    const bool explicitType = params.is_object() && params.value("resultType", "") == "command";
+    const bool schemeMatch = isCommandSchemeUri(path);
+    if (!explicitType && !schemeMatch) {
+        return false;
+    }
+    if (params.is_object() && params.contains("commandId") && params["commandId"].is_string()) {
+        outCommandId = params["commandId"].get<std::string>();
+    }
+    if (outCommandId.empty() && schemeMatch) {
+        outCommandId = SystemCommandCatalog::extractCommandIdFromUri(path);
+    }
+    return true;
+}
+
+json executeWhitelistedSystemCommandResponse(const std::string& commandId, bool asAdmin) {
+    if (commandId.empty() || SystemCommandCatalog::findById(commandId) == nullptr) {
+        return {{"success", false}, {"error", "unknown command"}};
+    }
+    const bool ok = SystemCommandCatalog::executeWhitelistedCommand(commandId, asAdmin);
+    return {{"success", ok}};
 }
 
 HWND currentProcessSearchWindow() {
@@ -105,6 +143,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.openFile", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string commandId;
+        if (isSystemCommandRequest(params, path, commandId)) {
+            return executeWhitelistedSystemCommandResponse(commandId, false);
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
@@ -121,6 +163,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.openFileAsAdmin", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string commandId;
+        if (isSystemCommandRequest(params, path, commandId)) {
+            return executeWhitelistedSystemCommandResponse(commandId, true);
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
@@ -138,6 +184,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.openFolder", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, path, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (BrowserBookmarkIndex::isSafeHttpUrl(path)) {
@@ -155,6 +205,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.showFileProperties", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, path, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (isMissingLocalPathTarget(wpath)) {
@@ -165,6 +219,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.openWithNotepad", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, path, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (isMissingLocalPathTarget(wpath)) {
@@ -175,6 +233,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.copyFile", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, path, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (isMissingLocalPathTarget(wpath)) {
@@ -191,6 +253,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.renamePath", [](const json& params) -> json {
         const std::string oldPath = params.value("oldPath", params.value("path", ""));
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, oldPath, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         const std::string newName = params.value("newName", params.value("name", ""));
         if (oldPath.empty() || newName.empty()) {
             return {{"success", false}, {"error", "invalid parameters"}};
@@ -211,6 +277,10 @@ void registerSearchInteractionHandlers(tools3000::core::MessageBridge& bridge) {
 
     bridge.registerHandler("search.showShellContextMenu", [](const json& params) -> json {
         const std::string path = extractSearchRequestPath(params);
+        std::string ignoredCmd;
+        if (isSystemCommandRequest(params, path, ignoredCmd)) {
+            return {{"success", false}, {"error", "not applicable to system command"}};
+        }
         if (path.empty()) return {{"success", false}, {"error", "path is empty"}};
         const std::wstring wpath = tools3000::core::WinUtils::utf8ToWstring(path);
         if (isMissingLocalPathTarget(wpath)) {

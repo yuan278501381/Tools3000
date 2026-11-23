@@ -365,6 +365,51 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
         selAll.command = {PinMenuAction::SelectAllText, 0};
         ocrParent.submenu.push_back(std::move(selAll));
 
+        ocrParent.submenu.push_back(makeSeparator());
+
+        // 极客直切入口：贴图级「识字语种」覆写（默认遵循自动嗅探，1% 极端短词/生僻字场景可零切换重识并自动重译）
+        {
+            const std::string curScript = snap.activeOcrScriptMode.empty() ? "auto" : snap.activeOcrScriptMode;
+            PinMenuItem scriptParent;
+            scriptParent.icon = CaptureIconId::ActionTranslate;
+            scriptParent.label = tools3000::core::trWCstrFor(zh, L"识字语种", L"OCR Script");
+            if (curScript == "cjk") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"中英", L"CJK");
+            } else if (curScript == "japan") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"日语", L"JA");
+            } else if (curScript == "korean") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"韩语", L"KO");
+            } else if (curScript == "cyrillic") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"俄语", L"RU");
+            } else if (curScript == "latin") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"西/葡", L"LA");
+            }
+
+            auto makeScriptItem = [&](int param, const char* modeKey,
+                                      const wchar_t* zhLabel, const wchar_t* enLabel,
+                                      bool installed) {
+                PinMenuItem item;
+                item.icon = CaptureIconId::ActionTranslate;
+                item.isChecked = (curScript == modeKey);
+                item.label = tools3000::core::trWCstrFor(zh, zhLabel, enLabel);
+                if (!installed) {
+                    item.statusBadge = tools3000::core::trWCstrFor(zh, L"未安装", L"Not installed");
+                }
+                item.command = {PinMenuAction::SetOcrScriptMode, param};
+                scriptParent.submenu.push_back(std::move(item));
+            };
+
+            makeScriptItem(PinOcrScriptParam::kAuto, "auto", L"自动识别 (推荐)", L"Auto Detect (Recommended)", true);
+            scriptParent.submenu.push_back(makeSeparator());
+            makeScriptItem(PinOcrScriptParam::kCjk, "cjk", L"中文与英文", L"Chinese & English", true);
+            makeScriptItem(PinOcrScriptParam::kJapan, "japan", L"日语", L"Japanese", snap.scriptPackJapanInstalled);
+            makeScriptItem(PinOcrScriptParam::kKorean, "korean", L"韩语", L"Korean", snap.scriptPackKoreanInstalled);
+            makeScriptItem(PinOcrScriptParam::kCyrillic, "cyrillic", L"俄语 (西里尔)", L"Russian (Cyrillic)", snap.scriptPackCyrillicInstalled);
+            makeScriptItem(PinOcrScriptParam::kLatin, "latin", L"西 / 葡 / 欧文 (拉丁)", L"Spanish / Portuguese (Latin)", snap.scriptPackLatinInstalled);
+
+            ocrParent.submenu.push_back(std::move(scriptParent));
+        }
+
         data.items.push_back(std::move(ocrParent));
     }
 

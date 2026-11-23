@@ -56,6 +56,8 @@ const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) =
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
+const FileLocksmithPage = lazy(() => import('./pages/FileLocksmithPage').then((module) => ({ default: module.FileLocksmithPage })));
+const FeedbackModal = lazy(() => import('./components/FeedbackModal').then((module) => ({ default: module.FeedbackModal })));
 
 const getInitialActivePluginIds = (): string[] | null => {
   try {
@@ -107,10 +109,12 @@ function App() {
   const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [retainedDisabledNav, setRetainedDisabledNav] = useState<NavId | null>(null);
   const activeNavRef = useRef<NavId>(activeNav);
   const picasaWasActiveRef = useRef<boolean>(false);
+  const locksmithWasActiveRef = useRef<boolean>(false);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
   const contentContainerRef = useRef<HTMLDivElement>(null);
 
@@ -132,13 +136,21 @@ function App() {
       .filter((plugin) => plugin.enabled && plugin.active)
       .map((p) => p.id);
     const picasaNowActive = activeList.includes('picasa_viewer');
+    const locksmithNowActive = activeList.includes('file_locksmith');
     if (!picasaNowActive && picasaWasActiveRef.current && activeNavRef.current === 'picasa_viewer') {
       // 用户在 Picasa 图片查看器页面内就地关闭总开关时，保留当前页供查看停用态或直接重开
       setRetainedDisabledNav('picasa_viewer');
     } else if (picasaNowActive) {
       setRetainedDisabledNav((prev) => (prev === 'picasa_viewer' ? null : prev));
     }
+    if (!locksmithNowActive && locksmithWasActiveRef.current && activeNavRef.current === 'file_locksmith') {
+      // 用户在文件占用解锁页面内就地关闭右键菜单时，保留当前页供直接使用页内检测或重新开启
+      setRetainedDisabledNav('file_locksmith');
+    } else if (locksmithNowActive) {
+      setRetainedDisabledNav((prev) => (prev === 'file_locksmith' ? null : prev));
+    }
     picasaWasActiveRef.current = picasaNowActive;
+    locksmithWasActiveRef.current = locksmithNowActive;
     setActivePluginIds(activeList);
     try {
       localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
@@ -284,9 +296,12 @@ function App() {
         pollTimer = setTimeout(() => locateTargetInContent(detail.targetText!), 60);
       }
     };
+    const onOpenFeedback = () => setShowFeedbackModal(true);
     window.addEventListener('tools3000:navigate-deep', onDeepNav);
+    window.addEventListener('tools3000:open-feedback', onOpenFeedback);
     return () => {
       window.removeEventListener('tools3000:navigate-deep', onDeepNav);
+      window.removeEventListener('tools3000:open-feedback', onOpenFeedback);
       if (highlightTimer) clearTimeout(highlightTimer);
       if (pollTimer) clearTimeout(pollTimer);
     };
@@ -333,6 +348,8 @@ function App() {
       'spotlight',
       'dialogenhancer',
       'dialog_enhancer',
+      'file_locksmith',
+      'filelocksmith',
       'remote_boost',
       'remote',
       'picasa_viewer',
@@ -398,6 +415,7 @@ function App() {
       case 'keycast':         return <KeycastPage />;
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;
+      case 'file_locksmith':  return <FileLocksmithPage />;
       case 'remote_boost':    return <RemoteBoostPage />;
       case 'picasa_viewer':   return <PicasaViewerPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
@@ -434,6 +452,7 @@ function App() {
         <Sidebar
           activeNav={activeNav}
           onNavigate={handleNavSelect}
+          onOpenFeedback={() => setShowFeedbackModal(true)}
           activePlugins={activePlugins}
           installedExtensionIds={installedExtensionIds}
           installedExtensions={installedExtensions}
@@ -475,6 +494,11 @@ function App() {
         </main>
       </div>
       {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
+      {showFeedbackModal && (
+        <Suspense fallback={null}>
+          <FeedbackModal open={showFeedbackModal} onClose={() => setShowFeedbackModal(false)} />
+        </Suspense>
+      )}
       <WindowResizeHandles />
     </div>
   );

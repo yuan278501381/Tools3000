@@ -11,6 +11,7 @@ import {
   isEffectiveContentSearch,
   parseExplicitSortDirective,
   parseQueryKeywords,
+  resolveNativeIconRequest,
   stripContentSyntaxFromQuery,
 } from './searchUtils';
 import {
@@ -280,5 +281,49 @@ describe('parseQueryKeywords & Content Search Syntax Helpers', () => {
     );
     expect(extractParentDirectoryPath('D:\\Projects\\216-北辰智造\\部署手册.txt')).toBe('D:\\Projects\\216-北辰智造');
     expect(extractParentDirectoryPath('D:\\root_file.txt')).toBe('D:\\');
+  });
+
+  it('resolveNativeIconRequest resolves native icon paths for apps without name extension, bookmarks, and system commands', () => {
+    const chromeApp = resolveNativeIconRequest({
+      name: 'Google Chrome',
+      path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk',
+      isDirectory: false,
+      resultType: 'app',
+    });
+    expect(chromeApp.cacheKey).toBe('path:c:\\programdata\\microsoft\\windows\\start menu\\programs\\google chrome.lnk');
+    expect(chromeApp.extension).toBe('.lnk');
+    expect(chromeApp.filePath).toBe('C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk');
+    expect(chromeApp.resultType).toBe('app');
+
+    const uwpApp = resolveNativeIconRequest({
+      name: 'Calculator',
+      path: 'shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App',
+      isDirectory: false,
+      resultType: 'app',
+    });
+    expect(uwpApp.filePath).toBe('shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App');
+    expect(uwpApp.extension).toBe('.exe');
+
+    const bookmark = resolveNativeIconRequest({
+      name: 'Zhihu Article',
+      path: 'https://zhuanlan.zhihu.com/p/648167641',
+      isDirectory: false,
+      resultType: 'bookmark',
+      browserSource: 'Chrome',
+    });
+    expect(bookmark.cacheKey).toBe('bm:chrome:https://zhuanlan.zhihu.com/');
+    expect(bookmark.filePath).toBe('https://zhuanlan.zhihu.com/p/648167641');
+    expect(bookmark.resultType).toBe('bookmark');
+    expect(bookmark.browserSource).toBe('Chrome');
+
+    const command = resolveNativeIconRequest({
+      name: 'Task Manager',
+      path: 'cmd://taskmgr',
+      isDirectory: false,
+      resultType: 'command',
+    });
+    expect(command.cacheKey).toBe('cmd:cmd://taskmgr');
+    expect(command.resultType).toBe('command');
+    expect(command.filePath).toBe('cmd://taskmgr');
   });
 });

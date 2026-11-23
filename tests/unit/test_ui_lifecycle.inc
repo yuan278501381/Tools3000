@@ -1784,3 +1784,16 @@ TEST(FramelessWindowChromeRegressionTest, RoundedCornerPolicySkipsRegionOnWin11O
 
     DestroyWindow(hwnd);
 }
+
+TEST(WinUtilsOpenProgramAndClipboardContractTest, NonBlockingOpenProgramReturnsQuickly) {
+    wchar_t cmdPath[MAX_PATH] = {};
+    ASSERT_GT(SearchPathW(nullptr, L"cmd.exe", nullptr, MAX_PATH, cmdPath, nullptr), 0u);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const bool launched = tools3000::core::WinUtils::openProgram(cmdPath, L"/c exit 0");
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    EXPECT_TRUE(launched);
+    EXPECT_LT(elapsedMs, 2500);
+}

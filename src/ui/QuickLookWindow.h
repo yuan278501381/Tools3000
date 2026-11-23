@@ -13,6 +13,7 @@
 struct ICoreWebView2;
 struct ICoreWebView2Controller;
 struct ICoreWebView2Environment;
+struct ICoreWebView2WebResourceRequestedEventArgs;
 
 namespace tools3000::ui {
 
@@ -22,6 +23,8 @@ public:
 
     void show(const std::wstring& filePath, HINSTANCE hInstance = nullptr);
     void previewFile(const std::wstring& filePath);
+    void notifyFrontendReady();
+    void requestFallbackMediaAsync(const std::wstring& filePath, const std::string& mediaKind);
     void stepSiblingAsync(int delta);
     void hide();
     bool isVisible() const;
@@ -39,8 +42,9 @@ private:
     bool createWindow(HINSTANCE hInstance);
     void initializeWebView2();
     void updatePlacement();
-    void updateMediaHostMapping(const std::wstring& folderPath);
-    void clearMediaHostMapping();
+    std::string bindActiveMediaUrl(const std::wstring& filePath, uintmax_t sizeBytes, int faceIndex = -1);
+    void clearActiveMediaBinding();
+    void handleMediaResourceRequested(ICoreWebView2WebResourceRequestedEventArgs* args);
     void ensureAsyncWorkerStarted();
     void shutdownAsyncWorker();
     void asyncWorkerLoop(std::stop_token st);
@@ -60,13 +64,19 @@ private:
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_currentIsPdfPreview{false};
     bool m_webViewReady = false;
+    bool m_frontendReady = false;
     uint64_t m_showTimeTick{0};
     uint64_t m_mediaUrlRevision{0};
     std::atomic<uint64_t> m_generation{0};
     std::atomic<uint64_t> m_previewRequestId{0};
     std::wstring m_currentFilePath;
     std::wstring m_pendingFilePath;
-    std::wstring m_mappedMediaFolder;
+    std::wstring m_lastDispatchedPath;
+    uint64_t m_lastDispatchedGen = 0;
+
+    std::mutex m_mediaBindingMutex;
+    std::wstring m_activeMediaPath;
+    std::string m_activeMediaToken;
 
     std::mutex m_asyncMutex;
     std::condition_variable_any m_asyncCv;
@@ -75,6 +85,11 @@ private:
     uint64_t m_asyncPreviewGen = 0;
     bool m_asyncDeepDecode = false;
     bool m_hasAsyncPreviewTask = false;
+    std::wstring m_asyncFallbackPath;
+    std::string m_asyncFallbackKind;
+    uint64_t m_asyncFallbackReqId = 0;
+    uint64_t m_asyncFallbackGen = 0;
+    bool m_hasAsyncFallbackTask = false;
     std::wstring m_asyncStepBase;
     int m_asyncStepDelta = 0;
     uint64_t m_asyncStepGen = 0;

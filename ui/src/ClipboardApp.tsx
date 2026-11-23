@@ -61,6 +61,7 @@ import {
   type ClipboardSelectionState,
 } from './clipboardSelection';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
+import { useAppearance } from './hooks/useAppearance';
 import './ClipboardApp.css';
 
 export interface ClipboardItemSummary {
@@ -125,6 +126,7 @@ function formatRelativeTime(epochMs: number): string {
 
 export const ClipboardApp: FC = () => {
   const { t } = useTranslation();
+  useAppearance();
   const [query, setQuery] = useState('');
   const [filterKind, setFilterKind] = useState<FilterKind>('all');
   const [activeGroupId, setActiveGroupId] = useState('');
@@ -233,21 +235,53 @@ export const ClipboardApp: FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true })
-      .then((res) => {
-        if (!cancelled && res && Array.isArray(res.groups)) {
-          setGroups(res.groups);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      cancelled = true;
+  const signalFrameReady = useCallback(() => {
+    let sent = false;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      void bridgeRequest('clipboard.frameReady', undefined, { silent: true }).catch(() => {});
     };
+    const fallbackTimer = window.setTimeout(send, 48);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        window.clearTimeout(fallbackTimer);
+        send();
+      });
+    });
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    const initTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      void Promise.all([
+        bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true })
+          .then((res) => {
+            if (!cancelled && res && Array.isArray(res.groups)) {
+              setGroups(res.groups);
+            }
+          })
+          .catch(() => {}),
+        fetchItems('', 'all', ''),
+      ]).finally(() => {
+        if (!cancelled) {
+          signalFrameReady();
+        }
+      });
+    }, 0);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initTimer);
+    };
+  }, [fetchItems, signalFrameReady]);
+
+  const initialQueryEffectRef = useRef(true);
+  useEffect(() => {
+    if (initialQueryEffectRef.current) {
+      initialQueryEffectRef.current = false;
+      return;
+    }
     const timer = window.setTimeout(() => {
       void fetchItems(query, filterKind, activeGroupId);
     }, query ? 40 : 0);
@@ -280,11 +314,15 @@ export const ClipboardApp: FC = () => {
   useBridgeEvent('clipboard:shown', () => {
     setFocusIndexOnly(0);
     setEditingItemId(null);
-    void fetchGroups();
-    void fetchItems(query, filterKind, activeGroupId);
-    requestAnimationFrame(() => {
-      searchInputRef.current?.focus();
-      searchInputRef.current?.select();
+    void Promise.all([
+      fetchGroups(),
+      fetchItems(query, filterKind, activeGroupId),
+    ]).finally(() => {
+      signalFrameReady();
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+      });
     });
   });
 
