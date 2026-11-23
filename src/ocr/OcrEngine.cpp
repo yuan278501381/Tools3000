@@ -2231,7 +2231,20 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image, const std::s
     }
 
     if (allowDeepOcr && deepInstalled) {
-        auto deepResults = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+        std::vector<OcrResult> deepResults;
+        try {
+            deepResults = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+        } catch (const winrt::hresult_error& e) {
+            LOG_ERROR("OcrEngine: DeepOcr WinRT exception (hr=0x{:08X}), falling back to Windows OCR",
+                      static_cast<uint32_t>(e.code().value));
+            deepResults.clear();
+        } catch (const std::exception& e) {
+            LOG_ERROR("OcrEngine: DeepOcr std exception ({}), falling back to Windows OCR", e.what());
+            deepResults.clear();
+        } catch (...) {
+            LOG_ERROR("OcrEngine: DeepOcr unknown exception, falling back to Windows OCR");
+            deepResults.clear();
+        }
         if (!deepResults.empty() || enginePref == "ppocr_v4") {
             OcrPageExtraction entry;
             entry.lines = deepResults;
@@ -2294,13 +2307,37 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image, const std::string
     }
 
     auto qrFuture = std::async(std::launch::async, [&image]() {
-        return detectQrCodes(image);
+        try {
+            return detectQrCodes(image);
+        } catch (...) {
+            return std::vector<OcrQrResult>{};
+        }
     });
 
+    auto consumeQrSafe = [&qrFuture]() -> std::vector<OcrQrResult> {
+        try {
+            return qrFuture.get();
+        } catch (...) {
+            return {};
+        }
+    };
+
     if (preferDeep) {
-        page.lines = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+        try {
+            page.lines = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+        } catch (const winrt::hresult_error& e) {
+            LOG_ERROR("OcrEngine: DeepOcr page WinRT exception (hr=0x{:08X}), falling back to Windows OCR",
+                      static_cast<uint32_t>(e.code().value));
+            page.lines.clear();
+        } catch (const std::exception& e) {
+            LOG_ERROR("OcrEngine: DeepOcr page std exception ({}), falling back to Windows OCR", e.what());
+            page.lines.clear();
+        } catch (...) {
+            LOG_ERROR("OcrEngine: DeepOcr page unknown exception, falling back to Windows OCR");
+            page.lines.clear();
+        }
         if (!page.lines.empty() || enginePref == "ppocr_v4") {
-            page.qrCodes = qrFuture.get();
+            page.qrCodes = consumeQrSafe();
             page.activeEngine = "ppocr_v4";
             storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, page);
             return page;
@@ -2308,7 +2345,7 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image, const std::string
     }
 
     page.lines = extractWithWindowsOcr(image);
-    page.qrCodes = qrFuture.get();
+    page.qrCodes = consumeQrSafe();
     page.activeEngine = "windows";
     storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, page);
     return page;

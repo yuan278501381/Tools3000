@@ -24,6 +24,7 @@
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.35);
   overflow: hidden;
   font-family: var(--font-sans);
+  outline: none;
 }
 
 .fb-header {
@@ -395,6 +396,26 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.fb-error-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, transparent);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 550;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.fb-error-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .fb-spin {

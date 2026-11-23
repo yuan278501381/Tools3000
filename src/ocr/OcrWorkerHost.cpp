@@ -21,9 +21,11 @@
 #include "core/utils/WinUtils.h"
 
 #include <opencv2/core.hpp>
+#include <winrt/base.h>
 
 #include <algorithm>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -85,6 +87,11 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
     worker::ParentProcessWatchdog watchdog(parentPid, [&abortEvent]() {
         if (abortEvent) SetEvent(abortEvent.get());
     });
+
+    const std::wstring safeCpuStr = worker::findCliOptionValue(argc, argv, worker::Constants::kFlagSafeCpuMode);
+    if (safeCpuStr == L"1" || safeCpuStr == L"true" || safeCpuStr == L"TRUE") {
+        DeepOcrEngine::instance().setForceCpuOnlyModeForWorker(true);
+    }
 
     // Worker 自身靠进程退出回收 100% 驱动内存，禁用内部二次闲置卸载线程以免重复竞态
     DeepOcrEngine::instance().setIdleUnloadTimeoutForTest(0);
@@ -198,12 +205,33 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
 
         // 只读共享内存直接包装 cv::Mat 头（零拷贝！）
         cv::Mat sharedView(meta.height, meta.width, CV_8UC3, view.bytes(), static_cast<size_t>(meta.stepBytes));
-        const std::vector<OcrResult> results = DeepOcrEngine::instance().extractText(sharedView, scriptMode);
-        const DeepOcrRunStats stats = DeepOcrEngine::instance().lastRunStats();
-        const std::string activeTier = DeepOcrEngine::instance().effectiveModelTier();
+        std::vector<OcrResult> results;
+        DeepOcrRunStats stats{};
+        std::string activeTier = "mobile";
+        bool inferFailed = false;
+        try {
+            results = DeepOcrEngine::instance().extractText(sharedView, scriptMode);
+            stats = DeepOcrEngine::instance().lastRunStats();
+            activeTier = DeepOcrEngine::instance().effectiveModelTier();
+        } catch (const winrt::hresult_error&) {
+            inferFailed = true;
+        } catch (const std::exception&) {
+            inferFailed = true;
+        } catch (...) {
+            inferFailed = true;
+        }
 
         view.reset();
         shm.reset();
+
+        if (inferFailed) {
+            worker_proto::ResponseHeader errResp{};
+            errResp.status = 3;
+            if (!worker::writePod(pipe.get(), errResp, /*overlapped=*/true)) {
+                break;
+            }
+            continue;
+        }
 
         if (!worker_proto::writeOcrResults(pipe.get(), results, stats, activeTier, /*overlapped=*/true)) {
             break;

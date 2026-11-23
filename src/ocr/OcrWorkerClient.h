@@ -25,6 +25,12 @@
 
 namespace tools3000::ocr {
 
+enum class OcrWorkerExtractStatus {
+    Succeeded = 0,
+    WorkerUnavailable, // 当前环境不启用进程外 Worker（如单元测试默认进程内路径或 TOOLS3000_OCR_INPROC）
+    WorkerFailed,      // 已启用进程外隔离但 Worker 在推理中崩溃/超时/异常，禁止回退主进程以免拖垮宿主
+};
+
 class OcrWorkerClient {
 public:
     static OcrWorkerClient& instance();
@@ -32,7 +38,17 @@ public:
     /// 当前运行环境是否启用进程外 OCR Worker
     bool isOutOfProcessAvailable() const;
 
-    /// 通过独立短命子进程执行 PP-OCRv4 识别；失败（如子进程拉起异常）返回 false，调用方可无缝回退进程内引擎
+    /// 通过独立短命子进程执行 PP-OCRv4 识别并返回精细隔离状态（Worker 崩溃时自动切纯 CPU 隔离重试，绝不拖垮主进程）
+    OcrWorkerExtractStatus extractTextEx(
+        const cv::Mat& bgrImage,
+        const std::filesystem::path& modelDir,
+        const std::string& modelTier,
+        const std::string& scriptMode,
+        std::vector<OcrResult>& outResults,
+        DeepOcrRunStats& outStats,
+        std::string& outActiveTier);
+
+    /// 兼容旧签名封装：仅在 Worker 识别成功时返回 true
     bool extractText(
         const cv::Mat& bgrImage,
         const std::filesystem::path& modelDir,
@@ -51,6 +67,12 @@ public:
     /// 查询当前活跃 Worker 的 PID（无活跃进程时返回 0）
     DWORD activeWorkerPid() const noexcept;
 
+    /// 查询是否因检测到子进程 GPU/驱动异常而自动闩锁纯 CPU 安全模式
+    bool isSafeCpuModeLatched() const noexcept;
+
+    /// 测试专用：复位纯 CPU 安全模式闩锁
+    void resetSafeCpuModeForTest() noexcept;
+
     /// 测试专用：注入自定义 Tools3000.exe 路径及可选覆盖闲置超时秒数（<=0 保持默认 900s 两阶段保活）
     void setTestOverride(bool enabled, const std::filesystem::path& workerExePath = {}, int idleSecondsOverride = 0);
 
@@ -60,7 +82,12 @@ private:
     OcrWorkerClient(const OcrWorkerClient&) = delete;
     OcrWorkerClient& operator=(const OcrWorkerClient&) = delete;
 
-    bool ensureWorkerConnectedLocked(const std::filesystem::path& exePath, const std::string& modelTier, const std::filesystem::path& modelDir);
+    bool ensureWorkerConnectedLocked(
+        const std::filesystem::path& exePath,
+        const std::string& modelTier,
+        const std::filesystem::path& modelDir,
+        bool safeCpuMode,
+        bool* outReusedExisting = nullptr);
     void closeWorkerLocked(bool sendShutdownCmd);
     bool isChildAliveLocked() const noexcept;
     bool runSingleRequestLocked(
@@ -78,6 +105,8 @@ private:
     std::atomic<DWORD> m_childPid{0};
     std::string m_workerTier;
     std::filesystem::path m_workerModelDir;
+    bool m_workerSafeCpuMode = false;
+    std::atomic<bool> m_safeCpuModeLatched{false};
 
     mutable std::mutex m_configMutex;
     bool m_testOverrideSet = false;

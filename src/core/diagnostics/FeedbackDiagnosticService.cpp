@@ -9,12 +9,18 @@
 #include <bcrypt.h>
 #include <wincrypt.h>
 #include <psapi.h>
+#include <shellapi.h>
 #include <shlobj.h>
+#include <wincodec.h>
 #include <winhttp.h>
+#include <wrl/client.h>
 #include <zlib.h>
+
+#pragma comment(lib, "windowscodecs.lib")
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -92,9 +98,11 @@ std::string readTailLinesUtf8(const std::filesystem::path& filePath, size_t maxL
 
     LARGE_INTEGER sz{};
     std::string raw;
+    bool truncatedFromHead = false;
     if (GetFileSizeEx(h, &sz) && sz.QuadPart > 0) {
         const uint64_t total = static_cast<uint64_t>(sz.QuadPart);
-        const uint64_t window = (std::min)(total, static_cast<uint64_t>(160u * 1024u));
+        const uint64_t window = (std::min)(total, static_cast<uint64_t>(512u * 1024u));
+        truncatedFromHead = (total > window);
         LARGE_INTEGER pos{};
         pos.QuadPart = static_cast<LONGLONG>(total - window);
         if (SetFilePointerEx(h, pos, nullptr, FILE_BEGIN)) {
@@ -110,14 +118,21 @@ std::string readTailLinesUtf8(const std::filesystem::path& filePath, size_t maxL
     CloseHandle(h);
     if (raw.empty()) return {};
 
-    std::deque<std::string> lines;
     size_t start = 0;
+    if (truncatedFromHead) {
+        // 从文件中间窗口截断读入时，丢弃开头残缺的半行（避免跨 UTF-8 字符截断）
+        const size_t firstNl = raw.find('\n');
+        if (firstNl != std::string::npos && firstNl + 1 < raw.size()) {
+            start = firstNl + 1;
+        }
+    }
+    std::deque<std::string> lines;
     while (start < raw.size()) {
         size_t nl = raw.find('\n', start);
         if (nl == std::string::npos) nl = raw.size();
         std::string line = raw.substr(start, nl - start);
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        lines.push_back(std::move(line));
+        lines.push_back(WinUtils::sanitizeUtf8(line));
         if (lines.size() > maxLines) {
             lines.pop_front();
         }
@@ -293,6 +308,64 @@ bool writeSimpleStoreZip(const std::filesystem::path& zipPath,
     std::error_code ec;
     std::filesystem::create_directories(zipPath.parent_path(), ec);
     return WinUtils::atomicWriteFileWithFlush(zipPath.wstring(), out);
+}
+
+std::string encodeBase64Payload(const uint8_t* data, size_t size) {
+    if (!data || size == 0) return {};
+    DWORD outLen = 0;
+    if (!CryptBinaryToStringA(data, static_cast<DWORD>(size),
+                              CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &outLen) ||
+        outLen == 0) {
+        return {};
+    }
+    std::string out(outLen, '\0');
+    if (!CryptBinaryToStringA(data, static_cast<DWORD>(size),
+                              CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, out.data(), &outLen)) {
+        return {};
+    }
+    while (!out.empty() && out.back() == '\0') {
+        out.pop_back();
+    }
+    return out;
+}
+
+std::string readLatestCrashSummaryUtf8() {
+    std::error_code ec;
+    const std::filesystem::path crashDir = WinUtils::getAppDataDirectory() / L"crashes";
+    if (!std::filesystem::is_directory(crashDir, ec) || ec) {
+        return {};
+    }
+    std::filesystem::path newestPath;
+    std::filesystem::file_time_type newestTime{};
+    bool found = false;
+    const auto now = std::filesystem::file_time_type::clock::now();
+    constexpr auto kMaxCrashAge = std::chrono::hours(24 * 7);
+
+    for (const auto& entry : std::filesystem::directory_iterator(crashDir, ec)) {
+        if (ec) break;
+        if (!entry.is_regular_file(ec) || ec) continue;
+        const std::string ext = WinUtils::toLower(WinUtils::wstringToUtf8(entry.path().extension().wstring()));
+        if (ext != ".txt") continue;
+        const auto mtime = entry.last_write_time(ec);
+        if (ec) continue;
+        if (now > mtime && (now - mtime) > kMaxCrashAge) continue;
+        if (!found || mtime > newestTime) {
+            newestTime = mtime;
+            newestPath = entry.path();
+            found = true;
+        }
+    }
+    if (!found || newestPath.empty()) return {};
+
+    std::ifstream ifs(newestPath, std::ios::binary);
+    if (!ifs) return {};
+    constexpr size_t kMaxCrashBytes = 16u * 1024u;
+    std::string buf(kMaxCrashBytes, '\0');
+    ifs.read(buf.data(), static_cast<std::streamsize>(buf.size()));
+    const auto got = static_cast<size_t>(ifs.gcount());
+    buf.resize(got);
+    if (buf.empty()) return {};
+    return WinUtils::truncateUtf8Head(WinUtils::sanitizeUtf8(buf), kMaxCrashBytes);
 }
 
 std::string decodeBase64Payload(std::string_view b64) {
@@ -523,6 +596,13 @@ FeedbackBundlePreview FeedbackDiagnosticService::buildDiagnosticPreview(
                 redactions += r.totalReplacements;
             }
         }
+
+        const std::string rawCrash = readLatestCrashSummaryUtf8();
+        if (!rawCrash.empty()) {
+            auto r = redactSensitiveText(rawCrash);
+            preview.redactedLatestCrash = std::move(r.redactedText);
+            redactions += r.totalReplacements;
+        }
     }
 
     auto descRed = redactSensitiveText(input.description);
@@ -541,22 +621,26 @@ FeedbackBundlePreview FeedbackDiagnosticService::buildDiagnosticPreview(
     if (!stepsRed.redactedText.empty()) {
         md << "### Steps to Reproduce\n" << stepsRed.redactedText << "\n\n";
     }
-    md << "### Environment Snapshot\n```json\n" << preview.environment.dump(2) << "\n```\n\n";
+    md << "### Environment Snapshot\n```json\n" << preview.environment.dump(2, ' ', false, json::error_handler_t::replace) << "\n```\n\n";
     if (input.includeLogs && !preview.redactedMainLog.empty()) {
-        // Markdown 内保留末 40 行摘要，完整 200 行随 .zip / 中继传输
+        // Markdown 内保留末 2400 字节日志摘录（严格按 UTF-8 码点与整行边界截断），完整最近 1000 行随 .zip / 中继传输
         const size_t tailKeep = 2400;
-        std::string excerpt = preview.redactedMainLog.size() > tailKeep
-            ? preview.redactedMainLog.substr(preview.redactedMainLog.size() - tailKeep)
-            : preview.redactedMainLog;
+        const std::string excerpt = WinUtils::truncateUtf8Tail(
+            preview.redactedMainLog, tailKeep, /*alignToLineStart=*/true);
         md << "### Redacted Log Excerpt\n```text\n" << excerpt << "\n```\n";
     }
-    preview.markdownReport = md.str();
+    if (input.includeLogs && !preview.redactedLatestCrash.empty()) {
+        const std::string crashExcerpt = WinUtils::truncateUtf8Head(preview.redactedLatestCrash, 1200);
+        md << "\n### Latest Crash / Terminate Summary\n```text\n" << crashExcerpt << "\n```\n";
+    }
+    preview.markdownReport = WinUtils::sanitizeUtf8(md.str());
 
-    // 预填 GitHub Issue URL（受 URL 长度上限控制，保持 <= 3500 字符安全打开）
-    const std::string issueTitle = "[" + typeTag + "] " + (input.title.empty() ? "Feedback" : input.title);
+    // 预填 GitHub Issue URL（按 UTF-8 码点边界安全截断，保持 <= 3500 字符安全打开）
+    const std::string issueTitle = WinUtils::sanitizeUtf8(
+        "[" + typeTag + "] " + (input.title.empty() ? "Feedback" : input.title));
     std::string bodyForUrl = preview.markdownReport;
     if (bodyForUrl.size() > 2600) {
-        bodyForUrl.resize(2600);
+        bodyForUrl = WinUtils::truncateUtf8Head(bodyForUrl, 2600);
         bodyForUrl += "\n\n...(truncated, please attach the exported Tools3000 diagnostic .zip bundle)";
     }
     const std::string labelParam =
@@ -576,17 +660,20 @@ bool FeedbackDiagnosticService::exportDiagnosticZipBundle(
     std::string& outError,
     uint32_t* outTotalRedactions) {
     outError.clear();
-    const auto preview = buildDiagnosticPreview(input, 200);
+    const auto preview = buildDiagnosticPreview(input, kDefaultLogLines);
     if (outTotalRedactions) *outTotalRedactions = preview.totalRedactions;
 
     std::vector<std::pair<std::string, std::string>> entries;
     entries.emplace_back("report.md", preview.markdownReport);
-    entries.emplace_back("environment.json", preview.environment.dump(2));
+    entries.emplace_back("environment.json", preview.environment.dump(2, ' ', false, json::error_handler_t::replace));
     if (input.includeLogs && !preview.redactedMainLog.empty()) {
         entries.emplace_back("tools3000_redacted.log", preview.redactedMainLog);
     }
     if (input.includeLogs && !preview.redactedServiceLog.empty()) {
         entries.emplace_back("service_redacted.log", preview.redactedServiceLog);
+    }
+    if (input.includeLogs && !preview.redactedLatestCrash.empty()) {
+        entries.emplace_back("latest_crash_redacted.txt", preview.redactedLatestCrash);
     }
 
     // 附带截图（Data URI 或本地文件，限制单图 8 MB）
@@ -643,7 +730,7 @@ std::string FeedbackDiagnosticService::computeLightweightPowNonce(
 
 FeedbackSubmitOutcome FeedbackDiagnosticService::submitFeedback(const FeedbackSubmissionInput& input) {
     FeedbackSubmitOutcome outcome;
-    const auto preview = buildDiagnosticPreview(input, 200);
+    const auto preview = buildDiagnosticPreview(input, kDefaultLogLines);
     outcome.totalRedactions = preview.totalRedactions;
     outcome.markdownReport = preview.markdownReport;
     outcome.issueUrl = preview.githubIssueUrl;
@@ -668,7 +755,9 @@ FeedbackSubmitOutcome FeedbackDiagnosticService::submitFeedback(const FeedbackSu
 
         std::string respBody;
         DWORD statusCode = 0;
-        if (postJsonToRelayEndpoint(preview.relayEndpoint, nonce, challenge, payload.dump(), respBody, statusCode)) {
+        if (postJsonToRelayEndpoint(preview.relayEndpoint, nonce, challenge,
+                                    payload.dump(-1, ' ', false, json::error_handler_t::replace),
+                                    respBody, statusCode)) {
             const json parsed = json::parse(respBody, nullptr, false);
             outcome.ok = true;
             outcome.mode = "relay_submitted";
@@ -717,6 +806,184 @@ FeedbackSubmitOutcome FeedbackDiagnosticService::submitFeedback(const FeedbackSu
 
 std::string FeedbackDiagnosticService::getGitHubNewIssueBaseUrl() {
     return kGitHubIssuesNewUrl;
+}
+
+ClipboardImageAttachment FeedbackDiagnosticService::readClipboardImageAsDataUri(size_t maxImageBytes) {
+    ClipboardImageAttachment result;
+    const size_t effectiveLimit = (maxImageBytes > 0) ? maxImageBytes : kMaxScreenshotAttachmentBytes;
+
+    bool opened = false;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        if (OpenClipboard(nullptr)) {
+            opened = true;
+            break;
+        }
+        Sleep(15);
+    }
+    if (!opened) {
+        return result;
+    }
+
+    struct ClipboardGuard {
+        bool active = true;
+        void close() noexcept {
+            if (active) {
+                CloseClipboard();
+                active = false;
+            }
+        }
+        ~ClipboardGuard() { close(); }
+    } clipGuard;
+
+    // 路径 1：剪贴板包含在资源管理器中复制的图片文件 (CF_HDROP)
+    if (IsClipboardFormatAvailable(CF_HDROP)) {
+        if (HANDLE hDrop = GetClipboardData(CF_HDROP)) {
+            HDROP drop = static_cast<HDROP>(hDrop);
+            const UINT count = DragQueryFileW(drop, 0xFFFFFFFFu, nullptr, 0);
+            if (count > 0) {
+                const UINT len = DragQueryFileW(drop, 0, nullptr, 0);
+                if (len > 0 && len < 4096) {
+                    std::wstring filePathW(len, L'\0');
+                    if (DragQueryFileW(drop, 0, filePathW.data(), len + 1) > 0) {
+                        const std::filesystem::path imgPath(filePathW);
+                        const std::string ext = WinUtils::toLower(WinUtils::wstringToUtf8(imgPath.extension().wstring()));
+                        std::string mime;
+                        if (ext == ".png") mime = "image/png";
+                        else if (ext == ".jpg" || ext == ".jpeg") mime = "image/jpeg";
+                        else if (ext == ".webp") mime = "image/webp";
+
+                        if (!mime.empty()) {
+                            clipGuard.close();
+                            std::error_code ec;
+                            if (std::filesystem::is_regular_file(imgPath, ec) && !ec) {
+                                const auto fsz = std::filesystem::file_size(imgPath, ec);
+                                if (!ec && fsz > 0) {
+                                    if (fsz > effectiveLimit) {
+                                        result.tooLarge = true;
+                                        result.byteSize = static_cast<size_t>(fsz);
+                                        result.fileName = WinUtils::wstringToUtf8(imgPath.filename().wstring());
+                                        return result;
+                                    }
+                                    std::ifstream ifs(imgPath, std::ios::binary);
+                                    if (ifs) {
+                                        std::vector<uint8_t> bytes(static_cast<size_t>(fsz));
+                                        ifs.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+                                        const size_t got = static_cast<size_t>(ifs.gcount());
+                                        if (got > 0) {
+                                            bytes.resize(got);
+                                            const std::string b64 = encodeBase64Payload(bytes.data(), bytes.size());
+                                            if (!b64.empty()) {
+                                                result.ok = true;
+                                                result.dataUri = "data:" + mime + ";base64," + b64;
+                                                result.fileName = WinUtils::wstringToUtf8(imgPath.filename().wstring());
+                                                result.byteSize = bytes.size();
+                                                return result;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            return result;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 路径 2：剪贴板包含截图位图 (CF_BITMAP / CF_DIB / CF_DIBV5) -> WIC 内存编码为 PNG Data URI
+    if (!IsClipboardFormatAvailable(CF_BITMAP)) {
+        return result;
+    }
+    HBITMAP hBmp = reinterpret_cast<HBITMAP>(GetClipboardData(CF_BITMAP));
+    if (!hBmp) {
+        return result;
+    }
+
+    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const bool needCoUninit = SUCCEEDED(comHr);
+    struct ComUninitGuard {
+        bool active = false;
+        ~ComUninitGuard() {
+            if (active) CoUninitialize();
+        }
+    } comGuard{needCoUninit};
+    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory;
+    if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&wicFactory))) ||
+        !wicFactory) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmap> wicBitmap;
+    // 在持有剪贴板期间将 HBITMAP 拷贝入独立 WIC 位图，随后立即释放系统剪贴板锁
+    const HRESULT bmpHr = wicFactory->CreateBitmapFromHBITMAP(hBmp, nullptr, WICBitmapIgnoreAlpha, &wicBitmap);
+    clipGuard.close();
+    if (FAILED(bmpHr) || !wicBitmap) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<IStream> memStream;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &memStream)) || !memStream) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+    if (FAILED(wicFactory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) || !encoder) {
+        return result;
+    }
+    if (FAILED(encoder->Initialize(memStream.Get(), WICBitmapEncoderNoCache))) {
+        return result;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+    if (FAILED(encoder->CreateNewFrame(&frame, nullptr)) || !frame) {
+        return result;
+    }
+    if (FAILED(frame->Initialize(nullptr)) ||
+        FAILED(frame->WriteSource(wicBitmap.Get(), nullptr)) ||
+        FAILED(frame->Commit()) ||
+        FAILED(encoder->Commit())) {
+        return result;
+    }
+
+    HGLOBAL hMem = nullptr;
+    if (FAILED(GetHGlobalFromStream(memStream.Get(), &hMem)) || !hMem) {
+        return result;
+    }
+    STATSTG stat{};
+    if (FAILED(memStream->Stat(&stat, STATFLAG_NONAME))) {
+        return result;
+    }
+    const size_t pngBytes = static_cast<size_t>(stat.cbSize.QuadPart);
+    if (pngBytes == 0) {
+        return result;
+    }
+    if (pngBytes > effectiveLimit) {
+        result.tooLarge = true;
+        result.byteSize = pngBytes;
+        result.fileName = "clipboard-screenshot.png";
+        return result;
+    }
+
+    const void* locked = GlobalLock(hMem);
+    if (!locked) {
+        return result;
+    }
+    const std::string b64 = encodeBase64Payload(static_cast<const uint8_t*>(locked), pngBytes);
+    GlobalUnlock(hMem);
+    if (b64.empty()) {
+        return result;
+    }
+
+    result.ok = true;
+    result.dataUri = "data:image/png;base64," + b64;
+    result.fileName = "clipboard-screenshot.png";
+    result.byteSize = pngBytes;
+    return result;
 }
 
 }  // namespace tools3000::core

@@ -1458,16 +1458,29 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         in.includeLogs = params.value("includeLogs", true);
         in.screenshotPath = jsonStringOr(params, "screenshotPath");
         in.screenshotDataUri = jsonStringOr(params, "screenshotDataUri");
-        const auto preview = tools3000::core::FeedbackDiagnosticService::buildDiagnosticPreview(in, 200);
+        const auto preview = tools3000::core::FeedbackDiagnosticService::buildDiagnosticPreview(
+            in, tools3000::core::FeedbackDiagnosticService::kDefaultLogLines);
         return {
             {"ok", true},
             {"environment", preview.environment},
             {"redactedMainLog", preview.redactedMainLog},
             {"redactedServiceLog", preview.redactedServiceLog},
+            {"redactedLatestCrash", preview.redactedLatestCrash},
             {"markdownReport", preview.markdownReport},
             {"githubIssueUrl", preview.githubIssueUrl},
             {"totalRedactions", preview.totalRedactions},
             {"relayConfigured", preview.relayConfigured}
+        };
+    });
+    tools3000::core::MessageBridge::instance().markMethodAsync("feedback.readClipboardImage");
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.readClipboardImage", [](const nlohmann::json&) -> nlohmann::json {
+        const auto att = tools3000::core::FeedbackDiagnosticService::readClipboardImageAsDataUri();
+        return {
+            {"ok", att.ok},
+            {"tooLarge", att.tooLarge},
+            {"dataUri", att.dataUri},
+            {"fileName", att.fileName},
+            {"byteSize", att.byteSize}
         };
     });
     tools3000::core::MessageBridge::instance().markMethodAsync("feedback.submit");

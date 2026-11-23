@@ -247,6 +247,18 @@ public:
     /// 查询最近一次端到端 OCR 识别的分阶段耗时与复核统计
     DeepOcrRunStats lastRunStats() const noexcept;
 
+    /// 独立 OCR Worker 进程安全模式：强制跳过 DirectML GPU，使用纯 CPU SIMD / OpenCV DNN 稳定推理
+    void setForceCpuOnlyModeForWorker(bool forceCpu) noexcept;
+
+    /// 查询当前是否处于纯 CPU 安全模式（含 Worker --safe-cpu=1、环境变量 TOOLS3000_OCR_FORCE_CPU=1 或 GPU 运行期故障自愈闩锁）
+    bool isForceCpuOnlyMode() const noexcept;
+
+    /// 查询是否因检测到 WinML DirectML 运行期异常而触发了 GPU 熔断降级
+    bool isGpuRuntimeBlacklisted() const noexcept;
+
+    /// 供自动化测试复位纯 CPU / GPU 熔断状态
+    void resetCpuSafeModeForTest() noexcept;
+
     /// 供自动化测试调整闲置自动卸载超时秒数（<=0 表示立即禁用自动定时，默认 60s）
     void setIdleUnloadTimeoutForTest(int seconds) noexcept;
 
@@ -400,6 +412,8 @@ private:
     std::chrono::steady_clock::time_point m_lastActivityTime{};
     std::atomic<int> m_idleUnloadTimeoutSec{DeepOcrConstants::kIdleUnloadTimeoutSeconds};
     std::atomic<bool> m_shuttingDown{false};
+    std::atomic<bool> m_forceCpuOnlyForWorker{false};
+    std::atomic<bool> m_gpuRuntimeBlacklisted{false};
 
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;

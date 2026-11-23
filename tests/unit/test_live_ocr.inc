@@ -3908,6 +3908,49 @@ TEST(WorkerIsolationTest, OcrWorkerOutOfProcessIsolationAndIdleExit) {
     EXPECT_FALSE(OcrWorkerClient::instance().isWorkerRunning());
 }
 
+TEST(WorkerIsolationTest, WorkerFailureRefusesUnsafeInProcessFallbackAndLatchesSafeCpu) {
+    using namespace tools3000::ocr;
+
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "PP-OCRv4 model bundle not installed";
+    }
+
+    // 使用必定不握手并立即退出的原生可执行文件模拟 Win10 OCR Worker 崩溃场景
+    wchar_t sysDir[MAX_PATH]{};
+    ASSERT_GT(GetSystemDirectoryW(sysDir, static_cast<DWORD>(std::size(sysDir))), 0u);
+    const std::filesystem::path fakeCrashExe = std::filesystem::path(sysDir) / L"where.exe";
+    if (!std::filesystem::is_regular_file(fakeCrashExe)) {
+        GTEST_SKIP() << "System helper exe unavailable";
+    }
+
+    deep.releaseLoadedModels();
+    deep.resetCpuSafeModeForTest();
+    ASSERT_EQ(deep.activeSessionCount(), 0u);
+    ASSERT_FALSE(deep.isWarmAndLoaded());
+
+    struct OverrideResetGuard {
+        ~OverrideResetGuard() {
+            OcrWorkerClient::instance().setTestOverride(false);
+            DeepOcrEngine::instance().resetCpuSafeModeForTest();
+        }
+    } guard;
+
+    OcrWorkerClient::instance().setTestOverride(true, fakeCrashExe, /*idleSecondsOverride=*/5);
+    ASSERT_FALSE(OcrWorkerClient::instance().isSafeCpuModeLatched());
+
+    cv::Mat sample(120, 360, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(sample, "CrashGuard 2026", cv::Point(18, 76),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(16, 16, 16), 2, cv::LINE_AA);
+
+    // Worker 失败后必须触发 CPU 安全模式闩锁，且 DeepOcrEngine 严禁回退到宿主主进程内加载 DirectML/WinML
+    const auto lines = deep.extractText(sample);
+    EXPECT_TRUE(lines.empty());
+    EXPECT_TRUE(OcrWorkerClient::instance().isSafeCpuModeLatched());
+    EXPECT_EQ(deep.activeSessionCount(), 0u) << "Host process must NOT load in-process DirectML after isolated worker crash";
+    EXPECT_FALSE(deep.isWarmAndLoaded()) << "Host process must NOT fall back to in-process DeepOCR after worker failure";
+}
+
 TEST(WorkerIsolationTest, RecordEncodeAndStudioExportWorkersOutOfProcessEndToEnd) {
     using namespace tools3000::capture;
 

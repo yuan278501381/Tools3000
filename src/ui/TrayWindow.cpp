@@ -395,7 +395,8 @@ void TrayWindow::initializeWebView2() {
                                         const nlohmann::json envelope = {
                                             {"type", "event"}, {"event", eventName}, {"data", data}
                                         };
-                                        const auto msg = tools3000::core::WinUtils::utf8ToWstring(envelope.dump());
+                                        const auto msg = tools3000::core::WinUtils::utf8ToWstring(
+                                            envelope.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
                                         m_webView->PostWebMessageAsString(msg.c_str());
                                     });
                                 }

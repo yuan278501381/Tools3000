@@ -496,7 +496,10 @@ void SettingsWindow::onWebView2Ready() {
                         CoTaskMemFree(messageRaw);
 
                         if (!web_security::isBridgeMethodAllowed(
-                                message, web_security::Surface::Settings)) return S_OK;
+                                message, web_security::Surface::Settings)) {
+                            LOG_WARN("SettingsWindow: dropped disallowed or oversized bridge message ({} bytes)", message.size());
+                            return S_OK;
+                        }
 
                         tools3000::core::MessageBridge::instance().handleMessageAsync(
                             message,
@@ -529,7 +532,7 @@ void SettingsWindow::onWebView2Ready() {
                 const nlohmann::json envelope = {
                     {"type", "event"}, {"event", eventName}, {"data", data}
                 };
-                const std::string payload = envelope.dump();
+                const std::string payload = envelope.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
                 // 隐藏或最小化期间合批暂存最新事件，严禁调用 PostWebMessage 唤醒已挂起 renderer；
                 // 窗口重新呈现或还原时由 flushPendingEvents() 一次性送达前端，确保零状态丢失。
                 if (!isVisible() || m_minimized.load()) {

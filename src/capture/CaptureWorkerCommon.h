@@ -43,6 +43,7 @@ namespace Constants {
     inline constexpr const wchar_t* kFlagIdleSeconds    = L"--idle-sec=";
     inline constexpr const wchar_t* kFlagJobFile        = L"--job=";
     inline constexpr const wchar_t* kFlagCancelEvent    = L"--cancel-event=";
+    inline constexpr const wchar_t* kFlagSafeCpuMode    = L"--safe-cpu=";
 
     inline constexpr const wchar_t* kModeOcr            = L"ocr";
     inline constexpr const wchar_t* kModeStudioExport   = L"studio-export";
