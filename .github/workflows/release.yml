@@ -198,7 +198,7 @@ jobs:
 
       - name: Upload Unsigned Inner Binaries for SignPath
         if: steps.signing-config.outputs.provider == 'signpath'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         id: upload-unsigned-inner
         with:
           name: Tools3000-InnerBinaries-Unsigned
@@ -286,7 +286,7 @@ jobs:
       # 第二轮签名 (SignPath): 对生成的带版本号安装包进行外层签名
       - name: Upload Unsigned Outer Installer for SignPath
         if: steps.signing-config.outputs.provider == 'signpath'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         id: upload-unsigned-installer
         with:
           name: Tools3000-Setup-Unsigned
