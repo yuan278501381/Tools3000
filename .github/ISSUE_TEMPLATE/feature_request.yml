@@ -1,30 +1,31 @@
-name: 功能建议与共创 / Feature Request
-description: 提出新功能想法、交互优化建议，或希望一起共创的新模块
+name: Feature Request / 功能建议与共创
+description: Suggest a new feature, UX improvement, or workflow enhancement / 提出新功能想法或交互优化建议
 title: "[Feature] "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        欢迎提出任何能提升 Windows 日常效率的实用建议！也欢迎直接提交 Pull Request 一起共创。
+        We love practical ideas that make everyday Windows workflows faster! Pull Requests are also warmly welcome.
+        欢迎提出任何能提升 Windows 日常效率的实用建议，也欢迎提交 Pull Request 一起共创！
   - type: textarea
     id: scenario
     attributes:
-      label: 使用场景与痛点
-      description: 您在什么高频场景下需要这个能力？目前是如何绕过的？
+      label: Use Case & Pain Point / 使用场景与痛点
+      description: When do you need this capability, and how do you currently work around it? / 在什么场景下需要该功能？
     validations:
       required: true
   - type: textarea
     id: proposal
     attributes:
-      label: 期望的实现方式或参考交互
-      description: 您理想中的快捷键、交互流程或配置项是什么样的？
+      label: Proposed UX or Behavior / 期望的交互或实现方式
+      description: Ideal shortcut, UI flow, or reference behavior / 理想中的快捷键、操作流程或设置项
     validations:
       required: true
   - type: checkboxes
     id: cocreate
     attributes:
-      label: 参与方式
+      label: Participation / 参与方式
       options:
-        - label: 我愿意提供测试样本或帮忙实机验证修复版
-        - label: 我计划自行或借助 AI 提交 Pull Request 参与共创
+        - label: I am happy to help test a preview build / 我愿意帮忙实机测试预览修复版
+        - label: I plan to submit a Pull Request (human or AI-assisted) / 我计划提交 PR 参与共创
