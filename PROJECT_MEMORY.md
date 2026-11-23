@@ -6,6 +6,24 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 截图原位翻译人因排版 6 维世界级架构重构 + 9 场景合规回归样本集入库 (`InPlaceTranslateEngine.{h,cpp}`, `tests/unit/test_capture.inc`, `tests/fixtures/translate/`)
+- **实机四场景对比图暴露的 6 大底层通用根因与第一性原理根治（零硬编码、零过拟合）**：
+  1. **对齐失控与满宽行误居中（侧边栏红框行 / NYTimes / Yahoo 卡片飘移）**：
+     - *根因*：`computeSafeLayoutRect` 曾把触及画布左右边缘 (`x=2` / `x=W-2`) 直接置为 `leftObstacleHit/rightObstacleHit = true`，令满宽左对齐列表行触发 `boundedSymmetricCenter` 飞向正中；且未利用垂直列结构；
+     - *根治*：彻底禁止画布边缘充当按钮边框；确立**格式塔左对齐列守恒定律 (`hasLeftAlignedColumnPeer`)**（只要垂直邻近 `<=450px` 存在左边缘对齐 `<=8px` 且非同宽同轴居中堆叠的兄弟块，强制 `isCentered=false` 锚定 `baseRect.x`）+ 满宽行禁居中门限；对称扩大纯色大留白居中探测半径至 `240px` 并新增低反差纯色容器边缘检测（`complexity<=4.0f` 全列 `>=88%` 跃变 `>=14`）与 1px UI 按钮/表格细边框刹车（`complexity<=7.5f` 全列 `>=70%` 偏离 `>=26`）。
+  2. **擦除残渣「毛边」与单行渲染「腰斩截底」（NYTimes 顶栏 / 图表 / 侧边栏 / Yahoo Logo）**：
+     - *根因*：① `eraseParagraphBackground` 硬编码 `padX=2, padY=1`，无法覆盖 OCR 紧包框漏掉的首尾字母外延墨水（如 `W` 左撇、`B` 竖杆、`e` 右缘、`!` 感叹号）；② 单行渲染用含 35% 透明 leading 的 `DWRITE_TEXT_METRICS.height` 死卡 OCR 紧包框，导致英文译中文系统性缩水 25% 且字形下缘被 `PushAxisAlignedClip` 截断；
+     - *根治*：纯色/渐变背景全面升级为 **4 向像素级墨水连通封顶擦除 (`computeInkSealedEraseRect`)**（受障碍物硬界与贯穿型竖/横边框墙刹车保护，自动吸收首尾外延残墨至纯背景空白封顶，既 100% 清零毛边又零误伤下拉箭头 `v`、文件夹图标与表格线）；单行 `fitParagraphTextLayout` 改用可见墨水高度 `min(m.height, fontPx * 1.02f)` 判定溢出，`renderParagraphOntoBgr` 通过 `IDWriteTextLayout::GetLineMetrics` 将可见字形墨水中轴精确对齐原图 `(inkTopY + inkBottomY) * 0.5f`，并借用上下最多 4px 洁净透明缓冲垫（`alpha=0` 零污染背景）彻底杜绝截底。
+  3. **多行大标题字号/字重腰斩 + DirectWrite 双重行高虚胖截断**：
+     - *根因*：① `renderTranslatedCanvas` 原先传 `sampleRect = lineRects.front()` 却误传整段多行 `para.originalText` 与全段 `para.charBoxes` 给 `TextReplaceEngine::extractStyle`，致 `emFromW` 被严重拉低、所有多行大标题缩成小细字；② 多行布局调用 `SetLineSpacing(PROPORTIONAL, 1.24f)` 叠乘雅黑自带 `1.34x` 变成荒诞 `1.66x` 行距，致双行紧凑卡片标题被冤枉判定溢出而打省略号丢字；
+     - *根治*：`TranslationParagraph` 新增逐行 `lineTexts` / `lineCharBoxes`，`extractParagraphStyle` 逐行独立采样取稳健中位数 + 施加几何行高物理上限（`<=1.06x`，短徽章 `<=0.94x` 杜绝图标污染变巨无霸）+ 英文->CJK 克制视觉等高补偿 + **同列未翻译原生目标语兄弟行字号标尺** + 层级保护字号归一；多行行距切换为确定性 `DWRITE_LINE_SPACING_METHOD_UNIFORM(fontPx * 1.22f, fontPx * 0.96f)`；复杂照片背景圆角托底改贴实际排版文字包围盒消除长黑尾巴。
+  4. **多栏卡片穿插撕裂 + 居中多行标题分裂 + 眉标误吞 + 照片背景误断**：
+     - *根治*：`buildTranslationParagraphs` 由仅查 `result.back()` 升级为同 `layoutRegionId` 内倒序回溯近 12 段寻找最佳父段；`canMergeIntoParagraph` 新增同中轴居中多行标题合并（`preferCentered=true`）与全大写短眉标防火墙（`OPINION` 绝不向下吞并大标题）；`hasVisualSeamBetween` 对高方差照片纹理背景（`stdDev > 18`）自动免疫背景跳变、小字全行逐行中位数前景采样防 JPEG 噪点误断。
+  5. **同行尾部时间戳剥离 + 微重叠去重 + 次级灰字无损保色 + 噪声防火墙**：
+     - *根治*：预处理自动剥离同行尾部独立紧凑时间戳（如 `...Artwork C...  8d` 剥出 `8d` 写入 `detachedObstacleRects` 自动避障）与 OCR 切片微重叠前缀（如 `...Voted` + `ed  Precinct Maps`）；`ensureReadableTextBgr` 保色阈值由 `0.32f -> 0.16f` 并在低对比时温和插值推升至 `0.28f`（根治深色模式次级灰字变刺眼纯白）；`looksLikeIdentifierOrSerialCode` 增补首字母大写产品名+尾数字（`Tools3000`/`Win11`，排除小写 `for2026`），`isTranslatableText` 拦截无多字母单词的孤立单字母噪声/坐标（`"Q"`/`"s"`/`"257 D, 178 R"`）。
+  6. **合规翻译回归样本集入库 (`tests/fixtures/translate/`)**：
+     - 严格剔除含真实服务器 IP 与账密的 Postman 截图并清理临时产物，归档 9 张涵盖暗色侧边栏、NYTimes、Yahoo、SAP B1、Hacker News、AlternativeTo、暗色技术文档、云联管理端与工业装箱卡的合规测试原图及说明文档，并在 `tests/unit/test_capture.inc` 新增回归断言 2.10~2.12 与全 8 场景实图验收闭环。
+
 ### [2026-11-23] 应用内一键更新「点安装闪退且版本未升」根治（`taskkill /t` 进程树自爆 + `skipifsilent` 不重启）
 - **实机黑匣子根因（100% 日志实锤）**：
   1. **安装器递归强杀自己 (`installer.iss` `StopAndKillAllTools3000ProcessesForDir`)**：当旧版 `Tools3000.exe` 以管理员身份运行时，点击「立即安装」直接派生子进程 `Setup.exe -> Setup.tmp`（父进程树 `Tools3000.exe -> Setup.exe -> Setup.tmp`）；1 秒后安装器在 `PrepareToInstall` 向主程序发 `WM_CLOSE` 后仅 `Sleep(30)`（主程序优雅退出约需 258ms），随即执行 **`taskkill /f /t /im Tools3000.exe`**，`/t` 沿父子进程树递归把安装程序自身连同旧版进程一起当场强杀自爆，文件一字节未覆盖，用户体感为“点安装直接闪退”；

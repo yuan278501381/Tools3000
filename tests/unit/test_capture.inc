@@ -15173,6 +15173,108 @@ TEST(InPlaceTranslateEngineTest, ParagraphClusteringNoiseFilterAndNonDestructive
         EXPECT_EQ(hnRes.paragraphs[0].renderedRect.x, 120);
     }
 
+    // 2.10. 格式塔左对齐列守恒 + 满宽行禁居中 + 尾部时间戳剥离 + 产品名/单字母噪声防火墙回归
+    {
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Tools3000"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Win11"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Q"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("257 D, 178 R"));
+        EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("for2026"));
+
+        // 侧边栏粘连时间戳剥离 + 满宽行严守左对齐（即使左右距画布对称也绝不飘居中！）
+        std::vector<PinOcrBlock> sideBlocks;
+        sideBlocks.push_back(PinOcrBlock{"Pinned Conversations", cv::Rect(8, 22, 116, 14), {}, 0, 0});
+        sideBlocks.push_back(PinOcrBlock{"Database Optimization And SAP Upgrade", cv::Rect(9, 70, 237, 15), {}, 0, 1});
+        sideBlocks.push_back(PinOcrBlock{
+            "Bilibili Video Prompt Extraction And Artwork C...  8d",
+            cv::Rect(10, 120, 294, 15), {}, 0, 2});
+
+        auto sideParas = InPlaceTranslateEngine::buildTranslationParagraphs(sideBlocks, cv::Size(317, 200));
+        ASSERT_EQ(sideParas.size(), 3u);
+        EXPECT_EQ(sideParas[2].originalText, "Bilibili Video Prompt Extraction And Artwork C...");
+        ASSERT_EQ(sideParas[2].detachedObstacleRects.size(), 1u);
+
+        cv::Mat darkSidebar(200, 317, CV_8UC3, cv::Scalar(71, 60, 57));
+        sideParas[0].translatedText = "固定对话";
+        sideParas[1].translatedText = "数据库优化与SAP升级";
+        sideParas[2].translatedText = "哔哩哔哩视频提示提取";
+        const auto sideRes = InPlaceTranslateEngine::renderTranslatedCanvas(darkSidebar, sideParas, "zh-CN");
+        ASSERT_TRUE(sideRes.success);
+        ASSERT_EQ(sideRes.paragraphs.size(), 3u);
+        // 红框满宽行绝不飘到画布正中，严格锚定原左边缘，且绝不向右踩踏剥离出的 8d 区域！
+        EXPECT_EQ(sideRes.paragraphs[2].renderedRect.x, sideParas[2].unionRect.x);
+        EXPECT_LE(sideRes.paragraphs[2].renderedRect.x + sideRes.paragraphs[2].renderedRect.width,
+                  sideParas[2].detachedObstacleRects[0].x);
+    }
+
+    // 2.11. 4向像素级墨水连通封顶擦除防毛边 + 深色次级灰字不拉成刺眼纯白回归
+    {
+        // 白底上模拟 OCR 框漏掉左侧 W 左撇 (3px) 与右侧 e 残边 (3px)，且右侧 10px 处有独立下拉图标
+        cv::Mat navCanvas(60, 220, CV_8UC3, cv::Scalar(255, 255, 255));
+        cv::rectangle(navCanvas, cv::Rect(77, 22, 3, 8), cv::Scalar(40, 40, 40), cv::FILLED);   // 漏在框左外的 W 撇
+        cv::rectangle(navCanvas, cv::Rect(80, 20, 24, 12), cv::Scalar(50, 50, 50), cv::FILLED); // 框内文字主体
+        cv::rectangle(navCanvas, cv::Rect(104, 22, 3, 8), cv::Scalar(40, 40, 40), cv::FILLED);  // 漏在框右外的 d 缘
+        cv::rectangle(navCanvas, cv::Rect(114, 24, 5, 4), cv::Scalar(40, 40, 40), cv::FILLED);  // 右侧独立下拉箭头 v
+
+        TranslationParagraph navItem{};
+        navItem.unionRect = cv::Rect(80, 19, 24, 14);
+        navItem.lineRects = {navItem.unionRect};
+        navItem.lineTexts = {"World"};
+        navItem.lineCharBoxes = {{}};
+        navItem.isSingleLine = true;
+        navItem.originalText = "World";
+        navItem.translatedText = "世界";
+
+        const auto navRes = InPlaceTranslateEngine::renderTranslatedCanvas(navCanvas, {navItem}, "zh-CN");
+        ASSERT_TRUE(navRes.success);
+        // 框左外侧 x=77..79 的漏框残渣必须 100% 擦净归零（回归纯白底），右侧独立箭头 x=114..118 必须完好无损！
+        EXPECT_GT(navRes.translatedCanvas.at<cv::Vec3b>(25, 78)[0], 240);
+        EXPECT_LT(navRes.translatedCanvas.at<cv::Vec3b>(25, 116)[0], 80);
+
+        // 深色模式次级柔和灰字（contrast≈0.24）绝不能被暴力拉成刺眼纯白 (>220)
+        cv::Mat darkCard(60, 220, CV_8UC3, cv::Scalar(71, 60, 57));
+        cv::putText(darkCard, "Pinned", cv::Point(16, 36), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(137, 127, 124), 1);
+        TranslationParagraph muted{};
+        muted.unionRect = cv::Rect(14, 20, 68, 18);
+        muted.lineRects = {muted.unionRect};
+        muted.lineTexts = {"Pinned"};
+        muted.lineCharBoxes = {{}};
+        muted.isSingleLine = true;
+        muted.originalText = "Pinned";
+        muted.translatedText = "固定";
+        const auto darkRes = InPlaceTranslateEngine::renderTranslatedCanvas(darkCard, {muted}, "zh-CN");
+        ASSERT_TRUE(darkRes.success);
+        cv::Mat renderedPatch = darkRes.translatedCanvas(darkRes.paragraphs[0].renderedRect);
+        double minVal = 0.0, maxVal = 0.0;
+        cv::minMaxLoc(renderedPatch.reshape(1), &minVal, &maxVal);
+        EXPECT_LT(maxVal, 210.0); // 保留原柔和灰调，绝不跳变成 245 刺眼纯白
+    }
+
+    // 2.12. 多栏并排卡片回溯聚类 + 居中双行标题合并 + 全大写眉标防火墙回归
+    {
+        std::vector<PinOcrBlock> multiCol;
+        // 同一 layoutRegionId 中左右并排两张卡片按 Y 交替出现
+        multiCol.push_back(PinOcrBlock{"The best early Black", cv::Rect(40, 20, 120, 14), {}, 1, 0});
+        multiCol.push_back(PinOcrBlock{"The 4 p.m. rule helps", cv::Rect(200, 20, 120, 14), {}, 1, 0});
+        multiCol.push_back(PinOcrBlock{"Friday deals to grab", cv::Rect(40, 36, 122, 14), {}, 1, 1});
+        multiCol.push_back(PinOcrBlock{"keep your home warm", cv::Rect(200, 36, 118, 14), {}, 1, 1});
+        // 居中双行图表标题（中心点都在 x=500，但左边缘相差 30px）
+        multiCol.push_back(PinOcrBlock{"Seat margin in the", cv::Rect(450, 20, 100, 16), {}, 2, 2});
+        multiCol.push_back(PinOcrBlock{"U.S. House of Representatives", cv::Rect(420, 38, 160, 15), {}, 2, 3});
+        // 全大写短眉标 OPINION 绝不向下吞并大标题
+        multiCol.push_back(PinOcrBlock{"OPINION", cv::Rect(40, 110, 42, 12), {}, 3, 4});
+        multiCol.push_back(PinOcrBlock{"Set Up a Password Manager", cv::Rect(40, 124, 190, 16), {}, 3, 5});
+
+        const auto paras = InPlaceTranslateEngine::buildTranslationParagraphs(multiCol, cv::Size(640, 200));
+        ASSERT_EQ(paras.size(), 5u);
+        EXPECT_EQ(paras[0].lineRects.size(), 2u);
+        EXPECT_EQ(paras[1].lineRects.size(), 2u);
+        EXPECT_EQ(paras[2].lineRects.size(), 2u);
+        EXPECT_TRUE(paras[2].preferCentered);
+        EXPECT_EQ(paras[3].originalText, "OPINION");
+        EXPECT_EQ(paras[4].originalText, "Set Up a Password Manager");
+    }
+
     // 3. 贴图快捷键与右键菜单直达动作回归
     const auto trKey = PinInputController::resolveKeyDown('T', true, true, false, false);
     EXPECT_EQ(trKey.action, PinShortcutAction::TranslateInPlace);
@@ -15252,6 +15354,48 @@ TEST(InPlaceTranslateEngineTest, LiveImageVisualQaWhenEnvSet) {
               << " target=" << batchRes.effectiveTargetLang
               << " provider=" << batchRes.providerUsed
               << " elapsedMs=" << batchRes.elapsedMs << "\n";
+
+    const char* verboseEnv = std::getenv("TOOLS3000_LIVE_TRANSLATE_QA_VERBOSE");
+    if (verboseEnv && *verboseEnv && std::string(verboseEnv) != "0") {
+        std::cout << "[QA-BLOCKS] img=" << src.cols << "x" << src.rows << "\n";
+        for (size_t i = 0; i < blocks.size(); ++i) {
+            const auto& b = blocks[i];
+            int maxCharGap = 0;
+            size_t maxGapIdx = 0;
+            for (size_t k = 1; k < b.charBoxes.size(); ++k) {
+                const int g = b.charBoxes[k].x - (b.charBoxes[k - 1].x + b.charBoxes[k - 1].width);
+                if (g > maxCharGap) {
+                    maxCharGap = g;
+                    maxGapIdx = k;
+                }
+            }
+            const auto st = TextReplaceEngine::extractStyle(src, b.origBox, b.charBoxes, b.text);
+            const cv::Vec3b bg = st.bgPlane.evalAt(
+                static_cast<float>(b.origBox.x) + b.origBox.width * 0.5f,
+                static_cast<float>(b.origBox.y) + b.origBox.height * 0.5f);
+            std::cout << "  B[" << i << "] rc=(" << b.origBox.x << "," << b.origBox.y << ","
+                      << b.origBox.width << "x" << b.origBox.height << ")"
+                      << " inkH=" << (st.inkBottomY - st.inkTopY)
+                      << " reg=" << b.layoutRegionId << " row=" << b.alignedRowId
+                      << " chars=" << b.charBoxes.size() << " maxGap=" << maxCharGap << "@" << maxGapIdx
+                      << " em=" << st.fontSizePx << " w=" << st.fontWeight
+                      << " fg=(" << (int)st.textBgr[0] << "," << (int)st.textBgr[1] << "," << (int)st.textBgr[2] << ")"
+                      << " bg=(" << (int)bg[0] << "," << (int)bg[1] << "," << (int)bg[2] << ")"
+                      << " tr=" << (InPlaceTranslateEngine::isTranslatableText(b.text) ? 1 : 0)
+                      << " txt=[" << b.text << "]\n";
+        }
+        std::cout << "[QA-PARAS]\n";
+        for (size_t i = 0; i < renderRes.paragraphs.size(); ++i) {
+            const auto& p = renderRes.paragraphs[i];
+            std::cout << "  P[" << i << "] union=(" << p.unionRect.x << "," << p.unionRect.y << ","
+                      << p.unionRect.width << "x" << p.unionRect.height << ")"
+                      << " rendered=(" << p.renderedRect.x << "," << p.renderedRect.y << ","
+                      << p.renderedRect.width << "x" << p.renderedRect.height << ")"
+                      << " single=" << (p.isSingleLine ? 1 : 0)
+                      << " lines=" << p.lineRects.size()
+                      << " orig=[" << p.originalText << "] -> trans=[" << p.translatedText << "]\n";
+        }
+    }
 }
 
 
