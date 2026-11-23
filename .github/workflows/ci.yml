@@ -1,0 +1,111 @@
+name: CI Quality Gates
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-and-static-gates:
+    name: Frontend, 9-Layer i18n & Static Gates
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: 'ui/package-lock.json'
+
+      - name: Verify version single source of truth
+        shell: pwsh
+        run: pwsh -NoProfile -File ./scripts/verify-version.ps1
+
+      - name: Install UI dependencies
+        working-directory: ui
+        run: npm ci
+
+      - name: Run ESLint & 7 repository-wide static gates (i18n / logger / CSS / typography / path encoding)
+        working-directory: ui
+        run: npm run lint
+
+      - name: Run TypeScript strict typecheck
+        working-directory: ui
+        run: npx tsc -b
+
+      - name: Run Vitest unit & component suite
+        working-directory: ui
+        run: npm test
+
+      - name: Build production UI bundle & validate HTML
+        working-directory: ui
+        run: npm run build
+
+  rust-cli-and-mcp:
+    name: Rust CLI, MCP Server & Cross-Arch Verification
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-x64-mcp-introspection
+          - os: windows-latest
+            label: windows-x64-and-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            src/cli
+            src/viewer
+
+      - name: Test & build tools3000-cli MCP server (-D warnings)
+        shell: pwsh
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          cargo test --manifest-path src/cli/Cargo.toml
+          cargo build --release --manifest-path src/cli/Cargo.toml
+
+      - name: Verify live MCP stdio introspection handshake
+        shell: pwsh
+        run: |
+          $exe = if ($IsWindows) { "src/cli/target/release/tools3000-cli.exe" } else { "src/cli/target/release/tools3000-cli" }
+          $reqs = @(
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}',
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+            '{"jsonrpc":"2.0","id":3,"method":"resources/list"}',
+            '{"jsonrpc":"2.0","id":4,"method":"prompts/list"}'
+          ) -join "`n"
+          $out = @($reqs | & $exe mcp)
+          if ($out.Count -ne 4) { throw "Expected 4 MCP responses, got $($out.Count)" }
+          Write-Host "[OK] MCP stdio introspection verified ($($out.Count) responses)."
+
+      - name: Verify Windows ARM64 (aarch64-pc-windows-msvc) native compilation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          rustup target add aarch64-pc-windows-msvc
+          cargo build --release --manifest-path src/cli/Cargo.toml --target aarch64-pc-windows-msvc
+          cargo check --manifest-path src/viewer/Cargo.toml --target aarch64-pc-windows-msvc
+          Write-Host "[OK] Windows ARM64 build & check succeeded."

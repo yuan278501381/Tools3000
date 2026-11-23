@@ -1,29 +1,24 @@
-name: 'Tools3000 CI & Manual Release Pipeline'
+name: 'Tools3000 Manual Cloud Release Pipeline'
 
 # 权威发版源约定 (D-03):
-# 正式版本以本地 scripts/release.ps1 权威签名构建与发布为准。
-# 严禁监听 push.tags 自动触发云端打包上传，彻底杜绝本地 git push --tags 后被云端未签名构建覆盖正式版资产。
-'on':
-  push:
-    branches:
-      - 'main'
-      - 'master'
-  pull_request:
-    branches:
-      - 'main'
-      - 'master'
-    paths-ignore:
-      - '**.md'
-      - 'docs/**'
-      - 'LICENSE'
-      - '.gitignore'
+# 正式版本以本地 scripts/release.ps1 权威签名构建与发布为准；日常 Push / PR 门禁由 ci.yml 快速执行。
+# 本流水线仅保留 workflow_dispatch 按需手动触发（含 Azure Trusted Signing / SignPath 云签名备用通道）。
+on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Manual Release Version (e.g. 1.2.0, leave empty to read VERSION)'
+        description: 'Manual Release Version (e.g. 1.4.5, leave empty to read VERSION)'
         required: false
         default: ''
         type: string
+      arch:
+        description: 'Target Windows Architecture (x64 or arm64)'
+        required: false
+        default: 'x64'
+        type: choice
+        options:
+          - 'x64'
+          - 'arm64'
       publish_release:
         description: 'Publish GitHub Release assets (manual fallback only)'
         required: false
@@ -37,20 +32,19 @@ name: 'Tools3000 CI & Manual Release Pipeline'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
   build-and-verify:
-    name: Build, Test & Verify (Manual Release Optional)
+    name: Build, Sign & Verify (Manual Cloud Release)
     runs-on: windows-latest
     permissions:
       contents: write
       id-token: write
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-archives
       SCCACHE_GHA_ENABLED: 'true'
 
     steps:
@@ -120,9 +114,13 @@ jobs:
         shell: pwsh
 
       - name: Build Frontend, C++ Core & Stage deploy_dist (Pre-Installer)
+        env:
+          TARGET_ARCH: ${{ inputs.arch }}
         run: |
-          $QuickArg = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { @() } else { @("-Quick") }
-          pwsh -File .\deploy.ps1 -Configuration Release @QuickArg -SkipTests -SkipInstaller
+          $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:RUNNER_TEMP "vcpkg-archives"
+          New-Item -ItemType Directory -Path $env:VCPKG_DEFAULT_BINARY_CACHE -Force | Out-Null
+          $ArchVal = if ($env:TARGET_ARCH -eq "arm64") { "arm64" } else { "x64" }
+          pwsh -File .\deploy.ps1 -Configuration Release -Arch $ArchVal -SkipTests -SkipInstaller
         shell: pwsh
 
       - name: Run C++ Native Unit Tests (Headless Adapted)

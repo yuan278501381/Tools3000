@@ -1,4 +1,32 @@
-# Tools3000 v1.4.5 官方正式版发布说明
+# Tools3000 v1.4.5 Release Notes | 官方正式版发布说明
+
+**[English](#english-release-highlights)** · **[简体中文说明](#本次重点新功能与体验升级)** · **[SHA-256 & VirusTotal](#文件完整性校验与安全查验-sha-256--virustotal)**
+
+---
+
+## English Release Highlights
+
+Welcome to **Tools3000 v1.4.5** (compared against **v1.4.4**). Shaped directly by community feedback, this release introduces a brand-new native **Text Expander** module, **drag-and-drop direct paste** in Clipboard History, a **Saved & Historical Capture Region Manager**, **120Hz+ hardware-composited pin zoom**, and unified navigation across Settings and Tray:
+
+1. **New First-Class Module: Text Expander** *(thanks to Reddit r/windowsapps @redchrism, @iquizuanswer)*
+   - Type short triggers (e.g. `;mail`, `;sig`, `;date`) in any app to expand static snippets or dynamic macros (date/time, clipboard reference, cursor placement) instantly.
+   - Enabled out of the box with zero idle bloat (unhooks completely when disabled), automatic exclusion of password managers (KeePass, 1Password, Bitwarden, Enpass, LastPass, RoboForm, Dashlane) and RDP windows, zero clipboard history pollution, JSON import/export, and a live test sandbox in Settings.
+2. **Clipboard History (`Alt + V`) Drag-Paste, Category Cleanliness & Active-App Tracking** *(thanks to Linux.do @宫灵紫凝)*
+   - **Drag-to-Paste Without Closing**: Drag any clipboard card directly into editors, AI chat inputs, or browser address bars while keeping the clipboard panel open for consecutive drops.
+   - **Hide Pinned Items in Other Tabs**: Optional toggle to keep pinned items exclusively inside the `Pinned` tab so they don't crowd `All / Text / Images / Files / Colors`.
+   - **Live Target Tracking When Pinned**: Switching from App A to App B while the clipboard window is pinned now pastes accurately into App B.
+   - **Fixes**: Resolved occasional multi-press `Alt + V` summon issues, delayed top-of-list refresh on newly copied items, and unresponsive click-to-paste after `Ctrl + A` or taking screenshots (`Esc` now exits hierarchically: edit -> clear multi-select -> close).
+3. **Historical & Fixed Capture Region Manager** *(thanks to Linux.do @宫灵紫凝)*
+   - Press `R` / `Shift + R` inside capture mode to cycle recent capture regions (configurable `0–50` persistent history & customizable cycle key), or press the new global shortcut **`Shift + F1` (`Repeat Last Capture`)** to jump straight into your previous region.
+   - New **Region Manager** in `Settings -> Capture & Record`: pin fixed regions (never evicted), rename, fine-tune `X / Y / W / H` pixels, add centered presets (`1280×720`, `1920×1080`, `1080×1080`, `800×600`), or trigger a capture directly from any saved region.
+4. **120Hz+ Silky-Smooth Desktop Pin Wheel Zoom (`F3`)**
+   - Re-engineered wheel zoom with a GPU hardware-composited zoom stage, eliminating window resize jitter and edge flicker across high-DPI multi-monitor setups.
+5. **Unified Update Badges, Non-Truncated 3-Section Tray & Consistent Menu Order**
+   - Update notification dot now syncs across the system tray icon, tray top banner, and Settings `About` tab (with one-click `Ignore this version`); upgraded Tray Control Center to a rigid 3-section layout so bottom actions are never clipped; unified module ordering across Sidebar, Modules page, and Tray.
+
+**Upgrade**: In-app via `Settings -> About -> Check for Updates`, overwrite with `Tools3000-v1.4.5-Setup.exe` / `Tools3000-v1.4.5-win-x64-portable.zip`, or run `scoop update tools3000`.
+
+---
 
 欢迎升级至 **Tools3000 v1.4.5**。本版本基于 **v1.4.4**，围绕社区用户的真实高频反馈带来了全新一级模块 **「文本扩展器（Text Expander）」**、**剪贴板拖拽直贴与置顶切窗跟随**、**截图历史选区记忆与固定选区管理工作台**、**桌面贴图电影级顺滑滚轮缩放**，以及 **三端更新红点联动、托盘三段式防截断重构与三端菜单有序重排**。
 

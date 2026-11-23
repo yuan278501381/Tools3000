@@ -1,59 +1,60 @@
-name: 问题反馈 / Bug Report
-description: 反馈在使用 Tools3000 过程中遇到的异常、崩溃、识别/录制偏差或兼容性问题
+name: Bug Report / 问题反馈
+description: Report a bug, crash, DPI/multi-monitor glitch, or compatibility issue / 反馈异常、崩溃或兼容性问题
 title: "[Bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        感谢您反馈问题！越清晰的复现信息与环境参数，越有助于快速定位并修复。
+        Thank you for reporting an issue! Clear reproduction steps help us fix it quickly. (Tip: You can also export a privacy-scrubbed diagnostic bundle directly from **Settings -> Feedback** inside Tools3000.)
+        感谢反馈问题！清晰的复现步骤有助于快速定位修复（也可直接在软件左下角「问题反馈」导出自动脱敏诊断包）。
   - type: textarea
     id: description
     attributes:
-      label: 问题描述
-      description: 简述您遇到的现象，以及您期望的正常行为
-      placeholder: 例如：在 4K 200% 缩放副屏上按 F1 截图时，放大镜偏移约 10px...
+      label: Problem Description / 问题描述
+      description: What happened vs. what you expected / 简述实际现象与期望的正常行为
+      placeholder: e.g. Magnifier offset by 10px on secondary 4K 200% display when pressing F1...
     validations:
       required: true
   - type: textarea
     id: steps
     attributes:
-      label: 复现步骤
-      description: 请按顺序列出最小复现步骤
+      label: Steps to Reproduce / 复现步骤
+      description: Minimal steps to trigger the issue / 按顺序列出最小复现步骤
       placeholder: |
-        1. 打开 ...
-        2. 按下快捷键 ...
-        3. 观察到 ...
+        1. Open ...
+        2. Press ...
+        3. Observe ...
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Tools3000 版本
-      description: 可在「设置 -> 关于」查看
-      placeholder: 例如：v1.0.11（标准安装版 / 便携版 / Scoop）
+      label: Tools3000 Version / 软件版本
+      description: Visible under Settings -> About / 可在「设置 -> 关于」查看
+      placeholder: e.g. v1.4.5 (Installer / Portable / Scoop / Winget)
     validations:
       required: true
   - type: dropdown
     id: os
     attributes:
-      label: 操作系统与架构
+      label: Windows Version & Architecture / 系统与架构
       options:
         - Windows 11 (x64)
         - Windows 11 (ARM64)
         - Windows 10 (x64)
         - Windows Server 2019 / 2022 / 2025
-        - 其他
+        - Other / 其他
     validations:
       required: true
   - type: input
     id: display
     attributes:
-      label: 显示器分辨率与缩放比例（如涉及界面/截图/录屏）
-      placeholder: 例如：主屏 3456x2160 200%，副屏 1920x1080 100%
+      label: Display & DPI Scaling / 分辨率与缩放比例 (Optional)
+      placeholder: e.g. Primary 3840x2160 @ 200%, Secondary 1920x1080 @ 100%
   - type: textarea
     id: logs
     attributes:
-      label: 截图 / 诊断日志（可选）
-      description: 可在「设置 -> 通用设置 -> 日志目录」中找到最近日志并脱敏后粘贴
+      label: Logs or Screenshots / 诊断日志或截图 (Optional)
+      description: Paste relevant lines from %LOCALAPPDATA%\Tools3000\logs\tools3000.log (or attach screenshots)
       render: text

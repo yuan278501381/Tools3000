@@ -9,13 +9,15 @@
 **English** · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/yuan278501381/Tools3000/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/yuan278501381/Tools3000/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
+[![Glama MCP](https://glama.ai/mcp/servers/yuan278501381/Tools3000/badges/score.svg)](https://glama.ai/mcp/servers/yuan278501381/Tools3000)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#download--install)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#download--install)
 [![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
 
-**[Download Latest](#download--install)** · [At a Glance](#at-a-glance) · [Live Demos](#live-feature-demos) · [Security & Trust](#security-verification--trust) · [Why Tools3000](#why-i-built-tools3000) · [What It Replaces](#what-it-replaces) · [Contribute](#feedback--co-creation) · [Developer Guide](docs/DEVELOPER.md)
+**[Official Website](https://yuan278501381.github.io/Tools3000/)** · **[Download Latest](#download--install)** · [At a Glance](#at-a-glance) · [Live Demos](#live-feature-demos) · [Security & Trust](#security-verification--trust) · [Why Tools3000](#why-i-built-tools3000) · [What It Replaces](#what-it-replaces) · [Contribute](#feedback--co-creation) · [Developer Guide](docs/DEVELOPER.md)
 
 </div>
 
@@ -249,6 +251,6 @@ Full compatibility with install folders and Windows usernames containing Chinese
 
 ## Documentation & License
 
-- **Development & Security**: Build instructions, architecture, plugin SDK, and Lua scripting are in the **[Developer Guide](docs/DEVELOPER.md)**; security policy in **[SECURITY.md](SECURITY.md)**; release history on **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
+- **Development, Privacy & Security**: Contribution guide in **[CONTRIBUTING.md](CONTRIBUTING.md)**; build & architecture in **[Developer Guide](docs/DEVELOPER.md)**; zero-telemetry privacy policy in **[PRIVACY.md](PRIVACY.md)**; security policy in **[SECURITY.md](SECURITY.md)**; release history on **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
 - **License**: Released under the **[GNU GPL v3.0](LICENSE)** (with [Windows / WebView2 Linking Exception](LICENSE-EXCEPTION.md)).
 - **Copyright**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

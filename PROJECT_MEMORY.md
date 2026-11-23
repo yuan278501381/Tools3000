@@ -6,6 +6,12 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 万星开源项目全维基建落地：全绿 CI、Dependabot、社区治理五件套、中英双语 GitHub Pages 官网、Winget 官方源 PR 与 Glama 绿灯
+- **工程与增长基建闭环**：
+  1. **修复历史红叉工作流并建立全绿门禁 (`.github/workflows/ci.yml`, `release.yml`, `dependabot.yml`)**：定位并修复 `release.yml` 第 53 行 Job 级 `env` 非法引用 `runner.temp` 导致每次 Push 0s 失败的缺陷，将其收敛为手动云发版备用通道（含 `x64`/`arm64` 选项）；新建 `ci.yml` 守护每次 Push/PR（Ubuntu 前端 ESLint + 7 大全库静态门禁 + `tsc -b` + Vitest 267 项 + Linux/Windows x64/ARM64 Rust CLI & MCP 实机自省测试）；配置 `dependabot.yml` 覆盖 `/ui`、4 个 Rust Cargo 目录与 GitHub Actions。
+  2. **开源治理与 SignPath 合规五件套 + 根目录净化**：新增 `CONTRIBUTING.md`、`CODE_OF_CONDUCT.md`、`PRIVACY.md`（SignPath Foundation 免费代码签名要求的正式零遥测隐私承诺）、`.github/PULL_REQUEST_TEMPLATE.md` 及中英双语 Issue 模板；将根目录历史过程文档（`PROJECT.md`、`task.md`、`TEST_INFRA.md`、`TEST_READY.md`、`release_notes_v1.md`）归档至 `docs/archive/`；开启仓库 GitHub Discussions、关闭空置 Wiki，更新 `v1.4.5` Release Notes 为中英双语。
+  3. **官方双语静态站 + 1280x640 社交卡片 + 微软官方 Winget PR + Glama 收录**：上线零构建负担的中英自适应微晶官网 `docs/site/index.html` 与 `.github/workflows/pages.yml`（`https://yuan278501381.github.io/Tools3000/`）；生成 2x 超采样 `docs/images/social-preview-1280x640.png` 与 30 秒 1080p 宣传短片；通过 `wingetcreate submit` 正式向 `microsoft/winget-pkgs` 提交 `PR #487469`；`punkpeye/awesome-mcp-servers` `PR #20489` 通过 Glama 评测并获 `has-glama` 绿标。
+
 ### [2026-11-24] 国际化文档拓扑升级：主 README 切换为英文，简体中文沉淀为 README.zh-CN.md
 - **架构决策**：为最大化 GitHub 全球检索、Glama MCP Registry (`Overview` 默认读取根目录 `README.md`)、Awesome Lists 及海外开发社区转化率，采用开源全球化标准文档布局：
   - 根目录 `README.md` 为**完整英文版**（顶部导航首位 `English`，次位醒目 `[简体中文](README.zh-CN.md)`）；

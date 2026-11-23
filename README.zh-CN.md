@@ -9,13 +9,15 @@
 [English](README.md) · **简体中文** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/yuan278501381/Tools3000/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/yuan278501381/Tools3000/actions/workflows/ci.yml)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
+[![Glama MCP](https://glama.ai/mcp/servers/yuan278501381/Tools3000/badges/score.svg)](https://glama.ai/mcp/servers/yuan278501381/Tools3000)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#安装与下载)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#安装与下载)
 [![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
 
-**[立即下载最新版本](#安装与下载)** · [核心功能一览](#核心功能一览) · [全功能演示](#全功能动态演示) · [安全与校验](#安全校验与信任说明) · [开发初衷](#开发初衷) · [一软替代清单](#一软替代清单) · [参与共创](#参与共创与反馈) · [开发者指南](docs/DEVELOPER.md)
+**[项目官网](https://yuan278501381.github.io/Tools3000/)** · **[立即下载最新版本](#安装与下载)** · [核心功能一览](#核心功能一览) · [全功能演示](#全功能动态演示) · [安全与校验](#安全校验与信任说明) · [开发初衷](#开发初衷) · [一软替代清单](#一软替代清单) · [参与共创](#参与共创与反馈) · [开发者指南](docs/DEVELOPER.md)
 
 </div>
 
@@ -250,6 +252,6 @@ scoop install tools3000/tools3000
 
 ## 文档与许可
 
-- **开发与安全**：源码编译、插件 SDK、Lua 扩展见 **[开发者指南](docs/DEVELOPER.md)**，安全验证与漏洞披露见 **[SECURITY.md](SECURITY.md)**，版本变更见 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
+- **开发、隐私与安全**：贡献指南见 **[CONTRIBUTING.md](CONTRIBUTING.md)**，源码编译与插件扩展见 **[开发者指南](docs/DEVELOPER.md)**，零遥测隐私承诺见 **[PRIVACY.md](PRIVACY.md)**，安全披露见 **[SECURITY.md](SECURITY.md)**，版本变更见 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
 - **开源协议**：本项目基于 **[GNU GPL v3.0](LICENSE)** 开源（附 [Windows / WebView2 链接豁免](LICENSE-EXCEPTION.md)）。
 - **版权声明**：`Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)
