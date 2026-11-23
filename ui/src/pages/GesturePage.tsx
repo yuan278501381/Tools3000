@@ -77,6 +77,8 @@ interface GestureState {
   showActionHint?: boolean;
   autoBypassFullscreen?: boolean;
   enableScribbleCancel?: boolean;
+  pauseCancelEnabled?: boolean;
+  pauseCancelMs?: number;
   targetMode?: 'underPointer' | 'foreground';
   initialTimeoutMs?: number;
   minSegmentDistance?: number;
@@ -170,6 +172,8 @@ export const GesturePage: FC = () => {
   const [minSegmentDistance, setMinSegmentDistance] = useState(24);
   const [shapeMatchThreshold, setShapeMatchThreshold] = useState(75);
   const [scribbleCancel, setScribbleCancel] = useState(true);
+  const [pauseCancelEnabled, setPauseCancelEnabled] = useState(false);
+  const [pauseCancelMs, setPauseCancelMs] = useState(700);
   const [triggerButton, setTriggerButton] = useState('right');
   const [trailColorMode, setTrailColorMode] = useState<'auto' | 'custom'>('auto');
   const [trailColor, setTrailColor] = useState('#3B82F6');
@@ -218,7 +222,21 @@ export const GesturePage: FC = () => {
         const key = BUILTIN_COMMAND_KEYS[action.builtinCmd ?? 0];
         return key ? tr(key) : '';
       }
-      case 3: return action.programPath ?? '';
+      case 3: {
+        const rawPath = (action.programPath ?? '').trim();
+        if (!rawPath) return '';
+        const stripped = rawPath.replace(/^["']|["']$/g, '');
+        const parts = stripped.split(/[\\/]/).filter(Boolean);
+        const exeName = parts.length > 0 ? parts[parts.length - 1] : stripped;
+        const mode = action.runMode ?? 'always_new';
+        if (mode === 'activate_or_run') {
+          return `[${t('gesture.runModeShortActivate' as never, 'Activate')}] ${exeName}`;
+        }
+        if (mode === 'toggle_or_run') {
+          return `[${t('gesture.runModeShortToggle' as never, 'Toggle')}] ${exeName}`;
+        }
+        return exeName;
+      }
       default: return '';
     }
   };
@@ -259,6 +277,8 @@ export const GesturePage: FC = () => {
         setShowActionHint(state.showActionHint ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
         setScribbleCancel(state.enableScribbleCancel ?? true);
+        setPauseCancelEnabled(state.pauseCancelEnabled ?? false);
+        setPauseCancelMs(state.pauseCancelMs ?? 700);
         setTargetMode(state.targetMode === 'foreground' ? 'foreground' : 'underPointer');
         setTrailColorMode(state.trailColorMode ?? 'auto');
         setTrailColor(state.trailColor ?? '#3B82F6');
@@ -784,6 +804,32 @@ export const GesturePage: FC = () => {
     }
   };
 
+  const handleTogglePauseCancel = async (checked: boolean) => {
+    setPauseCancelEnabled(checked);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { pauseCancelEnabled: checked });
+      if (!result.success) throw new Error(result.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setPauseCancelEnabled(!checked);
+      console.error('Failed to update pause cancel state:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
+  const handlePauseCancelMsChange = async (val: number) => {
+    const previous = pauseCancelMs;
+    const clamped = Math.max(400, Math.min(2000, Math.round(val)));
+    setPauseCancelMs(clamped);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', { pauseCancelMs: clamped });
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setPauseCancelMs(previous);
+      console.error('Failed to update gesture pauseCancelMs:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
   const handleTriggerChange = async (value: string) => {
     const previous = triggerButton;
     setTriggerButton(value);
@@ -845,6 +891,9 @@ export const GesturePage: FC = () => {
         m.action.name.toLowerCase().includes(q) ||
         locName.includes(q) ||
         (m.action.keyStroke || '').toLowerCase().includes(q) ||
+        (m.action.programPath || '').toLowerCase().includes(q) ||
+        (m.action.matchCmdLine || '').toLowerCase().includes(q) ||
+        (m.action.matchTitle || '').toLowerCase().includes(q) ||
         (m.action.description || '').toLowerCase().includes(q) ||
         locDesc.includes(q)
       );
@@ -1199,6 +1248,42 @@ export const GesturePage: FC = () => {
             checked={scribbleCancel}
             onChange={handleToggleScribbleCancel}
           />
+          <Toggle
+            id="gesture-pause-cancel"
+            label={t('gesture.pauseCancel' as never, 'Pause to Cancel')}
+            description={t(
+              'gesture.pauseCancelDesc' as never,
+              'Hold the cursor still briefly after starting a gesture to fade out and cancel without triggering any action or context menu',
+            )}
+            checked={pauseCancelEnabled}
+            onChange={handleTogglePauseCancel}
+          />
+          {pauseCancelEnabled && (
+            <SettingRow
+              label={t('gesture.pauseCancelMs' as never, 'Pause Cancel Delay')}
+              description={t(
+                'gesture.pauseCancelMsDesc' as never,
+                'How long the cursor must stay stationary during a stroke before auto-canceling (400-2000 ms)',
+              )}
+            >
+              <Select
+                id="gesture-pause-cancel-ms"
+                value={String(pauseCancelMs)}
+                onChange={(val) => void handlePauseCancelMsChange(Number(val))}
+                options={[
+                  { value: '400', label: t('gesture.pauseCancelMsFast' as never, '400 ms (Fast)') },
+                  { value: '550', label: t('gesture.pauseCancelMsQuick' as never, '550 ms (Quick)') },
+                  { value: '700', label: t('gesture.pauseCancelMsStandard' as never, '700 ms (Standard)') },
+                  { value: '1000', label: t('gesture.pauseCancelMsRelaxed' as never, '1000 ms (Relaxed)') },
+                  { value: '1500', label: t('gesture.pauseCancelMsLong' as never, '1500 ms (Long)') },
+                  { value: '2000', label: t('gesture.pauseCancelMsExtraLong' as never, '2000 ms (Extra Long)') },
+                  ...(![400, 550, 700, 1000, 1500, 2000].includes(pauseCancelMs)
+                    ? [{ value: String(pauseCancelMs), label: t('gesture.customMsUnit', '{{ms}} ms (Custom)', { ms: pauseCancelMs }) }]
+                    : []),
+                ]}
+              />
+            </SettingRow>
+          )}
           <SettingRow label={tr('gesture.triggerButton')} description={tr('gesture.triggerButtonDesc')}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '100%', maxWidth: '380px' }}>
               <Select
@@ -1553,13 +1638,24 @@ export const GesturePage: FC = () => {
                             <span className="gesture-table__col gesture-table__col--key">
                               {actionDetail(m.action) && (() => {
                                 const detailText = actionDetail(m.action);
+                                const tooltipDetail =
+                                  m.action.type === 3
+                                    ? [
+                                        detailText,
+                                        m.action.programPath,
+                                        m.action.matchCmdLine,
+                                        m.action.matchTitle,
+                                      ]
+                                        .filter((part): part is string => Boolean(part && part.trim()))
+                                        .join(' | ')
+                                    : detailText;
                                 const len = detailText.length;
                                 const fontSize = len >= 10 ? '0.83rem' : len >= 7 ? '0.85rem' : len >= 5 ? '0.88rem' : '0.92rem';
                                 return (
                                   <button
                                     type="button"
                                     className="gesture-detail-badge-btn"
-                                    title={t('gesture.editParamTip', 'Click to edit parameter: {{detail}}', { detail: detailText })}
+                                    title={t('gesture.editParamTip', 'Click to edit parameter: {{detail}}', { detail: tooltipDetail })}
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       openEditMapping(m, 'action_detail');

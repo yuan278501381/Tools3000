@@ -22,7 +22,9 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <functional>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -81,6 +83,12 @@ public:
     /// 初始化虚拟机并绑定 API。可重复调用 (重新构建干净的状态)。
     bool initialize();
 
+    /// 若虚拟机尚未初始化则按需惰性初始化；若已就绪则立即返回 true。
+    bool ensureInitialized();
+
+    /// 查询虚拟机当前是否处于已初始化就绪状态。
+    bool isInitialized() const;
+
     /// 释放虚拟机。
     void shutdown();
 
@@ -108,11 +116,29 @@ public:
     void revokePermissions(const std::string& scriptId);
     void revokeAllPermissions();
 
+    /// 供单元测试校验字节码 Chunk LRU 缓存状态
+    size_t chunkCacheSizeForTesting() const;
+    uint64_t chunkCacheHitsForTesting() const;
+
 private:
-    LuaEngine() = default;
-    ~LuaEngine() = default;
+    LuaEngine();
+    ~LuaEngine();
     LuaEngine(const LuaEngine&) = delete;
     LuaEngine& operator=(const LuaEngine&) = delete;
+
+    static constexpr size_t kChunkCacheCapacity = 64;
+
+    struct CachedChunkEntry {
+        uint64_t hash = 0;
+        std::string source;
+        sol::protected_function chunk;
+    };
+
+    bool initializeLocked();
+    void clearChunkCacheLocked() noexcept;
+    bool compileOrFetchChunkLocked(const std::string& script,
+                                   sol::protected_function& outChunk,
+                                   std::string& outError);
 
     // 在锁内执行已加载/编译好的可调用对象，统一错误处理与安全超时限制。
     bool runProtected(const std::function<sol::protected_function_result()>& fn,
@@ -135,8 +161,13 @@ private:
     void bindUi(sol::table& easy);
     void bindUrl(sol::table& easy);
 
+    // 重要：m_lua 必须声明在 m_chunkCacheLru 之前，确保析构时先释放 sol::protected_function 再销毁 lua_State
     std::unique_ptr<sol::state> m_lua;
-    std::mutex m_mutex;  // 保护虚拟机生命周期与脚本执行协调
+    std::list<CachedChunkEntry> m_chunkCacheLru;
+    std::unordered_map<uint64_t, std::list<CachedChunkEntry>::iterator> m_chunkCacheIndex;
+    uint64_t m_chunkCacheHits = 0;
+
+    mutable std::mutex m_mutex;  // 保护虚拟机生命周期、字节码缓存与脚本执行协调
     std::condition_variable m_execCv;
     bool m_executing = false;
     bool m_shutdownPending = false;

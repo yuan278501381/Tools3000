@@ -28,6 +28,7 @@ interface DialogConfig {
   perAppMemory: boolean;
   quickSwitch: boolean;
   ribbonEnabled: boolean;
+  inlineSearchEnabled: boolean;
   ribbonPosition: string;
 }
 
@@ -39,15 +40,18 @@ interface AppMemoryItem {
   lastUsedTimestamp: number;
 }
 
+const DEFAULT_DIALOG_CONFIG: DialogConfig = {
+  enabled: true,
+  perAppMemory: true,
+  quickSwitch: true,
+  ribbonEnabled: true,
+  inlineSearchEnabled: true,
+  ribbonPosition: 'top-right',
+};
+
 export const DialogEnhancerPage: FC = () => {
   const { t } = useTranslation();
-  const [config, setConfig] = useState<DialogConfig>({
-    enabled: true,
-    perAppMemory: true,
-    quickSwitch: true,
-    ribbonEnabled: true,
-    ribbonPosition: 'top-right',
-  });
+  const [config, setConfig] = useState<DialogConfig>(DEFAULT_DIALOG_CONFIG);
   const [favorites, setFavorites] = useState<string[]>([]);
   const [appMemories, setAppMemories] = useState<AppMemoryItem[]>([]);
   const [blacklist, setBlacklist] = useState<string[]>([]);
@@ -59,7 +63,7 @@ export const DialogEnhancerPage: FC = () => {
   useEffect(() => {
     let cancelled = false;
     Promise.allSettled([
-      bridgeRequest<DialogConfig>('dialog.getConfig'),
+      bridgeRequest<Partial<DialogConfig>>('dialog.getConfig'),
       bridgeRequest<Array<{ id: string; enabled: boolean; active: boolean }>>('plugins.getAll'),
       bridgeRequest<boolean>('config.get', { key: '/dialog/enabled' }),
       bridgeRequest<boolean>('config.get', { key: '/plugins/dialogenhancer/enabled' }),
@@ -70,8 +74,12 @@ export const DialogEnhancerPage: FC = () => {
       if (cancelled) return;
       let effectiveEnabled = true;
       if (cfgRes.status === 'fulfilled' && cfgRes.value) {
-        effectiveEnabled = cfgRes.value.enabled;
-        setConfig(cfgRes.value);
+        effectiveEnabled = typeof cfgRes.value.enabled === 'boolean' ? cfgRes.value.enabled : true;
+        setConfig({
+          ...DEFAULT_DIALOG_CONFIG,
+          ...cfgRes.value,
+          enabled: effectiveEnabled,
+        });
       } else {
         if (pluginsRes.status === 'fulfilled' && Array.isArray(pluginsRes.value)) {
           const item = pluginsRes.value.find((p) => p.id === 'dialogenhancer' || p.id === 'dialog_enhancer');
@@ -118,22 +126,32 @@ export const DialogEnhancerPage: FC = () => {
     const previous = config;
     const next = { ...config, ...patch };
     setConfig(next);
+
+    // P1 修复：总开关统一只通过 plugins.setEnabled 单次调度（后端内部自动同步 dialog.updateConfig 与插件热加载/卸载），
+    // 彻底消除先前先停用、再 setEnabled、再启用导致 3 次重复 dialog.updateConfig 的风暴。
     if (typeof patch.enabled === 'boolean') {
+      const { enabled, ...restPatch } = patch;
       try {
-        if (!patch.enabled) {
-          await bridgeRequest('dialog.updateConfig', { enabled: false }).catch(() => {});
-        }
-        const res = await bridgeRequest<{ success: boolean; restartRequired?: boolean }>('plugins.setEnabled', { id: 'dialogenhancer', enabled: patch.enabled });
-        if (patch.enabled) {
-          await bridgeRequest('dialog.updateConfig', patch as Record<string, unknown>);
+        const res = await bridgeRequest<{ success: boolean; restartRequired?: boolean }>(
+          'plugins.setEnabled',
+          { id: 'dialogenhancer', enabled }
+        );
+        if (enabled) {
+          if (Object.keys(restPatch).length > 0) {
+            await bridgeRequest('dialog.updateConfig', restPatch as Record<string, unknown>);
+          }
           const [cfgRes, favsRes, memsRes, blRes] = await Promise.allSettled([
-            bridgeRequest<DialogConfig>('dialog.getConfig'),
+            bridgeRequest<Partial<DialogConfig>>('dialog.getConfig'),
             bridgeRequest<string[]>('dialog.getFavorites'),
             bridgeRequest<AppMemoryItem[]>('dialog.getAppMemories'),
             bridgeRequest<string[]>('dialog.getBlacklist'),
           ]);
           if (cfgRes.status === 'fulfilled' && cfgRes.value) {
-            setConfig({ ...cfgRes.value, enabled: true });
+            setConfig({
+              ...DEFAULT_DIALOG_CONFIG,
+              ...cfgRes.value,
+              enabled: true,
+            });
           }
           if (favsRes.status === 'fulfilled' && Array.isArray(favsRes.value)) setFavorites(favsRes.value);
           if (memsRes.status === 'fulfilled' && Array.isArray(memsRes.value)) setAppMemories(memsRes.value);
@@ -152,6 +170,7 @@ export const DialogEnhancerPage: FC = () => {
       }
       return;
     }
+
     try {
       await bridgeRequest('dialog.updateConfig', patch as Record<string, unknown>);
     } catch {
@@ -171,14 +190,17 @@ export const DialogEnhancerPage: FC = () => {
     }
   };
 
+  // P1 修复：改用独立 dialog.browseDirectory IPC，彻底解除对 capture 插件的跨模块耦合
   const handleBrowseFavorite = async () => {
     try {
-      const dir = await bridgeRequest<string | null>('capture.browseDirectory');
+      const dir = await bridgeRequest<string | null>('dialog.browseDirectory');
       if (dir) {
         await handleAddFavorite(dir);
       }
     } catch (error) {
-      toast.error(t('capture.browseFailed'), { description: String(error) });
+      toast.error(t('dialog.browseFailed', 'Failed to select folder'), {
+        description: String(error),
+      });
     }
   };
 
@@ -285,7 +307,7 @@ export const DialogEnhancerPage: FC = () => {
         </Card>
       </SettingGroup>
 
-      {/* 2. 文件对话框顶部快捷工具条：总开关 + 从属选项 */}
+      {/* 2. 文件对话框快捷工具条与内嵌即搜 */}
       <SettingGroup title={t('dialog.ribbonGroup')} icon={<Sparkles size={18} />}>
         <Card>
           <Toggle
@@ -302,6 +324,17 @@ export const DialogEnhancerPage: FC = () => {
           >
             <div className="dialog-ribbon-options__title">{t('dialog.ribbonOptions')}</div>
             <Toggle
+              id="dialog-inline-search"
+              label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump (Ctrl+G)')}
+              description={t(
+                'dialog.inlineSearchEnabledDesc',
+                'Click the search icon or press Ctrl+G inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
+              )}
+              checked={config.inlineSearchEnabled}
+              disabled={!config.enabled || !config.ribbonEnabled}
+              onChange={(v) => updateConfig({ inlineSearchEnabled: v })}
+            />
+            <Toggle
               id="dialog-quick-switch"
               label={t('dialog.quickSwitch')}
               description={t('dialog.quickSwitchDesc')}
@@ -317,6 +350,8 @@ export const DialogEnhancerPage: FC = () => {
                 options={[
                   { value: 'top-right', label: t('dialog.ribbonPositionTopRight') },
                   { value: 'top-center', label: t('dialog.ribbonPositionTopCenter') },
+                  { value: 'bottom-right', label: t('dialog.ribbonPositionBottomRight', 'Bottom Right') },
+                  { value: 'bottom-center', label: t('dialog.ribbonPositionBottomCenter', 'Bottom Center') },
                 ]}
                 onChange={(v) => updateConfig({ ribbonPosition: v })}
               />
@@ -378,7 +413,7 @@ export const DialogEnhancerPage: FC = () => {
       <SettingGroup title={t('dialog.appMemoriesGroup')} icon={<History size={18} />}>
         <Card subtitle={t('dialog.appMemoriesDesc')}>
           {appMemories.length > 0 && (
-            <div style={{ marginBottom: '1rem', display: 'flex', justifyContent: 'flex-end' }}>
+            <div className="dialog-memories-toolbar">
               <Button variant="ghost" size="sm" onClick={() => setConfirmClearMemoriesOpen(true)}>
                 <Trash2 size={14} /> {t('dialog.clearAllMemories')}
               </Button>
@@ -400,7 +435,7 @@ export const DialogEnhancerPage: FC = () => {
                     <CodeBadge>{item.isFixed ? item.fixedWorkspace : item.lastPath}</CodeBadge>
                   </div>
                   <div className="dialog-memory-time">{formatTime(item.lastUsedTimestamp)}</div>
-                  <div className="dialog-memory-action" style={{ display: 'flex', gap: '0.25rem' }}>
+                  <div className="dialog-memory-action">
                     <Button
                       variant="ghost"
                       size="sm"

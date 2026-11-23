@@ -25,8 +25,10 @@ import { GestureDrawCanvas } from './GestureDrawCanvas';
 import { GestureStrokePreview } from './GestureStrokePreview';
 import {
   type GestureMapping,
+  type ProgramRunMode,
   ACTION_TYPE_KEYS,
   BUILTIN_COMMAND_KEYS,
+  DEFAULT_LOCAL_LUA_PERMISSIONS,
   GESTURE_CODE_PATTERN,
   codeToArrows,
   isGesturePrefixConflict,
@@ -189,6 +191,10 @@ export const GestureEditorModal: FC<Props> = ({
   const setAction = (patch: Partial<GestureMapping['action']>) =>
     setDraft((d) => ({ ...d, action: { ...d.action, ...patch } }));
 
+  const isLegacyProgramEdit = isEdit && initialMap?.action.type === 3 && !initialMap?.action.runMode;
+  const effectiveRunMode: ProgramRunMode =
+    draft.action.runMode ?? (isLegacyProgramEdit ? 'always_new' : 'activate_or_run');
+
   const handleSave = () => {
     if (!canSave) return;
     const tVal = draft.action.type;
@@ -198,11 +204,21 @@ export const GestureEditorModal: FC<Props> = ({
       description: draft.action.description,
     };
     if (tVal === 0) action.keyStroke = draft.action.keyStroke ?? '';
-    else if (tVal === 1) action.luaScript = draft.action.luaScript ?? '';
-    else if (tVal === 2) action.builtinCmd = draft.action.builtinCmd ?? 0;
+    else if (tVal === 1) {
+      action.luaScript = draft.action.luaScript ?? '';
+      action.permissions =
+        Array.isArray(draft.action.permissions) && draft.action.permissions.length > 0
+          ? draft.action.permissions
+          : [...DEFAULT_LOCAL_LUA_PERMISSIONS];
+    } else if (tVal === 2) action.builtinCmd = draft.action.builtinCmd ?? 0;
     else if (tVal === 3) {
-      action.programPath = draft.action.programPath ?? '';
+      action.programPath = (draft.action.programPath ?? '').trim();
       action.programArgs = draft.action.programArgs ?? '';
+      action.runMode = effectiveRunMode;
+      const cmdLineFilter = (draft.action.matchCmdLine ?? '').trim();
+      const titleFilter = (draft.action.matchTitle ?? '').trim();
+      if (cmdLineFilter) action.matchCmdLine = cmdLineFilter;
+      if (titleFilter) action.matchTitle = titleFilter;
     }
     onSave(
       {
@@ -382,7 +398,14 @@ export const GestureEditorModal: FC<Props> = ({
             <Select
               value={String(draft.action.type)}
               options={ACTION_TYPE_KEYS.map((key, index) => ({ value: String(index), label: t(key) }))}
-              onChange={(v: string) => setAction({ type: Number(v) })}
+              onChange={(v: string) => {
+                const nextType = Number(v);
+                if (nextType === 3 && !draft.action.runMode) {
+                  setAction({ type: nextType, runMode: 'activate_or_run' });
+                } else {
+                  setAction({ type: nextType });
+                }
+              }}
               placement="auto"
               portal
             />
@@ -462,6 +485,80 @@ export const GestureEditorModal: FC<Props> = ({
                   onChange={(v: string) => setAction({ programArgs: v })}
                 />
               </Field>
+              <Field
+                label={t('gestureEditor.programRunMode' as never, 'Launch Mode')}
+                hint={t(
+                  'gestureEditor.programRunModeHint' as never,
+                  'Automatically extracts --user-data-dir / --profile-directory fingerprints from arguments for <3ms single-instance switching',
+                )}
+              >
+                <Select
+                  id="gesture-program-run-mode"
+                  value={effectiveRunMode}
+                  options={[
+                    {
+                      value: 'activate_or_run',
+                      label: t(
+                        'gestureEditor.runModeActivateOrRun' as never,
+                        'Activate existing window or launch (Recommended)',
+                      ),
+                    },
+                    {
+                      value: 'toggle_or_run',
+                      label: t(
+                        'gestureEditor.runModeToggleOrRun' as never,
+                        'Activate / minimize toggle or launch',
+                      ),
+                    },
+                    {
+                      value: 'always_new',
+                      label: t(
+                        'gestureEditor.runModeAlwaysNew' as never,
+                        'Always launch a new instance',
+                      ),
+                    },
+                  ]}
+                  onChange={(v: string) => setAction({ runMode: v as ProgramRunMode })}
+                  placement="auto"
+                  portal
+                />
+              </Field>
+              {effectiveRunMode !== 'always_new' && (
+                <>
+                  <Field
+                    label={t('gestureEditor.programMatchCmdLine' as never, 'Command-line / Profile Filter')}
+                    hint={t(
+                      'gestureEditor.programMatchCmdLineHint' as never,
+                      'Optional. Leave blank to auto-detect from Arguments (e.g. --user-data-dir)',
+                    )}
+                  >
+                    <TextInput
+                      value={draft.action.matchCmdLine ?? ''}
+                      onChange={(v: string) => setAction({ matchCmdLine: v })}
+                      placeholder={t(
+                        'gestureEditor.programMatchCmdLinePlaceholder' as never,
+                        'e.g. Profile 1 or Chrome\\Data',
+                      )}
+                    />
+                  </Field>
+                  <Field
+                    label={t('gestureEditor.programMatchTitle' as never, 'Window Title Filter')}
+                    hint={t(
+                      'gestureEditor.programMatchTitleHint' as never,
+                      'Optional case-insensitive substring match for window title',
+                    )}
+                  >
+                    <TextInput
+                      value={draft.action.matchTitle ?? ''}
+                      onChange={(v: string) => setAction({ matchTitle: v })}
+                      placeholder={t(
+                        'gestureEditor.programMatchTitlePlaceholder' as never,
+                        'e.g. Visual Studio Code',
+                      )}
+                    />
+                  </Field>
+                </>
+              )}
             </>
           )}
         </div>

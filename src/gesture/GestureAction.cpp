@@ -790,6 +790,17 @@ void KeyStroke::send(void* targetWindowPtr) const {
     sendKeyStrokeWorkerImpl(*this, targetWindowPtr);
 }
 
+namespace {
+
+std::string normalizeRunProgramMode(std::string_view mode) {
+    if (mode == "activate_or_run" || mode == "toggle_or_run" || mode == "always_new") {
+        return std::string(mode);
+    }
+    return "always_new";
+}
+
+}  // namespace
+
 // ── GestureAction::execute ───────────────────────────────────────────────────
 
 void GestureAction::execute(void* targetWindowPtr) const {
@@ -810,16 +821,23 @@ void GestureAction::execute(void* targetWindowPtr) const {
 
         case ActionType::LuaScript: {
             LOG_DEBUG("执行手势动作: LuaScript, name={}, script={}", name, luaScript.substr(0, std::min(luaScript.size(), (size_t)100)));
-            tools3000::core::ScriptContext ctx;
-            // 权限绑定到名称和内容；编辑同名脚本后必须重新授权，不能继承旧代码权限。
-            ctx.scriptId = "gesture:" + name + ":" +
-                           std::to_string(std::hash<std::string>{}(luaScript));
-            ctx.scriptName = name.empty() ? "自定义手势脚本" : name;
-            ctx.requestedPerms = requestedPermissions.empty()
-                ? tools3000::core::LuaPermission::Safe
+            auto& luaEngine = tools3000::core::LuaEngine::instance();
+            if (!luaEngine.ensureInitialized()) {
+                LOG_ERROR("Failed to initialize LuaEngine for gesture script: name={}", name);
+                break;
+            }
+            // 本地手势 Lua 脚本属于宿主授予的可信本地自动化扩展通道：
+            // 未显式限制 permissions 时授予本地自动化所需完整权限，直接非阻塞执行，
+            // 避免因缺少 permissions 被静默拦截或弹模态 MessageBox 阻塞动作工作线程。
+            const tools3000::core::LuaPermission defaultLocalAutoPerms =
+                tools3000::core::LuaPermission::Standard |
+                tools3000::core::LuaPermission::Shell |
+                tools3000::core::LuaPermission::Fs |
+                tools3000::core::LuaPermission::Http;
+            const tools3000::core::LuaPermission effectivePerms = requestedPermissions.empty()
+                ? defaultLocalAutoPerms
                 : tools3000::core::parseLuaPermissions(requestedPermissions);
-            ctx.interactive = true;
-            tools3000::core::LuaEngine::instance().authorizeAndExecute(luaScript, ctx);
+            luaEngine.executeScript(luaScript, effectivePerms);
             break;
         }
 
@@ -833,6 +851,34 @@ void GestureAction::execute(void* targetWindowPtr) const {
             LOG_DEBUG("执行手势动作: RunProgram, path={}", programPath);
             const std::wstring wPath = tools3000::core::WinUtils::utf8ToWstring(programPath);
             const std::wstring wArgs = tools3000::core::WinUtils::utf8ToWstring(programArgs);
+            const std::string effectiveMode = normalizeRunProgramMode(runMode);
+
+            if (effectiveMode == "activate_or_run" || effectiveMode == "toggle_or_run") {
+                std::wstring effectiveCmdFilter =
+                    tools3000::core::WinUtils::utf8ToWstring(matchCmdLine);
+                if (effectiveCmdFilter.empty() && !wArgs.empty()) {
+                    effectiveCmdFilter =
+                        tools3000::core::WinUtils::extractProfileMatchHintFromArgs(wArgs);
+                }
+                const std::wstring wMatchTitle =
+                    tools3000::core::WinUtils::utf8ToWstring(matchTitle);
+                const auto outcome = tools3000::core::WinUtils::activateOrToggleWindowByExe(
+                    wPath,
+                    effectiveMode == "toggle_or_run",
+                    effectiveCmdFilter,
+                    wMatchTitle);
+                if (outcome == tools3000::core::WinUtils::WindowActivateOutcome::Activated) {
+                    LOG_INFO("RunProgram activated existing window: path={}, mode={}",
+                             programPath, effectiveMode);
+                    break;
+                }
+                if (outcome == tools3000::core::WinUtils::WindowActivateOutcome::Minimized) {
+                    LOG_INFO("RunProgram minimized foreground window: path={}, mode={}",
+                             programPath, effectiveMode);
+                    break;
+                }
+            }
+
             ShellExecuteW(nullptr, L"open", wPath.c_str(),
                           wArgs.empty() ? nullptr : wArgs.c_str(),
                           nullptr, SW_SHOWNORMAL);
@@ -865,6 +911,13 @@ nlohmann::json GestureAction::toJson() const {
         case ActionType::RunProgram:
             j["programPath"] = programPath;
             j["programArgs"] = programArgs;
+            j["runMode"] = normalizeRunProgramMode(runMode);
+            if (!matchCmdLine.empty()) {
+                j["matchCmdLine"] = matchCmdLine;
+            }
+            if (!matchTitle.empty()) {
+                j["matchTitle"] = matchTitle;
+            }
             break;
     }
     return j;
@@ -932,6 +985,17 @@ GestureAction GestureAction::fromJson(const nlohmann::json& j) {
             }
             if (j.contains("programArgs") && j["programArgs"].is_string()) {
                 action.programArgs = j["programArgs"].get<std::string>();
+            }
+            if (j.contains("runMode") && j["runMode"].is_string()) {
+                action.runMode = normalizeRunProgramMode(j["runMode"].get<std::string>());
+            } else {
+                action.runMode = "always_new";
+            }
+            if (j.contains("matchCmdLine") && j["matchCmdLine"].is_string()) {
+                action.matchCmdLine = j["matchCmdLine"].get<std::string>();
+            }
+            if (j.contains("matchTitle") && j["matchTitle"].is_string()) {
+                action.matchTitle = j["matchTitle"].get<std::string>();
             }
             break;
     }

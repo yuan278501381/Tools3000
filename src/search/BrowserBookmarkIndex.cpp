@@ -160,6 +160,15 @@ BookmarkQueryParseResult BrowserBookmarkIndex::parseBookmarkQuery(std::string_vi
         trimmed[2] == ':') {
         return {true, std::string(trimView(trimmed.substr(3)))};
     }
+    if (trimmed.size() >= 2 &&
+        (trimmed[0] == 'b' || trimmed[0] == 'B') &&
+        trimmed[1] == ':') {
+        // 严格放行 B 盘路径（b:\... / b:/...），避免抢占真实盘符文件搜索
+        if (trimmed.size() >= 3 && (trimmed[2] == '\\' || trimmed[2] == '/')) {
+            return {false, std::string(trimmed)};
+        }
+        return {true, std::string(trimView(trimmed.substr(2)))};
+    }
     return {false, std::string(trimmed)};
 }
 
@@ -173,10 +182,11 @@ bool BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(std::string_view raw
         return false;
     }
 
-    // 排除所有显式文件搜索操作符，做到 100% 零语法冲突
-    static constexpr std::array<std::string_view, 18> kFileOps = {
+    // 排除所有显式文件搜索操作符与专用前缀，做到 100% 零语法冲突
+    static constexpr std::array<std::string_view, 21> kFileOps = {
         "content:", "c:", "ext:", "path:", "parent:", "p:", "file:", "folder:", "dir:",
-        "size:", "dm:", "date:", "modified:", "regex:", "r:", "case:", "cs:", "exact:"
+        "size:", "dm:", "date:", "modified:", "regex:", "r:", "case:", "cs:", "exact:",
+        "app:", "cmd:", "bm:"
     };
     const std::string low = toLowerAscii(trimmed);
     if (low.find("内容:") != std::string::npos) return false;

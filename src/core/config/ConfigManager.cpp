@@ -69,10 +69,10 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
     std::error_code ec;
     std::filesystem::create_directories(configDir, ec);
     if (ec) {
-        LOG_ERROR("无法创建配置目录: path={}, error={}", configDir.string(), ec.message());
+        LOG_ERROR("无法创建配置目录: path={}, error={}", WinUtils::pathToUtf8(configDir), ec.message());
         return false;
     }
-    m_configFilePath = configDir / filename;
+    m_configFilePath = configDir / WinUtils::utf8ToPath(filename);
     {
         std::lock_guard ioLock(m_ioMutex);
         m_hasFileStamp = false;
@@ -89,7 +89,7 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
         m_config = json();
     }
 
-    LOG_INFO("配置管理器初始化, 配置文件路径={}", m_configFilePath.string());
+    LOG_INFO("配置管理器初始化, 配置文件路径={}", WinUtils::pathToUtf8(m_configFilePath));
 
     if (!load()) return false;
 
@@ -168,7 +168,7 @@ bool ConfigManager::load(bool* changed) {
     bool shouldCreate = false;
     try {
         if (!std::filesystem::exists(m_configFilePath)) {
-            LOG_INFO("配置文件不存在, 将使用默认配置并创建文件: {}", m_configFilePath.string());
+            LOG_INFO("配置文件不存在, 将使用默认配置并创建文件: {}", WinUtils::pathToUtf8(m_configFilePath));
             shouldCreate = true;
         }
 
@@ -205,7 +205,7 @@ bool ConfigManager::load(bool* changed) {
             if (backupError) {
                 LOG_ERROR("损坏配置备份失败: {}", backupError.message());
             } else {
-                LOG_WARN("损坏配置已保留到: {}", backupPath.string());
+                LOG_WARN("损坏配置已保留到: {}", WinUtils::pathToUtf8(backupPath));
             }
         }
         shouldCreate = true;
@@ -257,10 +257,10 @@ bool ConfigManager::writeSnapshotLocked(const json& snapshot) const {
                     m_hasFileStamp = true;
                 }
             }
-            LOG_TRACE("配置已通过硬件原子刷盘保存到文件: {}", m_configFilePath.string());
+            LOG_TRACE("配置已通过硬件原子刷盘保存到文件: {}", WinUtils::pathToUtf8(m_configFilePath));
             return true;
         } else {
-            LOG_ERROR("配置原子硬件刷盘失败: {}", m_configFilePath.string());
+            LOG_ERROR("配置原子硬件刷盘失败: {}", WinUtils::pathToUtf8(m_configFilePath));
         }
     } catch (const std::exception& e) {
         LOG_ERROR("配置保存失败: {}", e.what());
@@ -659,11 +659,11 @@ void ConfigManager::watchFileChanges() {
     );
 
     if (hDir == INVALID_HANDLE_VALUE) {
-        LOG_WARN("无法监控配置文件目录: {}", dir.string());
+        LOG_WARN("无法监控配置文件目录: {}", WinUtils::pathToUtf8(dir));
         return;
     }
 
-    LOG_DEBUG("配置文件监控已启动: {}", dir.string());
+    LOG_DEBUG("配置文件监控已启动: {}", WinUtils::pathToUtf8(dir));
 
     OVERLAPPED overlapped{};
     overlapped.hEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);

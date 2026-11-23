@@ -1,7 +1,7 @@
 import { useState, useEffect, type FC } from 'react';
 import { Card, SettingGroup, Toggle, Button, CodeBadge } from '../components/UIKit';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch } from 'lucide-react';
+import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch, MessageSquarePlus } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent, openExternalUrl } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import './AboutPage.css';
@@ -314,6 +314,15 @@ export const AboutPage: FC = () => {
             <Button variant="secondary" size="sm" onClick={() => void handleExportLogs()} title={t('about.exportLogsTip', 'Export system diagnostic logs and environment report')}>
               <Download size={13} />
               <span>{t('about.exportLogs', 'Export Logs')}</span>
+            </Button>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => window.dispatchEvent(new CustomEvent('tools3000:open-feedback'))}
+              title={t('feedback.entryButton', 'Give Feedback')}
+            >
+              <MessageSquarePlus size={13} />
+              <span>{t('feedback.entryButton', 'Give Feedback')}</span>
             </Button>
             {updateResult?.readyToInstall ? (
               <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>

@@ -9,7 +9,7 @@
 
 import { useState, useMemo, useRef, useEffect, type FC, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Search, X, CornerDownRight, Power } from 'lucide-react';
+import { Search, X, CornerDownRight, Power, MessageSquarePlus } from 'lucide-react';
 import { toast } from 'sonner';
 import { CodeBadge } from './UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
@@ -38,6 +38,7 @@ export interface SidebarExtensionDescriptor {
 export interface SidebarProps {
   activeNav: NavId;
   onNavigate: (id: NavId) => void;
+  onOpenFeedback?: () => void;
   activePlugins?: ReadonlySet<string>;
   installedExtensionIds?: string[];
   installedExtensions?: ReadonlyArray<SidebarExtensionDescriptor>;
@@ -65,6 +66,7 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
 export const Sidebar: FC<SidebarProps> = ({
   activeNav,
   onNavigate,
+  onOpenFeedback,
   activePlugins,
   installedExtensionIds = [],
   installedExtensions,
@@ -585,6 +587,19 @@ export const Sidebar: FC<SidebarProps> = ({
           </>
         )}
       </nav>
+      {onOpenFeedback && (
+        <div className="sidebar__footer">
+          <button
+            type="button"
+            id="sidebar-feedback-btn"
+            className="sidebar__feedback-btn"
+            onClick={onOpenFeedback}
+          >
+            <MessageSquarePlus size={15} aria-hidden="true" />
+            <span>{t('feedback.entryButton', 'Give Feedback')}</span>
+          </button>
+        </div>
+      )}
     </aside>
   );
 };

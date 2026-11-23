@@ -932,8 +932,10 @@ begin
       Exec(ExpandConstant('{sys}\schtasks.exe'), '/delete /tn "Tools3000\Autorun for ' + InteractiveUser + '" /f', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
   end;
 
-  // 清除当前用户及多账户 UAC 场景下所有已加载用户配置单元的自启动项 (HKCU / HKU Run) 与 Picasa 看图器全部 41 格式关联
+  // 清除当前用户及多账户 UAC 场景下所有已加载用户配置单元的自启动项 (HKCU / HKU Run)、File Locksmith 右键菜单与 Picasa 看图器全部 41 格式关联
   RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\*\shell\Tools3000.FileLocksmith');
+  RegDeleteKeyIncludingSubkeys(HKCU, 'Software\Classes\Directory\shell\Tools3000.FileLocksmith');
   CleanPicasaAssocInHive(HKCU, '');
   if RegGetSubkeyNames(HKU, '', SubKeys) then
   begin
@@ -943,6 +945,8 @@ begin
          (CompareText(Copy(SubKeys[I], Length(SubKeys[I]) - 7, 8), '_Classes') = 0) then
         Continue;
       RegDeleteValue(HKU, SubKeys[I] + '\Software\Microsoft\Windows\CurrentVersion\Run', 'Tools3000');
+      RegDeleteKeyIncludingSubkeys(HKU, SubKeys[I] + '\Software\Classes\*\shell\Tools3000.FileLocksmith');
+      RegDeleteKeyIncludingSubkeys(HKU, SubKeys[I] + '\Software\Classes\Directory\shell\Tools3000.FileLocksmith');
       CleanPicasaAssocInHive(HKU, SubKeys[I]);
     end;
   end;

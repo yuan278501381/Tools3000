@@ -1,8 +1,8 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
@@ -44,6 +44,9 @@ public:
 
     bool isRibbonEnabled() const;
     void setRibbonEnabled(bool enabled);
+
+    bool isInlineSearchEnabled() const;
+    void setInlineSearchEnabled(bool enabled);
 
     std::string getRibbonPosition() const;
     void setRibbonPosition(const std::string& pos);
@@ -89,12 +92,14 @@ private:
     ~PathMemoryManager() = default;
 
     static std::string canonicalProcessKey(const std::string& processName);
+    static std::string sanitizeRibbonPosition(const std::string& pos);
 
     mutable std::mutex m_mutex;
     bool m_enabled{true};
     bool m_perAppMemory{true};
     bool m_quickSwitch{true};
     bool m_ribbonEnabled{true};
+    bool m_inlineSearchEnabled{true};
     std::string m_ribbonPosition{"top-right"};
 
     std::unordered_map<std::string, AppMemoryItem> m_appMemories;

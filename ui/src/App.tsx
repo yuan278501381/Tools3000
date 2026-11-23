@@ -56,6 +56,7 @@ const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) =
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
+const FeedbackModal = lazy(() => import('./components/FeedbackModal').then((module) => ({ default: module.FeedbackModal })));
 
 const getInitialActivePluginIds = (): string[] | null => {
   try {
@@ -107,6 +108,7 @@ function App() {
   const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [retainedDisabledNav, setRetainedDisabledNav] = useState<NavId | null>(null);
   const activeNavRef = useRef<NavId>(activeNav);
@@ -284,9 +286,12 @@ function App() {
         pollTimer = setTimeout(() => locateTargetInContent(detail.targetText!), 60);
       }
     };
+    const onOpenFeedback = () => setShowFeedbackModal(true);
     window.addEventListener('tools3000:navigate-deep', onDeepNav);
+    window.addEventListener('tools3000:open-feedback', onOpenFeedback);
     return () => {
       window.removeEventListener('tools3000:navigate-deep', onDeepNav);
+      window.removeEventListener('tools3000:open-feedback', onOpenFeedback);
       if (highlightTimer) clearTimeout(highlightTimer);
       if (pollTimer) clearTimeout(pollTimer);
     };
@@ -434,6 +439,7 @@ function App() {
         <Sidebar
           activeNav={activeNav}
           onNavigate={handleNavSelect}
+          onOpenFeedback={() => setShowFeedbackModal(true)}
           activePlugins={activePlugins}
           installedExtensionIds={installedExtensionIds}
           installedExtensions={installedExtensions}
@@ -475,6 +481,11 @@ function App() {
         </main>
       </div>
       {showOnboarding && <OnboardingModal onComplete={handleOnboardingComplete} />}
+      {showFeedbackModal && (
+        <Suspense fallback={null}>
+          <FeedbackModal open={showFeedbackModal} onClose={() => setShowFeedbackModal(false)} />
+        </Suspense>
+      )}
       <WindowResizeHandles />
     </div>
   );

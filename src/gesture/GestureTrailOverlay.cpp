@@ -528,6 +528,9 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                 if (m_standaloneToastMode.load(std::memory_order_acquire)) {
                     holdMs = m_standaloneToastHoldMs.load(std::memory_order_relaxed);
                     fadeMs = 160;
+                } else if (m_excessiveFade.load(std::memory_order_acquire)) {
+                    holdMs = kGestureSpeechlessFadeHoldMs;
+                    fadeMs = kGestureSpeechlessFadeOutMs;
                 } else {
                     std::lock_guard renderLock(m_renderMutex);
                     holdMs = static_cast<DWORD>(std::clamp(m_style.fadeHoldMs, 0.0f, 5000.0f));
@@ -682,6 +685,7 @@ void GestureTrailOverlay::beginTrail() {
     raiseZOrderForDraw();
     m_trailEpoch.fetch_add(1, std::memory_order_acq_rel);
     m_standaloneToastMode.store(false, std::memory_order_release);
+    m_excessiveFade.store(false, std::memory_order_release);
     m_hideRequested.store(false, std::memory_order_release);
     m_wantVisible.store(false, std::memory_order_release);
     m_strokeSurfaceLive.store(false, std::memory_order_release);
@@ -731,7 +735,8 @@ void GestureTrailOverlay::addPoint(float x, float y) {
 
 void GestureTrailOverlay::setLiveAction(const std::string& actionText) {
     const bool showHint = m_showActionHint.load(std::memory_order_acquire);
-    const std::string effectiveText = showHint ? actionText : std::string();
+    const bool isExcessive = isGestureSpeechlessMarker(actionText);
+    const std::string effectiveText = (showHint || isExcessive) ? actionText : std::string();
     bool changed = false;
     {
         std::lock_guard lock(m_trailMutex);
@@ -764,7 +769,7 @@ void GestureTrailOverlay::setRecognized(bool recognized) {
     if (m_isRecognized.exchange(recognized) != recognized) {
         if (!recognized) {
             std::lock_guard lock(m_trailMutex);
-            if (m_resultText != "•••") {
+            if (!isGestureSpeechlessMarker(m_resultText)) {
                 m_resultText.clear();
             }
         }
@@ -780,14 +785,15 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
     const bool showHint = m_showActionHint.load(std::memory_order_acquire);
     const bool fadeEnabled = m_fadeEnabled.load(std::memory_order_acquire);
     const bool drawLine = m_drawTrailLine.load(std::memory_order_acquire);
-    const std::string effectiveResultText = showHint ? resultText : std::string();
+    const bool isExcessive = isGestureSpeechlessMarker(resultText);
+    const std::string effectiveResultText = (showHint || isExcessive) ? resultText : std::string();
 
     bool hasPoints = false;
     bool hasResultText = false;
     size_t overlayPoints = 0;
     {
         std::lock_guard lock(m_trailMutex);
-        if (!showHint) {
+        if (!showHint && !isExcessive) {
             m_resultText.clear();
         } else if (!effectiveResultText.empty()) {
             m_resultText = effectiveResultText;
@@ -809,11 +815,11 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
     LOG_DEBUG("手势轨迹结束: overlayPoints={}, label={}", overlayPoints, effectiveResultText);
     // 松手时才命中的短手势（如 U=关闭窗口）过程中方向可能没变过，
     // live setRecognized(true) 没走到：即便关闭动作提示文字，轨迹仍应保留命中主题色。
-    const bool recognizedResult = !resultText.empty() && resultText != "•••";
+    const bool recognizedResult = !resultText.empty() && !isExcessive;
     if (recognizedResult) {
         m_isRecognized.store(true, std::memory_order_relaxed);
     }
-    if (!effectiveResultText.empty() && effectiveResultText != "•••") {
+    if (!effectiveResultText.empty() && !isExcessive) {
         // endTrail may run on the low-level mouse-hook path. Do not synchronously
         // call a window API here; hand the accessibility update to the HWND's
         // owning thread instead.
@@ -821,12 +827,12 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
             PostMessageW(m_hwnd, WM_GESTURE_ACCESSIBILITY_RESULT, 0, 0);
         }
     }
-    if (!fadeEnabled) {
+    if (!fadeEnabled && !isExcessive) {
         // 用户关闭手势结束渐隐效果：松手立即 0ms 瞬消画布与提示胶囊，彻底消除视觉拖尾
         hide();
         return;
     }
-    const bool hasVisualContent = (drawLine && hasPoints) || (showHint && hasResultText);
+    const bool hasVisualContent = isExcessive || (drawLine && hasPoints) || (showHint && hasResultText);
     if (hasVisualContent) {
         m_wantVisible.store(true, std::memory_order_release);
     } else {
@@ -834,6 +840,7 @@ void GestureTrailOverlay::endTrail(const std::string& resultText) {
         hide();
         return;
     }
+    m_excessiveFade.store(isExcessive, std::memory_order_release);
     m_standaloneToastMode.store(false, std::memory_order_release);
     m_fadeEpoch.store(m_trailEpoch.load(std::memory_order_acquire), std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
@@ -876,6 +883,7 @@ void GestureTrailOverlay::hide() {
     const uint64_t epoch = m_trailEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     m_hideEpoch.store(epoch, std::memory_order_release);
     m_standaloneToastMode.store(false, std::memory_order_release);
+    m_excessiveFade.store(false, std::memory_order_release);
     m_fading.store(false, std::memory_order_release);
     m_fadeClockStarted.store(false, std::memory_order_release);
     m_pulseIntensity.store(0.0f, std::memory_order_release);
@@ -1786,11 +1794,11 @@ void GestureTrailOverlay::drawToastContentDirect(
 
     if (excessive) {
         D2D1_COLOR_F bgColor = isLight
-            ? D2D1::ColorF(0.92f, 0.18f, 0.24f, 0.94f * fadeAlpha)
-            : D2D1::ColorF(0.52f, 0.08f, 0.12f, 0.92f * fadeAlpha);
+            ? D2D1::ColorF(0.90f, 0.16f, 0.24f, 0.95f * fadeAlpha)
+            : D2D1::ColorF(0.84f, 0.14f, 0.22f, 0.94f * fadeAlpha);
         D2D1_COLOR_F borderColor = isLight
-            ? D2D1::ColorF(0.78f, 0.10f, 0.16f, 0.85f * fadeAlpha)
-            : D2D1::ColorF(0.96f, 0.28f, 0.36f, 0.85f * fadeAlpha);
+            ? D2D1::ColorF(0.74f, 0.08f, 0.15f, 0.88f * fadeAlpha)
+            : D2D1::ColorF(1.0f, 0.42f, 0.48f, 0.86f * fadeAlpha);
         D2D1_COLOR_F dotColor = D2D1::ColorF(1.0f, 1.0f, 1.0f, fadeAlpha);
 
         if (!ctx.bgBrush) rt->CreateSolidColorBrush(bgColor, ctx.bgBrush.GetAddressOf());
@@ -1802,16 +1810,16 @@ void GestureTrailOverlay::drawToastContentDirect(
         if (!ctx.excDotBrush) rt->CreateSolidColorBrush(dotColor, ctx.excDotBrush.GetAddressOf());
         else ctx.excDotBrush->SetColor(dotColor);
 
-        float boxW = 126.0f * resultScale;
+        float boxW = 128.0f * resultScale;
         float boxH = 58.0f * resultScale;
         D2D1_ROUNDED_RECT rrect = D2D1::RoundedRect(
             D2D1::RectF(centerX - boxW / 2.0f, centerY - boxH / 2.0f,
                         centerX + boxW / 2.0f, centerY + boxH / 2.0f),
-            16.0f * resultScale, 16.0f * resultScale);
+            18.0f * resultScale, 18.0f * resultScale);
         if (ctx.bgBrush) rt->FillRoundedRectangle(&rrect, ctx.bgBrush.Get());
-        if (ctx.borderBrush) rt->DrawRoundedRectangle(&rrect, ctx.borderBrush.Get(), 1.4f * resultScale);
+        if (ctx.borderBrush) rt->DrawRoundedRectangle(&rrect, ctx.borderBrush.Get(), 1.5f * resultScale);
         if (ctx.excDotBrush) {
-            const float dotRadius = 6.0f * resultScale;
+            const float dotRadius = 6.5f * resultScale;
             const float dotSpacing = 22.0f * resultScale;
             rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX - dotSpacing, centerY), dotRadius, dotRadius), ctx.excDotBrush.Get());
             rt->FillEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, centerY), dotRadius, dotRadius), ctx.excDotBrush.Get());
@@ -2197,9 +2205,10 @@ bool GestureTrailOverlay::render() {
     const int toastCenterY = toastWork.top +
         static_cast<int>(static_cast<float>(toastWork.bottom - toastWork.top) * 0.82f);
 
-    const bool isExcessive = (resultText == "•••");
-    const bool shouldShowToast = showHint &&
-        (standaloneToast || shouldShowGestureResultToast(isRecognized, !resultText.empty(), isExcessive));
+    const bool isExcessive = isGestureSpeechlessMarker(resultText);
+    const bool shouldShowToast = isExcessive ||
+        (showHint &&
+         (standaloneToast || shouldShowGestureResultToast(isRecognized, !resultText.empty(), false)));
 
     // 纯文字轻提示模式（独立亮度 OSD 或用户关闭轨迹线但保留手势提示文字）
     if (!drawLine || points.empty()) {

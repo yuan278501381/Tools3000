@@ -48,7 +48,7 @@ class BrowserBookmarkIndex final {
 public:
     static BrowserBookmarkIndex& instance();
 
-    /// 解析零冲突 `bm:` 前缀（大小写不敏感，不抢占 `b `）
+    /// 解析书签前缀：`bm:` 或 `b:`（大小写不敏感，严格放行 `b:\...` / `b:/...` 盘符路径，不抢占 `b `）
     static BookmarkQueryParseResult parseBookmarkQuery(std::string_view rawQuery);
 
     /// 判断普通查询是否适合混排浏览器书签（自动排除显式文件系统操作符与驱动器路径）

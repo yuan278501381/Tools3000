@@ -659,7 +659,7 @@ export function getSortedResults(
   propertyCache?: PropertyCacheMap,
   locale: string = 'en',
 ): SearchResult[] {
-  if (results.length <= 1) return results;
+  if (sortField === 'relevance' || results.length <= 1) return results;
   const resolvedLocale = locale && locale.trim() ? locale : 'en';
 
   return [...results].sort((left, right) => {
@@ -698,7 +698,9 @@ export function getSortedResults(
   });
 }
 
-const EXPLICIT_SORT_ALIAS_MAP: Readonly<Record<string, { field: TableColumnId; defaultDir: SortDirection }>> = {
+const EXPLICIT_SORT_ALIAS_MAP: Readonly<Record<string, { field: SortField; defaultDir: SortDirection }>> = {
+  relevance: { field: 'relevance', defaultDir: 'desc' },
+  smart: { field: 'relevance', defaultDir: 'desc' },
   date: { field: 'modified', defaultDir: 'desc' },
   mtime: { field: 'modified', defaultDir: 'desc' },
   time: { field: 'modified', defaultDir: 'desc' },
@@ -717,10 +719,10 @@ const EXPLICIT_SORT_ALIAS_MAP: Readonly<Record<string, { field: TableColumnId; d
  */
 export function parseExplicitSortDirective(
   query: string,
-): { field: TableColumnId; direction: SortDirection } | null {
+): { field: SortField; direction: SortDirection } | null {
   if (!query || !query.includes(':')) return null;
   const tokens = tokenizeQueryQuoteAware(query);
-  let matched: { field: TableColumnId; direction: SortDirection } | null = null;
+  let matched: { field: SortField; direction: SortDirection } | null = null;
   for (const token of tokens) {
     const match = token.match(/^sort:([a-z]+)(?:-(asc|desc))?$/i);
     if (!match) continue;
@@ -762,6 +764,9 @@ const FILE_SCOPE_FILTER_PREFIXES = [
   'py:',
   'sort:',
   'orderby:',
+  'bm:',
+  'app:',
+  'cmd:',
 ] as const;
 
 /**
@@ -868,8 +873,12 @@ export function isFileScopeFilterToken(token: string): boolean {
     return true;
   }
 
-  // 盘符或路径词元，如 c:, D:, D:\Work, C:/repo, \src\
-  if (/^[a-zA-Z]:(?:[\\/].*)?$/.test(token)) {
+  // 盘符或路径词元，如 c:, D:, D:\Work, C:/repo, b:\foo, \src\
+  if (/^[a-zA-Z]:[\\/]/.test(token) || /^[a-zA-Z]:$/.test(token)) {
+    return true;
+  }
+  // 非盘符 `b:<kw>` 书签直搜前缀同样作为专用算子保留，不冠以 `content:`
+  if (/^b:[^\\/]/i.test(token)) {
     return true;
   }
   if (!isQuoted && token.includes('\\')) {
@@ -1059,6 +1068,9 @@ const VALUE_BEARING_KEYWORD_PREFIXES = new Set([
   'folder',
   'dir',
   'bm',
+  'b',
+  'app',
+  'cmd',
 ]);
 
 /**

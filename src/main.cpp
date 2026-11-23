@@ -67,12 +67,15 @@
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
 #include "core/utils/ShellContextMenuService.h"
+#include "core/utils/FileLocksmithEngine.h"
+#include "core/diagnostics/FeedbackDiagnosticService.h"
 #include "core/utils/SessionIsolation.h"
 #include "core/ipc/AutoStartPolicy.h"
 #include "tray/TrayIcon.h"
 #include "ui/SettingsWindow.h"
 #include "ui/SearchWindow.h"
 #include "ui/ClipboardWindow.h"
+#include "ui/FileLocksmithWindow.h"
 #include "ui/QuickLookWindow.h"
 #include "clipboard/ClipboardManager.h"
 #include "ui/QuickLookNavigation.h"
@@ -195,8 +198,9 @@ void CALLBACK FullscreenGuardWinEventProc(
 bool writePerformanceBaselineSnapshot(const std::filesystem::path& outputPath) {
     std::error_code error;
     const auto parent = outputPath.parent_path();
+    const std::string outputUtf8 = tools3000::core::WinUtils::pathToUtf8(outputPath);
     if (parent.empty() || !std::filesystem::is_directory(parent, error) || error) {
-        LOG_ERROR("Performance baseline output directory is unavailable: {}", outputPath.string());
+        LOG_ERROR("Performance baseline output directory is unavailable: {}", outputUtf8);
         return false;
     }
     nlohmann::json snapshot = {
@@ -208,7 +212,7 @@ bool writePerformanceBaselineSnapshot(const std::filesystem::path& outputPath) {
     {
         std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
         if (!stream) {
-            LOG_ERROR("Cannot create performance baseline snapshot: {}", outputPath.string());
+            LOG_ERROR("Cannot create performance baseline snapshot: {}", outputUtf8);
             return false;
         }
         stream << snapshot.dump(2) << '\n';
@@ -216,14 +220,14 @@ bool writePerformanceBaselineSnapshot(const std::filesystem::path& outputPath) {
         if (!stream) {
             stream.close();
             std::filesystem::remove(temporary, error);
-            LOG_ERROR("Cannot write performance baseline snapshot: {}", outputPath.string());
+            LOG_ERROR("Cannot write performance baseline snapshot: {}", outputUtf8);
             return false;
         }
     }
     std::filesystem::rename(temporary, outputPath, error);
     if (error) {
         std::filesystem::remove(temporary, error);
-        LOG_ERROR("Cannot finalize performance baseline snapshot: {}", outputPath.string());
+        LOG_ERROR("Cannot finalize performance baseline snapshot: {}", outputUtf8);
         return false;
     }
     return true;
@@ -462,6 +466,30 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
 
     // 提升进程优先级为 HIGH_PRIORITY_CLASS，确保在高负荷系统下鼠标手势与全局热键调度不被饿死
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+
+    // 独立短命零常驻 File Locksmith 文件占用解锁弹窗 (--unlock "<path>" 或 --unlock=<path>)
+    // 跳过单实例互斥锁、全局钩子、托盘与 WebView2，退出即由 OS 100% 归零全部物理与虚拟内存。
+    {
+        std::wstring unlockTarget;
+        if (const auto inlineVal = commandLineStringValue(L"--unlock="); inlineVal.has_value() && !inlineVal->empty()) {
+            unlockTarget = *inlineVal;
+        } else {
+            int argc = 0;
+            LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+            if (argv) {
+                for (int i = 1; i + 1 < argc; ++i) {
+                    if (_wcsicmp(argv[i], L"--unlock") == 0 && argv[i + 1] && argv[i + 1][0] != L'\0') {
+                        unlockTarget = argv[i + 1];
+                        break;
+                    }
+                }
+                LocalFree(argv);
+            }
+        }
+        if (!unlockTarget.empty()) {
+            return tools3000::ui::runFileLocksmithWindow(hInstance, unlockTarget);
+        }
+    }
 
     // 快捷自启动注册/注销独立命令处理（专供安装包或运维脚本原子调用）
     if (hasCommandLineFlag(L"--register-autostart")) {
@@ -1034,7 +1062,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     auto& pm = tools3000::core::PluginManager::instance();
     const std::filesystem::path pluginDir =
         tools3000::core::WinUtils::getExeDirectory() / L"plugins";
-    pm.loadPlugins(pluginDir.string());
+    pm.loadPlugins(pluginDir);
 
     // 4. 全局快捷键注册与全屏智能免打扰策略初始化
     tools3000::core::WinUtils::setFullscreenPolicyMode(
@@ -1283,10 +1311,16 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.ready", [](const nlohmann::json&) -> nlohmann::json {
         tools3000::core::MainThreadDispatcher::instance().post([]() {
-            auto& ql = tools3000::ui::QuickLookWindow::instance();
-            if (!ql.currentFilePath().empty()) {
-                ql.previewFile(ql.currentFilePath());
-            }
+            tools3000::ui::QuickLookWindow::instance().notifyFrontendReady();
+        });
+        return {{"success", true}};
+    });
+    tools3000::core::MessageBridge::instance().registerHostHandler("quicklook.fallbackMedia", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string pathUtf8 = jsonStringOr(params, "path");
+        const std::string kind = jsonStringOr(params, "kind", "video");
+        tools3000::core::MainThreadDispatcher::instance().post([pathUtf8, kind]() {
+            tools3000::ui::QuickLookWindow::instance().requestFallbackMediaAsync(
+                tools3000::core::WinUtils::utf8ToWstring(pathUtf8), kind);
         });
         return {{"success", true}};
     });
@@ -1322,6 +1356,104 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         }
         ShellExecuteW(nullptr, L"open", logDir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
         return {{"success", true}, {"path", tools3000::core::WinUtils::wstringToUtf8(logDir.wstring())}};
+    });
+
+    tools3000::core::MessageBridge::instance().registerHostHandler("system.openFileLocksmith", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string pathUtf8 = jsonStringOr(params, "path");
+        if (pathUtf8.empty()) {
+            return {{"success", false}, {"error", "empty_path"}};
+        }
+        const bool ok = tools3000::core::FileLocksmithEngine::launchUnlockWindowProcess(
+            tools3000::core::WinUtils::utf8ToWstring(pathUtf8), false);
+        return {{"success", ok}};
+    });
+    tools3000::core::MessageBridge::instance().registerHostHandler("system.getShellMenuConfig", [](const nlohmann::json&) -> nlohmann::json {
+        bool shiftOnlyReg = false;
+        const bool registered = tools3000::core::FileLocksmithEngine::isExplorerContextMenuRegistered(&shiftOnlyReg);
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        return {
+            {"enabled", registered},
+            {"shiftOnly", registered ? shiftOnlyReg : cfg.get<bool>("/general/shellMenuShiftOnly", true)}
+        };
+    });
+    tools3000::core::MessageBridge::instance().registerHostHandler("system.updateShellMenuConfig", [](const nlohmann::json& params) -> nlohmann::json {
+        const bool enabled = params.value("enabled", false);
+        const bool shiftOnly = params.value("shiftOnly", true);
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        cfg.set<bool>("/general/shellMenuLocksmithEnabled", enabled);
+        cfg.set<bool>("/general/shellMenuShiftOnly", shiftOnly);
+        const std::wstring verbLabel = tools3000::core::trW(
+            L"使用 Tools3000 查看文件占用/解锁",
+            L"Inspect File Locks with Tools3000");
+        const bool ok = tools3000::core::FileLocksmithEngine::syncExplorerContextMenu(
+            enabled, shiftOnly, tools3000::core::WinUtils::getExePath().wstring(), verbLabel);
+        return {{"success", ok}, {"enabled", enabled}, {"shiftOnly", shiftOnly}};
+    });
+
+    // 方案 C 双轨应用内问题反馈与 10 维隐私脱敏诊断通道（全异步执行，绝不阻塞 UI 消息泵）
+    tools3000::core::MessageBridge::instance().markMethodAsync("feedback.preview");
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.preview", [](const nlohmann::json& params) -> nlohmann::json {
+        tools3000::core::FeedbackSubmissionInput in;
+        in.feedbackType = jsonStringOr(params, "feedbackType", "bug");
+        in.title = jsonStringOr(params, "title");
+        in.description = jsonStringOr(params, "description");
+        in.stepsToReproduce = jsonStringOr(params, "stepsToReproduce");
+        in.contact = jsonStringOr(params, "contact");
+        in.includeLogs = params.value("includeLogs", true);
+        in.screenshotPath = jsonStringOr(params, "screenshotPath");
+        in.screenshotDataUri = jsonStringOr(params, "screenshotDataUri");
+        const auto preview = tools3000::core::FeedbackDiagnosticService::buildDiagnosticPreview(in, 200);
+        return {
+            {"ok", true},
+            {"environment", preview.environment},
+            {"redactedMainLog", preview.redactedMainLog},
+            {"redactedServiceLog", preview.redactedServiceLog},
+            {"markdownReport", preview.markdownReport},
+            {"githubIssueUrl", preview.githubIssueUrl},
+            {"totalRedactions", preview.totalRedactions},
+            {"relayConfigured", preview.relayConfigured}
+        };
+    });
+    tools3000::core::MessageBridge::instance().markMethodAsync("feedback.submit");
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.submit", [](const nlohmann::json& params) -> nlohmann::json {
+        if (tools3000::core::Logger::instance()) {
+            tools3000::core::Logger::instance()->flush();
+        }
+        tools3000::core::FeedbackSubmissionInput in;
+        in.feedbackType = jsonStringOr(params, "feedbackType", "bug");
+        in.title = jsonStringOr(params, "title");
+        in.description = jsonStringOr(params, "description");
+        in.stepsToReproduce = jsonStringOr(params, "stepsToReproduce");
+        in.contact = jsonStringOr(params, "contact");
+        in.includeLogs = params.value("includeLogs", true);
+        in.screenshotPath = jsonStringOr(params, "screenshotPath");
+        in.screenshotDataUri = jsonStringOr(params, "screenshotDataUri");
+        const auto res = tools3000::core::FeedbackDiagnosticService::submitFeedback(in);
+        return {
+            {"ok", res.ok},
+            {"mode", res.mode},
+            {"trackingId", res.trackingId},
+            {"issueUrl", res.issueUrl},
+            {"exportedBundlePath", res.exportedBundlePath},
+            {"markdownReport", res.markdownReport},
+            {"errorMessage", res.errorMessage},
+            {"totalRedactions", res.totalRedactions}
+        };
+    });
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.revealBundle", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string pathUtf8 = jsonStringOr(params, "path");
+        if (pathUtf8.empty()) return {{"success", false}};
+        const bool ok = tools3000::core::WinUtils::openFolderAndSelectItem(
+            tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
+        return {{"success", ok}};
+    });
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.openExternalUrl", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string url = jsonStringOr(params, "url");
+        if (url.rfind("https://github.com/yuan278501381/tools3000/", 0) != 0) {
+            return {{"success", false}, {"error", "untrusted_url"}};
+        }
+        tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
+        return {{"success", true}};
     });
 
     // 注册导出诊断日志 IPC 处理器（模态保存框 + 磁盘合并解压必须在异步池执行，严禁阻塞 UI 消息泵）

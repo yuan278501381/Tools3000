@@ -24,7 +24,7 @@ inline bool isExternalClientSource(std::string_view source) noexcept {
 }
 
 inline bool isActionAllowedForExternal(std::string_view action) noexcept {
-    return action == "getDbStats";
+    return action == "getDbStats" || action == "getIndexGeneration";
 }
 
 inline std::wstring normalizePathLower(std::wstring_view rawPath) {

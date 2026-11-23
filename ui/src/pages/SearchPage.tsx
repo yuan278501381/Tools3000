@@ -8,7 +8,8 @@ import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { SearchExternalApiCard } from '../components/SearchExternalApiCard';
 import { CATEGORY_DEFS } from '../search/searchConstants';
-import type { SearchMode } from '../search/searchTypes';
+import type { SearchMemoryMode, SearchMode, SearchRankingProfile } from '../search/searchTypes';
+import { formatBytes } from '../search/searchUtils';
 import { safeStorageGetEnum, safeStorageSetItem } from '../search/storageUtils';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
 import { bridgeRequest } from '../hooks/useBridge';
@@ -24,7 +25,11 @@ import {
   Sparkles,
   Zap,
   Play,
-  RotateCw
+  RotateCw,
+  Cpu,
+  Power,
+  ShieldCheck,
+  Sliders,
 } from 'lucide-react';
 import './SearchPage.css';
 
@@ -36,6 +41,12 @@ interface SearchSettings {
   matchPath: boolean;
   pinyinEnabled: boolean;
   includeBookmarks?: boolean;
+  enableAppsAndCommands?: boolean;
+  liveRefreshEnabled?: boolean;
+  rankingProfile?: SearchRankingProfile;
+  memoryMode?: SearchMemoryMode;
+  idleTrimMinutes?: number;
+  idleStopMinutes?: number;
   iconStyle?: 'native' | 'vector';
   autoBypassFullscreen?: boolean;
   externalApiEnabled?: boolean;
@@ -45,8 +56,19 @@ interface SearchSettings {
 
 interface ServiceStatus {
   available: boolean;
+  running?: boolean;
   pipeName: string;
+  workingSetBytes?: number;
+  privateBytes?: number;
+  memoryMode?: SearchMemoryMode;
+  idleTrimMinutes?: number;
+  idleStopMinutes?: number;
+  idleSeconds?: number;
+  lastTrimmedAt?: number;
 }
+
+const IDLE_TRIM_MINUTE_OPTIONS = [2, 5, 10, 15, 30] as const;
+const IDLE_STOP_MINUTE_OPTIONS = [10, 15, 30, 60, 120] as const;
 
 export const SearchPage: FC = () => {
   const { t, i18n } = useTranslation();
@@ -75,6 +97,12 @@ export const SearchPage: FC = () => {
     matchPath: false,
     pinyinEnabled: isChineseUi,
     includeBookmarks: true,
+    enableAppsAndCommands: true,
+    liveRefreshEnabled: true,
+    rankingProfile: 'balanced_frecency',
+    memoryMode: 'idle_trim',
+    idleTrimMinutes: 5,
+    idleStopMinutes: 30,
     iconStyle: 'native',
     autoBypassFullscreen: true,
     externalApiEnabled: false,
@@ -86,11 +114,21 @@ export const SearchPage: FC = () => {
   );
   const [serviceStatus, setServiceStatus] = useState<ServiceStatus>({
     available: false,
+    running: false,
     pipeName: '\\\\.\\pipe\\Tools3000SearchPipe',
+    workingSetBytes: 0,
+    privateBytes: 0,
+    memoryMode: 'idle_trim',
+    idleTrimMinutes: 5,
+    idleStopMinutes: 30,
+    idleSeconds: 0,
+    lastTrimmedAt: 0,
   });
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
   const [waking, setWaking] = useState(false);
+  const [trimming, setTrimming] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
 
@@ -172,6 +210,22 @@ export const SearchPage: FC = () => {
     };
   }, [i18n.resolvedLanguage, i18n.language]);
 
+  // 切换到「服务与索引」Tab 时按 DEMAND_START 原则静默刷新一次内存观测，绝不拉起未运行服务
+  useEffect(() => {
+    if (activeTab !== 'status') return;
+    let cancelled = false;
+    void bridgeRequest<ServiceStatus>('search.getServiceStatus')
+      .then((res) => {
+        if (!cancelled && res && typeof res === 'object') {
+          setServiceStatus((prev) => ({ ...prev, ...res, running: res.running ?? res.available }));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
+
   const saveSearchMode = async (mode: SearchMode) => {
     setSearchMode(mode);
     safeStorageSetItem('tools3000_search_default_mode', mode);
@@ -230,7 +284,7 @@ export const SearchPage: FC = () => {
     try {
       const res = await bridgeRequest<ServiceStatus>('search.getServiceStatus');
       if (res && typeof res === 'object') {
-        setServiceStatus(prev => ({ ...prev, ...res }));
+        setServiceStatus(prev => ({ ...prev, ...res, running: res.running ?? res.available }));
       }
       if (res?.available) {
         toast.success(t('searchPage.serviceOk', 'Index daemon connected via local named pipe'));
@@ -253,7 +307,7 @@ export const SearchPage: FC = () => {
       const statusRes = await bridgeRequest<ServiceStatus>('search.getServiceStatus').catch(() => warmRes);
       const effective = statusRes && typeof statusRes === 'object' ? statusRes : warmRes;
       if (effective && typeof effective === 'object') {
-        setServiceStatus(prev => ({ ...prev, ...effective }));
+        setServiceStatus(prev => ({ ...prev, ...effective, running: effective.running ?? effective.available }));
       }
       if (effective?.available) {
         toast.success(t('searchPage.serviceWoken', 'Indexing engine woken and ready'));
@@ -264,6 +318,74 @@ export const SearchPage: FC = () => {
       toast.error(t('searchPage.serviceDown', 'Index service not responding, check administrator privileges'));
     } finally {
       setWaking(false);
+    }
+  };
+
+  const trimServiceMemory = async () => {
+    if (trimming || stopping) return;
+    setTrimming(true);
+    try {
+      const res = await bridgeRequest<{
+        success?: boolean;
+        running?: boolean;
+        workingSetBytes?: number;
+        privateBytes?: number;
+        lastTrimmedAt?: number;
+      }>('search.trimMemory');
+      if (res && typeof res === 'object') {
+        setServiceStatus((prev) => ({
+          ...prev,
+          available: Boolean(res.running ?? prev.available),
+          running: Boolean(res.running ?? prev.running),
+          workingSetBytes: typeof res.workingSetBytes === 'number' ? res.workingSetBytes : prev.workingSetBytes,
+          privateBytes: typeof res.privateBytes === 'number' ? res.privateBytes : prev.privateBytes,
+          lastTrimmedAt: typeof res.lastTrimmedAt === 'number' ? res.lastTrimmedAt : prev.lastTrimmedAt,
+        }));
+      }
+      if (res?.success) {
+        const wsText = formatBytes(res.workingSetBytes ?? 0);
+        toast.success(
+          t('searchPage.trimMemorySuccess', 'Search service memory trimmed (Working Set: {{size}})', { size: wsText }),
+        );
+      } else {
+        toast.info(t('searchPage.memoryServiceOfflineToast', 'Search service is not running (0 MB)'));
+      }
+    } catch {
+      toast.error(t('searchPage.trimMemoryFailed', 'Failed to trim search service memory'));
+    } finally {
+      setTrimming(false);
+    }
+  };
+
+  const stopSearchService = async () => {
+    if (stopping || trimming) return;
+    setStopping(true);
+    try {
+      const res = await bridgeRequest<{
+        success?: boolean;
+        running?: boolean;
+        snapshotSaved?: boolean;
+      }>('search.stopService');
+      const stillRunning = Boolean(res?.running);
+      setServiceStatus((prev) => ({
+        ...prev,
+        available: stillRunning,
+        running: stillRunning,
+        workingSetBytes: stillRunning ? prev.workingSetBytes : 0,
+        privateBytes: stillRunning ? prev.privateBytes : 0,
+        idleSeconds: 0,
+      }));
+      if (!stillRunning) {
+        toast.success(
+          t('searchPage.stopServiceSuccess', 'Search service stopped cleanly (0 MB). Next search will wake and catch up USN automatically.'),
+        );
+      } else {
+        toast.error(t('searchPage.stopServiceFailed', 'Search service is still stopping; click Check Now shortly'));
+      }
+    } catch {
+      toast.error(t('searchPage.stopServiceFailed', 'Search service is still stopping; click Check Now shortly'));
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -291,6 +413,55 @@ export const SearchPage: FC = () => {
       : searchMode === 'content'
         ? t('search.modeContentOnlyDesc', 'Full-text search inside documents, spreadsheets, PDFs, CAD and code files')
         : t('search.modeFilenameOnlyDesc', 'Sub-millisecond response (<5ms); to search content, click the top "Content" tab or prefix with content:');
+
+  const activeRankingProfile: SearchRankingProfile = settings.rankingProfile ?? 'balanced_frecency';
+  const rankingProfileOptions: Array<{ value: SearchRankingProfile; label: string }> = [
+    {
+      value: 'balanced_frecency',
+      label: t('searchPage.rankingBalanced', 'Balanced Smart (Recommended · Frecency)'),
+    },
+    {
+      value: 'files_first',
+      label: t('searchPage.rankingFilesFirst', 'Files First (Exact Alias Commands Only)'),
+    },
+    {
+      value: 'launcher_first',
+      label: t('searchPage.rankingLauncherFirst', 'Apps & Commands First (Launcher Mode)'),
+    },
+  ];
+  const rankingProfileDesc =
+    activeRankingProfile === 'files_first'
+      ? t('searchPage.rankingFilesFirstDesc', 'Prioritize local files at the top; apps and commands only surface above files on exact alias matches (e.g. env) or explicit app:/cmd: prefixes.')
+      : activeRankingProfile === 'launcher_first'
+        ? t('searchPage.rankingLauncherFirstDesc', 'Place matched apps and Windows system commands in the top tier ahead of local files, ideal for keyboard-first launcher workflows.')
+        : t('searchPage.rankingBalancedDesc', 'Pin high-confidence apps and exact commands at the top (capped at 3 so files are never buried) and automatically boost frequently used items via Frecency.');
+
+  const activeMemoryMode: SearchMemoryMode = settings.memoryMode ?? 'idle_trim';
+  const activeIdleTrimMinutes = settings.idleTrimMinutes ?? 5;
+  const activeIdleStopMinutes = settings.idleStopMinutes ?? 30;
+  const isServiceRunning = Boolean(serviceStatus.running || serviceStatus.available);
+  const workingSetText = isServiceRunning
+    ? formatBytes(serviceStatus.workingSetBytes ?? 0)
+    : t('searchPage.memoryStoppedValue', '0 MB · Stopped');
+  const privateBytesText = isServiceRunning
+    ? formatBytes(serviceStatus.privateBytes ?? 0)
+    : t('searchPage.memoryStoppedValue', '0 MB · Stopped');
+
+  const idleTrimOptions = IDLE_TRIM_MINUTE_OPTIONS.map((mins) => ({
+    value: String(mins),
+    label: t('searchPage.minutesOption', '{{count}} min', { count: mins }),
+  }));
+  const idleStopOptions = IDLE_STOP_MINUTE_OPTIONS.map((mins) => ({
+    value: String(mins),
+    label: t('searchPage.minutesOption', '{{count}} min', { count: mins }),
+  }));
+
+  const memoryModeDesc =
+    activeMemoryMode === 'full_resident'
+      ? t('searchPage.memoryModeFullDesc', 'Keep full MFT tree and query caches resident in memory with no idle trimming or shutdown for constant sub-millisecond response.')
+      : activeMemoryMode === 'idle_stop'
+        ? t('searchPage.memoryModeStopDesc', 'After idling past the threshold, flush the latest NTFS USN cursor snapshot to disk and exit cleanly to 0 MB. Next search wakes on demand and catches up via USN in milliseconds.')
+        : t('searchPage.memoryModeTrimDesc', 'Recommended: release query/content caches and compact working set after idling while keeping live NTFS USN monitoring active with zero missed file changes.');
 
   if (loading) {
     return <PageSkeleton cards={2} rowsPerCard={4} />;
@@ -422,12 +593,49 @@ export const SearchPage: FC = () => {
 
               <SettingRow
                 label={t('searchPage.bookmarksTitle', 'Include Browser Bookmarks in General Search')}
-                description={t('searchPage.bookmarksDesc', 'Mix matching local Edge, Chrome, and Brave bookmarks into regular search results. Dedicated bm: prefix and the Bookmarks category always remain available.')}
+                description={t('searchPage.bookmarksDesc', 'Mix matching local Edge, Chrome, and Brave bookmarks into regular search results. Dedicated b: / bm: prefixes (while keeping b:\\ as drive B) and the Bookmarks category always remain available offline.')}
               >
                 <Toggle
                   id="search-bookmarks-toggle"
                   checked={settings.includeBookmarks ?? true}
                   onChange={v => saveSetting('includeBookmarks', v)}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label={t('searchPage.appsAndCommandsTitle', 'Quick Launch Apps & Windows System Commands')}
+                description={t('searchPage.appsAndCommandsDesc', 'Mix installed Start Menu apps and 35+ built-in geek commands (such as env, services, devmgmt, hosts) into general search offline. Explicit app: and cmd: prefixes always work without waking the index service.')}
+              >
+                <Toggle
+                  id="search-apps-commands-toggle"
+                  checked={settings.enableAppsAndCommands ?? true}
+                  onChange={v => saveSetting('enableAppsAndCommands', v)}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label={t('searchPage.liveRefreshTitle', 'Real-Time Result Updates for New & Changed Files')}
+                description={t('searchPage.liveRefreshDesc', 'Automatically refresh open search results in place when files are created, renamed, or deleted via NTFS USN monitoring. Zero background polling when the search window is hidden.')}
+              >
+                <Toggle
+                  id="search-live-refresh-toggle"
+                  checked={settings.liveRefreshEnabled ?? true}
+                  onChange={v => {
+                    safeStorageSetItem('tools3000_search_live_refresh', String(v));
+                    void saveSetting('liveRefreshEnabled', v);
+                  }}
+                />
+              </SettingRow>
+
+              <SettingRow
+                label={t('searchPage.rankingProfileTitle', 'Result Priority Strategy')}
+                description={rankingProfileDesc}
+              >
+                <Select
+                  id="search-ranking-profile"
+                  value={activeRankingProfile}
+                  onChange={v => void saveSetting('rankingProfile', v as SearchRankingProfile)}
+                  options={rankingProfileOptions}
                 />
               </SettingRow>
 
@@ -598,6 +806,21 @@ export const SearchPage: FC = () => {
                     <td>{t('searchPage.modNopyDesc', 'Disable pinyin, match plain text only')}</td>
                     <td><CodeBadge>nopy:wx</CodeBadge></td>
                   </tr>
+                  <tr>
+                    <td><CodeBadge>b:&lt;kw&gt;</CodeBadge> / <CodeBadge>bm:&lt;kw&gt;</CodeBadge></td>
+                    <td>{t('searchPage.modBookmarkDesc', 'Search local browser bookmarks offline without waking index service (b:\\ still targets drive B)')}</td>
+                    <td><CodeBadge>b:github</CodeBadge>, <CodeBadge>bm:docs</CodeBadge></td>
+                  </tr>
+                  <tr>
+                    <td><CodeBadge>app:&lt;name&gt;</CodeBadge></td>
+                    <td>{t('searchPage.modAppDesc', 'Search installed Start Menu, App Paths, and portable apps offline')}</td>
+                    <td><CodeBadge>app:code</CodeBadge></td>
+                  </tr>
+                  <tr>
+                    <td><CodeBadge>cmd:&lt;alias&gt;</CodeBadge></td>
+                    <td>{t('searchPage.modCmdDesc', 'Launch 35+ built-in Windows system commands offline (supports English and Pinyin aliases)')}</td>
+                    <td><CodeBadge>cmd:env</CodeBadge>, <CodeBadge>cmd:services</CodeBadge></td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -685,24 +908,24 @@ export const SearchPage: FC = () => {
           <Card title={t('searchPage.serviceMonitor', 'NTFS MFT Engine Monitor')}>
             <div className="service-status-card">
               <div className="service-status-header">
-                <div className={`status-indicator ${serviceStatus.available ? 'status-indicator--online' : 'status-indicator--standby'}`}>
-                  {serviceStatus.available ? <CheckCircle2 size={24} aria-hidden="true" /> : <Sparkles size={24} aria-hidden="true" />}
+                <div className={`status-indicator ${isServiceRunning ? 'status-indicator--online' : 'status-indicator--standby'}`}>
+                  {isServiceRunning ? <CheckCircle2 size={24} aria-hidden="true" /> : <Sparkles size={24} aria-hidden="true" />}
                 </div>
                 <div className="status-info">
                   <h3 className="status-title">
-                    {serviceStatus.available
+                    {isServiceRunning
                       ? t('searchPage.serviceRunning', 'Indexing Engine Running (Local Named Pipe)')
                       : t('searchPage.serviceStandby', 'On-Demand Standby (Instant Wake on First Search)')}
                   </h3>
                   <p className="status-desc">
-                    {serviceStatus.available
+                    {isServiceRunning
                       ? t('searchPage.serviceRunningDesc', 'NTFS MFT tree and USN journal monitoring are mounted and ready')
                       : t('searchPage.serviceStandbyDesc', 'Follows zero-boot-overhead DEMAND_START policy; wakes automatically on first search or click Wake Engine Now.')}
                   </p>
                 </div>
                 <div className="service-status-actions">
-                  {!serviceStatus.available && (
-                    <Button variant="primary" onClick={() => void wakeService()} disabled={waking || checking}>
+                  {!isServiceRunning && (
+                    <Button variant="primary" onClick={() => void wakeService()} disabled={waking || checking || stopping}>
                       {waking ? (
                         <RotateCw size={14} className="uikit-spin-icon" aria-hidden="true" />
                       ) : (
@@ -711,7 +934,7 @@ export const SearchPage: FC = () => {
                       {t('searchPage.wakeNow', 'Wake Engine Now')}
                     </Button>
                   )}
-                  <Button variant="ghost" onClick={() => void checkService()} disabled={checking || waking}>
+                  <Button variant="ghost" onClick={() => void checkService()} disabled={checking || waking || trimming || stopping}>
                     <RotateCw size={14} className={checking ? 'uikit-spin-icon' : ''} aria-hidden="true" />
                     {t('searchPage.checkNow', 'Check Now')}
                   </Button>
@@ -720,12 +943,20 @@ export const SearchPage: FC = () => {
 
               <div className="service-details-grid">
                 <div className="detail-item">
-                  <span className="detail-label">{t('searchPage.indexTech', 'Indexing Architecture')}</span>
-                  <span className="detail-value">{t('searchPage.indexTechDesc', 'NTFS MFT memory tree + USN Journal incremental monitoring')}</span>
+                  <span className="detail-label">{t('searchPage.memoryWorkingSet', 'Working Set Memory')}</span>
+                  <span className="detail-value" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                    {workingSetText}
+                  </span>
                 </div>
                 <div className="detail-item">
-                  <span className="detail-label">{t('searchPage.pinyinTech', 'Pinyin Engine')}</span>
-                  <span className="detail-value">{t('searchPage.pinyinTechDesc', 'Zero-heap allocation GBK/Unicode bi-directional pinyin table')}</span>
+                  <span className="detail-label">{t('searchPage.memoryPrivateBytes', 'Private Commit Memory')}</span>
+                  <span className="detail-value" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                    {privateBytesText}
+                  </span>
+                </div>
+                <div className="detail-item">
+                  <span className="detail-label">{t('searchPage.indexTech', 'Indexing Architecture')}</span>
+                  <span className="detail-value">{t('searchPage.indexTechDesc', 'NTFS MFT memory tree + USN Journal incremental monitoring')}</span>
                 </div>
                 <div className="detail-item">
                   <span className="detail-label">{t('searchPage.daemonMode', 'Daemon Mode')}</span>
@@ -734,6 +965,138 @@ export const SearchPage: FC = () => {
               </div>
             </div>
           </Card>
+
+          <SettingGroup title={t('searchPage.memoryPolicyGroup', 'Search Service Memory Policy')} icon={<Cpu size={18} />}>
+            <Card>
+              <SettingRow
+                label={t('searchPage.memoryModeTitle', 'Idle Memory Management Mode')}
+                description={memoryModeDesc}
+              >
+                <div
+                  className="uikit-segmented"
+                  role="radiogroup"
+                  aria-label={t('searchPage.memoryModeTitle', 'Idle Memory Management Mode')}
+                >
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={activeMemoryMode === 'full_resident'}
+                    className={`uikit-segmented__btn ${activeMemoryMode === 'full_resident' ? 'uikit-segmented__btn--active' : ''}`}
+                    onClick={() => void saveSetting('memoryMode', 'full_resident')}
+                  >
+                    {t('searchPage.memoryModeFull', 'Full Resident')}
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={activeMemoryMode === 'idle_trim'}
+                    className={`uikit-segmented__btn ${activeMemoryMode === 'idle_trim' ? 'uikit-segmented__btn--active' : ''}`}
+                    onClick={() => void saveSetting('memoryMode', 'idle_trim')}
+                  >
+                    {t('searchPage.memoryModeTrim', 'Idle Trim (Recommended)')}
+                  </button>
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={activeMemoryMode === 'idle_stop'}
+                    className={`uikit-segmented__btn ${activeMemoryMode === 'idle_stop' ? 'uikit-segmented__btn--active' : ''}`}
+                    onClick={() => void saveSetting('memoryMode', 'idle_stop')}
+                  >
+                    {t('searchPage.memoryModeStop', 'Idle Sleep (0 MB)')}
+                  </button>
+                </div>
+              </SettingRow>
+
+              {activeMemoryMode === 'idle_trim' && (
+                <SettingRow
+                  label={t('searchPage.idleTrimMinutesTitle', 'Idle Trim Threshold')}
+                  description={t('searchPage.idleTrimMinutesDesc', 'Automatically release caches and trim working set after this idle duration while keeping USN monitoring active')}
+                >
+                  <Select
+                    id="search-idle-trim-minutes"
+                    value={String(activeIdleTrimMinutes)}
+                    onChange={v => void saveSetting('idleTrimMinutes', Number(v))}
+                    options={idleTrimOptions}
+                  />
+                </SettingRow>
+              )}
+
+              {activeMemoryMode === 'idle_stop' && (
+                <SettingRow
+                  label={t('searchPage.idleStopMinutesTitle', 'Idle Deep Sleep Threshold')}
+                  description={t('searchPage.idleStopMinutesDesc', 'Automatically persist the latest USN snapshot and exit the search daemon to 0 MB after this idle duration')}
+                >
+                  <Select
+                    id="search-idle-stop-minutes"
+                    value={String(activeIdleStopMinutes)}
+                    onChange={v => void saveSetting('idleStopMinutes', Number(v))}
+                    options={idleStopOptions}
+                  />
+                </SettingRow>
+              )}
+
+              <SettingRow
+                label={t('searchPage.manualMemoryControlTitle', 'Manual Memory Control')}
+                description={t('searchPage.manualMemoryControlDesc', 'Release cached search buffers immediately or cleanly stop the background index service without losing any file updates')}
+              >
+                <div className="service-status-actions">
+                  <Button
+                    variant="secondary"
+                    onClick={() => void trimServiceMemory()}
+                    disabled={!isServiceRunning || trimming || stopping}
+                  >
+                    {trimming ? (
+                      <RotateCw size={14} className="uikit-spin-icon" aria-hidden="true" />
+                    ) : (
+                      <Sliders size={14} aria-hidden="true" />
+                    )}
+                    {t('searchPage.trimMemoryNow', 'Release Memory Now')}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={() => void stopSearchService()}
+                    disabled={!isServiceRunning || stopping || trimming}
+                  >
+                    {stopping ? (
+                      <RotateCw size={14} className="uikit-spin-icon" aria-hidden="true" />
+                    ) : (
+                      <Power size={14} aria-hidden="true" />
+                    )}
+                    {t('searchPage.stopServiceNow', 'Stop Search Service')}
+                  </Button>
+                </div>
+              </SettingRow>
+
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: '10px',
+                  marginTop: '12px',
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  background: 'var(--well-bg)',
+                  border: '1px solid var(--well-border)',
+                  color: 'var(--text-secondary)',
+                  fontSize: '0.84rem',
+                  fontWeight: 500,
+                  lineHeight: 1.55,
+                }}
+              >
+                <ShieldCheck
+                  size={16}
+                  aria-hidden="true"
+                  style={{ color: 'var(--primary)', flexShrink: 0, marginTop: '2px' }}
+                />
+                <span>
+                  {t(
+                    'searchPage.usnSafetyNote',
+                    'Whether using Idle Trim or Idle Sleep, Tools3000 relies on NTFS USN Journal incremental catch-up so newly created, renamed, or modified files are never missed.',
+                  )}
+                </span>
+              </div>
+            </Card>
+          </SettingGroup>
         </div>
       )}
     </div>

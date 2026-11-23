@@ -130,6 +130,9 @@ struct GestureAction {
     BuiltinCommand builtinCmd;       // type == BuiltinCommand
     std::string programPath;         // type == RunProgram
     std::string programArgs;         // type == RunProgram
+    std::string runMode = "always_new"; // type == RunProgram ("activate_or_run" | "toggle_or_run" | "always_new")
+    std::string matchCmdLine;        // type == RunProgram (可选命令行/Profile 关键字匹配)
+    std::string matchTitle;          // type == RunProgram (可选窗口标题关键字匹配)
 
     /// 执行动作 (可传入鼠标下方的目标窗口句柄 HWND)
     void execute(void* targetWindow = nullptr) const;

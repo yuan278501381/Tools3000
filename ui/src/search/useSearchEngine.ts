@@ -57,6 +57,7 @@ interface UseSearchEngineResult {
   resumeContentScan: () => void;
   clearResultCache: () => void;
   refreshQuery: () => void;
+  silentRefreshQuery: () => void;
   refreshOnFocus: () => void;
 }
 
@@ -175,6 +176,7 @@ export function useSearchEngine({
   const runContentLoopRef = useRef<((checkpoint: ContentScanCheckpoint, sequence: number, bypassBudgetGuard: boolean) => Promise<void>) | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
   const refreshRequestedRef = useRef(false);
+  const silentRefreshRequestedRef = useRef(false);
 
   useEffect(() => {
     hasResultsRef.current = snapshot.results.length > 0;
@@ -195,9 +197,20 @@ export function useSearchEngine({
     clearResultCache();
     resumeCheckpointRef.current = null;
     setContentScanPaused(null);
+    silentRefreshRequestedRef.current = false;
     refreshRequestedRef.current = true;
     setRefreshCounter((c) => c + 1);
   }, [clearResultCache]);
+
+  const silentRefreshQuery = useCallback(() => {
+    // 实时文件变动无闪原地刷新：绝不打断正在执行的检索或渐进式全文扫描
+    if (isRunningRef.current || isContentModeRef.current || resumeCheckpointRef.current !== null) {
+      return;
+    }
+    silentRefreshRequestedRef.current = true;
+    refreshRequestedRef.current = true;
+    setRefreshCounter((c) => c + 1);
+  }, []);
 
   const refreshOnFocus = useCallback(() => {
     // 正在执行扫描（尤其是渐进式全文扫描）或已软暂停等待用户决定续扫时，窗口获焦绝不打断或偷偷重扫
@@ -757,7 +770,9 @@ export function useSearchEngine({
     });
     const sequence = ++requestSequenceRef.current;
     const isRefresh = refreshRequestedRef.current;
+    const isSilentRefresh = silentRefreshRequestedRef.current;
     refreshRequestedRef.current = false;
+    silentRefreshRequestedRef.current = false;
     const debounceMs = isRefresh ? 0 : resolveDebounceMs({ query: trimmedQuery, activeCategory, searchMode });
 
     const runQuery = async () => {
@@ -852,13 +867,17 @@ export function useSearchEngine({
       isRunningRef.current = true;
       setScanProgress(null);
       // 发起全新查询时立即清除上一轮遗留的“服务启动中”提示，避免切查询后错误残留
-      if (retryCountRef.current === 0) {
+      if (retryCountRef.current === 0 && !isSilentRefresh) {
         setIsServiceStarting(false);
       }
-      const loadingTimer = window.setTimeout(() => {
-        if (sequence === requestSequenceRef.current) setLoading(true);
-      }, 80);
-      startScanStopwatch(sequence);
+      const loadingTimer = isSilentRefresh
+        ? 0
+        : window.setTimeout(() => {
+            if (sequence === requestSequenceRef.current) setLoading(true);
+          }, 80);
+      if (!isSilentRefresh) {
+        startScanStopwatch(sequence);
+      }
 
       let keepRetrying = false;
 
@@ -933,7 +952,8 @@ export function useSearchEngine({
           });
           setSelectedIndex((prev) => {
             const len = Array.isArray(response.results) ? response.results.length : 0;
-            return len === 0 ? 0 : Math.min(prev, 0);
+            if (len === 0) return 0;
+            return isSilentRefresh ? Math.min(prev, len - 1) : 0;
           });
           if (response.totalIndexedFiles !== undefined) setTotalIndexedFiles(response.totalIndexedFiles);
           if (response.elapsedMs !== undefined) setSearchElapsedMs(response.elapsedMs);
@@ -1045,6 +1065,7 @@ export function useSearchEngine({
     resumeContentScan,
     clearResultCache,
     refreshQuery,
+    silentRefreshQuery,
     refreshOnFocus,
   };
 }

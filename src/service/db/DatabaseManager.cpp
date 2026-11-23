@@ -470,6 +470,7 @@ bool DatabaseManager::loadSnapshot(std::vector<MftParser*>& parsers) {
     for (const auto& [parser, lastUsn] : pendingCatchUps) {
         if (parser) {
             parser->catchUpUsnJournal(lastUsn);
+            parser->shrinkIndexCapacity();
         }
     }
 

@@ -350,6 +350,347 @@ std::wstring WinUtils::utf8ToWstring(const std::string& str) {
     return result;
 }
 
+std::string WinUtils::pathToUtf8(const std::filesystem::path& path) {
+    return wstringToUtf8(path.wstring());
+}
+
+std::filesystem::path WinUtils::utf8ToPath(std::string_view utf8Path) {
+    if (utf8Path.empty()) return {};
+    return std::filesystem::path(utf8ToWstring(std::string(utf8Path)));
+}
+
+namespace {
+
+struct NtUnicodeString {
+    USHORT Length;
+    USHORT MaximumLength;
+    PWSTR Buffer;
+};
+
+using NtQueryInformationProcessFn = LONG(NTAPI*)(
+    HANDLE ProcessHandle,
+    ULONG ProcessInformationClass,
+    PVOID ProcessInformation,
+    ULONG ProcessInformationLength,
+    PULONG ReturnLength);
+
+std::wstring normalizeForMatch(std::wstring_view raw) {
+    std::wstring out;
+    out.reserve(raw.size());
+    for (wchar_t ch : raw) {
+        if (ch == L'"' || ch == L'\'') continue;
+        if (ch == L'/') ch = L'\\';
+        out.push_back(ch);
+    }
+    if (!out.empty()) {
+        CharLowerBuffW(out.data(), static_cast<DWORD>(out.size()));
+    }
+    while (!out.empty() && (out.back() == L'\\' || out.back() == L' ')) {
+        out.pop_back();
+    }
+    size_t start = 0;
+    while (start < out.size() && out[start] == L' ') {
+        ++start;
+    }
+    if (start > 0) {
+        out.erase(0, start);
+    }
+    return out;
+}
+
+std::wstring extractExeBasenameLower(std::wstring_view exeOrPath) {
+    std::wstring norm = normalizeForMatch(exeOrPath);
+    const size_t slash = norm.find_last_of(L'\\');
+    if (slash != std::wstring::npos && slash + 1 < norm.size()) {
+        norm = norm.substr(slash + 1);
+    }
+    return norm;
+}
+
+bool isDwmCloakedWindow(HWND hwnd) noexcept {
+    DWORD cloaked = 0;
+    const HRESULT hr = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked));
+    return SUCCEEDED(hr) && cloaked != 0;
+}
+
+bool isEligibleTopLevelAppWindow(HWND hwnd) noexcept {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    if (!IsWindowVisible(hwnd)) return false;
+    if (GetWindow(hwnd, GW_OWNER) != nullptr) return false;
+    const LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if ((exStyle & WS_EX_TOOLWINDOW) != 0 && (exStyle & WS_EX_APPWINDOW) == 0) {
+        return false;
+    }
+    if (isDwmCloakedWindow(hwnd)) return false;
+    return true;
+}
+
+void pulseNeutralForegroundUnlock() noexcept {
+    INPUT inputs[2]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_F24;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = VK_F24;
+    inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    SendInput(2, inputs, sizeof(INPUT));
+}
+
+}  // namespace
+
+std::wstring WinUtils::queryProcessCommandLine(DWORD pid) {
+    if (pid == 0) return {};
+    static const NtQueryInformationProcessFn pNtQuery = []() -> NtQueryInformationProcessFn {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll) return nullptr;
+        return reinterpret_cast<NtQueryInformationProcessFn>(
+            GetProcAddress(ntdll, "NtQueryInformationProcess"));
+    }();
+    if (!pNtQuery) return {};
+
+    HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!hProcess) return {};
+
+    constexpr ULONG kProcessCommandLineInformation = 60;
+    ULONG required = 0;
+    LONG status = pNtQuery(hProcess, kProcessCommandLineInformation, nullptr, 0, &required);
+    if (required < sizeof(NtUnicodeString) || required > 1024 * 1024) {
+        CloseHandle(hProcess);
+        return {};
+    }
+
+    std::vector<BYTE> buffer(required + 64, 0);
+    status = pNtQuery(hProcess, kProcessCommandLineInformation,
+                      buffer.data(), static_cast<ULONG>(buffer.size()), &required);
+    CloseHandle(hProcess);
+    if (status < 0) return {};
+
+    const auto* us = reinterpret_cast<const NtUnicodeString*>(buffer.data());
+    if (!us->Buffer || us->Length == 0) return {};
+    const size_t wcharCount = us->Length / sizeof(wchar_t);
+    return std::wstring(us->Buffer, wcharCount);
+}
+
+std::wstring WinUtils::extractProfileMatchHintFromArgs(const std::wstring& args) {
+    if (args.empty()) return {};
+    const std::wstring lower = toLower(args);
+    static constexpr std::wstring_view kKeys[] = {
+        L"--user-data-dir=",
+        L"--profile-directory=",
+        L"-profile ",
+        L"-p "
+    };
+    for (const auto key : kKeys) {
+        const size_t pos = lower.find(key);
+        if (pos == std::wstring::npos) continue;
+        size_t valStart = pos + key.size();
+        while (valStart < args.size() && args[valStart] == L' ') ++valStart;
+        if (valStart >= args.size()) continue;
+        size_t valEnd = valStart;
+        if (args[valStart] == L'"') {
+            ++valStart;
+            valEnd = args.find(L'"', valStart);
+            if (valEnd == std::wstring::npos) valEnd = args.size();
+        } else {
+            valEnd = args.find_first_of(L" \t\r\n", valStart);
+            if (valEnd == std::wstring::npos) valEnd = args.size();
+        }
+        if (valEnd > valStart) {
+            return args.substr(valStart, valEnd - valStart);
+        }
+    }
+    return {};
+}
+
+bool WinUtils::activateWindowForeground(HWND hwnd) {
+    if (!hwnd || !IsWindow(hwnd)) return false;
+    if (IsIconic(hwnd)) {
+        ShowWindow(hwnd, SW_RESTORE);
+    } else if (!IsWindowVisible(hwnd)) {
+        ShowWindow(hwnd, SW_SHOW);
+    }
+
+    AllowSetForegroundWindow(ASFW_ANY);
+    LockSetForegroundWindow(LSFW_UNLOCK);
+
+    if (SetForegroundWindow(hwnd)) {
+        BringWindowToTop(hwnd);
+        return true;
+    }
+
+    const HWND fg = GetForegroundWindow();
+    const DWORD fgThread = fg ? GetWindowThreadProcessId(fg, nullptr) : 0;
+    const DWORD curThread = GetCurrentThreadId();
+    const DWORD targetThread = GetWindowThreadProcessId(hwnd, nullptr);
+
+    bool attachedFg = false;
+    bool attachedTarget = false;
+    if (fgThread != 0 && fgThread != curThread) {
+        attachedFg = AttachThreadInput(curThread, fgThread, TRUE) != FALSE;
+    }
+    if (targetThread != 0 && targetThread != curThread && targetThread != fgThread) {
+        attachedTarget = AttachThreadInput(curThread, targetThread, TRUE) != FALSE;
+    }
+
+    pulseNeutralForegroundUnlock();
+    BringWindowToTop(hwnd);
+    ShowWindow(hwnd, IsIconic(hwnd) ? SW_RESTORE : SW_SHOW);
+    BOOL ok = SetForegroundWindow(hwnd);
+    if (!ok) {
+        SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+        ok = SetForegroundWindow(hwnd);
+    }
+
+    if (attachedTarget) AttachThreadInput(curThread, targetThread, FALSE);
+    if (attachedFg) AttachThreadInput(curThread, fgThread, FALSE);
+    return ok != FALSE || GetForegroundWindow() == hwnd;
+}
+
+HWND WinUtils::findTopLevelWindowByExe(const std::wstring& exeOrPath,
+                                       const std::wstring& cmdLineFilter,
+                                       const std::wstring& titleFilter) {
+    const std::wstring normTargetFull = normalizeForMatch(exeOrPath);
+    const std::wstring targetBase = extractExeBasenameLower(exeOrPath);
+    if (targetBase.empty()) return nullptr;
+    const bool hasFullPath = normTargetFull.find(L'\\') != std::wstring::npos;
+    const std::wstring normCmdFilter = normalizeForMatch(cmdLineFilter);
+    const std::wstring normTitleFilter = toLower(titleFilter);
+
+    struct SearchCtx {
+        std::wstring targetFull;
+        std::wstring targetBase;
+        bool hasFullPath = false;
+        std::wstring cmdFilter;
+        std::wstring titleFilter;
+        std::unordered_map<DWORD, std::wstring> pidPathCache;
+        std::unordered_map<DWORD, std::wstring> pidCmdCache;
+        HWND bestExactPathMatch = nullptr;
+        HWND bestBaseMatch = nullptr;
+    } ctx;
+    ctx.targetFull = normTargetFull;
+    ctx.targetBase = targetBase;
+    ctx.hasFullPath = hasFullPath;
+    ctx.cmdFilter = normCmdFilter;
+    ctx.titleFilter = normTitleFilter;
+
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* c = reinterpret_cast<SearchCtx*>(lParam);
+            if (!isEligibleTopLevelAppWindow(hwnd)) return TRUE;
+
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == 0) return TRUE;
+
+            auto it = c->pidPathCache.find(pid);
+            if (it == c->pidPathCache.end()) {
+                it = c->pidPathCache.emplace(pid, normalizeForMatch(processPathFromPid(pid))).first;
+            }
+            const std::wstring& procFull = it->second;
+            if (procFull.empty()) return TRUE;
+
+            const std::wstring procBase = extractExeBasenameLower(procFull);
+            if (procBase != c->targetBase) return TRUE;
+
+            const bool exactPathMatched = c->hasFullPath && (procFull == c->targetFull);
+            if (c->hasFullPath && !exactPathMatched && !c->cmdFilter.empty()) {
+                // 指定了完整路径且同时指定命令行时，优先要求同 exe 路径
+                return TRUE;
+            }
+
+            if (!c->cmdFilter.empty()) {
+                auto cmdIt = c->pidCmdCache.find(pid);
+                if (cmdIt == c->pidCmdCache.end()) {
+                    cmdIt = c->pidCmdCache.emplace(pid, normalizeForMatch(queryProcessCommandLine(pid))).first;
+                }
+                if (cmdIt->second.find(c->cmdFilter) == std::wstring::npos) {
+                    return TRUE;
+                }
+            }
+
+            if (!c->titleFilter.empty()) {
+                const std::wstring titleLow = toLower(getWindowTitle(hwnd));
+                if (titleLow.find(c->titleFilter) == std::wstring::npos) {
+                    return TRUE;
+                }
+            }
+
+            if (exactPathMatched) {
+                c->bestExactPathMatch = hwnd;
+                return FALSE;  // Z-order 首个精确完整路径命中，立即短路结束
+            }
+            if (!c->bestBaseMatch) {
+                c->bestBaseMatch = hwnd;
+                if (!c->hasFullPath) {
+                    return FALSE;  // 仅按 exe 名匹配时，首个 Z-order 命中即最优
+                }
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+
+    return ctx.bestExactPathMatch ? ctx.bestExactPathMatch : ctx.bestBaseMatch;
+}
+
+WinUtils::WindowActivateOutcome WinUtils::activateOrToggleWindowByExe(
+    const std::wstring& exeOrPath,
+    bool toggleIfForeground,
+    const std::wstring& cmdLineFilter,
+    const std::wstring& titleFilter) {
+    HWND target = findTopLevelWindowByExe(exeOrPath, cmdLineFilter, titleFilter);
+    if (!target) {
+        return WindowActivateOutcome::NotFound;
+    }
+    if (toggleIfForeground && GetForegroundWindow() == target && !IsIconic(target)) {
+        ShowWindow(target, SW_MINIMIZE);
+        return WindowActivateOutcome::Minimized;
+    }
+    activateWindowForeground(target);
+    return WindowActivateOutcome::Activated;
+}
+
+bool WinUtils::focusWindowByTitle(const std::wstring& titleSubstr,
+                                  const std::wstring& optionalExeOrPath) {
+    if (titleSubstr.empty()) return false;
+    const std::wstring titleLow = toLower(titleSubstr);
+    const std::wstring exeBaseLow = optionalExeOrPath.empty() ? L"" : extractExeBasenameLower(optionalExeOrPath);
+
+    struct TitleCtx {
+        std::wstring titleLow;
+        std::wstring exeBaseLow;
+        std::unordered_map<DWORD, std::wstring> pidBaseCache;
+        HWND found = nullptr;
+    } ctx{titleLow, exeBaseLow, {}, nullptr};
+
+    EnumWindows(
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* c = reinterpret_cast<TitleCtx*>(lParam);
+            if (!isEligibleTopLevelAppWindow(hwnd)) return TRUE;
+
+            if (!c->exeBaseLow.empty()) {
+                DWORD pid = 0;
+                GetWindowThreadProcessId(hwnd, &pid);
+                if (pid == 0) return TRUE;
+                auto it = c->pidBaseCache.find(pid);
+                if (it == c->pidBaseCache.end()) {
+                    it = c->pidBaseCache.emplace(pid, extractExeBasenameLower(processPathFromPid(pid))).first;
+                }
+                if (it->second != c->exeBaseLow) return TRUE;
+            }
+
+            const std::wstring title = toLower(getWindowTitle(hwnd));
+            if (title.find(c->titleLow) != std::wstring::npos) {
+                c->found = hwnd;
+                return FALSE;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+
+    if (!ctx.found) return false;
+    return activateWindowForeground(ctx.found);
+}
+
 std::string WinUtils::getProcessNameFromWindow(HWND hwnd) {
     if (!hwnd) return {};
     DWORD pid = 0;
@@ -2038,8 +2379,7 @@ bool checkExplorerShellViewFocus(HWND foregroundWnd, bool& outIsExplorer, bool& 
             return false;
         }
         if (outIsExplorer && gti.hwndFocus != foregroundWnd &&
-            _wcsicmp(focusClass, L"ShellTabWindowClass") != 0 &&
-            _wcsicmp(focusClass, L"SysTreeView32") != 0) {
+            _wcsicmp(focusClass, L"ShellTabWindowClass") != 0) {
             bool insideShellView = false;
             for (HWND cur = gti.hwndFocus; cur && cur != foregroundWnd; cur = GetParent(cur)) {
                 wchar_t parentCls[128] = {0};
@@ -2055,6 +2395,120 @@ bool checkExplorerShellViewFocus(HWND foregroundWnd, bool& outIsExplorer, bool& 
         }
     }
     return true;
+}
+
+HWND findActiveExplorerTabHwnd(HWND explorerRoot) noexcept {
+    if (!explorerRoot || !IsWindow(explorerRoot)) return nullptr;
+
+    // 1. 优先沿当前焦点控件向上回溯所属 ShellTabWindowClass（Win11 23H2/24H2 多标签页最精准）
+    DWORD tid = GetWindowThreadProcessId(explorerRoot, nullptr);
+    GUITHREADINFO gti{};
+    gti.cbSize = sizeof(gti);
+    if (tid != 0 && GetGUIThreadInfo(tid, &gti) && gti.hwndFocus) {
+        for (HWND cur = gti.hwndFocus; cur && cur != explorerRoot; cur = GetParent(cur)) {
+            wchar_t cls[128]{};
+            if (GetClassNameW(cur, cls, 128) > 0 && _wcsicmp(cls, L"ShellTabWindowClass") == 0) {
+                return cur;
+            }
+        }
+    }
+
+    // 2. 次选遍历直接子窗口寻找可见的 ShellTabWindowClass（避免命中后台隐藏标签页）
+    HWND fallbackFirst = nullptr;
+    for (HWND tab = FindWindowExW(explorerRoot, nullptr, L"ShellTabWindowClass", nullptr);
+         tab != nullptr;
+         tab = FindWindowExW(explorerRoot, tab, L"ShellTabWindowClass", nullptr)) {
+        if (!fallbackFirst) fallbackFirst = tab;
+        if (IsWindowVisible(tab)) {
+            return tab;
+        }
+    }
+    return fallbackFirst;
+}
+
+std::optional<std::wstring> extractSelectedPathFromFolderView(IFolderView* fv) {
+    if (!fv) return std::nullopt;
+
+    auto resolveShellItemPath = [](IShellItem* item) -> std::optional<std::wstring> {
+        if (!item) return std::nullopt;
+        PWSTR pszPath = nullptr;
+        if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &pszPath)) || !pszPath) {
+            return std::nullopt;
+        }
+        std::wstring resolved(pszPath);
+        CoTaskMemFree(pszPath);
+        if (resolved.empty()) return std::nullopt;
+        const bool isUnc = resolved.size() >= 2 && resolved[0] == L'\\' && resolved[1] == L'\\';
+        if (isUnc) return resolved;
+        std::error_code ec;
+        if (std::filesystem::exists(resolved, ec)) {
+            return resolved;
+        }
+        return std::nullopt;
+    };
+
+    // 1. 首选 IFolderView2::GetSelection：原生支持 Win11 图库(Gallery)/主页(Home)/库(Libraries)/搜索结果及超长路径
+    Microsoft::WRL::ComPtr<IFolderView2> fv2;
+    if (SUCCEEDED(fv->QueryInterface(IID_PPV_ARGS(&fv2))) && fv2) {
+        Microsoft::WRL::ComPtr<IShellItemArray> items;
+        if (SUCCEEDED(fv2->GetSelection(FALSE, &items)) && items) {
+            DWORD selCount = 0;
+            if (SUCCEEDED(items->GetCount(&selCount)) && selCount > 0) {
+                Microsoft::WRL::ComPtr<IShellItem> firstItem;
+                if (SUCCEEDED(items->GetItemAt(0, &firstItem)) && firstItem) {
+                    if (auto path = resolveShellItemPath(firstItem.Get())) {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. 次选 IFolderView::Items(SVGIO_SELECTION, IShellItemArray)
+    {
+        Microsoft::WRL::ComPtr<IShellItemArray> items;
+        if (SUCCEEDED(fv->Items(SVGIO_SELECTION, IID_PPV_ARGS(&items))) && items) {
+            DWORD selCount = 0;
+            if (SUCCEEDED(items->GetCount(&selCount)) && selCount > 0) {
+                Microsoft::WRL::ComPtr<IShellItem> firstItem;
+                if (SUCCEEDED(items->GetItemAt(0, &firstItem)) && firstItem) {
+                    if (auto path = resolveShellItemPath(firstItem.Get())) {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. 兜底仅在存在显式选中数 (>0) 时结合焦点项解析，防止点击空白取消选中后误预览首项
+    int selectedCount = 0;
+    if (FAILED(fv->ItemCount(SVGIO_SELECTION, &selectedCount)) || selectedCount <= 0) {
+        return std::nullopt;
+    }
+
+    int focusIndex = -1;
+    if (FAILED(fv->GetFocusedItem(&focusIndex)) || focusIndex < 0) {
+        if (FAILED(fv->GetSelectionMarkedItem(&focusIndex)) || focusIndex < 0) {
+            return std::nullopt;
+        }
+    }
+
+    Microsoft::WRL::ComPtr<IShellFolder> shellFolder;
+    if (SUCCEEDED(fv->GetFolder(IID_PPV_ARGS(&shellFolder))) && shellFolder) {
+        PITEMID_CHILD pidlItem = nullptr;
+        if (SUCCEEDED(fv->Item(focusIndex, &pidlItem)) && pidlItem) {
+            Microsoft::WRL::ComPtr<IShellItem> item;
+            const HRESULT itemHr = SHCreateItemWithParent(
+                nullptr, shellFolder.Get(), pidlItem, IID_PPV_ARGS(&item));
+            CoTaskMemFree(pidlItem);
+            if (SUCCEEDED(itemHr) && item) {
+                if (auto path = resolveShellItemPath(item.Get())) {
+                    return path;
+                }
+            }
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -2085,18 +2539,38 @@ std::optional<std::wstring> WinUtils::getSelectedExplorerFile() {
         }
     } comGuard;
 
-    const HWND activeTab = isExplorer
-        ? FindWindowExW(foregroundWnd, nullptr, L"ShellTabWindowClass", nullptr)
-        : nullptr;
-
-    // COM 遍历 IShellWindows 取得选中项
     Microsoft::WRL::ComPtr<IShellWindows> shellWindows;
     HRESULT hr = CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&shellWindows));
     if (FAILED(hr) || !shellWindows) return std::nullopt;
 
+    // 桌面窗口专属路径：IShellWindows::Item() 不包含桌面，必须走 FindWindowSW(SWC_DESKTOP)
+    if (isDesktop) {
+        VARIANT vEmpty;
+        VariantInit(&vEmpty);
+        long lhwnd = 0;
+        Microsoft::WRL::ComPtr<IDispatch> desktopDisp;
+        hr = shellWindows->FindWindowSW(&vEmpty, &vEmpty, SWC_DESKTOP, &lhwnd, SWFO_NEEDDISPATCH, &desktopDisp);
+        if (SUCCEEDED(hr) && desktopDisp) {
+            Microsoft::WRL::ComPtr<IServiceProvider> sp;
+            Microsoft::WRL::ComPtr<IShellBrowser> sb;
+            Microsoft::WRL::ComPtr<IShellView> sv;
+            Microsoft::WRL::ComPtr<IFolderView> fv;
+            if (SUCCEEDED(desktopDisp.As(&sp)) && sp &&
+                SUCCEEDED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb))) && sb &&
+                SUCCEEDED(sb->QueryActiveShellView(&sv)) && sv &&
+                SUCCEEDED(sv.As(&fv)) && fv) {
+                return extractSelectedPathFromFolderView(fv.Get());
+            }
+        }
+        return std::nullopt;
+    }
+
+    const HWND activeTab = findActiveExplorerTabHwnd(foregroundWnd);
+
     long count = 0;
     shellWindows->get_Count(&count);
 
+    std::optional<std::wstring> fallbackSameWindowResult;
     for (long i = 0; i < count; ++i) {
         VARIANT vi;
         VariantInit(&vi);
@@ -2114,11 +2588,8 @@ std::optional<std::wstring> WinUtils::getSelectedExplorerFile() {
         app->get_HWND(reinterpret_cast<SHANDLE_PTR*>(&hwnd));
         if (!hwnd) continue;
 
-        // 匹配顶层窗口或其父/子窗口句柄（兼容 Win11 多标签页 Explorer）
-        if (hwnd != foregroundWnd && !isDesktop) {
-            if (!IsChild(hwnd, foregroundWnd) && !IsChild(foregroundWnd, hwnd)) {
-                continue;
-            }
+        if (hwnd != foregroundWnd && !IsChild(hwnd, foregroundWnd) && !IsChild(foregroundWnd, hwnd)) {
+            continue;
         }
 
         Microsoft::WRL::ComPtr<IServiceProvider> sp;
@@ -2127,11 +2598,12 @@ std::optional<std::wstring> WinUtils::getSelectedExplorerFile() {
         Microsoft::WRL::ComPtr<IShellBrowser> sb;
         if (FAILED(sp->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&sb))) || !sb) continue;
 
-        if (activeTab) {
-            HWND browserHwnd = nullptr;
-            if (SUCCEEDED(sb->GetWindow(&browserHwnd)) && browserHwnd && browserHwnd != activeTab) {
-                continue;
-            }
+        HWND browserHwnd = nullptr;
+        (void)sb->GetWindow(&browserHwnd);
+        const bool exactTabMatch = (!activeTab) || (browserHwnd == activeTab);
+        const bool sameTopWindow = (browserHwnd == foregroundWnd || !browserHwnd);
+        if (!exactTabMatch && !sameTopWindow) {
+            continue;
         }
 
         Microsoft::WRL::ComPtr<IShellView> sv;
@@ -2140,47 +2612,18 @@ std::optional<std::wstring> WinUtils::getSelectedExplorerFile() {
         Microsoft::WRL::ComPtr<IFolderView> fv;
         if (FAILED(sv.As(&fv)) || !fv) continue;
 
-        int focusIndex = -1;
-        if (FAILED(fv->GetFocusedItem(&focusIndex)) || focusIndex < 0) {
-            if (FAILED(fv->GetSelectionMarkedItem(&focusIndex)) || focusIndex < 0) {
-                continue;
+        auto selected = extractSelectedPathFromFolderView(fv.Get());
+        if (selected.has_value()) {
+            if (exactTabMatch) {
+                return selected;
             }
-        }
-
-        Microsoft::WRL::ComPtr<IPersistFolder2> pf;
-        if (FAILED(fv->GetFolder(IID_PPV_ARGS(&pf))) || !pf) continue;
-
-        PIDLIST_ABSOLUTE pidlFolder = nullptr;
-        if (FAILED(pf->GetCurFolder(&pidlFolder)) || !pidlFolder) continue;
-
-        PITEMID_CHILD pidlItem = nullptr;
-        if (SUCCEEDED(fv->Item(focusIndex, &pidlItem)) && pidlItem) {
-            PIDLIST_ABSOLUTE pidlFull = ILCombine(pidlFolder, pidlItem);
-            CoTaskMemFree(pidlItem);
-            CoTaskMemFree(pidlFolder);
-
-            if (pidlFull) {
-                wchar_t path[MAX_PATH] = {0};
-                const bool hasPath = SHGetPathFromIDListW(pidlFull, path) != FALSE;
-                CoTaskMemFree(pidlFull);
-                if (hasPath) {
-                    std::wstring resolved(path);
-                    const bool isUnc = resolved.size() >= 2 && resolved[0] == L'\\' && resolved[1] == L'\\';
-                    if (isUnc) {
-                        return resolved;
-                    }
-                    std::error_code ec;
-                    if (std::filesystem::exists(resolved, ec)) {
-                        return resolved;
-                    }
-                }
+            if (!fallbackSameWindowResult.has_value()) {
+                fallbackSameWindowResult = std::move(selected);
             }
-        } else {
-            CoTaskMemFree(pidlFolder);
         }
     }
 
-    return std::nullopt;
+    return fallbackSameWindowResult;
 }
 
 std::string WinUtils::captureSelectedText() {

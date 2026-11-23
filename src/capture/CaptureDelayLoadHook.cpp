@@ -23,9 +23,15 @@ FARPROC WINAPI captureDelayLoadNotifyHook(unsigned dliNotify, PDelayLoadInfo pdl
     }
 
     // 优先在 exe 根目录（LOAD_LIBRARY_SEARCH_APPLICATION_DIR）及系统安全目录解析，
-    // 兼顾主程序与 --worker=* 子进程在任意工作目录下的稳定按需加载。
-    HMODULE mod = LoadLibraryExA(
-        pdli->szDll,
+    // 兼顾主程序与 --worker=* 子进程在任意工作目录下的稳定按需加载（纯 Unicode LoadLibraryExW）。
+    wchar_t wideDll[MAX_PATH]{};
+    const int converted = MultiByteToWideChar(
+        CP_UTF8, 0, pdli->szDll, -1, wideDll, static_cast<int>(sizeof(wideDll) / sizeof(wideDll[0])));
+    if (converted <= 0) {
+        return nullptr;
+    }
+    HMODULE mod = LoadLibraryExW(
+        wideDll,
         nullptr,
         LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
     if (mod) {

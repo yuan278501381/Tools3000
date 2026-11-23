@@ -7,9 +7,11 @@
 #include "core/utils/WinUtils.h"
 #include "search/ServiceStartupPolicy.h"
 #include "search/BrowserBookmarkIndex.h"
+#include "search/InstalledAppIndex.h"
 #include "search/SearchInteractionHandlers.h"
 #include "search/SearchPropertyExtractor.h"
 #include "search/SearchQueryConfigUtils.h"
+#include "search/SystemCommandCatalog.h"
 #include "service/PipeProtocol.h"
 #include "service/PipeEndpoint.h"
 #include "service/SearchRequestLimits.h"
@@ -45,6 +47,7 @@ bool g_forcePortableService = false;
 // 本进程是否亲手拉起过索引服务，用于启动期状态提示。
 static std::atomic<bool> g_serviceSpawnedByUs{false};
 static std::atomic<bool> g_serviceConfirmedReady{false};
+static std::atomic<bool> g_memoryPolicySynced{false};
 
 // 后台 WebView 预载、设置页状态查询和任意搜索 IPC 都不能成为服务启动信号。
 // 只有原生 SearchWindow::show() 先发送 windowShown 后，后续请求才允许补拉服务。
@@ -412,6 +415,7 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
             spawnedInThisCall = true;
             g_serviceSpawnedByUs.store(true);
             g_serviceConfirmedReady.store(false, std::memory_order_relaxed);
+            g_memoryPolicySynced.store(false, std::memory_order_release);
         }
     } else if (action == tools3000::search::StartupAction::AllowPortableFallback) {
         LOG_WARN("SearchPlugin: SCM 无法为本用户启动（无启动权限或服务已停止），回退便携索引进程");
@@ -440,8 +444,9 @@ ScmEndpointResult startScmServiceAndWait(DWORD& error) {
         if (!readyPipe.empty()) {
             // Quick probe: verify the pipe accepts open (or is legitimately busy with another worker)
             // so ACL/handshake refusal fails fast rather than spinning until timeout (`HIGH-10`).
-            HANDLE probe = CreateFileA(
-                readyPipe.c_str(),
+            const std::wstring widePipe = tools3000::core::WinUtils::utf8ToWstring(readyPipe);
+            HANDLE probe = CreateFileW(
+                widePipe.c_str(),
                 GENERIC_READ | GENERIC_WRITE,
                 0,
                 nullptr,
@@ -582,6 +587,7 @@ static bool ensureSearchServiceRunning() {
                            CREATE_NO_WINDOW | DETACHED_PROCESS, nullptr, exeDir.c_str(), &si, &pi)) {
             g_serviceSpawnedByUs.store(true);
             g_serviceConfirmedReady.store(false, std::memory_order_relaxed);
+            g_memoryPolicySynced.store(false, std::memory_order_release);
             // 便携模式也遵循“首次搜索后常驻”：不把索引进程加入
             // 主程序的 KILL_ON_JOB_CLOSE Job，使 Tools3000 关闭后它仍可服务。
             if (pi.hProcess) CloseHandle(pi.hProcess);
@@ -760,7 +766,8 @@ std::optional<PooledPipeConnection> openFreshPipeConnection(
     HANDLE pipe = INVALID_HANDLE_VALUE;
     DWORD connectError = ERROR_SUCCESS;
     while (!g_searchPluginShuttingDown.load(std::memory_order_relaxed)) {
-        pipe = CreateFileA(activePipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        const std::wstring widePipe = tools3000::core::WinUtils::utf8ToWstring(activePipe);
+        pipe = CreateFileW(widePipe.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                            OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
         if (pipe != INVALID_HANDLE_VALUE) {
             break;
@@ -882,6 +889,96 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
         return response;
     }
     return std::nullopt;
+}
+
+struct SearchMemoryPolicyConfig {
+    std::string memoryMode = "idle_trim";
+    int idleTrimMinutes = 5;
+    int idleStopMinutes = 30;
+};
+
+std::string normalizeMemoryModeString(const std::string& raw) {
+    if (raw == "full_resident" || raw == "idle_trim" || raw == "idle_stop") {
+        return raw;
+    }
+    return "idle_trim";
+}
+
+int clampIdleTrimMinutesValue(int minutes) noexcept {
+    return (std::clamp)(minutes, 1, 240);
+}
+
+int clampIdleStopMinutesValue(int minutes) noexcept {
+    return (std::clamp)(minutes, 5, 1440);
+}
+
+SearchMemoryPolicyConfig readMemoryPolicyFromConfig() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    SearchMemoryPolicyConfig out;
+    out.memoryMode = normalizeMemoryModeString(cfg.get<std::string>("/search/memoryMode", "idle_trim"));
+    out.idleTrimMinutes = clampIdleTrimMinutesValue(cfg.get<int>("/search/idleTrimMinutes", 5));
+    out.idleStopMinutes = clampIdleStopMinutesValue(cfg.get<int>("/search/idleStopMinutes", 30));
+    return out;
+}
+
+bool isPreferChineseLanguageFromConfig() {
+    const std::string lang = tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "zh-CN");
+    return lang.empty() ||
+           (lang.size() >= 2 && (lang[0] == 'z' || lang[0] == 'Z') && (lang[1] == 'h' || lang[1] == 'H'));
+}
+
+std::vector<std::string> readPortableAppDirsFromConfig() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const auto raw = cfg.get<nlohmann::json>("/search/portableAppDirs", nlohmann::json::array());
+    std::vector<std::string> out;
+    if (raw.is_array()) {
+        for (const auto& item : raw) {
+            if (item.is_string()) {
+                std::string dir = expandClientUserEnvUtf8(
+                    item.get<std::string>(),
+                    tools3000::service::search_limits::MaxPathUtf8Bytes);
+                if (!dir.empty() && out.size() < 32) {
+                    out.push_back(std::move(dir));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// 严格遵守 DEMAND_START：绝不拉起未运行的服务，仅向当前已在线服务推送策略。
+bool pushMemoryPolicyToRunningService(bool force) {
+    if (g_searchPipe.empty() || !isAnySearchPipeReady(1)) {
+        return false;
+    }
+    if (!force && g_memoryPolicySynced.load(std::memory_order_acquire)) {
+        return true;
+    }
+    const auto policy = readMemoryPolicyFromConfig();
+    nlohmann::json req = {
+        {"action", "updateMemoryPolicy"},
+        {"memoryMode", policy.memoryMode},
+        {"idleTrimMinutes", policy.idleTrimMinutes},
+        {"idleStopMinutes", policy.idleStopMinutes}
+    };
+    DWORD err = ERROR_SUCCESS;
+    auto resp = querySearchService(req.dump(), err, /*autoStart=*/false, 2000);
+    if (resp && !resp->empty()) {
+        g_memoryPolicySynced.store(true, std::memory_order_release);
+        return true;
+    }
+    return false;
+}
+
+bool isNonFileLauncherUri(std::string_view path) noexcept {
+    if (path.size() >= 6 &&
+        (path[0] == 'c' || path[0] == 'C') &&
+        (path[1] == 'm' || path[1] == 'M') &&
+        (path[2] == 'd' || path[2] == 'D') &&
+        path[3] == ':' && path[4] == '/' && path[5] == '/') {
+        return true;
+    }
+    return tools3000::search::BrowserBookmarkIndex::isSafeHttpUrl(path);
 }
 
 static const std::unordered_map<std::string, std::vector<std::string>> CONTENT_CATEGORY_EXTS = {
@@ -1018,8 +1115,10 @@ public:
     bool initialize() override {
         LOG_INFO("SearchPlugin: 初始化搜索引擎");
         g_searchPluginShuttingDown.store(false, std::memory_order_release);
+        g_memoryPolicySynced.store(false, std::memory_order_release);
         if (!initializePipeEndpoint()) return false;
         g_searchWindowExplicitlyShown.store(false);
+        tools3000::search::InstalledAppIndex::instance().setPortableAppDirs(readPortableAppDirsFromConfig());
 
         auto& mb = tools3000::core::MessageBridge::instance();
         
@@ -1038,28 +1137,74 @@ public:
                 return invalidSearchRequest("query exceeds 1024-byte limit");
             }
 
-            // ── 零冲突浏览器书签直搜路径 (`bm:` 前缀，纯离线 0ms 响应，绝不拉起全盘索引服务) ──
-            const auto bmParsed = tools3000::search::BrowserBookmarkIndex::parseBookmarkQuery(query);
-            if (bmParsed.isExplicitBookmarkQuery) {
-                const auto t0 = std::chrono::steady_clock::now();
-                const uint64_t reqLimit = params.contains("limit") && params["limit"].is_number_unsigned()
-                    ? (std::min<uint64_t>)(params["limit"].get<uint64_t>(), 200u)
-                    : 80u;
-                auto bmResults = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
-                    bmParsed.cleanQuery, static_cast<size_t>(reqLimit == 0 ? 80u : reqLimit), 1);
+            const auto makeOfflineResponse = [&](nlohmann::json results, auto t0) -> nlohmann::json {
                 const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - t0).count();
-                nlohmann::json bmResp = {
-                    {"results", std::move(bmResults)},
+                nlohmann::json resp = {
+                    {"results", std::move(results)},
                     {"available", true},
                     {"status", "ready"},
                     {"hasMore", false},
                     {"elapsedMs", elapsed}
                 };
                 if (params.contains("queryId")) {
-                    bmResp["queryId"] = params["queryId"];
+                    resp["queryId"] = params["queryId"];
                 }
-                return bmResp;
+                return resp;
+            };
+
+            const uint64_t offlineLimit = params.contains("limit") && params["limit"].is_number_unsigned()
+                ? (std::min<uint64_t>)(params["limit"].get<uint64_t>(), 200u)
+                : 80u;
+            const size_t safeOfflineLimit = static_cast<size_t>(offlineLimit == 0 ? 80u : offlineLimit);
+
+            // ── 1. 浏览器书签离线直搜 (`b:` / `bm:` 前缀，0ms 响应，绝不拉起全盘索引服务；`b:\` / `b:/` 严格放行盘符) ──
+            const auto bmParsed = tools3000::search::BrowserBookmarkIndex::parseBookmarkQuery(query);
+            if (bmParsed.isExplicitBookmarkQuery) {
+                const auto t0 = std::chrono::steady_clock::now();
+                auto bmResults = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
+                    bmParsed.cleanQuery, safeOfflineLimit, 1);
+                tools3000::search::LauncherFrecencyStore::instance().applyToResults(bmResults);
+                if (bmResults.is_array() && bmResults.size() > 1) {
+                    std::stable_sort(bmResults.begin(), bmResults.end(), [](const nlohmann::json& a, const nlohmann::json& b) {
+                        const double fa = a.value("frecencyScore", 0.0);
+                        const double fb = b.value("frecencyScore", 0.0);
+                        if (fa != fb) return fa > fb;
+                        return a.value("matchRank", 0) > b.value("matchRank", 0);
+                    });
+                }
+                return makeOfflineResponse(std::move(bmResults), t0);
+            }
+
+            // ── 2. 极客系统命令离线直搜 (`cmd:` 前缀，0ms 响应，绝不拉起全盘索引服务) ──
+            const auto cmdParsed = tools3000::search::SystemCommandCatalog::parseCommandQuery(query);
+            if (cmdParsed.isExplicitCommandQuery) {
+                const auto t0 = std::chrono::steady_clock::now();
+                auto cmdResults = tools3000::search::SystemCommandCatalog::searchCommandsToJson(
+                    cmdParsed.cleanQuery, safeOfflineLimit, /*allowEmptyQuery=*/true,
+                    isPreferChineseLanguageFromConfig());
+                tools3000::search::LauncherFrecencyStore::instance().applyToResults(cmdResults);
+                tools3000::search::FusionOptions opts;
+                opts.profile = tools3000::search::RankingProfile::LauncherFirst;
+                opts.maxTotalResults = safeOfflineLimit;
+                auto sorted = tools3000::search::fuseSearchResults(
+                    nlohmann::json::array(), nlohmann::json::array(), cmdResults, nlohmann::json::array(), opts);
+                return makeOfflineResponse(std::move(sorted), t0);
+            }
+
+            // ── 3. 本地应用离线直搜 (`app:` 前缀，0ms 响应，绝不拉起全盘索引服务) ──
+            const auto appParsed = tools3000::search::InstalledAppIndex::parseAppQuery(query);
+            if (appParsed.isExplicitAppQuery) {
+                const auto t0 = std::chrono::steady_clock::now();
+                auto appResults = tools3000::search::InstalledAppIndex::instance().searchLocalApps(
+                    appParsed.cleanQuery, safeOfflineLimit, /*allowEmptyQuery=*/true);
+                tools3000::search::LauncherFrecencyStore::instance().applyToResults(appResults);
+                tools3000::search::FusionOptions opts;
+                opts.profile = tools3000::search::RankingProfile::LauncherFirst;
+                opts.maxTotalResults = safeOfflineLimit;
+                auto sorted = tools3000::search::fuseSearchResults(
+                    nlohmann::json::array(), appResults, nlohmann::json::array(), nlohmann::json::array(), opts);
+                return makeOfflineResponse(std::move(sorted), t0);
             }
 
             // Expand desktop user environment variables (`%APPDATA%`, `%LOCALAPPDATA%`,
@@ -1180,40 +1325,69 @@ public:
                     const bool isInit = result.value("initializing", false);
                     if (!isInit) {
                         g_serviceConfirmedReady.store(true, std::memory_order_relaxed);
+                        if (!g_memoryPolicySynced.load(std::memory_order_acquire)) {
+                            (void)pushMemoryPolicyToRunningService(false);
+                        }
                     }
                     result["available"] = !isInit;
                     result["status"] = isInit ? "starting" : "ready";
 
-                    // 常规搜索可控轻权重混排高相关浏览器书签（零语法冲突，仅首页 cursor == 0 且非全文/文件专用操作符时生效）
+                    // 常规搜索首页智能融合：本地极客系统命令 + 已安装应用 + 浏览器书签 + 服务端全盘文件
+                    // 按 3 档可配置优先级策略 (balanced_frecency / files_first / launcher_first) + 统一 Frecency 确定性去重排序
                     const uint64_t reqCursor = normalized.contains("cursor") && normalized["cursor"].is_number_unsigned()
                         ? normalized["cursor"].get<uint64_t>()
                         : 0u;
-                    const bool includeBookmarks = tools3000::core::ConfigManager::instance().get<bool>("/search/includeBookmarks", true);
-                    if (includeBookmarks &&
-                        !isInit &&
+                    auto& cfg = tools3000::core::ConfigManager::instance();
+                    const bool includeBookmarks = cfg.get<bool>("/search/includeBookmarks", true);
+                    const bool enableAppsAndCommands = cfg.get<bool>("/search/enableAppsAndCommands", true);
+                    const auto rankingProfile = tools3000::search::parseRankingProfile(
+                        cfg.get<std::string>("/search/rankingProfile", "balanced_frecency"));
+
+                    if (!isInit &&
                         !isContentSearch &&
                         reqCursor == 0 &&
                         !result.value("cancelled", false) &&
                         result.contains("results") &&
-                        result["results"].is_array() &&
-                        tools3000::search::BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(query)) {
-                        auto mixedBookmarks = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
-                            query, 5u, 55);
-                        if (mixedBookmarks.is_array() && !mixedBookmarks.empty()) {
-                            nlohmann::json combined = nlohmann::json::array();
-                            // 若文件列表首条是精确高分匹配（如完全同名），保留前 3 个本地文件在最前，否则书签直达前排
-                            auto& fileArr = result["results"];
-                            const size_t leadFiles = (std::min<size_t>)(fileArr.size(), 3u);
-                            for (size_t i = 0; i < leadFiles; ++i) {
-                                combined.push_back(std::move(fileArr[i]));
-                            }
-                            for (auto& bm : mixedBookmarks) {
-                                combined.push_back(std::move(bm));
-                            }
-                            for (size_t i = leadFiles; i < fileArr.size(); ++i) {
-                                combined.push_back(std::move(fileArr[i]));
-                            }
-                            result["results"] = std::move(combined);
+                        result["results"].is_array()) {
+                        nlohmann::json mixedBookmarks = nlohmann::json::array();
+                        if (includeBookmarks &&
+                            tools3000::search::BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(query)) {
+                            mixedBookmarks = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
+                                query, 5u, 55);
+                        }
+
+                        nlohmann::json mixedCommands = nlohmann::json::array();
+                        nlohmann::json mixedApps = nlohmann::json::array();
+                        if (enableAppsAndCommands &&
+                            tools3000::search::SystemCommandCatalog::shouldMixLauncherInGeneralQuery(query)) {
+                            mixedCommands = tools3000::search::SystemCommandCatalog::searchCommandsToJson(
+                                query, 8u, /*allowEmptyQuery=*/false, isPreferChineseLanguageFromConfig());
+                            mixedApps = tools3000::search::InstalledAppIndex::instance().searchLocalApps(
+                                query, 10u, /*allowEmptyQuery=*/false);
+                        }
+
+                        if (!mixedBookmarks.empty() || !mixedCommands.empty() || !mixedApps.empty()) {
+                            auto& frecencyStore = tools3000::search::LauncherFrecencyStore::instance();
+                            frecencyStore.applyToResults(result["results"]);
+                            frecencyStore.applyToResults(mixedApps);
+                            frecencyStore.applyToResults(mixedCommands);
+                            frecencyStore.applyToResults(mixedBookmarks);
+
+                            tools3000::search::FusionOptions fusionOpts;
+                            fusionOpts.profile = rankingProfile;
+                            const uint64_t requestedLimit = normalized.contains("limit") && normalized["limit"].is_number_unsigned()
+                                ? normalized["limit"].get<uint64_t>()
+                                : 100u;
+                            fusionOpts.maxTotalResults = static_cast<size_t>((std::max<uint64_t>)(
+                                requestedLimit,
+                                static_cast<uint64_t>(result["results"].size()) + 10u));
+
+                            result["results"] = tools3000::search::fuseSearchResults(
+                                result["results"],
+                                mixedApps,
+                                mixedCommands,
+                                mixedBookmarks,
+                                fusionOpts);
                         }
                     }
 
@@ -1315,21 +1489,136 @@ public:
 
         registerSearchInteractionHandlers(mb);
 
-        // 只报告状态，不再顺手拉起服务：设置页一打开就会查一次状态，那不足以
-        // 说明用户要用搜索。需要拉起时走 search.warmup。
+        // 只报告状态与实时内存观测，绝不拉起服务（100% DEMAND_START + autoStart=false）。
         mb.registerHandler("search.getServiceStatus", [](const nlohmann::json&) -> nlohmann::json {
+            const auto policy = readMemoryPolicyFromConfig();
+            nlohmann::json offlineResp = {
+                {"available", false},
+                {"running", false},
+                {"workingSetBytes", 0u},
+                {"privateBytes", 0u},
+                {"memoryMode", policy.memoryMode},
+                {"idleTrimMinutes", policy.idleTrimMinutes},
+                {"idleStopMinutes", policy.idleStopMinutes},
+                {"idleSeconds", 0u},
+                {"lastTrimmedAt", 0u}
+            };
+            if (g_searchPipe.empty() || !isAnySearchPipeReady(1)) {
+                return offlineResp;
+            }
+            DWORD err = ERROR_SUCCESS;
+            auto resp = querySearchService(R"({"action":"getMemoryStats"})", err, /*autoStart=*/false, 2000);
+            if (!resp || resp->empty()) {
+                return offlineResp;
+            }
+            try {
+                auto stats = nlohmann::json::parse(*resp);
+                nlohmann::json onlineResp = offlineResp;
+                onlineResp["available"] = true;
+                onlineResp["running"] = true;
+                onlineResp["workingSetBytes"] = stats.value("workingSetBytes", uint64_t{0});
+                onlineResp["privateBytes"] = stats.value("privateBytes", uint64_t{0});
+                onlineResp["memoryMode"] = normalizeMemoryModeString(stats.value("memoryMode", policy.memoryMode));
+                onlineResp["idleTrimMinutes"] = clampIdleTrimMinutesValue(stats.value("idleTrimMinutes", policy.idleTrimMinutes));
+                onlineResp["idleStopMinutes"] = clampIdleStopMinutesValue(stats.value("idleStopMinutes", policy.idleStopMinutes));
+                onlineResp["idleSeconds"] = stats.value("idleSeconds", uint64_t{0});
+                onlineResp["lastTrimmedAt"] = stats.value("lastTrimmedAt", uint64_t{0});
+                return onlineResp;
+            } catch (...) {
+                return offlineResp;
+            }
+        });
+
+        // 手动触发搜索服务内存释放（仅对已在线服务生效，autoStart=false，USN 监听保持存活）。
+        mb.registerHandler("search.trimMemory", [](const nlohmann::json&) -> nlohmann::json {
+            if (g_searchPipe.empty() || !isAnySearchPipeReady(1)) {
+                return {
+                    {"success", false},
+                    {"running", false},
+                    {"workingSetBytes", 0u},
+                    {"privateBytes", 0u},
+                    {"error", "search service is not running"}
+                };
+            }
+            DWORD err = ERROR_SUCCESS;
+            auto resp = querySearchService(R"({"action":"trimMemory"})", err, /*autoStart=*/false, 5000);
+            if (!resp || resp->empty()) {
+                return {
+                    {"success", false},
+                    {"running", false},
+                    {"workingSetBytes", 0u},
+                    {"privateBytes", 0u},
+                    {"error", "failed to reach search service"}
+                };
+            }
+            try {
+                auto parsed = nlohmann::json::parse(*resp);
+                parsed["running"] = true;
+                return parsed;
+            } catch (...) {
+                return {{"success", false}, {"running", true}, {"error", "invalid response"}};
+            }
+        });
+
+        // 手动停止搜索服务（先刷盘最新 NextUsn 快照再优雅退出归零内存，autoStart=false）。
+        mb.registerHandler("search.stopService", [](const nlohmann::json&) -> nlohmann::json {
+            if (g_searchPipe.empty() || !isAnySearchPipeReady(1)) {
+                closeAllPooledPipes();
+                g_serviceConfirmedReady.store(false, std::memory_order_release);
+                g_serviceSpawnedByUs.store(false, std::memory_order_release);
+                g_memoryPolicySynced.store(false, std::memory_order_release);
+                return {
+                    {"success", true},
+                    {"running", false},
+                    {"alreadyStopped", true},
+                    {"workingSetBytes", 0u},
+                    {"privateBytes", 0u}
+                };
+            }
+            DWORD err = ERROR_SUCCESS;
+            auto resp = querySearchService(
+                R"({"action":"shutdown","saveSnapshot":true})", err, /*autoStart=*/false, 8000);
+            closeAllPooledPipes();
+            g_serviceConfirmedReady.store(false, std::memory_order_release);
+            g_serviceSpawnedByUs.store(false, std::memory_order_release);
+            g_memoryPolicySynced.store(false, std::memory_order_release);
+
+            bool snapshotSaved = false;
+            if (resp && !resp->empty()) {
+                try {
+                    const auto parsed = nlohmann::json::parse(*resp);
+                    snapshotSaved = parsed.value("snapshotSaved", false);
+                } catch (...) {}
+            }
+
+            // 等待服务管道关闭（最多 2.4 秒），确保 UI 立即看到已归零停止态
+            bool stillRunning = true;
+            for (int attempt = 0; attempt < 30; ++attempt) {
+                if (!isAnySearchPipeReady(1)) {
+                    stillRunning = false;
+                    break;
+                }
+                Sleep(80);
+            }
             return {
-                {"available", !g_searchPipe.empty() && isAnySearchPipeReady(1)}
+                {"success", resp.has_value() || !stillRunning},
+                {"running", stillRunning},
+                {"snapshotSaved", snapshotSaved},
+                {"workingSetBytes", 0u},
+                {"privateBytes", 0u}
             };
         });
 
         mb.registerHandler("search.warmup", [](const nlohmann::json&) -> nlohmann::json {
             // warmup 只由 SearchWindow::show 在用户显式唤起搜索时发出。
-            // 首次启动后服务常驻，直到 Windows 关机/重启或管理员停止。
+            // 首次启动后服务常驻，直到 Windows 关机/重启、闲置深度休眠或用户/管理员停止。
             if (!g_searchWindowExplicitlyShown.load()) {
                 return {{"available", false}, {"error", "search window was not explicitly shown"}};
             }
             if (!g_searchPipe.empty() && isAnySearchPipeReady(1)) {
+                if (!g_memoryPolicySynced.load(std::memory_order_acquire)) {
+                    (void)pushMemoryPolicyToRunningService(false);
+                }
                 return {{"available", true}};
             }
             if (!g_warmupInFlight.exchange(true, std::memory_order_acq_rel)) {
@@ -1339,7 +1628,9 @@ public:
                 }
                 g_warmupWorker = std::thread([]() {
                     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    (void)ensureSearchServiceRunning();
+                    if (ensureSearchServiceRunning()) {
+                        (void)pushMemoryPolicyToRunningService(true);
+                    }
                     g_warmupInFlight.store(false, std::memory_order_release);
                 });
             }
@@ -1370,6 +1661,30 @@ public:
             return {{"success", true}};
         });
 
+        mb.registerHandler("search.getIndexGeneration", [](const nlohmann::json&) -> nlohmann::json {
+            // 严格只读探测，绝不拉起未运行的搜索服务 (100% DEMAND_START + autoStart=false)
+            if (g_searchPipe.empty() || !isAnySearchPipeReady(1)) {
+                return {{"success", false}, {"running", false}, {"ready", false}, {"indexGeneration", 0u}};
+            }
+            DWORD err = ERROR_SUCCESS;
+            auto resp = querySearchService(R"({"action":"getIndexGeneration"})", err, /*autoStart=*/false, 800);
+            if (!resp || resp->empty()) {
+                return {{"success", false}, {"running", false}, {"ready", false}, {"indexGeneration", 0u}};
+            }
+            try {
+                auto parsed = nlohmann::json::parse(*resp);
+                return {
+                    {"success", parsed.value("success", true)},
+                    {"running", parsed.value("running", true)},
+                    {"ready", parsed.value("ready", true)},
+                    {"indexGeneration", parsed.value("indexGeneration", uint64_t{0})},
+                    {"totalIndexedFiles", parsed.value("totalIndexedFiles", uint64_t{0})}
+                };
+            } catch (...) {
+                return {{"success", false}, {"running", false}, {"ready", false}, {"indexGeneration", 0u}};
+            }
+        });
+
         mb.registerHandler("search.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& cfg = tools3000::core::ConfigManager::instance();
             std::string hotkey = cfg.get<std::string>("/hotkeys/Toggle Search", "Alt+Space");
@@ -1389,6 +1704,13 @@ public:
             bool catArchive = cfg.get<bool>("/search/contentCategory_archive", true);
             std::string iconStyle = cfg.get<std::string>("/search/iconStyle", "native");
             bool includeBookmarks = cfg.get<bool>("/search/includeBookmarks", true);
+            bool enableAppsAndCommands = cfg.get<bool>("/search/enableAppsAndCommands", true);
+            bool liveRefreshEnabled = cfg.get<bool>("/search/liveRefreshEnabled", true);
+            std::string rankingProfile = tools3000::search::rankingProfileToString(
+                tools3000::search::parseRankingProfile(
+                    cfg.get<std::string>("/search/rankingProfile", "balanced_frecency")));
+            const auto memPolicy = readMemoryPolicyFromConfig();
+            const auto portableAppDirs = readPortableAppDirsFromConfig();
             bool externalApiEnabled = cfg.get<bool>("/search/externalApiEnabled", false);
             std::string externalApiExcludePaths = cfg.get<std::string>("/search/externalApiExcludePaths", "");
             std::string externalApiAllowedRoots = cfg.get<std::string>("/search/externalApiAllowedRoots", "");
@@ -1428,10 +1750,16 @@ public:
             }
 
             return {
-                // 保留字段以兼容旧 UI/API，但服务生命周期现已固定为：
-                // 首次显式唤起时按需启动，随后在本次 Windows 会话中常驻。
-                {"residentInBackground", true},
-                {"keepServiceRunning", true},
+                // 保留字段以兼容旧 UI/API，服务生命周期仍严格遵循 DEMAND_START。
+                {"residentInBackground", memPolicy.memoryMode != "idle_stop"},
+                {"keepServiceRunning", memPolicy.memoryMode != "idle_stop"},
+                {"memoryMode", memPolicy.memoryMode},
+                {"idleTrimMinutes", memPolicy.idleTrimMinutes},
+                {"idleStopMinutes", memPolicy.idleStopMinutes},
+                {"enableAppsAndCommands", enableAppsAndCommands},
+                {"liveRefreshEnabled", liveRefreshEnabled},
+                {"rankingProfile", rankingProfile},
+                {"portableAppDirs", portableAppDirs},
                 {"hotkey", hotkey},
                 {"maxResults", maxResults},
                 {"defaultCategory", defaultCategory},
@@ -1469,7 +1797,10 @@ public:
             nlohmann::json searchPatch = nlohmann::json::object();
             nlohmann::json uiPrefPatch = nlohmann::json::object();
             bool hasEnabledDrivesUpdate = false;
+            bool hasMemoryPolicyUpdate = false;
+            bool hasPortableDirsUpdate = false;
             std::string updatedEnabledDrives;
+            std::vector<std::string> updatedPortableDirs;
 
             if (params.contains("hotkey") && params["hotkey"].is_string()) {
                 const std::string newHotkey = params["hotkey"].get<std::string>();
@@ -1548,6 +1879,65 @@ public:
             if (params.contains("includeBookmarks") && params["includeBookmarks"].is_boolean()) {
                 searchPatch["includeBookmarks"] = params["includeBookmarks"].get<bool>();
             }
+            if (params.contains("enableAppsAndCommands") && params["enableAppsAndCommands"].is_boolean()) {
+                searchPatch["enableAppsAndCommands"] = params["enableAppsAndCommands"].get<bool>();
+            }
+            if (params.contains("liveRefreshEnabled") && params["liveRefreshEnabled"].is_boolean()) {
+                searchPatch["liveRefreshEnabled"] = params["liveRefreshEnabled"].get<bool>();
+            }
+            if (params.contains("rankingProfile") && params["rankingProfile"].is_string()) {
+                const auto parsedProfile = tools3000::search::parseRankingProfile(
+                    params["rankingProfile"].get<std::string>());
+                searchPatch["rankingProfile"] = tools3000::search::rankingProfileToString(parsedProfile);
+            }
+            if (params.contains("memoryMode") && params["memoryMode"].is_string()) {
+                searchPatch["memoryMode"] = normalizeMemoryModeString(params["memoryMode"].get<std::string>());
+                hasMemoryPolicyUpdate = true;
+            }
+            if (params.contains("idleTrimMinutes") && params["idleTrimMinutes"].is_number()) {
+                searchPatch["idleTrimMinutes"] = clampIdleTrimMinutesValue(params["idleTrimMinutes"].get<int>());
+                hasMemoryPolicyUpdate = true;
+            }
+            if (params.contains("idleStopMinutes") && params["idleStopMinutes"].is_number()) {
+                searchPatch["idleStopMinutes"] = clampIdleStopMinutesValue(params["idleStopMinutes"].get<int>());
+                hasMemoryPolicyUpdate = true;
+            }
+            if (params.contains("portableAppDirs")) {
+                std::vector<std::string> rawDirs;
+                if (params["portableAppDirs"].is_array()) {
+                    for (const auto& item : params["portableAppDirs"]) {
+                        if (item.is_string()) {
+                            std::string d = item.get<std::string>();
+                            if (!d.empty() && rawDirs.size() < 32) {
+                                rawDirs.push_back(std::move(d));
+                            }
+                        }
+                    }
+                } else if (params["portableAppDirs"].is_string()) {
+                    const auto& text = params["portableAppDirs"].get_ref<const std::string&>();
+                    size_t start = 0;
+                    while (start <= text.size() && rawDirs.size() < 32) {
+                        const size_t sep = text.find_first_of(";\r\n", start);
+                        std::string_view part = (sep == std::string::npos)
+                            ? std::string_view(text).substr(start)
+                            : std::string_view(text).substr(start, sep - start);
+                        while (!part.empty() && (part.front() == ' ' || part.front() == '\t')) part.remove_prefix(1);
+                        while (!part.empty() && (part.back() == ' ' || part.back() == '\t')) part.remove_suffix(1);
+                        if (!part.empty()) {
+                            rawDirs.emplace_back(part);
+                        }
+                        if (sep == std::string::npos) break;
+                        start = sep + 1;
+                    }
+                }
+                searchPatch["portableAppDirs"] = rawDirs;
+                updatedPortableDirs.reserve(rawDirs.size());
+                for (const auto& d : rawDirs) {
+                    updatedPortableDirs.push_back(expandClientUserEnvUtf8(
+                        d, tools3000::service::search_limits::MaxPathUtf8Bytes));
+                }
+                hasPortableDirsUpdate = true;
+            }
             if (params.contains("externalApiEnabled") && params["externalApiEnabled"].is_boolean()) {
                 searchPatch["externalApiEnabled"] = params["externalApiEnabled"].get<bool>();
             }
@@ -1611,6 +2001,14 @@ public:
             }
             if (!patch.empty() && !cfg.mergePatch(patch)) {
                 return {{"success", false}, {"error", "failed to persist search settings"}};
+            }
+
+            if (hasPortableDirsUpdate) {
+                tools3000::search::InstalledAppIndex::instance().setPortableAppDirs(std::move(updatedPortableDirs));
+            }
+            if (hasMemoryPolicyUpdate) {
+                // autoStart=false: 仅热推送到当前已在线的服务，严禁唤醒未运行服务
+                (void)pushMemoryPolicyToRunningService(true);
             }
 
             if (hasEnabledDrivesUpdate) {
@@ -1711,12 +2109,17 @@ public:
                 params.value("path", ""),
                 tools3000::service::search_limits::MaxPathUtf8Bytes);
             if (path.empty()) return {{"success", false}};
+            // 统一主进程 Frecency 计数持久化（支持 cmd://、应用、书签与本地文件，完全离线零唤醒）
+            tools3000::search::LauncherFrecencyStore::instance().recordRun(path);
+            if (isNonFileLauncherUri(path)) {
+                return {{"success", true}};
+            }
             nlohmann::json req;
             req["action"] = "recordRun";
             req["path"] = path;
             DWORD err = 0;
-            auto res = querySearchService(req.dump(), err, /*autoStart=*/false, 2500);
-            return {{"success", res.has_value()}};
+            (void)querySearchService(req.dump(), err, /*autoStart=*/false, 2500);
+            return {{"success", true}};
         });
 
         mb.registerHandler("search.recordSearch", [](const nlohmann::json& params) -> nlohmann::json {
@@ -1795,6 +2198,9 @@ public:
                  "search.query",
                  "search.sync",
                  "search.rebuildIndex",
+                 "search.getServiceStatus",
+                 "search.trimMemory",
+                 "search.stopService",
                  "search.getSearchHistory",
                  "search.removeSearchHistory",
                  "search.clearSearchHistory",
@@ -1818,6 +2224,7 @@ public:
     void shutdown() override {
         LOG_INFO("SearchPlugin: 关闭");
         g_searchPluginShuttingDown.store(true, std::memory_order_release);
+        g_memoryPolicySynced.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(g_warmupThreadMutex);
             if (g_warmupWorker.joinable()) {
@@ -1827,6 +2234,8 @@ public:
         }
         closeAllPooledPipes();
         tools3000::search::BrowserBookmarkIndex::instance().clearCache();
+        tools3000::search::InstalledAppIndex::instance().clearCache();
+        tools3000::search::LauncherFrecencyStore::instance().flush();
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("search.");
         // 索引服务一旦因显式搜索需求启动，即独立常驻。
         // 主程序退出不发送 shutdown；SCM 的 demand start 保证下次开机不自启。

@@ -170,7 +170,7 @@ target_include_directories(Tools3000Core PUBLIC
 )
 target_link_libraries(Tools3000Core PUBLIC
     spdlog::spdlog nlohmann_json::nlohmann_json sol2::sol2 ${LUA_LIBRARIES} fmt::fmt ZLIB::ZLIB
-    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys windowsapp
+    user32 shell32 advapi32 dbghelp psapi shlwapi winhttp crypt32 bcrypt uiautomationcore oleaut32 ole32 dwmapi gdiplus imm32 shcore propsys windowsapp
     d2d1 dwrite d3d11 dxgi dcomp
 )
 
@@ -401,6 +401,7 @@ set(CAPTURE_OTHER_SOURCES
     src/capture/CaptureDelayLoadHook.cpp
     src/capture/CaptureOverlay.cpp
     src/capture/CaptureWorkerEntry.cpp
+    src/capture/MediaProbeWorker.cpp
     src/capture/CaptureRenderer.cpp
     src/capture/CaptureRendererHud.cpp
     src/capture/CaptureRendererMarkup.cpp
@@ -503,6 +504,7 @@ set_target_properties(Plugin_DialogEnhancer PROPERTIES RUNTIME_OUTPUT_DIRECTORY 
 set(HOST_OTHER_SOURCES
     src/main.cpp
     src/ui/ClipboardWindow.cpp
+    src/ui/FileLocksmithWindow.cpp
     src/ui/KeyboardPipeline.cpp
     src/ui/QuickLookWindow.cpp
     src/ui/SearchWindow.cpp
@@ -627,6 +629,8 @@ if(BUILD_TESTING)
         src/ocr/OcrResultWindow.cpp
         src/search/SearchPropertyExtractor.cpp
         src/search/BrowserBookmarkIndex.cpp
+        src/search/SystemCommandCatalog.cpp
+        src/search/InstalledAppIndex.cpp
         $<TARGET_OBJECTS:capture_objects>
         $<TARGET_OBJECTS:gesture_objects>
         $<TARGET_OBJECTS:service_objects>

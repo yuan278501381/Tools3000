@@ -4717,3 +4717,382 @@ TEST(BrowserBookmarkIndexTest, ParsesZeroConflictPrefixAndSearchesChromiumJson) 
     EXPECT_EQ(hits[0].value("resultType", ""), "bookmark");
     EXPECT_EQ(hits[0].value("browserSource", ""), "Edge");
 }
+
+#include "search/SystemCommandCatalog.h"
+#include "search/InstalledAppIndex.h"
+#include "service/FileIndexStore.h"
+
+TEST(BrowserBookmarkIndexTest, ShortBPrefixSupportsBookmarksWithoutBreakingDriveBPaths) {
+    using tools3000::search::BrowserBookmarkIndex;
+
+    // 1. `b:` 与 `bm:` 均触发纯书签搜索（大小写不敏感）
+    const auto bEmpty = BrowserBookmarkIndex::parseBookmarkQuery("b:");
+    EXPECT_TRUE(bEmpty.isExplicitBookmarkQuery);
+    EXPECT_TRUE(bEmpty.cleanQuery.empty());
+
+    const auto bGitHub = BrowserBookmarkIndex::parseBookmarkQuery("b:github");
+    EXPECT_TRUE(bGitHub.isExplicitBookmarkQuery);
+    EXPECT_EQ(bGitHub.cleanQuery, "github");
+
+    const auto bUpperSpaced = BrowserBookmarkIndex::parseBookmarkQuery("B:  react docs");
+    EXPECT_TRUE(bUpperSpaced.isExplicitBookmarkQuery);
+    EXPECT_EQ(bUpperSpaced.cleanQuery, "react docs");
+
+    const auto bmGitHub = BrowserBookmarkIndex::parseBookmarkQuery("bm:github");
+    EXPECT_TRUE(bmGitHub.isExplicitBookmarkQuery);
+    EXPECT_EQ(bmGitHub.cleanQuery, "github");
+
+    // 2. 严格放行 B 盘路径（`b:\...`、`b:/...`）与普通空格词 `b foo`
+    const auto driveBackslash = BrowserBookmarkIndex::parseBookmarkQuery("b:\\foo\\bar.txt");
+    EXPECT_FALSE(driveBackslash.isExplicitBookmarkQuery);
+
+    const auto driveSlash = BrowserBookmarkIndex::parseBookmarkQuery("b:/foo/bar.txt");
+    EXPECT_FALSE(driveSlash.isExplicitBookmarkQuery);
+
+    const auto driveRoot = BrowserBookmarkIndex::parseBookmarkQuery("B:\\");
+    EXPECT_FALSE(driveRoot.isExplicitBookmarkQuery);
+
+    const auto plainSpaceB = BrowserBookmarkIndex::parseBookmarkQuery("b foo");
+    EXPECT_FALSE(plainSpaceB.isExplicitBookmarkQuery);
+
+    // 3. 常规混排避让 app:/cmd:/bm: 显式前缀
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("app:code"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("cmd:env"));
+    EXPECT_FALSE(BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery("bm:github"));
+}
+
+TEST(SystemCommandCatalogTest, MatchesGeekCommandsAndEnforcesStrictWhitelist) {
+    using tools3000::search::SystemCommandCatalog;
+
+    // 至少内置 35 条常用极客系统命令
+    EXPECT_GE(SystemCommandCatalog::allCommands().size(), 35u);
+
+    // 1. `env` / `环境变量` / `hjbl` / `huanjing` 均瞬达编辑系统环境变量
+    for (const char* q : {"env", "环境变量", "hjbl", "huanjing"}) {
+        const auto matches = SystemCommandCatalog::searchCommands(q, 5, false);
+        ASSERT_FALSE(matches.empty()) << "query should match env command: " << q;
+        EXPECT_STREQ(matches[0].spec->id, "env") << "top hit for query: " << q;
+    }
+
+    const auto envMatches = SystemCommandCatalog::searchCommands("env", 5, false);
+    ASSERT_FALSE(envMatches.empty());
+    EXPECT_TRUE(envMatches[0].isExactAlias);
+
+    // 2. 校验其他关键系统命令命中
+    const auto svcMatches = SystemCommandCatalog::searchCommands("services", 5, false);
+    ASSERT_FALSE(svcMatches.empty());
+    EXPECT_STREQ(svcMatches[0].spec->id, "services");
+
+    const auto devMatches = SystemCommandCatalog::searchCommands("devmgmt", 5, false);
+    ASSERT_FALSE(devMatches.empty());
+    EXPECT_STREQ(devMatches[0].spec->id, "devmgmt");
+
+    const auto hostsMatches = SystemCommandCatalog::searchCommands("hosts", 5, false);
+    ASSERT_FALSE(hostsMatches.empty());
+    EXPECT_STREQ(hostsMatches[0].spec->id, "hosts");
+
+    // 3. `cmd:` 显式前缀解析
+    const auto cmdParsed = SystemCommandCatalog::parseCommandQuery("CMD: env");
+    EXPECT_TRUE(cmdParsed.isExplicitCommandQuery);
+    EXPECT_EQ(cmdParsed.cleanQuery, "env");
+    EXPECT_FALSE(SystemCommandCatalog::parseCommandQuery("cmd.exe").isExplicitCommandQuery);
+
+    // 4. 安全白名单铁律：未知 ID 与命令注入 URI 100% 拒绝
+    EXPECT_NE(SystemCommandCatalog::findById("env"), nullptr);
+    EXPECT_EQ(SystemCommandCatalog::findById("calc.exe & whoami"), nullptr);
+    EXPECT_EQ(SystemCommandCatalog::findById("..\\cmd"), nullptr);
+    EXPECT_EQ(SystemCommandCatalog::extractCommandIdFromUri("cmd://env"), "env");
+    EXPECT_TRUE(SystemCommandCatalog::extractCommandIdFromUri("cmd://env && calc").empty());
+    EXPECT_TRUE(SystemCommandCatalog::extractCommandIdFromUri("cmd://../evil").empty());
+    EXPECT_TRUE(SystemCommandCatalog::extractCommandIdFromUri("http://env").empty());
+    EXPECT_FALSE(SystemCommandCatalog::executeWhitelistedCommand("not_in_whitelist", false));
+    EXPECT_FALSE(SystemCommandCatalog::executeWhitelistedCommand("cmd.exe /c whoami", false));
+
+    // 5. 外部只读 API 严禁放行内存控制/停服接口
+    EXPECT_FALSE(tools3000::service::external_api::isActionAllowedForExternal("trimMemory"));
+    EXPECT_FALSE(tools3000::service::external_api::isActionAllowedForExternal("updateMemoryPolicy"));
+    EXPECT_FALSE(tools3000::service::external_api::isActionAllowedForExternal("getMemoryStats"));
+    EXPECT_FALSE(tools3000::service::external_api::isActionAllowedForExternal("shutdown"));
+}
+
+TEST(SearchRankingFusionTest, EnforcesThreeRankingProfilesCapAndFrecencyBoost) {
+    using namespace tools3000::search;
+
+    const nlohmann::json filesJson = nlohmann::json::array({
+        {
+            {"name", "env.txt"},
+            {"path", "D:\\Work\\env.txt"},
+            {"isDirectory", false},
+            {"resultType", "file"},
+            {"matchRank", 1}
+        },
+        {
+            {"name", "env_config.yaml"},
+            {"path", "D:\\Work\\env_config.yaml"},
+            {"isDirectory", false},
+            {"resultType", "file"},
+            {"matchRank", 2}
+        },
+        {
+            // 与本地应用同路径，应去重并把更高 runCount 合并回应用项
+            {"name", "EnvTool.lnk"},
+            {"path", "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\EnvTool.lnk"},
+            {"isDirectory", false},
+            {"resultType", "file"},
+            {"runCount", 5}
+        }
+    });
+
+    const nlohmann::json commandsJson = nlohmann::json::array({
+        {
+            {"name", "Edit System Environment Variables"},
+            {"path", "cmd://env"},
+            {"isDirectory", false},
+            {"resultType", "command"},
+            {"commandId", "env"},
+            {"exactAliasMatch", true},
+            {"launcherScore", 1000},
+            {"frecencyScore", 0.0}
+        }
+    });
+
+    const nlohmann::json appsJson = nlohmann::json::array({
+        {
+            {"name", "EnvTool"},
+            {"path", "C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\EnvTool.lnk"},
+            {"isDirectory", false},
+            {"resultType", "app"},
+            {"dedupStem", "envtool"},
+            {"exactAliasMatch", false},
+            {"launcherScore", 860},
+            {"frecencyScore", 0.0}
+        },
+        {
+            {"name", "EnvViewer"},
+            {"path", "C:\\Apps\\EnvViewer.exe"},
+            {"isDirectory", false},
+            {"resultType", "app"},
+            {"dedupStem", "envviewer"},
+            {"exactAliasMatch", false},
+            {"launcherScore", 820},
+            {"frecencyScore", 0.0}
+        },
+        {
+            {"name", "EnvStudio"},
+            {"path", "C:\\Apps\\EnvStudio.exe"},
+            {"isDirectory", false},
+            {"resultType", "app"},
+            {"dedupStem", "envstudio"},
+            {"exactAliasMatch", false},
+            {"launcherScore", 780},
+            {"frecencyScore", 0.0}
+        },
+        {
+            {"name", "EnvHelper"},
+            {"path", "C:\\Apps\\EnvHelper.exe"},
+            {"isDirectory", false},
+            {"resultType", "app"},
+            {"dedupStem", "envhelper"},
+            {"exactAliasMatch", false},
+            {"launcherScore", 740},
+            {"frecencyScore", 0.0}
+        }
+    });
+
+    const nlohmann::json bookmarksJson = nlohmann::json::array({
+        {
+            {"name", "Env Docs"},
+            {"path", "https://example.com/env"},
+            {"isDirectory", false},
+            {"resultType", "bookmark"},
+            {"matchRank", 80},
+            {"frecencyScore", 0.0}
+        }
+    });
+
+    // 1. balanced_frecency（默认）：顶栏严格 Cap=3，不淹没本地文件；且同名文档 env.txt 绝不误删，重复 .lnk 已去重
+    {
+        FusionOptions opts;
+        opts.profile = RankingProfile::BalancedFrecency;
+        opts.balancedTopLauncherCap = 3;
+        const auto fused = fuseSearchResults(filesJson, appsJson, commandsJson, bookmarksJson, opts);
+        ASSERT_EQ(fused.size(), 8u);  // 1 cmd + 4 apps + 2 non-dup files + 1 bookmark
+        EXPECT_EQ(fused[0].value("path", ""), "cmd://env");
+        EXPECT_EQ(fused[1].value("name", ""), "EnvTool");
+        EXPECT_EQ(fused[1].value("runCount", 0u), 5u);
+        EXPECT_EQ(fused[2].value("name", ""), "EnvViewer");
+        // 第 4 位立即出现本地文件，确保顶栏 Cap=3 不淹没文件
+        EXPECT_EQ(fused[3].value("resultType", ""), "file");
+        EXPECT_EQ(fused[3].value("name", ""), "env.txt");
+        EXPECT_EQ(fused[4].value("name", ""), "env_config.yaml");
+    }
+
+    // 2. files_first：仅精确别名命令 `env` 置顶，其余非精确应用排在本地文件之后
+    {
+        FusionOptions opts;
+        opts.profile = RankingProfile::FilesFirst;
+        const auto fused = fuseSearchResults(filesJson, appsJson, commandsJson, bookmarksJson, opts);
+        ASSERT_EQ(fused.size(), 8u);
+        EXPECT_EQ(fused[0].value("path", ""), "cmd://env");
+        EXPECT_EQ(fused[1].value("resultType", ""), "file");
+        EXPECT_EQ(fused[1].value("name", ""), "env.txt");
+        EXPECT_EQ(fused[2].value("resultType", ""), "file");
+        EXPECT_EQ(fused[2].value("name", ""), "env_config.yaml");
+        EXPECT_EQ(fused[3].value("resultType", ""), "app");
+    }
+
+    // 3. launcher_first：全部 5 条命令+应用位于最高梯队，文件紧随其后
+    {
+        FusionOptions opts;
+        opts.profile = RankingProfile::LauncherFirst;
+        const auto fused = fuseSearchResults(filesJson, appsJson, commandsJson, bookmarksJson, opts);
+        ASSERT_EQ(fused.size(), 8u);
+        EXPECT_EQ(fused[0].value("resultType", ""), "command");
+        for (size_t i = 1; i <= 4; ++i) {
+            EXPECT_EQ(fused[i].value("resultType", ""), "app");
+        }
+        EXPECT_EQ(fused[5].value("resultType", ""), "file");
+        EXPECT_EQ(fused[5].value("name", ""), "env.txt");
+    }
+
+    // 4. Frecency 提权：原本分数最低的 EnvHelper 经高频使用后自动超越其他非精确应用跃升顶栏
+    {
+        nlohmann::json boostedApps = appsJson;
+        boostedApps[3]["frecencyScore"] = 1200.0;
+        boostedApps[3]["runCount"] = 7;
+
+        FusionOptions opts;
+        opts.profile = RankingProfile::BalancedFrecency;
+        opts.balancedTopLauncherCap = 3;
+        const auto fused = fuseSearchResults(filesJson, boostedApps, commandsJson, nlohmann::json::array(), opts);
+        ASSERT_GE(fused.size(), 4u);
+        EXPECT_EQ(fused[0].value("path", ""), "cmd://env");
+        EXPECT_EQ(fused[1].value("name", ""), "EnvHelper");
+        EXPECT_EQ(fused[3].value("resultType", ""), "file");
+    }
+}
+
+TEST(InstalledAppIndexTest, BuildsLightweightAcronymsAndPersistsFrecency) {
+    using namespace tools3000::search;
+
+    EXPECT_EQ(InstalledAppIndex::buildInitialsAcronym("Visual Studio Code"), "vsc");
+    EXPECT_EQ(InstalledAppIndex::buildInitialsAcronym("微信"), "wx");
+    EXPECT_EQ(InstalledAppIndex::buildInitialsAcronym("腾讯会议"), "txhy");
+
+    const auto parsedApp = InstalledAppIndex::parseAppQuery("APP: wechat");
+    EXPECT_TRUE(parsedApp.isExplicitAppQuery);
+    EXPECT_EQ(parsedApp.cleanQuery, "wechat");
+    EXPECT_FALSE(InstalledAppIndex::parseAppQuery("apple.txt").isExplicitAppQuery);
+
+    // 验证 LauncherFrecencyStore 宽字符原子持久化与往返读取
+    wchar_t tempDir[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempDir), 0u);
+    const std::filesystem::path frecencyFile =
+        std::filesystem::path(tempDir) / L"tools3000_test_frecency_utf8_测试.json";
+    DeleteFileW(frecencyFile.c_str());
+
+    auto& store = LauncherFrecencyStore::instance();
+    store.setStoragePathForTesting(frecencyFile);
+    const int64_t tNow = 1'790'000'000'000ll;
+    store.recordRun("cmd://env", tNow);
+    store.recordRun("cmd://env", tNow + 1000);
+    store.clearCache();  // 强制从磁盘重新加载
+
+    const auto rec = store.lookup("CMD://ENV");
+    EXPECT_EQ(rec.runCount, 2u);
+    EXPECT_GT(store.scoreFor("cmd://env", tNow + 2000), 600.0);
+
+    store.resetForTesting();
+    DeleteFileW(frecencyFile.c_str());
+}
+
+TEST(FileIndexStoreMemoryTest, ShrinkExcessCapacityReclaimsHashAndVectorSlackWithoutDataLoss) {
+    using tools3000::service::FileIndexStore;
+
+    FileIndexStore store;
+    store.setDriveLetter('C');
+    // 预置 4000 条记录（触发较大哈希表与记录向量分配）
+    store.reserve(4000);
+    for (uint64_t i = 1; i <= 4000; ++i) {
+        FileRecordInit rec{};
+        rec.fileReferenceNumber = 10'000 + i;
+        rec.parentFileReferenceNumber = 0;
+        rec.fileName = (i % 2 == 0)
+            ? (L"测试文档_" + std::to_wstring(i) + L".txt")
+            : (L"report_" + std::to_wstring(i) + L".log");
+        rec.isDirectory = false;
+        rec.fileSize = i * 16;
+        store.upsert(rec, true, true);
+    }
+    store.recomputeHierarchyMetadata();
+    ASSERT_EQ(store.size(), 4000u);
+
+    const size_t hashCapBefore = store.hashCapacity();
+    const uint64_t bytesBefore = store.approximateBytes();
+
+    // 删除 3900 条记录，仅保留 FRN 10001..10100
+    for (uint64_t i = 101; i <= 4000; ++i) {
+        ASSERT_TRUE(store.erase(10'000 + i));
+    }
+    ASSERT_EQ(store.size(), 100u);
+
+    store.shrinkExcessCapacity();
+
+    EXPECT_EQ(store.size(), 100u);
+    EXPECT_EQ(store.tombstoneCount(), 0u);
+    EXPECT_LT(store.hashCapacity(), hashCapBefore);
+    EXPECT_LT(store.approximateBytes(), bytesBefore);
+
+    // 逐条验证全部 100 条存活记录的 find()、view() 与 forEach() 100% 完整
+    for (uint64_t i = 1; i <= 100; ++i) {
+        const uint64_t frn = 10'000 + i;
+        const auto* stored = store.find(frn);
+        ASSERT_NE(stored, nullptr) << "missing live record frn=" << frn;
+        const auto view = store.view(*stored);
+        EXPECT_EQ(view.fileReferenceNumber, frn);
+        EXPECT_EQ(view.fileSize, i * 16);
+        const std::wstring expectedName = (i % 2 == 0)
+            ? (L"测试文档_" + std::to_wstring(i) + L".txt")
+            : (L"report_" + std::to_wstring(i) + L".log");
+        EXPECT_EQ(view.fileName, expectedName);
+    }
+    for (uint64_t i = 101; i <= 4000; ++i) {
+        EXPECT_EQ(store.find(10'000 + i), nullptr);
+    }
+
+    size_t visited = 0;
+    store.forEach([&visited](const tools3000::service::StoredFileRecord&) { ++visited; });
+    EXPECT_EQ(visited, 100u);
+}
+
+TEST(SearchLiveWatchTest, IndexGenerationAdvancesOnSnapshotImportAndAllowedReadOnly) {
+    EXPECT_TRUE(tools3000::service::external_api::isActionAllowedForExternal("getIndexGeneration"));
+    EXPECT_FALSE(tools3000::service::external_api::isActionAllowedForExternal("rebuild"));
+
+    auto parser = std::make_unique<MftParser>();
+    const uint64_t initialGen = parser->getIndexGeneration();
+
+    std::vector<FileRecordInit> batch1;
+    FileRecordInit f1{};
+    f1.fileReferenceNumber = 5001;
+    f1.parentFileReferenceNumber = 0;
+    f1.fileName = L"live_added_report.pdf";
+    f1.isDirectory = false;
+    batch1.push_back(std::move(f1));
+
+    ASSERT_TRUE(parser->importSnapshot(std::move(batch1), 100, 1));
+    const uint64_t genAfterImport1 = parser->getIndexGeneration();
+    EXPECT_GT(genAfterImport1, initialGen);
+
+    std::vector<FileRecordInit> batch2;
+    FileRecordInit f2{};
+    f2.fileReferenceNumber = 5002;
+    f2.parentFileReferenceNumber = 0;
+    f2.fileName = L"live_added_report_v2.pdf";
+    f2.isDirectory = false;
+    batch2.push_back(std::move(f2));
+
+    ASSERT_TRUE(parser->importSnapshot(std::move(batch2), 200, 1));
+    const uint64_t genAfterImport2 = parser->getIndexGeneration();
+    EXPECT_GT(genAfterImport2, genAfterImport1);
+}

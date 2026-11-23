@@ -100,6 +100,14 @@ public:
     void setInitialTimeoutMs(int ms);
     int initialTimeoutMs() const { return m_initialTimeoutMs.load(); }
 
+    /// 手势划动中途停顿自动取消开关 (默认 false)
+    void setPauseCancelEnabled(bool enabled);
+    bool pauseCancelEnabled() const { return m_pauseCancelEnabled.load(std::memory_order_acquire); }
+
+    /// 手势划动中途停顿自动取消超时阈值 (毫秒, 默认 700, 范围 [400, 2000])
+    void setPauseCancelMs(int ms);
+    int pauseCancelMs() const { return m_pauseCancelMs.load(std::memory_order_acquire); }
+
     /// 手势最小识别距离 (像素, 默认 24px；同时控制轨迹覆盖层激活阈值)
     void setMinSegmentDistance(int px);
     int minSegmentDistance() const { return m_minSegmentDistance.load(); }
@@ -235,6 +243,8 @@ private:
     std::atomic<bool> m_autoBypassFullscreen{true};
     std::atomic<GestureTargetMode> m_targetMode{GestureTargetMode::UnderPointer};
     std::atomic<int> m_initialTimeoutMs{0};
+    std::atomic<bool> m_pauseCancelEnabled{false};
+    std::atomic<int> m_pauseCancelMs{kDefaultPauseCancelMs};
     std::atomic<int> m_minSegmentDistance{24};
     std::atomic<int> m_shapeMatchThreshold{75};
     HWND m_gestureStartWindow = nullptr;  // 手势开始时光标下的顶层窗口（含设置窗）
@@ -259,6 +269,10 @@ private:
     bool m_profileResolvedLocally = false;
     bool m_wheelExecutedDuringTracking = false;    // 按住触发键期间是否执行过滚轮手势
     bool m_instantExecutedDuringTracking = false;  // 按住触发键划动期间是否已触发 instantExecute
+    bool m_pauseCanceledDuringTracking = false;    // 本次追踪是否已因划动中途停顿超时自动取消
+    bool m_speechlessShownDuringTracking = false;  // 本次追踪是否已触发 10 秒乱画红底三白点无语彩蛋
+    POINT m_pauseAnchorPt{0, 0};                   // 停顿检测抗抖锚点坐标 (位移平方 >= 36px^2 时刷新)
+    std::chrono::steady_clock::time_point m_pauseAnchorTime{}; // 停顿检测锚点刷新时间戳
     bool m_hasMovedBeyondThreshold = false;        // 是否已移动跨过起始识别阈值
     bool m_trailOverlayActivated = false;          // 轨迹覆盖层是否已在跨过阈值后激活（未激活前 0 光点）
     std::vector<TrackPoint> m_pendingTrailPoints;  // 跨过最小识别距离前暂存的起笔与途经坐标

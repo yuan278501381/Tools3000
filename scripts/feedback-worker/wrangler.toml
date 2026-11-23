@@ -1,0 +1,11 @@
+name = "tools3000-feedback-relay"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+GITHUB_REPO = "yuan278501381/tools3000"
+
+# 可选: 启用私有 R2 Bucket 物理隔离存放脱敏日志与截图
+# [[r2_buckets]]
+# binding = "FEEDBACK_R2"
+# bucket_name = "tools3000-feedback-private"

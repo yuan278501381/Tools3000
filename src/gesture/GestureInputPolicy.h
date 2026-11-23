@@ -569,6 +569,79 @@ inline constexpr bool shouldTriggerInitialTimeout(bool hasMovedBeyondThreshold,
            timeoutMs > 0 && elapsedMs >= static_cast<int64_t>(timeoutMs);
 }
 
+inline constexpr int kMinPauseCancelMs = 400;
+inline constexpr int kMaxPauseCancelMs = 2000;
+inline constexpr int kDefaultPauseCancelMs = 700;
+inline constexpr int kPauseCancelJitterRadiusSq = 36; // 6px 抗抖半径平方
+
+/// 划动中途停顿自动取消超时阈值安全钳制 [400, 2000] ms
+inline constexpr int clampPauseCancelMs(int ms) noexcept {
+    return ms < kMinPauseCancelMs ? kMinPauseCancelMs
+         : (ms > kMaxPauseCancelMs ? kMaxPauseCancelMs : ms);
+}
+
+/// 判定光标相对停顿锚点是否产生超过抗抖半径的有效位移 (默认 6px -> dx*dx + dy*dy >= 36)
+inline constexpr bool hasMovedBeyondPauseAnchor(int curX, int curY,
+                                                int anchorX, int anchorY,
+                                                int jitterRadiusSq = kPauseCancelJitterRadiusSq) noexcept {
+    const int64_t dx = static_cast<int64_t>(curX) - static_cast<int64_t>(anchorX);
+    const int64_t dy = static_cast<int64_t>(curY) - static_cast<int64_t>(anchorY);
+    return (dx * dx + dy * dy) >= static_cast<int64_t>(jitterRadiusSq);
+}
+
+/// 手势划动中途停顿超时自动取消纯策略判定 (Pause-to-Cancel)：
+/// 严格区别于起笔前的 initialTimeoutMs，仅在已跨过 minSegmentDistance 进入正式划动、
+/// 且尚未瞬发/滚轮/取消时生效。
+inline constexpr bool shouldTriggerPauseCancel(bool pauseCancelEnabled,
+                                               bool hasMovedBeyondThreshold,
+                                               bool instantExecuted,
+                                               bool wheelExecuted,
+                                               bool alreadyPauseCanceled,
+                                               int64_t pausedElapsedMs,
+                                               int pauseCancelMs) noexcept {
+    if (!pauseCancelEnabled) return false;
+    if (!hasMovedBeyondThreshold) return false;
+    if (instantExecuted || wheelExecuted || alreadyPauseCanceled) return false;
+    if (pauseCancelMs <= 0) return false;
+    return pausedElapsedMs >= static_cast<int64_t>(clampPauseCancelMs(pauseCancelMs));
+}
+
+/// 连续乱画 8 秒触发的拟人「无语」彩蛋标记（UTF-8 三圆点，呈现红底白三点胶囊）
+inline constexpr const char* kGestureSpeechlessMarker = "\xE2\x80\xA2\xE2\x80\xA2\xE2\x80\xA2";
+inline constexpr int64_t kGestureSpeechlessThresholdMs = 8000;
+inline constexpr int64_t kGestureWatchdogIdleTimeoutMs = 10000;
+inline constexpr int64_t kGestureWatchdogMaxActiveMs = 30000;
+inline constexpr DWORD kGestureSpeechlessFadeHoldMs = 680;
+inline constexpr DWORD kGestureSpeechlessFadeOutMs = 260;
+
+/// 判定给定动作文本是否为 8 秒乱画「无语红底三白点」彩蛋标记
+inline constexpr bool isGestureSpeechlessMarker(std::string_view text) noexcept {
+    return text == kGestureSpeechlessMarker;
+}
+
+/// 判定是否应当进入 8 秒乱画无语彩蛋态（需已进入有效划动且未瞬发/滚轮/停顿取消）
+inline constexpr bool shouldTriggerGestureSpeechless(bool hasMovedBeyondThreshold,
+                                                     bool instantExecuted,
+                                                     bool wheelExecuted,
+                                                     bool pauseCanceled,
+                                                     int64_t elapsedMs) noexcept {
+    return hasMovedBeyondThreshold &&
+           !instantExecuted &&
+           !wheelExecuted &&
+           !pauseCanceled &&
+           elapsedMs >= kGestureSpeechlessThresholdMs;
+}
+
+/// 手势看门狗防卡死熔断判定：
+/// - 10 秒内完全无新钩子事件输入（丢松手/失步僵死）-> 立即安全熔断；
+/// - 持续活跃乱画时绝不提前误杀（保证 8 秒红底白三点无语彩蛋完整触发并持续响应），
+///   仅在达到 30 秒总时长硬上限时强制熔断防极端状态机锁死。
+inline constexpr bool shouldWatchdogAbortGesture(int64_t totalElapsedMs,
+                                                 int64_t idleSinceLastEventMs) noexcept {
+    return idleSinceLastEventMs >= kGestureWatchdogIdleTimeoutMs ||
+           totalElapsedMs >= kGestureWatchdogMaxActiveMs;
+}
+
 /// 搜索结果中的 Shift+右键属于 Windows 原生菜单快捷操作，必须让物理按下/
 /// 抬起原样进入 WebView。若先由手势引擎吞掉再补发，Shift 状态、坐标和菜单
 /// 前台权限都会变得不可靠。

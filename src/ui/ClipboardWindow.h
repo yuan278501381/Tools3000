@@ -55,15 +55,22 @@ private:
     bool createWindow(HINSTANCE hInstance);
     void initializeWebView2();
     void updatePlacement();
+    void revealWindowNow();
+    void enterDeferredSuspend();
     void notifyShownToWeb();
     void notifyWindowStateToWeb();
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
     static constexpr UINT_PTR IDT_IDLE_DESTROY = 2102;
-    // 隐藏后先经 TrySuspend 瞬降 GPU/JS 活跃占用，5 分钟无交互再彻底销毁 WebView2 归还全部物理内存，
-    // 兼顾高频连续呼出 0ms 秒开体验与长时闲置零残留。
+    static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 2103;
+    static constexpr UINT_PTR IDT_REVEAL_FALLBACK = 2104;
+    // 高频热保活宽限期 (25s)：隐藏后 25 秒内保留 GPU 合成帧不立刻 TrySuspend/trimWorkingSet，
+    // 连续呼出 <16ms 零黑屏瞬开；超 25s 软挂起降内存，超 5 分钟彻底销毁归还全部物理内存。
+    static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
     static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 300000;
+    static constexpr UINT REVEAL_FALLBACK_WARM_MS = 450;
+    static constexpr UINT REVEAL_FALLBACK_COLD_MS = 1200;
     static constexpr UINT WM_CLIPBOARD_VERIFY_DEACTIVATED = WM_APP + 29;
 
     HWND m_hwnd = nullptr;
@@ -76,6 +83,8 @@ private:
     std::atomic<bool> m_visible{false};
     std::atomic<uint64_t> m_generation{0};
     bool m_webViewReady = false;
+    bool m_suspendedOrCold = true;
+    bool m_pendingReveal = false;
     bool m_pinned = false;
     bool m_maximized = false;
     bool m_inSizeMove = false;

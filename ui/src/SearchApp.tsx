@@ -68,6 +68,7 @@ import {
   getSortedResults,
   getVisibleTableColumns,
   hasContentSyntaxInQuery,
+  isEffectiveContentSearch,
   migrateTableColumnsToIncludeRunCount,
   normalizeSearchCategoryOrder,
   normalizeTableColumnOrder,
@@ -104,7 +105,7 @@ const REBUILD_POLL_INTERVAL_MS = 350;
 const REBUILD_POLL_TIMEOUT_MS = 120_000;
 const ALLOWED_MAX_RESULT_LIMITS = [0, 50, 100, 200] as const;
 const VALID_COLUMN_IDS: readonly ColumnId[] = ['name', 'path', 'size', 'modified', 'created', 'snippets'];
-const BARE_OPERATOR_PREFIX_REGEX = /^(content|\u5185\u5bb9|c|ext|path|parent|p|file|folder|dir|size|dm|date|modified|regex|r|case|cs|exact|pinyin|py|nopy|bm):$/i;
+const BARE_OPERATOR_PREFIX_REGEX = /^(content|\u5185\u5bb9|c|ext|path|parent|p|file|folder|dir|size|dm|date|modified|regex|r|case|cs|exact|pinyin|py|nopy|bm|b|app|cmd):$/i;
 const CJK_CHAR_REGEX = /[\u4e00-\u9fff]/;
 
 function isNonEmptyString(val: unknown): val is string {
@@ -334,6 +335,12 @@ export default function SearchApp() {
       }
       return defaultCategory && defaultCategory !== 'content' ? defaultCategory : 'all';
     }
+    if (trimmed.startsWith('bm:') || (trimmed.startsWith('b:') && trimmed[2] !== '\\' && trimmed[2] !== '/')) {
+      return 'bookmark';
+    }
+    if (trimmed.startsWith('app:') || trimmed.startsWith('cmd:')) {
+      return 'app';
+    }
     if (trimmed.startsWith('folder:') || trimmed.startsWith('dir:')) {
       return 'folder';
     }
@@ -381,6 +388,7 @@ export default function SearchApp() {
     resumeContentScan,
     clearResultCache,
     refreshQuery,
+    silentRefreshQuery,
     refreshOnFocus,
   } = useSearchEngine({
     query,
@@ -681,10 +689,13 @@ export default function SearchApp() {
 
   const [sortField, setSortField] = useState<SortField>(() => {
     const saved = safeStorageGetItem('tools3000_search_sort_field');
+    if (saved === 'relevance') {
+      return 'relevance';
+    }
     if (saved && isKnownTableColumnId(saved)) {
       return saved;
     }
-    return 'modified';
+    return 'relevance';
   });
 
   const [sortDirection, setSortDirection] = useState<SortDirection>(() =>
@@ -715,6 +726,12 @@ export default function SearchApp() {
   const [iconStyle, setIconStyle] = useState<SearchIconStyle>(() =>
     safeStorageGetEnum('tools3000_search_icon_style', ['native', 'vector'] as const, 'native'),
   );
+  const [liveRefreshEnabled, setLiveRefreshEnabled] = useState<boolean>(() => {
+    const raw = safeStorageGetItem('tools3000_search_live_refresh');
+    return raw === null ? true : raw !== 'false';
+  });
+  const lastSeenIndexGenRef = useRef<number | null>(null);
+  const liveWatchWindowVisibleRef = useRef<boolean>(!document.hidden);
   const NATIVE_ICON_CACHE_MAX_ENTRIES = 512;
   const [nativeIconCache, setNativeIconCache] = useState<Record<string, string>>({});
   const nativeIconCacheRef = useRef<Map<string, string>>(new Map());
@@ -764,6 +781,10 @@ export default function SearchApp() {
         pinyinEnabled?: boolean;
         matchPath?: boolean;
         caseSensitive?: boolean;
+        includeBookmarks?: boolean;
+        enableAppsAndCommands?: boolean;
+        liveRefreshEnabled?: boolean;
+        rankingProfile?: string;
         defaultCategory?: string;
         maxResults?: number;
         excludeHidden?: boolean;
@@ -775,6 +796,10 @@ export default function SearchApp() {
           if (res.iconStyle === 'native' || res.iconStyle === 'vector') {
             setIconStyle(res.iconStyle);
             safeStorageSetItem('tools3000_search_icon_style', res.iconStyle);
+          }
+          if (typeof res.liveRefreshEnabled === 'boolean') {
+            setLiveRefreshEnabled(res.liveRefreshEnabled);
+            safeStorageSetItem('tools3000_search_live_refresh', String(res.liveRefreshEnabled));
           }
           if (typeof res.defaultCategory === 'string' && res.defaultCategory) {
             const normalizedCat = res.defaultCategory === 'content' ? 'all' : res.defaultCategory;
@@ -881,7 +906,7 @@ export default function SearchApp() {
             }
           }
           const defaultPyByLang = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
-          const nextSig = `${Boolean(res.pinyinEnabled ?? defaultPyByLang)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}`;
+          const nextSig = `${Boolean(res.pinyinEnabled ?? defaultPyByLang)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}:${Boolean(res.includeBookmarks ?? true)}:${Boolean(res.enableAppsAndCommands ?? true)}:${res.rankingProfile ?? 'balanced_frecency'}`;
           const prevSig = searchSettingsSigRef.current;
           searchSettingsSigRef.current = nextSig;
           if (triggerRefreshOnDiff && prevSig !== null && prevSig !== nextSig) {
@@ -906,6 +931,8 @@ export default function SearchApp() {
         setDefaultCategory(e.newValue === 'content' ? 'all' : e.newValue);
       } else if (e.key === 'tools3000_search_icon_style' && (e.newValue === 'native' || e.newValue === 'vector')) {
         setIconStyle(e.newValue);
+      } else if (e.key === 'tools3000_search_live_refresh' && (e.newValue === 'true' || e.newValue === 'false')) {
+        setLiveRefreshEnabled(e.newValue === 'true');
       }
     };
     window.addEventListener('tools3000:focusSearch', onSyncEvt);
@@ -960,6 +987,9 @@ export default function SearchApp() {
     const missing = new Set<string>();
     const items: Array<{ key: string; ext: string; isDirectory: boolean; path?: string }> = [];
     for (const item of list.slice(0, 100)) {
+      if (item.resultType === 'bookmark' || item.resultType === 'command') {
+        continue;
+      }
       const spec = resolveNativeIconRequest(item);
       const key = spec.cacheKey;
       if (
@@ -1008,6 +1038,144 @@ export default function SearchApp() {
     safeStorageSetItem('tools3000_search_icon_style', newStyle);
     void bridgeRequest('search.saveSettings', { iconStyle: newStyle });
   };
+
+  const toggleLiveRefresh = useCallback(() => {
+    setLiveRefreshEnabled((prev) => {
+      const next = !prev;
+      safeStorageSetItem('tools3000_search_live_refresh', String(next));
+      void bridgeRequest('search.saveSettings', { liveRefreshEnabled: next }, { silent: true }).catch(() => undefined);
+      if (next) {
+        lastSeenIndexGenRef.current = null;
+      }
+      return next;
+    });
+  }, []);
+
+  // 实时显示新增与变动文件（Live Watch）：仅在窗口可见、已输入文件名查询且非交互阻塞态时，
+  // 通过零开销只读代次探测 (autoStart=false) 感知 USN 变动并原地无闪刷新结果列表。
+  useEffect(() => {
+    const trimmed = query.trim();
+    const isContent = Boolean(
+      trimmed &&
+      isEffectiveContentSearch({
+        query: trimmed,
+        activeCategory,
+        searchMode: activeCategory === 'content' ? 'content' : searchMode,
+      }),
+    );
+    const isLocalOnlyPrefix =
+      /^b(?:m)?:\s*/i.test(trimmed) ||
+      /^cmd:\s*/i.test(trimmed) ||
+      /^app:\s*/i.test(trimmed) ||
+      activeCategory === 'bookmarks';
+
+    if (
+      !liveRefreshEnabled ||
+      !trimmed ||
+      isContent ||
+      isLocalOnlyPrefix ||
+      isComposing ||
+      contextMenu.visible ||
+      loading ||
+      isRebuilding ||
+      isServiceStarting ||
+      isInitialIndexing
+    ) {
+      return;
+    }
+
+    let cancelled = false;
+    let timerId: number | undefined;
+    let inFlight = false;
+    const LIVE_WATCH_INTERVAL_MS = 850;
+
+    const scheduleNext = (delayMs: number) => {
+      if (cancelled || !liveWatchWindowVisibleRef.current || document.hidden) return;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      timerId = window.setTimeout(() => {
+        void pollOnce();
+      }, delayMs);
+    };
+
+    const pollOnce = async () => {
+      if (cancelled || inFlight || !liveWatchWindowVisibleRef.current || document.hidden) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const resp = await bridgeRequest<{
+          success?: boolean;
+          running?: boolean;
+          ready?: boolean;
+          indexGeneration?: number;
+          totalIndexedFiles?: number;
+        }>('search.getIndexGeneration', {}, { silent: true });
+        if (cancelled || !liveWatchWindowVisibleRef.current || document.hidden) return;
+        if (resp?.running && resp.ready && typeof resp.indexGeneration === 'number') {
+          if (typeof resp.totalIndexedFiles === 'number' && resp.totalIndexedFiles > 0) {
+            setTotalIndexedFiles(resp.totalIndexedFiles);
+          }
+          const prevGen = lastSeenIndexGenRef.current;
+          lastSeenIndexGenRef.current = resp.indexGeneration;
+          if (prevGen !== null && resp.indexGeneration !== prevGen) {
+            silentRefreshQuery();
+          }
+        }
+      } catch {
+        // 忽略瞬时探测异常，绝不干扰正常搜索体验
+      } finally {
+        inFlight = false;
+        scheduleNext(LIVE_WATCH_INTERVAL_MS);
+      }
+    };
+
+    const onWindowHidden = () => {
+      liveWatchWindowVisibleRef.current = false;
+      if (timerId !== undefined) {
+        window.clearTimeout(timerId);
+        timerId = undefined;
+      }
+    };
+    const onWindowShown = () => {
+      liveWatchWindowVisibleRef.current = true;
+      scheduleNext(350);
+    };
+    const onVisibility = () => {
+      if (document.hidden) {
+        onWindowHidden();
+      } else {
+        onWindowShown();
+      }
+    };
+
+    window.addEventListener('tools3000:searchWindowHidden', onWindowHidden);
+    window.addEventListener('tools3000:focusSearch', onWindowShown);
+    document.addEventListener('visibilitychange', onVisibility);
+    if (!document.hidden && liveWatchWindowVisibleRef.current) {
+      scheduleNext(LIVE_WATCH_INTERVAL_MS);
+    }
+
+    return () => {
+      cancelled = true;
+      if (timerId !== undefined) window.clearTimeout(timerId);
+      window.removeEventListener('tools3000:searchWindowHidden', onWindowHidden);
+      window.removeEventListener('tools3000:focusSearch', onWindowShown);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [
+    activeCategory,
+    contextMenu.visible,
+    isComposing,
+    isInitialIndexing,
+    isRebuilding,
+    isServiceStarting,
+    liveRefreshEnabled,
+    loading,
+    query,
+    searchMode,
+    setTotalIndexedFiles,
+    silentRefreshQuery,
+  ]);
 
   // 列配置（仅保留表头核心列 + 正交全文摘要开关，彻底清理卡片专属项）
   const [columns, setColumns] = useState<ColumnSetting[]>(() => {
@@ -1299,6 +1467,7 @@ export default function SearchApp() {
   const [propertyCacheForSort, setPropertyCacheForSort] = useState<PropertyCacheMap>({});
 
   const sortFieldNeedsBackendProp = useMemo(() => {
+    if (sortField === 'relevance') return false;
     const def = resolveColumnDefinition(sortField);
     if (def.requiresBackendProp) return true;
     if (sortField === 'accessed') {
@@ -1385,11 +1554,11 @@ export default function SearchApp() {
   }, [persistUiPreferencesPatch]);
 
   const fallbackSortIfColumnRemoved = useCallback((remainingCols: readonly TableColumnId[]) => {
-    if (!remainingCols.includes(sortField)) {
+    if (sortField !== 'relevance' && !remainingCols.includes(sortField)) {
       cancelSortExtraction();
-      setSortField('modified');
+      setSortField('relevance');
       setSortDirection('desc');
-      safeStorageSetItem('tools3000_search_sort_field', 'modified');
+      safeStorageSetItem('tools3000_search_sort_field', 'relevance');
       safeStorageSetItem('tools3000_search_sort_dir', 'desc');
     }
   }, [cancelSortExtraction, sortField]);
@@ -1776,23 +1945,44 @@ export default function SearchApp() {
   }, [sortedResults]);
 
   const handleSelectSort = useCallback((field: SortField) => {
+    if (field === 'relevance') {
+      cancelSortExtraction();
+      setSortField('relevance');
+      setSortDirection('desc');
+      safeStorageSetItem('tools3000_search_sort_field', 'relevance');
+      safeStorageSetItem('tools3000_search_sort_dir', 'desc');
+      setSelectedIndex(0);
+      inputRef.current?.focus();
+      return;
+    }
     if (!isKnownTableColumnId(field)) return;
     userCancelledSortKeyRef.current = '';
 
+    const def = resolveColumnDefinition(field);
     if (sortField === field) {
-      const nextDir = sortDirection === 'desc' ? 'asc' : 'desc';
-      setSortDirection(nextDir);
-      safeStorageSetItem('tools3000_search_sort_dir', nextDir);
+      if (sortDirection === def.defaultSortDir) {
+        const nextDir = sortDirection === 'desc' ? 'asc' : 'desc';
+        setSortDirection(nextDir);
+        safeStorageSetItem('tools3000_search_sort_dir', nextDir);
+      } else {
+        // 再次点击当前列：三态循环恢复智能相关性（保留后端 Frecency 与 3 档融合优先级）
+        cancelSortExtraction();
+        setSortField('relevance');
+        setSortDirection('desc');
+        safeStorageSetItem('tools3000_search_sort_field', 'relevance');
+        safeStorageSetItem('tools3000_search_sort_dir', 'desc');
+        setSelectedIndex(0);
+        inputRef.current?.focus();
+        return;
+      }
     } else {
       setSortField(field);
-      const def = resolveColumnDefinition(field);
       const defaultDir = def.defaultSortDir;
       setSortDirection(defaultDir);
       safeStorageSetItem('tools3000_search_sort_field', field);
       safeStorageSetItem('tools3000_search_sort_dir', defaultDir);
     }
 
-    const def = resolveColumnDefinition(field);
     const needsBackend =
       def.requiresBackendProp ||
       (field === 'accessed' && snapshot.results.some((item) => doesItemRequireBackendProperty(item, 'accessed'))) ||
@@ -1847,7 +2037,13 @@ export default function SearchApp() {
       return;
     }
 
-    let cleaned = stripContentSyntaxFromQuery(query);
+    let cleaned = stripContentSyntaxFromQuery(query).trimStart();
+    // 剥离书签/应用/命令前缀（严格保留 b:\ 与 b:/ 盘符路径）
+    if (/^(bm|app|cmd):/i.test(cleaned)) {
+      cleaned = cleaned.replace(/^(bm|app|cmd):\s*/i, '');
+    } else if (/^b:(?![\\/])/i.test(cleaned)) {
+      cleaned = cleaned.replace(/^b:\s*/i, '');
+    }
     CATEGORY_DEFS.forEach(c => {
       if (c.prefix && c.id !== 'content' && cleaned.toLowerCase().startsWith(c.prefix.trim().toLowerCase())) {
         const rest = cleaned.slice(c.prefix.trim().length);
@@ -2221,7 +2417,7 @@ export default function SearchApp() {
             setMaxResultLimit(0);
             setExcludeGitAndModules(true);
             setExcludeHidden(false);
-            setSortField('modified');
+            setSortField('relevance');
             setSortDirection('desc');
             const allLetters = systemDrives.map((d) => d.letter);
             if (allLetters.length > 0) {
@@ -2379,6 +2575,8 @@ export default function SearchApp() {
           selectedIndex={selectedIndex}
           searchElapsedMs={searchElapsedMs}
           isRebuilding={isRebuilding}
+          liveRefreshEnabled={liveRefreshEnabled}
+          onToggleLiveRefresh={toggleLiveRefresh}
           onRebuildIndex={() => void rebuildIndex()}
           onOpenResult={(res) => void openResult(res)}
           onOpenFolderResult={(res) => void openFolderResult(res)}

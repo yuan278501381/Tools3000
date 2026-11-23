@@ -708,8 +708,8 @@ html[data-surface="quicklook"] #root {
 
 .ql-image-canvas {
   margin: auto;
-  min-width: min-content;
-  min-height: min-content;
+  max-width: 100%;
+  max-height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -722,11 +722,14 @@ html[data-surface="quicklook"] #root {
   background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
   border-radius: 8px;
   padding: 16px;
+  box-sizing: border-box;
 }
 
 .ql-image-element {
   max-width: 100%;
   max-height: 70vh;
+  min-width: 32px;
+  min-height: 32px;
   object-fit: contain;
   transform-origin: center center;
   transition: transform 0.15s ease-out;
@@ -1514,4 +1517,346 @@ html[data-surface="quicklook"] #root {
     left: 16px;
     right: auto;
   }
+}
+
+/* ── 视频 FFmpeg 关键帧胶片条、压缩包目录树与字体瀑布流预览 ───────────────── */
+.ql-video-probe-card {
+  width: min(920px, 100%);
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+  border-radius: 14px;
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-sizing: border-box;
+}
+
+.ql-video-probe-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.ql-video-probe-title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ql-text-main);
+  font-size: 0.96rem;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.ql-video-probe-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ql-video-probe-meta-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ql-video-filmstrip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+}
+
+.ql-video-thumb-card {
+  margin: 0;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-border);
+  border-radius: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.ql-video-thumb-card img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  display: block;
+}
+
+.ql-video-thumb-card figcaption {
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--ql-text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-archive-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 16px 24px 20px;
+  gap: 12px;
+  box-sizing: border-box;
+}
+
+.ql-archive-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.ql-archive-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--ql-text-muted);
+  font-size: 0.86rem;
+  font-weight: 500;
+}
+
+.ql-archive-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--ql-surface-btn);
+  border: 1px solid var(--ql-border);
+  color: var(--ql-text-main);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+}
+
+.ql-archive-pill--warn {
+  color: var(--primary);
+}
+
+.ql-archive-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 240px;
+}
+
+.ql-archive-search-icon {
+  position: absolute;
+  left: 10px;
+  color: var(--ql-text-muted);
+  pointer-events: none;
+}
+
+.ql-archive-search-input {
+  width: 100%;
+  height: 32px;
+  padding: 0 12px 0 32px;
+  border-radius: 8px;
+  border: 1px solid var(--ql-border);
+  background: var(--ql-code-bg);
+  color: var(--ql-text-main);
+  font-family: var(--font-sans);
+  font-size: 0.86rem;
+  font-weight: 500;
+  outline: none;
+}
+
+.ql-archive-search-input:focus {
+  border-color: var(--primary);
+}
+
+.ql-archive-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.ql-archive-entry-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ql-archive-entry-name {
+  font-weight: 550;
+  color: var(--ql-text-main);
+}
+
+.ql-archive-entry-dir {
+  color: var(--ql-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 500;
+}
+
+.ql-archive-lock-icon {
+  color: var(--ql-text-muted);
+  flex-shrink: 0;
+}
+
+.ql-archive-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+  white-space: nowrap;
+}
+
+.ql-archive-empty {
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--ql-text-muted);
+  font-weight: 500;
+}
+
+.ql-font-view {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 26px 28px;
+  box-sizing: border-box;
+}
+
+.ql-font-header-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+}
+
+.ql-font-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ql-font-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--ql-text-main);
+}
+
+.ql-font-family-name {
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.ql-font-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--ql-text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.ql-font-faces-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ql-font-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ql-font-sample-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ql-border);
+  background: var(--ql-code-bg);
+  color: var(--ql-text-main);
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-sizing: border-box;
+  outline: none;
+}
+
+.ql-font-sample-input:focus {
+  border-color: var(--primary);
+}
+
+.ql-font-axes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+}
+
+.ql-font-axis-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ql-text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  font-weight: 500;
+}
+
+.ql-font-waterfall {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--ql-code-bg);
+  border: 1px solid var(--ql-border);
+}
+
+.ql-font-waterfall-row {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  align-items: baseline;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--ql-border);
+}
+
+.ql-font-size-tag {
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--ql-text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ql-font-sample-line {
+  color: var(--ql-text-main);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.ql-font-charset-card {
+  padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 1.05rem;
+  line-height: 1.5;
+  color: var(--ql-text-main);
+  word-break: break-all;
+}
+
+.ql-font-error,
+.ql-font-copyright {
+  color: var(--ql-text-muted);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.5;
 }

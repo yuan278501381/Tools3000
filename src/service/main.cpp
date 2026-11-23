@@ -20,11 +20,13 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <userenv.h>
+#include <psapi.h>
 #include <spdlog/spdlog.h>
-#include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <cwctype>
 #include <optional>
+#include <unordered_map>
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "MftParser.h"
@@ -37,6 +39,7 @@
 #include "SearchCancellation.h"
 #include "SearchRequestLimits.h"
 #include "content/ContentSearchEngine.h"
+#include "content/ContentTextCache.h"
 #include "db/RunHistoryManager.h"
 #include "db/SearchHistoryManager.h"
 #include "db/DatabaseManager.h"
@@ -131,6 +134,107 @@ void invalidateContentPlanCache() {
     // while retaining `g_PlanAnchorStates` so in-flight progressive queries re-anchor
     // cleanly without skipping or duplicating documents (`MED-16`).
     g_ContentPlanCache.clear();
+}
+
+void clearAllContentCachesForTrim() {
+    std::lock_guard<std::mutex> lock(g_ContentPlanCacheMutex);
+    g_ContentPlanCache.clear();
+    g_ContentPlanCache.shrink_to_fit();
+    g_PlanAnchorStates.clear();
+    g_PlanAnchorStates.shrink_to_fit();
+    g_BothNameRemainders.clear();
+    g_BothNameRemainders.shrink_to_fit();
+}
+
+enum class ServiceMemoryMode : int {
+    FullResident = 0,
+    IdleTrim = 1,
+    IdleStop = 2,
+};
+
+ServiceMemoryMode parseServiceMemoryMode(std::string_view value) noexcept {
+    if (value == "full_resident") return ServiceMemoryMode::FullResident;
+    if (value == "idle_stop") return ServiceMemoryMode::IdleStop;
+    return ServiceMemoryMode::IdleTrim;
+}
+
+const char* serviceMemoryModeToString(ServiceMemoryMode mode) noexcept {
+    switch (mode) {
+        case ServiceMemoryMode::FullResident: return "full_resident";
+        case ServiceMemoryMode::IdleStop: return "idle_stop";
+        case ServiceMemoryMode::IdleTrim:
+        default: return "idle_trim";
+    }
+}
+
+std::atomic<int> g_MemoryMode{static_cast<int>(ServiceMemoryMode::IdleTrim)};
+std::atomic<uint32_t> g_IdleTrimMinutes{5};
+std::atomic<uint32_t> g_IdleStopMinutes{30};
+std::atomic<uint64_t> g_LastUserActivityTick{0};
+std::atomic<uint64_t> g_LastTrimmedAtMs{0};
+std::atomic<bool> g_TrimmedDuringIdle{false};
+std::atomic<int> g_InFlightUserQueries{0};
+std::mutex g_MemoryTrimMutex;
+std::mutex g_PersistedUsnMutex;
+std::unordered_map<char, uint64_t> g_LastPersistedUsnByDrive;
+
+struct ScopedInFlightUserQuery {
+    ScopedInFlightUserQuery() noexcept {
+        g_InFlightUserQueries.fetch_add(1, std::memory_order_acq_rel);
+    }
+    ~ScopedInFlightUserQuery() noexcept {
+        g_InFlightUserQueries.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    ScopedInFlightUserQuery(const ScopedInFlightUserQuery&) = delete;
+    ScopedInFlightUserQuery& operator=(const ScopedInFlightUserQuery&) = delete;
+};
+
+void markUserActivity() noexcept {
+    g_LastUserActivityTick.store(GetTickCount64(), std::memory_order_release);
+    g_TrimmedDuringIdle.store(false, std::memory_order_release);
+}
+
+uint64_t currentEpochMillis() noexcept {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+void querySelfMemoryUsage(uint64_t& outWorkingSetBytes, uint64_t& outPrivateBytes) noexcept {
+    outWorkingSetBytes = 0;
+    outPrivateBytes = 0;
+    PROCESS_MEMORY_COUNTERS_EX pmc{};
+    pmc.cb = sizeof(pmc);
+    if (K32GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
+            sizeof(pmc))) {
+        outWorkingSetBytes = static_cast<uint64_t>(pmc.WorkingSetSize);
+        outPrivateBytes = static_cast<uint64_t>(pmc.PrivateUsage);
+    }
+}
+
+void recordPersistedUsns(const std::vector<MftParser*>& rawParsers) {
+    std::lock_guard<std::mutex> lock(g_PersistedUsnMutex);
+    for (const auto* parser : rawParsers) {
+        if (!parser || !parser->isInitialScanDone()) continue;
+        const char drive = static_cast<char>(std::toupper(static_cast<unsigned char>(parser->getDriveLetter())));
+        g_LastPersistedUsnByDrive[drive] = parser->getCurrentUsn();
+    }
+}
+
+bool hasAnyUsnAdvancedSincePersist(const std::vector<MftParser*>& rawParsers) {
+    std::lock_guard<std::mutex> lock(g_PersistedUsnMutex);
+    for (const auto* parser : rawParsers) {
+        if (!parser || !parser->isInitialScanDone()) continue;
+        const char drive = static_cast<char>(std::toupper(static_cast<unsigned char>(parser->getDriveLetter())));
+        const uint64_t curUsn = parser->getCurrentUsn();
+        const auto it = g_LastPersistedUsnByDrive.find(drive);
+        if (it == g_LastPersistedUsnByDrive.end() || it->second != curUsn) {
+            return true;
+        }
+    }
+    return false;
 }
 
 std::optional<CachedContentCandidatePlan> lookupCachedContentPlan(
@@ -709,6 +813,9 @@ void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::stri
                 if (!stop.stop_requested()) {
                     const auto rawParsers = toRawParserPointers(parsers);
                     const bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
+                    if (ok) {
+                        recordPersistedUsns(rawParsers);
+                    }
                     spdlog::info("{} database snapshot {}", reason, ok ? "saved" : "failed");
                 }
             } catch (const std::exception& e) {
@@ -759,7 +866,9 @@ bool scheduleRebuild() {
         try {
             if (!stop.stop_requested()) {
                 const auto rawParsers = toRawParserPointers(parsers);
-                tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
+                if (tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers)) {
+                    recordPersistedUsns(rawParsers);
+                }
             }
         } catch (const std::exception& e) {
             spdlog::error("Rebuild snapshot failed: {}", e.what());
@@ -785,7 +894,8 @@ void RequestServiceShutdown() {
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
         const auto pokePipe = [](const std::string& name) -> bool {
             if (name.empty()) return false;
-            HANDLE poke = CreateFileA(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
+            const std::wstring wideName(name.begin(), name.end());
+            HANDLE poke = CreateFileW(wideName.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
                                       nullptr, OPEN_EXISTING, 0, nullptr);
             if (poke == INVALID_HANDLE_VALUE) {
                 return GetLastError() != ERROR_FILE_NOT_FOUND;
@@ -804,6 +914,126 @@ void RequestServiceShutdown() {
     });
 }
 
+void PerformServiceMemoryTrim(uint64_t* outBeforeWs = nullptr, uint64_t* outAfterWs = nullptr) {
+    std::lock_guard<std::mutex> trimLock(g_MemoryTrimMutex);
+    uint64_t beforeWs = 0;
+    uint64_t beforePriv = 0;
+    querySelfMemoryUsage(beforeWs, beforePriv);
+    if (outBeforeWs) *outBeforeWs = beforeWs;
+
+    clearAllContentCachesForTrim();
+    tools3000::service::content::ContentTextCache::instance().clear();
+    tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
+
+    // 保持所有卷的 USN 实时监听线程 100% 存活，绝不遗漏任何文件变更。
+    const auto parsers = snapshotParsers();
+    for (const auto& parser : parsers) {
+        if (!parser) continue;
+        parser->releaseQueryCaches();
+        parser->shrinkIndexCapacity();
+    }
+
+    HeapCompact(GetProcessHeap(), 0);
+    SetProcessWorkingSetSizeEx(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1), 0);
+
+    uint64_t afterWs = 0;
+    uint64_t afterPriv = 0;
+    querySelfMemoryUsage(afterWs, afterPriv);
+    if (outAfterWs) *outAfterWs = afterWs;
+
+    g_LastTrimmedAtMs.store(currentEpochMillis(), std::memory_order_release);
+    g_TrimmedDuringIdle.store(true, std::memory_order_release);
+    spdlog::info(
+        "Service cold memory trim completed: workingSet {} MB -> {} MB, private {} MB",
+        beforeWs / (1024ULL * 1024ULL),
+        afterWs / (1024ULL * 1024ULL),
+        afterPriv / (1024ULL * 1024ULL));
+}
+
+void flushHistoryAndSaveSnapshotIfNeeded(bool forceSave) {
+    try {
+        tools3000::service::db::RunHistoryManager::instance().flush();
+        tools3000::service::db::SearchHistoryManager::instance().save();
+    } catch (...) {
+    }
+
+    const auto owners = snapshotParsers();
+    const auto rawParsers = toRawParserPointers(owners);
+    if (rawParsers.empty()) return;
+
+    if (forceSave || hasAnyUsnAdvancedSincePersist(rawParsers)) {
+        try {
+            const bool saved = tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
+            if (saved) {
+                recordPersistedUsns(rawParsers);
+            }
+            spdlog::info("Pre-shutdown USN-advance snapshot {}", saved ? "saved" : "skipped/failed");
+        } catch (const std::exception& e) {
+            spdlog::error("Pre-shutdown snapshot failed: {}", e.what());
+        } catch (...) {
+            spdlog::error("Pre-shutdown snapshot failed with unknown exception");
+        }
+    }
+}
+
+void MemoryPolicyWatchdogThread() {
+    spdlog::info("Memory policy watchdog thread started.");
+    while (g_IsRunning.load(std::memory_order_acquire)) {
+        const DWORD waitRes = (g_ServiceStopEvent != INVALID_HANDLE_VALUE && g_ServiceStopEvent != nullptr)
+            ? WaitForSingleObject(g_ServiceStopEvent, 15000)
+            : WAIT_TIMEOUT;
+        if (waitRes == WAIT_OBJECT_0 || !g_IsRunning.load(std::memory_order_acquire)) {
+            break;
+        }
+        if (g_ServiceStopEvent == INVALID_HANDLE_VALUE || g_ServiceStopEvent == nullptr) {
+            std::this_thread::sleep_for(std::chrono::seconds(15));
+            if (!g_IsRunning.load(std::memory_order_acquire)) break;
+        }
+
+        if (!g_SearchIndexReady.load(std::memory_order_acquire) ||
+            g_InFlightUserQueries.load(std::memory_order_acquire) > 0 ||
+            g_RebuildInProgress.load(std::memory_order_acquire) ||
+            g_SnapshotInProgress.load(std::memory_order_acquire) ||
+            g_InitialIndexWorkers.load(std::memory_order_acquire) > 0 ||
+            g_DynamicIndexWorkers.load(std::memory_order_acquire) > 0) {
+            continue;
+        }
+
+        const auto mode = static_cast<ServiceMemoryMode>(g_MemoryMode.load(std::memory_order_acquire));
+        if (mode == ServiceMemoryMode::FullResident) {
+            continue;
+        }
+
+        const uint64_t nowTick = GetTickCount64();
+        const uint64_t lastTick = g_LastUserActivityTick.load(std::memory_order_acquire);
+        const uint64_t idleMs = (lastTick > 0 && nowTick > lastTick) ? (nowTick - lastTick) : 0ULL;
+        const uint64_t trimThresholdMs = static_cast<uint64_t>(g_IdleTrimMinutes.load(std::memory_order_acquire)) * 60000ULL;
+        const uint64_t stopThresholdMs = static_cast<uint64_t>(g_IdleStopMinutes.load(std::memory_order_acquire)) * 60000ULL;
+
+        if (mode == ServiceMemoryMode::IdleTrim) {
+            if (!g_TrimmedDuringIdle.load(std::memory_order_acquire) && idleMs >= trimThresholdMs) {
+                PerformServiceMemoryTrim();
+            }
+        } else if (mode == ServiceMemoryMode::IdleStop) {
+            if (idleMs >= stopThresholdMs) {
+                spdlog::info(
+                    "Search service idle for {}s under idle_stop mode (threshold {}m); flushing snapshot and stopping.",
+                    idleMs / 1000ULL,
+                    g_IdleStopMinutes.load(std::memory_order_acquire));
+                flushHistoryAndSaveSnapshotIfNeeded(false);
+                RequestServiceShutdown();
+                break;
+            }
+            if (trimThresholdMs < stopThresholdMs &&
+                !g_TrimmedDuringIdle.load(std::memory_order_acquire) &&
+                idleMs >= trimThresholdMs) {
+                PerformServiceMemoryTrim();
+            }
+        }
+    }
+    spdlog::info("Memory policy watchdog thread stopped.");
+}
+
 std::string WStringToString(const std::wstring& wstr) {
     if (wstr.empty()) return std::string();
     int size_needed = WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), NULL, 0, NULL, NULL);
@@ -820,6 +1050,113 @@ std::wstring StringToWString(const std::string& str) {
     return wstrTo;
 }
 
+namespace {
+
+// 跨代码页宽字符安全滚动日志 Sink：直接基于 Win32 CreateFileW 写入 UTF-8 日志，
+// 彻底免疫无 8.3 短文件名卷与简/繁/日/韩/俄/西/葡等全 8 语种路径导致的窄串失败。
+class WideServiceRotatingFileSink final : public spdlog::sinks::base_sink<std::mutex> {
+public:
+    WideServiceRotatingFileSink(std::filesystem::path basePath, size_t maxFileSize, size_t maxFiles)
+        : m_basePath(std::move(basePath)),
+          m_maxFileSize(maxFileSize > 0 ? maxFileSize : 5 * 1024 * 1024),
+          m_maxFiles(maxFiles) {
+        openLocked();
+    }
+
+    ~WideServiceRotatingFileSink() override {
+        closeLocked();
+    }
+
+protected:
+    void sink_it_(const spdlog::details::log_msg& msg) override {
+        spdlog::memory_buf_t formatted;
+        base_sink<std::mutex>::formatter_->format(msg, formatted);
+        if (m_handle == INVALID_HANDLE_VALUE) {
+            openLocked();
+        }
+        if (m_handle == INVALID_HANDLE_VALUE) return;
+
+        if (m_currentSize + formatted.size() > m_maxFileSize) {
+            rotateLocked();
+        }
+        if (m_handle == INVALID_HANDLE_VALUE) return;
+
+        DWORD written = 0;
+        if (WriteFile(m_handle, formatted.data(), static_cast<DWORD>(formatted.size()), &written, nullptr)) {
+            m_currentSize += written;
+        }
+    }
+
+    void flush_() override {
+        if (m_handle != INVALID_HANDLE_VALUE) {
+            FlushFileBuffers(m_handle);
+        }
+    }
+
+private:
+    std::filesystem::path rotatedPath(size_t index) const {
+        if (index == 0) return m_basePath;
+        std::wstring p = m_basePath.wstring();
+        const size_t dot = p.find_last_of(L'.');
+        if (dot != std::wstring::npos && dot > m_basePath.parent_path().wstring().size()) {
+            return std::filesystem::path(p.substr(0, dot) + L"." + std::to_wstring(index) + p.substr(dot));
+        }
+        return std::filesystem::path(p + L"." + std::to_wstring(index));
+    }
+
+    void openLocked() {
+        closeLocked();
+        std::error_code ec;
+        std::filesystem::create_directories(m_basePath.parent_path(), ec);
+        m_handle = CreateFileW(
+            m_basePath.wstring().c_str(),
+            FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (m_handle != INVALID_HANDLE_VALUE) {
+            LARGE_INTEGER sz{};
+            if (GetFileSizeEx(m_handle, &sz) && sz.QuadPart >= 0) {
+                m_currentSize = static_cast<size_t>(sz.QuadPart);
+            } else {
+                m_currentSize = 0;
+            }
+        }
+    }
+
+    void closeLocked() {
+        if (m_handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(m_handle);
+            m_handle = INVALID_HANDLE_VALUE;
+        }
+    }
+
+    void rotateLocked() {
+        closeLocked();
+        std::error_code ec;
+        for (size_t i = m_maxFiles; i > 0; --i) {
+            const auto src = rotatedPath(i - 1);
+            const auto dst = rotatedPath(i);
+            if (!std::filesystem::exists(src, ec)) continue;
+            if (i == m_maxFiles) {
+                std::filesystem::remove(dst, ec);
+            }
+            MoveFileExW(src.wstring().c_str(), dst.wstring().c_str(), MOVEFILE_REPLACE_EXISTING);
+        }
+        openLocked();
+    }
+
+    std::filesystem::path m_basePath;
+    size_t m_maxFileSize;
+    size_t m_maxFiles;
+    HANDLE m_handle = INVALID_HANDLE_VALUE;
+    size_t m_currentSize = 0;
+};
+
+}  // namespace
+
 void InitLogger() {
     try {
         auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
@@ -833,18 +1170,8 @@ void InitLogger() {
             logDir = std::filesystem::temp_directory_path() / L"Tools3000" / L"logs";
         }
         std::filesystem::create_directories(logDir);
-#ifdef SPDLOG_WCHAR_FILENAMES
-        const auto logPath = (logDir / L"Tools3000_Service.log").wstring();
-#else
-        const std::wstring logDirW = logDir.wstring();
-        wchar_t shortDir[MAX_PATH] = {};
-        const DWORD shortLen = GetShortPathNameW(logDirW.c_str(), shortDir, MAX_PATH);
-        const std::filesystem::path resolvedDir =
-            (shortLen > 0 && shortLen < MAX_PATH) ? std::filesystem::path(shortDir) : logDir;
-        const auto logPath = (resolvedDir / "Tools3000_Service.log").string();
-#endif
-        auto file_sink = std::make_shared<spdlog::sinks::rotating_file_sink_mt>(
-            logPath, 5 * 1024 * 1024, 3);
+        auto file_sink = std::make_shared<WideServiceRotatingFileSink>(
+            logDir / L"Tools3000_Service.log", 5 * 1024 * 1024, 3);
         spdlog::sinks_init_list sink_list = { console_sink, file_sink };
         auto logger = std::make_shared<spdlog::logger>("service", sink_list.begin(), sink_list.end());
         spdlog::set_default_logger(logger);
@@ -895,7 +1222,9 @@ nlohmann::json ProcessSearchQuery(
                 const auto request = nlohmann::json::parse(utf8Input);
                 const std::string action = request.value("action", "");
                 isAllowedDuringInit =
-                    (action == "shutdown" || action == "cancel" || action == "getDbStats");
+                    (action == "shutdown" || action == "cancel" || action == "getDbStats" ||
+                     action == "getMemoryStats" || action == "updateMemoryPolicy" ||
+                     action == "getIndexGeneration");
             } catch (...) {
                 // Invalid requests are also deferred while startup owns the
                 // parser collection, rather than racing initialization.
@@ -922,12 +1251,105 @@ nlohmann::json ProcessSearchQuery(
                     tools3000::service::query::sharedEpochTracker().cancelAll();
                     return {{"success", true}, {"cancelled", true}};
                 }
+                if (act == "getIndexGeneration") {
+                    // 极轻量只读代次探测：不调用 markUserActivity()，绝不干扰空闲内存休眠策略。
+                    const auto parsers = snapshotParsers();
+                    uint64_t combinedGeneration = 0;
+                    uint64_t totalMemRecords = 0;
+                    for (const auto& p : parsers) {
+                        if (!p) continue;
+                        combinedGeneration += p->getIndexGeneration();
+                        totalMemRecords += p->getFileCount();
+                    }
+                    return {
+                        {"success", true},
+                        {"running", true},
+                        {"ready", g_SearchIndexReady.load(std::memory_order_acquire)},
+                        {"indexGeneration", combinedGeneration},
+                        {"totalIndexedFiles", totalMemRecords}
+                    };
+                }
+                if (act == "getMemoryStats") {
+                    uint64_t wsBytes = 0;
+                    uint64_t privBytes = 0;
+                    querySelfMemoryUsage(wsBytes, privBytes);
+                    const uint64_t nowTick = GetTickCount64();
+                    const uint64_t lastTick = g_LastUserActivityTick.load(std::memory_order_acquire);
+                    const uint64_t idleSeconds = (lastTick > 0 && nowTick > lastTick)
+                        ? ((nowTick - lastTick) / 1000ULL)
+                        : 0ULL;
+                    const auto mode = static_cast<ServiceMemoryMode>(g_MemoryMode.load(std::memory_order_acquire));
+                    return {
+                        {"success", true},
+                        {"running", true},
+                        {"workingSetBytes", wsBytes},
+                        {"privateBytes", privBytes},
+                        {"memoryMode", serviceMemoryModeToString(mode)},
+                        {"idleTrimMinutes", g_IdleTrimMinutes.load(std::memory_order_acquire)},
+                        {"idleStopMinutes", g_IdleStopMinutes.load(std::memory_order_acquire)},
+                        {"idleSeconds", idleSeconds},
+                        {"lastTrimmedAt", g_LastTrimmedAtMs.load(std::memory_order_acquire)}
+                    };
+                }
+                if (act == "updateMemoryPolicy") {
+                    if (reqJson.contains("memoryMode") && reqJson["memoryMode"].is_string()) {
+                        const auto nextMode = parseServiceMemoryMode(reqJson["memoryMode"].get_ref<const std::string&>());
+                        g_MemoryMode.store(static_cast<int>(nextMode), std::memory_order_release);
+                        g_TrimmedDuringIdle.store(false, std::memory_order_release);
+                    }
+                    if (reqJson.contains("idleTrimMinutes") &&
+                        (reqJson["idleTrimMinutes"].is_number_integer() || reqJson["idleTrimMinutes"].is_number_unsigned())) {
+                        const int64_t v = reqJson["idleTrimMinutes"].get<int64_t>();
+                        g_IdleTrimMinutes.store(
+                            static_cast<uint32_t>(std::clamp<int64_t>(v, 1, 120)),
+                            std::memory_order_release);
+                        g_TrimmedDuringIdle.store(false, std::memory_order_release);
+                    }
+                    if (reqJson.contains("idleStopMinutes") &&
+                        (reqJson["idleStopMinutes"].is_number_integer() || reqJson["idleStopMinutes"].is_number_unsigned())) {
+                        const int64_t v = reqJson["idleStopMinutes"].get<int64_t>();
+                        g_IdleStopMinutes.store(
+                            static_cast<uint32_t>(std::clamp<int64_t>(v, 5, 720)),
+                            std::memory_order_release);
+                    }
+                    const auto activeMode = static_cast<ServiceMemoryMode>(g_MemoryMode.load(std::memory_order_acquire));
+                    spdlog::info(
+                        "Updated search service memory policy: mode={}, idleTrimMinutes={}, idleStopMinutes={}",
+                        serviceMemoryModeToString(activeMode),
+                        g_IdleTrimMinutes.load(std::memory_order_acquire),
+                        g_IdleStopMinutes.load(std::memory_order_acquire));
+                    return {
+                        {"success", true},
+                        {"memoryMode", serviceMemoryModeToString(activeMode)},
+                        {"idleTrimMinutes", g_IdleTrimMinutes.load(std::memory_order_acquire)},
+                        {"idleStopMinutes", g_IdleStopMinutes.load(std::memory_order_acquire)}
+                    };
+                }
+                if (act == "trimMemory") {
+                    uint64_t beforeWs = 0;
+                    uint64_t afterWs = 0;
+                    PerformServiceMemoryTrim(&beforeWs, &afterWs);
+                    uint64_t curWs = 0;
+                    uint64_t curPriv = 0;
+                    querySelfMemoryUsage(curWs, curPriv);
+                    return {
+                        {"success", true},
+                        {"running", true},
+                        {"beforeWorkingSetBytes", beforeWs},
+                        {"afterWorkingSetBytes", afterWs},
+                        {"workingSetBytes", curWs},
+                        {"privateBytes", curPriv},
+                        {"lastTrimmedAt", g_LastTrimmedAtMs.load(std::memory_order_acquire)}
+                    };
+                }
                 if (act == "rebuild" || act == "reindex") {
+                    markUserActivity();
                     const bool started = scheduleRebuild();
                     return {{"success", started}, {"rebuilding", started},
                             {"alreadyRunning", !started && g_RebuildInProgress.load()}};
                 }
                 if (act == "catchup" || act == "sync") {
+                    markUserActivity();
                     pruneRemovedVolumes();
                     bool anyUpdated = false;
                     for (const auto& parser : snapshotParsers()) {
@@ -944,6 +1366,7 @@ nlohmann::json ProcessSearchQuery(
                     return {{"success", true}, {"synced", true}, {"updated", anyUpdated}};
                 }
                 if (act == "syncVolumes") {
+                    markUserActivity();
                     pruneRemovedVolumes();
                     std::vector<char> requested;
                     if (reqJson.contains("drives") && reqJson["drives"].is_array()) {
@@ -961,6 +1384,7 @@ nlohmann::json ProcessSearchQuery(
                     return {{"success", true}, {"mounted", mounted}};
                 }
                 if (act == "recordRun") {
+                    markUserActivity();
                     if (reqJson.contains("path") && reqJson["path"].is_string()) {
                         const auto& pathUtf8 = reqJson["path"].get_ref<const std::string&>();
                         if (pathUtf8.size() > tools3000::service::search_limits::MaxPathUtf8Bytes) {
@@ -977,6 +1401,7 @@ nlohmann::json ProcessSearchQuery(
                     return {{"success", false}};
                 }
                 if (act == "recordSearch") {
+                    markUserActivity();
                     if (reqJson.contains("query") && reqJson["query"].is_string()) {
                         const auto& queryUtf8 = reqJson["query"].get_ref<const std::string&>();
                         if (queryUtf8.size() > tools3000::service::search_limits::MaxQueryUtf8Bytes) {
@@ -1158,15 +1583,25 @@ nlohmann::json ProcessSearchQuery(
                     };
                 }
                 if (act == "saveSnapshot") {
+                    markUserActivity();
                     const auto owners = snapshotParsers();
                     const auto allParsers = toRawParserPointers(owners);
                     bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(allParsers);
+                    if (ok) {
+                        recordPersistedUsns(allParsers);
+                    }
                     return {{"success", ok}};
                 }
                 if (act == "shutdown") {
-                    // 快照不在这里落盘：写一份要几百 MB，而下次启动导入快照时本就会用
-                    // USN 日志补齐停机期间的变动，多花的磁盘代价换不来任何准确性。
-                    spdlog::info("Received shutdown request from client, stopping service.");
+                    const bool shouldSaveSnapshot = reqJson.value("saveSnapshot", false);
+                    if (shouldSaveSnapshot) {
+                        spdlog::info("Received graceful shutdown request with saveSnapshot=true, flushing USN snapshot.");
+                        flushHistoryAndSaveSnapshotIfNeeded(false);
+                    } else {
+                        // 快照不在这里落盘：写一份要几百 MB，而下次启动导入快照时本就会用
+                        // USN 日志补齐停机期间的变动，多花的磁盘代价换不来任何准确性。
+                        spdlog::info("Received shutdown request from client, stopping service.");
+                    }
                     RequestServiceShutdown();
                     return {{"success", true}, {"stopping", true}};
                 }
@@ -1347,6 +1782,8 @@ nlohmann::json ProcessSearchQuery(
         wQuery = expandQueryEnvForClient(rawInput, hClientToken, isSameUserProcessSid);
     }
     const auto overallStartTime = std::chrono::steady_clock::now();
+    markUserActivity();
+    ScopedInFlightUserQuery activeQueryGuard;
 
     // Monotonic server-side epoch (`MED-17`): immune to client clock rollback or huge `queryId`.
     auto& epochTracker = tools3000::service::query::sharedEpochTracker();
@@ -2399,6 +2836,7 @@ void IPCServerThread() {
     std::vector<std::thread> indexThreads;
 
     if (snapshotLoaded) {
+        recordPersistedUsns(rawParsers);
         spdlog::info("Successfully loaded database snapshot from Tools3000.db, checking volume readiness...");
         bool anyMissing = false;
         bool anyCatchUpRescanned = false;
@@ -2455,14 +2893,19 @@ void IPCServerThread() {
         scheduleSnapshot(initialParsers, "Initial");
     }
     spdlog::info("Search index launched for {} volume(s)", initialParsers.size());
+    markUserActivity();
     g_SearchIndexReady.store(true, std::memory_order_release);
 
     std::thread hotplugThread(DeviceHotplugWatcherThread);
+    std::thread memoryWatchdogThread(MemoryPolicyWatchdogThread);
 
     for (auto& w : pipeWorkers) {
         if (w.joinable()) w.join();
     }
     g_SearchIndexReady.store(false, std::memory_order_release);
+    if (memoryWatchdogThread.joinable()) {
+        memoryWatchdogThread.join();
+    }
     if (HWND hotplugHwnd = g_HotplugWindow.exchange(nullptr, std::memory_order_acq_rel)) {
         PostMessageW(hotplugHwnd, WM_CLOSE, 0, 0);
     }

@@ -9,7 +9,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
 import {
+  Activity,
   AppWindow,
+  Cpu,
   File,
   FileArchive,
   FileAudio,
@@ -19,6 +21,14 @@ import {
   FileVideo,
   Folder,
   Globe,
+  HardDrive,
+  Monitor,
+  Network,
+  Settings,
+  Shield,
+  Sliders,
+  Terminal,
+  Wrench,
 } from 'lucide-react';
 import {
   getColumnDisplayLabel,
@@ -130,6 +140,34 @@ function renderSnippetWithHighlight(
   );
 }
 
+function renderCommandIcon(iconHint: string | undefined, iconSize: number): ReactNode {
+  switch (iconHint) {
+    case 'sliders':
+      return <Sliders className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'settings':
+      return <Settings className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'cpu':
+      return <Cpu className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'network':
+      return <Network className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'wrench':
+      return <Wrench className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'activity':
+      return <Activity className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'harddrive':
+      return <HardDrive className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'filetext':
+      return <FileText className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'shield':
+      return <Shield className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'monitor':
+      return <Monitor className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+    case 'terminal':
+    default:
+      return <Terminal className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+  }
+}
+
 function renderFileIcon(
   name: string,
   isDirectory: boolean,
@@ -137,10 +175,14 @@ function renderFileIcon(
   iconStyle: SearchIconStyle = 'native',
   iconBase64?: string,
   resultType?: SearchResult['resultType'],
+  iconHint?: string,
 ): ReactNode {
   const iconSize = density === 'compact' ? 15 : density === 'comfortable' ? 18 : 16;
   if (resultType === 'bookmark') {
     return <Globe className="file-icon file-icon--bookmark" size={iconSize} aria-hidden="true" />;
+  }
+  if (resultType === 'command') {
+    return renderCommandIcon(iconHint, iconSize);
   }
   if (iconStyle === 'native' && iconBase64) {
     return (
@@ -165,6 +207,9 @@ function renderFileIcon(
     );
   }
 
+  if (resultType === 'app') {
+    return <AppWindow className="file-icon file-icon--exe" size={iconSize} aria-hidden="true" />;
+  }
   if (isDirectory) return <Folder className="file-icon file-icon--folder" size={iconSize} aria-hidden="true" />;
   const extension = name.toLowerCase();
   if (IMAGE_EXTENSIONS.test(extension)) return <FileImage className="file-icon file-icon--image" size={iconSize} aria-hidden="true" />;
@@ -234,17 +279,39 @@ export const SearchResultRow = memo(function SearchResultRow({
 
   const renderTableCell = (colId: TableColumnId): ReactNode => {
     const isBookmark = result.resultType === 'bookmark';
+    const isCommand = result.resultType === 'command';
+    const isApp = result.resultType === 'app';
+    const displayName = isCommand && result.titleKey
+      ? translateLabel(result.titleKey, result.name)
+      : result.name;
+
     if (colId === 'name') {
       return (
-        <div key="name" data-table-col="name" className="table-cell table-cell--name" title={result.name}>
-          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64, result.resultType)}
-          <span className="file-name-text">{highlightMatch(result.name, queryKeywords)}</span>
+        <div key="name" data-table-col="name" className="table-cell table-cell--name" title={displayName}>
+          {renderFileIcon(result.name, result.isDirectory, density, iconStyle, iconBase64, result.resultType, result.iconHint)}
+          <span className="file-name-text">{highlightMatch(displayName, queryKeywords)}</span>
           {isBookmark && (
             <span
               className="file-bookmark-badge"
               title={result.bookmarkFolder ? `${result.browserSource || 'Browser'} · ${result.bookmarkFolder}` : (result.browserSource || t('search.catBookmarks', 'Bookmarks'))}
             >
               {result.browserSource || t('search.catBookmarks', 'Bookmarks')}
+            </span>
+          )}
+          {isCommand && (
+            <span
+              className="file-bookmark-badge"
+              title={result.commandHint || t('search.badgeCommand', 'Command')}
+            >
+              {t('search.badgeCommand', 'Command')}
+            </span>
+          )}
+          {isApp && (
+            <span
+              className="file-bookmark-badge"
+              title={result.appSource || t('search.badgeApp', 'App')}
+            >
+              {t('search.badgeApp', 'App')}
             </span>
           )}
           {/* 严格遵循 MECE 原则：当独立「打开次数」列已显示时绝不在文件名列重复展示徽标；仅当用户主动隐藏该列时回退提示 */}
@@ -258,12 +325,24 @@ export const SearchResultRow = memo(function SearchResultRow({
     }
 
     if (colId === 'path') {
-      const directoryPath = isBookmark ? result.path : (extractParentDirectoryPath(result.path) || result.path);
+      const directoryPath = isCommand
+        ? (result.commandHint || result.path)
+        : isBookmark
+          ? result.path
+          : (extractParentDirectoryPath(result.path) || result.path);
       return (
-        <div key="path" data-table-col="path" className="table-cell table-cell--dir" title={result.path}>
+        <div key="path" data-table-col="path" className="table-cell table-cell--dir" title={directoryPath || result.path}>
           <span className="table-dir-text">
             {directoryPath ? highlightMatch(directoryPath, queryKeywords) : '—'}
           </span>
+        </div>
+      );
+    }
+
+    if (colId === 'size' && (isBookmark || isCommand || isApp)) {
+      return (
+        <div key="size" data-table-col="size" className="table-cell table-cell--size">
+          —
         </div>
       );
     }

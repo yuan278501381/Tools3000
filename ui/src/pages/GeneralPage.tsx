@@ -91,6 +91,10 @@ export const GeneralPage: FC = () => {
   const [isRestartingElevated, setIsRestartingElevated] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
+  const [shellMenuLocksmith, setShellMenuLocksmith] = useState<{ enabled: boolean; shiftOnly: boolean }>({
+    enabled: false,
+    shiftOnly: true,
+  });
 
   const { t, i18n } = useTranslation();
 
@@ -142,8 +146,15 @@ export const GeneralPage: FC = () => {
     Promise.all([
       bridgeRequest<GeneralSettings>('general.getSettings'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
-    ]).then(([res, hotkeyData]) => {
+      bridgeRequest<{ enabled?: boolean; shiftOnly?: boolean }>('system.getShellMenuConfig', undefined, { silent: true }).catch(() => null),
+    ]).then(([res, hotkeyData, shellMenuCfg]) => {
       if (cancelled) return;
+      if (shellMenuCfg && typeof shellMenuCfg.enabled === 'boolean') {
+        setShellMenuLocksmith({
+          enabled: shellMenuCfg.enabled,
+          shiftOnly: shellMenuCfg.shiftOnly ?? true,
+        });
+      }
       setSettings(prev => ({ ...prev, ...res }));
       if (isAccentColor(res.accentColor)) {
         setAccent(res.accentColor);
@@ -465,6 +476,34 @@ export const GeneralPage: FC = () => {
             checked={settings.autoReleaseSettingsMemory ?? true}
             onChange={(v) => updateSetting('autoReleaseSettingsMemory', v)}
           />
+          <Toggle
+            id="shellMenuFileLocksmith"
+            label={t('general.shellMenuFileLocksmith', 'Explorer Context Menu: Inspect File Locks')}
+            description={t('general.shellMenuFileLocksmithDesc', 'Add a zero-resident File Locksmith entry to File Explorer right-click menu to inspect and unlock busy files or folders')}
+            checked={shellMenuLocksmith.enabled}
+            onChange={(enabled) => {
+              const next = { ...shellMenuLocksmith, enabled };
+              setShellMenuLocksmith(next);
+              void bridgeRequest('system.updateShellMenuConfig', next, { silent: true })
+                .then(() => toast.success(t('general.toastSaved')))
+                .catch(() => toast.error(t('general.toastSaveFailed')));
+            }}
+          />
+          {shellMenuLocksmith.enabled && (
+            <Toggle
+              id="shellMenuFileLocksmithShiftOnly"
+              label={t('general.shellMenuFileLocksmithShiftOnly', 'Show Only on Shift + Right-Click')}
+              description={t('general.shellMenuFileLocksmithShiftOnlyDesc', 'Keep the standard right-click menu clean; hold Shift while right-clicking (1-step direct menu on Windows 11) to reveal it')}
+              checked={shellMenuLocksmith.shiftOnly}
+              onChange={(shiftOnly) => {
+                const next = { ...shellMenuLocksmith, shiftOnly };
+                setShellMenuLocksmith(next);
+                void bridgeRequest('system.updateShellMenuConfig', next, { silent: true })
+                  .then(() => toast.success(t('general.toastSaved')))
+                  .catch(() => toast.error(t('general.toastSaveFailed')));
+              }}
+            />
+          )}
           <SettingRow label={t('general.fullscreenMode')} description={t('general.fullscreenModeDesc')}>
             <Select
               id="fullscreenMode"

@@ -166,7 +166,7 @@ describe('Pages Usability & Regression Suite', () => {
           appMemories: [],
         };
       }
-      if (method === 'capture.browseDirectory') {
+      if (method === 'dialog.browseDirectory') {
         return 'D:\\Projects\\Tools3000';
       }
       if (method === 'dialog.addFavorite') {
@@ -184,7 +184,7 @@ describe('Pages Usability & Regression Suite', () => {
       fireEvent.click(browseBtn);
     });
 
-    expect(bridgeSpy).toHaveBeenCalledWith('capture.browseDirectory');
+    expect(bridgeSpy).toHaveBeenCalledWith('dialog.browseDirectory');
     expect(bridgeSpy).toHaveBeenCalledWith('dialog.addFavorite', { path: 'D:\\Projects\\Tools3000' });
     expect(screen.getByText('D:\\Projects\\Tools3000')).toBeDefined();
   });

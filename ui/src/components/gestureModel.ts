@@ -31,6 +31,22 @@ export const TRIGGER_ITEM_DEFINITIONS: TriggerItemDef[] = [
   { key: 'edge_right_wheel', name: 'Right Screen Edge + Wheel', nameKey: 'gesture.triggerEdgeRightWheel', category: 'edge', iconType: 'edge_wheel' },
 ];
 
+export type ProgramRunMode = 'activate_or_run' | 'toggle_or_run' | 'always_new';
+
+export const DEFAULT_LOCAL_LUA_PERMISSIONS = [
+  'log',
+  'url',
+  'window',
+  'ui',
+  'keyboard',
+  'mouse',
+  'clipboard',
+  'screen',
+  'shell',
+  'fs',
+  'http',
+] as const;
+
 export interface GestureMapping {
   id?: string;
   enabled?: boolean;
@@ -43,9 +59,13 @@ export interface GestureMapping {
     description?: string;
     keyStroke?: string;
     luaScript?: string;
+    permissions?: string[];
     builtinCmd?: number;
     programPath?: string;
     programArgs?: string;
+    runMode?: ProgramRunMode;
+    matchCmdLine?: string;
+    matchTitle?: string;
   };
 }
 

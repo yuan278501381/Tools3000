@@ -358,6 +358,7 @@ void SearchWindow::show(HINSTANCE hInstance) {
     warmUpSearchService();
 
     if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
         const bool wasHidden = !IsWindowVisible(m_hwnd);
         const bool wasMinimized = (IsIconic(m_hwnd) != FALSE);
 
@@ -431,8 +432,9 @@ void SearchWindow::hide() {
         m_webView->ExecuteScript(
             L"window.dispatchEvent(new CustomEvent('tools3000:searchWindowHidden'));", nullptr);
     }
-    if (m_controller) m_controller->put_IsVisible(FALSE);
-    if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "search");
+    // 延迟 25 秒再执行 put_IsVisible(FALSE) + TrySuspend：高频连续呼出搜索时保留 GPU 合成表面，
+    // 零黑屏瞬开；超 25 秒闲置后再挂起并由冷路径归还物理内存。
+    SetTimer(m_hwnd, IDT_DEFERRED_SUSPEND, DEFERRED_SUSPEND_DELAY_MS, nullptr);
     tools3000::core::MessageBridge::instance().handleMessage(
         R"({"id":0,"method":"search.windowHidden","params":{}})");
 }
@@ -986,6 +988,15 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                 inst.m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
             }
             return 0;
+        case WM_TIMER: {
+            if (wParam == IDT_DEFERRED_SUSPEND && !inst.m_visible.load()) {
+                KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
+                if (inst.m_controller) inst.m_controller->put_IsVisible(FALSE);
+                if (inst.m_webView) inst.m_suspendController.requestSuspend(inst.m_webView.Get(), "search");
+                return 0;
+            }
+            break;
+        }
         case WM_CLOSE:
             inst.hide();
             return 0;

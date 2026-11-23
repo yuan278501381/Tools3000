@@ -1007,6 +1007,47 @@ void FileIndexStore::compactIfSparse() {
     }
 }
 
+void FileIndexStore::shrinkExcessCapacity() {
+    compactIfSparse();
+    releaseBuildScratch();
+
+    m_records.shrink_to_fit();
+    m_pinyin.shrink_to_fit();
+    m_freePinyinSlots.shrink_to_fit();
+
+    if (m_liveCount == 0) {
+        m_slots.clear();
+        m_slots.shrink_to_fit();
+        m_tombstones = 0;
+        return;
+    }
+
+    size_t targetCap = 1024;
+    const size_t minSlots = (m_liveCount + 1) * 2;
+    while (targetCap < minSlots) {
+        targetCap <<= 1;
+    }
+
+    if (m_slots.size() > targetCap * 2) {
+        std::vector<uint32_t> newSlots(targetCap, kEmptySlot);
+        const size_t mask = targetCap - 1;
+        for (size_t i = 0; i < m_records.size(); ++i) {
+            const auto& rec = m_records[i];
+            if (rec.isDeleted() || rec.frn == EmptyKey) continue;
+            size_t probe = static_cast<size_t>(mixKey(rec.frn)) & mask;
+            while (newSlots[probe] != kEmptySlot) {
+                probe = (probe + 1) & mask;
+            }
+            newSlots[probe] = static_cast<uint32_t>(i);
+        }
+        m_slots = std::move(newSlots);
+        m_slots.shrink_to_fit();
+        m_tombstones = 0;
+    } else if (m_slots.capacity() > m_slots.size()) {
+        m_slots.shrink_to_fit();
+    }
+}
+
 uint64_t FileIndexStore::approximateBytes() const noexcept {
     return m_arena.approximateBytes() +
            static_cast<uint64_t>(m_records.capacity()) * sizeof(StoredFileRecord) +

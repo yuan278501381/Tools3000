@@ -47,6 +47,7 @@ namespace Constants {
     inline constexpr const wchar_t* kModeOcr            = L"ocr";
     inline constexpr const wchar_t* kModeStudioExport   = L"studio-export";
     inline constexpr const wchar_t* kModeRecordEncode   = L"record-encode";
+    inline constexpr const wchar_t* kModeMediaProbe     = L"media-probe";
 
     inline constexpr DWORD kPipeBufferBytes             = 256 * 1024;
     inline constexpr DWORD kPipeConnectTimeoutMs        = 15000;

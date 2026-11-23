@@ -23,9 +23,16 @@ export interface SearchResult {
   name: string;
   path: string;
   isDirectory: boolean;
-  resultType?: 'file' | 'bookmark';
+  resultType?: 'file' | 'bookmark' | 'app' | 'command';
   browserSource?: string;
   bookmarkFolder?: string;
+  commandId?: string;
+  commandHint?: string;
+  titleKey?: string;
+  iconHint?: string;
+  appSource?: string;
+  exactAliasMatch?: boolean;
+  launcherScore?: number;
   size?: number;
   creationTime?: number;
   lastWriteTime?: number;
@@ -119,7 +126,9 @@ export interface SortProgressState {
 
 export type SearchDensity = 'compact' | 'standard' | 'comfortable';
 export type SearchIconStyle = 'native' | 'vector';
-export type SortField = string;
+export type SearchMemoryMode = 'full_resident' | 'idle_trim' | 'idle_stop';
+export type SearchRankingProfile = 'balanced_frecency' | 'files_first' | 'launcher_first';
+export type SortField = 'relevance' | TableColumnId;
 export type SortDirection = 'asc' | 'desc';
 export type ColumnId = 'name' | 'path' | 'size' | 'modified' | 'created' | 'snippets';
 export type TableColumnId = string;

@@ -303,6 +303,8 @@ public:
                 {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
                 {"enableScribbleCancel", config.get<bool>("/gesture/enableScribbleCancel", true)},
+                {"pauseCancelEnabled", engine.pauseCancelEnabled()},
+                {"pauseCancelMs", engine.pauseCancelMs()},
                 {"targetMode", engine.targetMode()},
                 {"initialTimeoutMs", engine.initialTimeoutMs()},
                 {"minSegmentDistance", engine.minSegmentDistance()},
@@ -328,6 +330,7 @@ public:
                 "trailFadeEnabled", "showActionHint", "autoBypassFullscreen",
                 "targetMode", "initialTimeoutMs", "minSegmentDistance",
                 "shapeMatchThreshold",
+                "pauseCancelEnabled", "pauseCancelMs",
                 "trailColorMode", "trailColor", "trailWidth", "trailOutlineWidth",
                 "enableScribbleCancel", "webSearchEngine"
             };
@@ -343,6 +346,8 @@ public:
                 (params.contains("showActionHint") && !params["showActionHint"].is_boolean()) ||
                 (params.contains("autoBypassFullscreen") && !params["autoBypassFullscreen"].is_boolean()) ||
                 (params.contains("enableScribbleCancel") && !params["enableScribbleCancel"].is_boolean()) ||
+                (params.contains("pauseCancelEnabled") && !params["pauseCancelEnabled"].is_boolean()) ||
+                (params.contains("pauseCancelMs") && !params["pauseCancelMs"].is_number_integer()) ||
                 (params.contains("targetMode") && !params["targetMode"].is_string()) ||
                 (params.contains("initialTimeoutMs") && !params["initialTimeoutMs"].is_number_integer()) ||
                 (params.contains("minSegmentDistance") && !params["minSegmentDistance"].is_number_integer()) ||
@@ -387,6 +392,9 @@ public:
             const int initialTimeoutMs = (rawInitialTimeoutMs <= 0)
                 ? 0
                 : std::clamp(rawInitialTimeoutMs, 100, 3000);
+            const bool pauseCancelEnabled = params.value("pauseCancelEnabled", engine.pauseCancelEnabled());
+            const int pauseCancelMs = clampPauseCancelMs(
+                params.value("pauseCancelMs", engine.pauseCancelMs()));
             const int minSegmentDistance = std::clamp(
                 params.value("minSegmentDistance", engine.minSegmentDistance()), 5, 100);
             const int shapeMatchThreshold = std::clamp(
@@ -417,6 +425,8 @@ public:
                 {"showActionHint", showActionHint},
                 {"autoBypassFullscreen", autoBypassFullscreen},
                 {"enableScribbleCancel", enableScribbleCancel},
+                {"pauseCancelEnabled", pauseCancelEnabled},
+                {"pauseCancelMs", pauseCancelMs},
                 {"targetMode", targetMode},
                 {"initialTimeoutMs", initialTimeoutMs},
                 {"minSegmentDistance", minSegmentDistance},
@@ -437,6 +447,8 @@ public:
             engine.setAutoBypassFullscreen(autoBypassFullscreen);
             engine.setTargetMode(targetMode);
             engine.setInitialTimeoutMs(initialTimeoutMs);
+            engine.setPauseCancelEnabled(pauseCancelEnabled);
+            engine.setPauseCancelMs(pauseCancelMs);
             engine.setMinSegmentDistance(minSegmentDistance);
             engine.setShapeMatchThreshold(shapeMatchThreshold);
             tools3000::gesture::RecognizerConfig recConfig = engine.recognizerConfig();
@@ -456,6 +468,8 @@ public:
                 {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
                 {"enableScribbleCancel", enableScribbleCancel},
+                {"pauseCancelEnabled", engine.pauseCancelEnabled()},
+                {"pauseCancelMs", engine.pauseCancelMs()},
                 {"targetMode", engine.targetMode()},
                 {"initialTimeoutMs", engine.initialTimeoutMs()},
                 {"minSegmentDistance", engine.minSegmentDistance()},

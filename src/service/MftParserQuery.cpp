@@ -1722,3 +1722,14 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
     return collected;
 }
 
+void MftParser::releaseQueryCaches() {
+    std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+    m_CachedQuery.clear();
+    m_CachedQuery.shrink_to_fit();
+    m_CachedCandidates.clear();
+    m_CachedCandidates.shrink_to_fit();
+    m_CachedExcludePatterns.clear();
+    m_CachedExcludePatterns.shrink_to_fit();
+    m_CachedGeneration = 0;
+}
+

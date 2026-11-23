@@ -1,49 +1,95 @@
 /**
  * Tools3000 - High Performance Windows Productivity Suite
- * 
+ *
  * Copyright (c) 2026 Yy1 (GitHub yuan278501381) <https://github.com/yuan278501381> & Tools3000 contributors
- * 
+ *
  * Licensed under the GPL-3.0 License.
  */
 
 #pragma once
+
+#include "DialogEventAndLayoutPolicy.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <windows.h>
 
 namespace tools3000::dialog {
 
-// 文件对话框架构类型
+// 文件对话框架构兼容类型（保留供既有单测/调用点向后兼容，内部由 DialogArchitecture 映射）
 enum class DialogType {
     Unknown,       // 未知
-    Modern,        // IFileOpenDialog / IFileSaveDialog (Vista+ COM, VS Code / Antigravity IDE / 大多数现代应用)
-    Legacy,        // GetOpenFileName / OPENFILENAME (#32770, 老式应用)
-    FolderPicker,  // 文件夹选择器 (SHBrowseForFolder, SysTreeView32 / NamespaceTreeControl)
+    Modern,        // IFileOpenDialog / IFileSaveDialog (Vista+ COM)
+    Legacy,        // GetOpenFileName / OPENFILENAME (含 OFN_EXPLORER 与经典对话框)
+    FolderPicker,  // 文件夹选择器 (SHBrowseForFolder)
+};
+
+// 单次 EnumChildWindows 采集的对话框完整结构与句柄快照（消除重复全树扫描）
+struct DialogControlSnapshot {
+    HWND dialogHwnd{nullptr};
+    DialogArchitecture architecture{DialogArchitecture::Unknown};
+    DialogMode mode{DialogMode::Unknown};
+    DialogStructureSignals signals{};
+    HWND addressEdit41477{nullptr};
+    HWND breadcrumbParentHwnd{nullptr};
+    HWND addressToolbarHwnd{nullptr};
+    HWND fileNameEditHwnd{nullptr};
+    HWND fileNameComboHwnd{nullptr};
+    HWND fileTypeComboHwnd{nullptr};
+    HWND shellViewHwnd{nullptr};
+    HWND okButtonHwnd{nullptr};
+    HWND cancelButtonHwnd{nullptr};
+    HWND backButtonHwnd{nullptr};
+    std::wstring okButtonText;
+    std::wstring dialogTitle;
+    bool isInstallerOrWizard{false};
+    bool isProgressOrTransfer{false};
+    bool isPropertySheet{false};
 };
 
 class DialogNavigator {
 public:
     static DialogNavigator& instance();
 
-    // 尝试将目标文件对话框导航至指定文件夹路径（全球化通用、零语言依赖、杜绝误选）
+    // 尝试将目标文件对话框导航至指定文件夹路径（全球化通用、零语言依赖、实测验证到位）
     bool navigateToFolder(HWND dialogHwnd, const std::string& folderPath);
 
-    // 异步投递目录导航至专用后台 MTA 工作线程（自动取消同窗口堆积的旧导航请求，严禁阻塞主 UI 线程）
+    // 按对话框模式安全执行内嵌搜索结果跳转：
+    // - 目录 / Ctrl+Enter / SaveFile / PickFolder / Unknown：强制仅跳目录，绝不改写文件名、绝不提交；
+    // - OpenFile + 文件：先跳父目录并验证到位 -> 再填入文件名到 Edit 1152 -> Shift+Enter 才确认打开。
+    bool navigateToSearchResult(HWND dialogHwnd,
+                                const std::string& itemPath,
+                                bool itemIsDirectory,
+                                DialogMode mode,
+                                bool ctrlPressed = false,
+                                bool shiftPressed = false);
+
+    // 异步投递目录导航至专用后台 MTA 工作线程（单槽覆盖旧导航，绝不误伤普通异步任务队列）
     void navigateToFolderAsync(HWND dialogHwnd,
                                const std::string& folderPath,
                                std::function<void(bool)> onComplete = {});
 
-    // 异步投递通用后台探测任务至专用 MTA 工作线程
+    // 异步投递内嵌搜索结果安全跳转至专用后台 MTA 工作线程
+    void navigateToSearchResultAsync(HWND dialogHwnd,
+                                     const std::string& itemPath,
+                                     bool itemIsDirectory,
+                                     DialogMode mode,
+                                     bool ctrlPressed,
+                                     bool shiftPressed,
+                                     std::function<void(bool)> onComplete = {});
+
+    // 异步投递通用后台探测/收藏任务至独立普通队列（不受导航取消/覆盖影响）
     void postAsyncTask(std::function<void()> task);
 
-    // 启动/取消/停止专用后台 MTA 工作线程
+    // 启动/取消/停止专用后台 MTA 工作线程与受管 UNC 探测线程
     void startAsyncWorker();
     void cancelPendingNavigation();
     void shutdownAsyncWorker();
@@ -51,7 +97,10 @@ public:
     // 可被取消纪元或引擎停机毫秒级中断的等待（替代硬 sleep_for）
     bool waitInterruptibleMs(uint32_t ms, uint64_t expectedNavEpoch = 0) const;
 
-    // 检查某个窗口句柄是否为有效的文件打开/保存/文件夹选择对话框
+    // 单次 EnumChildWindows 采集完整结构与句柄快照
+    static DialogControlSnapshot inspectDialog(HWND dialogHwnd, bool allowCurrentProcess = false);
+
+    // 兼容检查：是否为有效文件打开/保存/文件夹选择对话框
     static bool isFileDialog(HWND hwnd, bool allowCurrentProcess = false);
 
     // 检查某个窗口句柄是否为文件传输/复制/移动/删除等进度操作弹窗
@@ -60,52 +109,85 @@ public:
     // 检查指定进程名是否属于软件安装程序/卸载程序
     static bool isInstallerProcess(const std::string& processName);
 
-    // 检查窗口或其宿主是否属于软件安装向导/卸载向导 (结合进程名、向导标题与窗口层级特征多维判定)
+    // 检查窗口或其宿主是否属于软件安装向导/卸载向导
     static bool isInstallerOrWizard(HWND dialogHwnd);
 
-    // 检测对话框类型 (Modern IFileDialog / Legacy OPENFILENAME / FolderPicker)
+    // MECE 5 类架构与 3 模式精确检测
+    static DialogArchitecture detectDialogArchitecture(HWND hwnd, bool allowCurrentProcess = true);
+    static DialogMode detectDialogMode(HWND hwnd, bool allowCurrentProcess = true);
     static DialogType detectDialogType(HWND hwnd);
 
-    // 查找对话框内的文件名/路径输入控件句柄
+    // 将 MECE 5 类架构映射为兼容 DialogType
+    static DialogType architectureToDialogType(DialogArchitecture arch) noexcept;
+
+    // 查找核心控件句柄
     static HWND findPathEditControl(HWND dialogHwnd);
-
-    // 查找对话框顶层地址栏控件句柄
     static HWND findAddressBandControl(HWND dialogHwnd);
-
-    // 查找对话框中间文件列表视图句柄 (SHELLDLL_DefView / DirectUIHWND)
     static HWND findShellViewControl(HWND dialogHwnd);
-
-    // 查找对话框确认/打开按钮句柄 (IDOK)
     static HWND findOkButtonControl(HWND dialogHwnd);
+
+    // 零 UIA 轻量化读取当前目录（专供 220ms 轮询使用：直接对缓存的 ToolbarWindow32 发一次 WM_GETTEXT）
+    static std::string getCurrentDialogFolderFast(HWND dialogHwnd, HWND& cachedToolbarHwnd);
 
     // 实时提取对话框当前所在的真实文件夹绝对物理路径
     static std::string getCurrentDialogFolder(HWND dialogHwnd);
 
-    // 实时提取用户当前选定/输入的目标项绝对物理路径
+    // 实时提取用户当前选定/输入的目标项绝对物理路径（仅建议在关闭或 INVOKED 时调用）
     static std::string getSelectedPath(HWND dialogHwnd);
 
 private:
     DialogNavigator() = default;
     ~DialogNavigator();
 
+    struct UncProbeRequest {
+        std::wstring path;
+        std::shared_ptr<std::atomic<DWORD>> attrs;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+
     void asyncWorkerLoop();
+    void probeWorkerLoop();
+    void ensureProbeWorkerStarted();
+    void shutdownProbeWorker();
+    bool verifyNavigableDirectoryBounded(const std::wstring& candidate);
+
     bool navigateToFolderInternal(HWND dialogHwnd, const std::string& folderPath, uint64_t navEpoch);
+    bool navigateModernDialog(HWND dialogHwnd,
+                              const DialogControlSnapshot& snap,
+                              const std::wstring& wPath,
+                              uint64_t navEpoch);
+    bool navigateLegacyDialog(HWND dialogHwnd,
+                              const DialogControlSnapshot& snap,
+                              const std::wstring& wPath,
+                              uint64_t navEpoch);
+    bool navigateToSearchResultInternal(HWND dialogHwnd,
+                                        const std::string& itemPath,
+                                        bool itemIsDirectory,
+                                        DialogMode mode,
+                                        bool ctrlPressed,
+                                        bool shiftPressed,
+                                        uint64_t navEpoch);
 
-    // UIAutomation: 读取地址栏当前路径 (Modern IFileDialog)
+    // UIAutomation 辅助（仅在轻量化 Win32 读取失败或关闭取选中项时按需使用）
     static std::string uiaGetAddressBarPath(HWND dialogHwnd);
-
-    // UIAutomation: 读取文件名输入框文本 (Modern IFileDialog)
     static std::string uiaGetFileNameText(HWND dialogHwnd, bool* controlFound = nullptr);
 
-    // UIAutomation: 将路径写入地址栏并导航 (Modern IFileDialog)
-    static bool uiaNavigate(HWND dialogHwnd, const std::wstring& wPath, uint64_t navEpoch = 0);
-
+    // 导航单槽与普通异步任务队列严格分离
     mutable std::mutex m_asyncMutex;
     mutable std::condition_variable m_asyncCv;
     std::thread m_asyncWorker;
-    std::deque<std::function<void()>> m_asyncQueue;
+    std::optional<std::function<void()>> m_pendingNavTask;
+    std::deque<std::function<void()>> m_generalQueue;
     std::atomic<bool> m_asyncRunning{false};
     std::atomic<uint64_t> m_navCancelEpoch{1};
+
+    // 受管单线程 UNC 异步探测槽（彻底消灭 std::thread::detach）
+    std::mutex m_probeMutex;
+    std::condition_variable m_probeCv;
+    std::condition_variable m_probeDoneCv;
+    std::thread m_probeWorker;
+    std::optional<UncProbeRequest> m_probeRequest;
+    std::atomic<bool> m_probeRunning{false};
 };
 
 } // namespace tools3000::dialog

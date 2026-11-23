@@ -400,6 +400,7 @@ private:
     std::atomic<bool> m_drawTrailLine{true};
     std::atomic<bool> m_fadeEnabled{true};
     std::atomic<bool> m_showActionHint{true};
+    std::atomic<bool> m_excessiveFade{false};
     std::atomic<bool> m_standaloneToastMode{false};
     std::atomic<DWORD> m_standaloneToastHoldMs{750};
 

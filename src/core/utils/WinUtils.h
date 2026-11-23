@@ -89,6 +89,43 @@ public:
     /// UTF-8 string 到 wstring
     static std::wstring utf8ToWstring(const std::string& str);
 
+    /// 跨代码页无损路径序列化 (std::filesystem::path → UTF-8 string，严禁对路径调用 .string())
+    static std::string pathToUtf8(const std::filesystem::path& path);
+
+    /// 跨代码页无损路径反序列化 (UTF-8 string → std::filesystem::path，支持简/繁/日/韩/俄/西/葡等全 Unicode 路径)
+    static std::filesystem::path utf8ToPath(std::string_view utf8Path);
+
+    /// 原生窗口激活/切换结果枚举
+    enum class WindowActivateOutcome {
+        NotFound = 0,
+        Activated = 1,
+        Minimized = 2
+    };
+
+    /// 读取指定进程的完整命令行（通过 ntdll!NtQueryInformationProcess(60)，仅需 PROCESS_QUERY_LIMITED_INFORMATION）
+    static std::wstring queryProcessCommandLine(DWORD pid);
+
+    /// 从启动参数中自动提取便携版/多 Profile 匹配指纹（如 --user-data-dir=... / --profile-directory=...）
+    static std::wstring extractProfileMatchHintFromArgs(const std::wstring& args);
+
+    /// 将指定顶层窗口安全激活并置前（自动解锁前台、还原最小化窗口，不触发 Alt 菜单）
+    static bool activateWindowForeground(HWND hwnd);
+
+    /// 按可执行文件名/完整路径 + 可选命令行特征 + 可选标题子串，按 Z-order 查找最佳顶层窗口 (<3ms)
+    static HWND findTopLevelWindowByExe(const std::wstring& exeOrPath,
+                                        const std::wstring& cmdLineFilter = L"",
+                                        const std::wstring& titleFilter = L"");
+
+    /// 按可执行文件名/路径激活已有窗口，或在 toggleIfForeground=true 且已处于前台时最小化切换
+    static WindowActivateOutcome activateOrToggleWindowByExe(const std::wstring& exeOrPath,
+                                                             bool toggleIfForeground,
+                                                             const std::wstring& cmdLineFilter = L"",
+                                                             const std::wstring& titleFilter = L"");
+
+    /// 按窗口标题子串（及可选可执行文件名）查找并激活顶层窗口
+    static bool focusWindowByTitle(const std::wstring& titleSubstr,
+                                   const std::wstring& optionalExeOrPath = L"");
+
     /// 获取窗口的进程名 (UTF-8)
     static std::string getProcessNameFromWindow(HWND hwnd);
 

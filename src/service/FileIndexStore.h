@@ -143,6 +143,10 @@ public:
     // Drops dead records when they exceed a quarter of `m_records`.
     void compactIfSparse();
 
+    // Releases excess vector capacity and downsizes an over-provisioned hash table
+    // without losing any live records or lookup integrity.
+    void shrinkExcessCapacity();
+
     void releaseBuildScratch() {
         m_arena.releaseInterner();
         m_pinyinAsciiInitialsScratch.clear();
