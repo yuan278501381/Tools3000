@@ -35,12 +35,49 @@ public:
     void destroy();
 
     bool isVisible() const noexcept;
+    bool isForegroundActive() const noexcept;
     bool isPinned() const noexcept { return m_pinned; }
     bool isMaximized() const noexcept { return m_maximized; }
     void setPinned(bool pinned);
     void toggleMaximize();
     HWND getHwnd() const noexcept { return m_hwnd; }
     HWND previousForegroundHwnd() const noexcept { return m_previousForegroundHwnd; }
+
+    /// 过滤空句柄、自身及其子窗口与不可见/任务栏窗口，归一化为顶层 GA_ROOT 句柄
+    static HWND resolveValidTargetForegroundHwnd(HWND candidate, HWND selfHwnd) noexcept;
+
+    /// 判定按下呼出热键时应隐藏还是强力前置显示（冷启等待中或掉到后台被遮挡时一律前置显示，绝不误关）
+    static constexpr bool shouldHideOnToggle(
+        bool visible,
+        bool pendingReveal,
+        bool foregroundActive) noexcept {
+        return visible && !pendingReveal && foregroundActive;
+    }
+
+    /// 判定失焦时是否允许自动隐藏剪贴板窗口（置顶、缩放、原生拖拽、拖拽会话驻留期及拖拽结束后 1200ms 内严禁自动隐藏）
+    static bool shouldAutoHideOnDeactivate(
+        bool visible,
+        bool pendingReveal,
+        bool pinned,
+        bool inSizeMove,
+        bool inNativeDrag,
+        uint64_t nowTick,
+        uint64_t showTick,
+        uint64_t lastNativeDragEndTick,
+        bool dragSessionHold = false) noexcept {
+        if (!visible || pendingReveal || pinned || inSizeMove || inNativeDrag || dragSessionHold) {
+            return false;
+        }
+        if (nowTick >= showTick && (nowTick - showTick) <= 200) {
+            return false;
+        }
+        if (lastNativeDragEndTick != 0 &&
+            nowTick >= lastNativeDragEndTick &&
+            (nowTick - lastNativeDragEndTick) < NATIVE_DRAG_HIDE_GRACE_MS) {
+            return false;
+        }
+        return true;
+    }
 
     /// 向已创建的剪贴板 WebView 推送实时更新或主题事件
     void pushEventJson(const std::string& envelopeJson);
@@ -59,8 +96,18 @@ private:
     void enterDeferredSuspend();
     void notifyShownToWeb();
     void notifyWindowStateToWeb();
+    void installForegroundTracker();
+    void uninstallForegroundTracker();
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+    static void CALLBACK foregroundWinEventProc(
+        HWINEVENTHOOK hWinEventHook,
+        DWORD event,
+        HWND hwnd,
+        LONG idObject,
+        LONG idChild,
+        DWORD idEventThread,
+        DWORD dwmsEventTime);
 
     static constexpr UINT_PTR IDT_IDLE_DESTROY = 2102;
     static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 2103;
@@ -71,10 +118,13 @@ private:
     static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 300000;
     static constexpr UINT REVEAL_FALLBACK_WARM_MS = 450;
     static constexpr UINT REVEAL_FALLBACK_COLD_MS = 1200;
+    static constexpr uint64_t NATIVE_DRAG_HIDE_GRACE_MS = 1200;
     static constexpr UINT WM_CLIPBOARD_VERIFY_DEACTIVATED = WM_APP + 29;
+    static constexpr UINT WM_CLIPBOARD_CAPTURE_FOREGROUND = WM_APP + 30;
 
     HWND m_hwnd = nullptr;
     HWND m_previousForegroundHwnd = nullptr;
+    HWINEVENTHOOK m_fgEventHook = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controller;
     Microsoft::WRL::ComPtr<ICoreWebView2> m_webView;
@@ -82,15 +132,18 @@ private:
 
     std::atomic<bool> m_visible{false};
     std::atomic<uint64_t> m_generation{0};
+    std::atomic<bool> m_inNativeDrag{false};
     bool m_webViewReady = false;
     bool m_suspendedOrCold = true;
     bool m_pendingReveal = false;
     bool m_pinned = false;
+    bool m_dragSessionHold = false;
     bool m_maximized = false;
     bool m_inSizeMove = false;
     bool m_hasCustomBounds = false;
     RECT m_customBounds{};
     uint64_t m_showTimeTick = 0;
+    uint64_t m_lastNativeDragEndTick = 0;
 };
 
 }  // namespace tools3000::ui

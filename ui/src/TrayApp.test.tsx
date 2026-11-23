@@ -21,7 +21,9 @@ vi.mock('react-i18next', () => ({
         return opts.defaultValue
           .replace('{{count}}', String(opts.count ?? 0))
           .replace('{{groups}}', String(opts.groups ?? 0))
-          .replace('{{id}}', String(opts.id ?? 1));
+          .replace('{{id}}', String(opts.id ?? 1))
+          .replace('{{version}}', String(opts.version ?? ''))
+          .replace('{{progress}}', String(opts.progress ?? 0));
       }
       return key;
     },
@@ -70,6 +72,7 @@ describe('TrayApp Bento Control Center', () => {
             { id: 'capture', active: true, enabled: true },
             { id: 'search', active: true, enabled: true },
             { id: 'clipboard', active: true, enabled: true },
+            { id: 'text_expander', active: true, enabled: true },
             { id: 'spotlight', active: true, enabled: true },
             { id: 'dialogenhancer', active: true, enabled: true },
             { id: 'file_locksmith', active: true, enabled: true },
@@ -104,8 +107,9 @@ describe('TrayApp Bento Control Center', () => {
     });
 
     expect(screen.getByText('Tools3000')).toBeDefined();
-    expect(screen.getByText('9/9 Active')).toBeDefined();
+    expect(screen.getByText('10/10 Active')).toBeDefined();
     expect(screen.getByRole('menuitemcheckbox', { name: /Clipboard/i })).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /Text Expander/i })).toBeDefined();
     expect(screen.getByRole('menuitemcheckbox', { name: /File Locksmith/i })).toBeDefined();
     expect(screen.getByText('Remote Boost')).toBeDefined();
     expect(screen.getByText('Hotkey passthrough')).toBeDefined();
@@ -243,5 +247,154 @@ describe('TrayApp Bento Control Center', () => {
       fireEvent.keyDown(window, { key: 'Escape', bubbles: true, cancelable: true });
     });
     expect(bridgeSpy).toHaveBeenCalledWith('tray.hide');
+  });
+
+  it('renders dual-action update banner above Bento control center when badgeVisible is true and routes clicks cleanly', async () => {
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'app.getUpdateState') {
+        return {
+          hasUpdate: true,
+          badgeVisible: true,
+          dismissed: false,
+          status: 'available',
+          latestVersion: 'v1.4.5',
+          progress: 0,
+          readyToInstall: false,
+        };
+      }
+      if (method === 'plugins.getAll') {
+        return [{ id: 'gesture', active: true, enabled: true }];
+      }
+      if (method === 'general.getSettings') return { elevated: false };
+      if (method === 'remote.getSettings') return { enabled: true };
+      if (method === 'hotkey.getAll') return [];
+      if (method === 'capture.pinGroupControl') return { totalCount: 0, groups: [] };
+      if (method === 'gesture.getState') return { paused: false };
+      return { success: true };
+    });
+
+    const { container } = await act(async () => render(<TrayApp />));
+
+    const header = container.querySelector('.tray-header');
+    const banner = container.querySelector('.tray-update-banner');
+    const bento = container.querySelector('.tray-control-center');
+    const headerDock = container.querySelector('.tray-header-dock');
+    const scrollBody = container.querySelector('.tray-scroll-body');
+    const scrollInner = container.querySelector('.tray-scroll-inner');
+    expect(header).toBeTruthy();
+    expect(banner).toBeTruthy();
+    expect(bento).toBeTruthy();
+    // 更新横幅位于吸顶顶栏（品牌头正下方），其正下方第一个视觉区块即为 Bento 模块舱
+    expect(header?.nextElementSibling).toBe(banner);
+    expect(headerDock?.nextElementSibling).toBe(scrollBody);
+    expect(scrollInner?.firstElementChild).toBe(bento);
+
+    // Ensure no nested buttons inside update banner
+    expect(banner?.querySelector('button button')).toBeNull();
+
+    const infoButton = screen.getByRole('button', { name: /New v1\.4\.5/i });
+    const downloadButton = screen.getByRole('button', { name: /^Download$/i });
+    expect(screen.getByText('View release notes')).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(downloadButton);
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('app.downloadUpdate');
+
+    await act(async () => {
+      fireEvent.click(infoButton);
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('tray.hide');
+    expect(bridgeSpy).toHaveBeenCalledWith('tray.action', { action: 'openAbout' });
+  });
+
+  it('hides update banner when update is dismissed (badgeVisible is false)', async () => {
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'app.getUpdateState') {
+        return {
+          hasUpdate: true,
+          badgeVisible: false,
+          dismissed: true,
+          status: 'available',
+          latestVersion: 'v1.4.5',
+          progress: 0,
+          readyToInstall: false,
+        };
+      }
+      if (method === 'plugins.getAll') return [];
+      if (method === 'general.getSettings') return { elevated: false };
+      if (method === 'remote.getSettings') return { enabled: false };
+      if (method === 'hotkey.getAll') return [];
+      if (method === 'capture.pinGroupControl') return { totalCount: 0, groups: [] };
+      return { success: true };
+    });
+
+    const { container } = await act(async () => render(<TrayApp />));
+    expect(container.querySelector('.tray-update-banner')).toBeNull();
+  });
+
+  it('triggers app.installUpdate from the right action button when update is readyToInstall', async () => {
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'app.getUpdateState') {
+        return {
+          hasUpdate: true,
+          badgeVisible: true,
+          dismissed: false,
+          status: 'readyToInstall',
+          latestVersion: 'v1.4.5',
+          progress: 100,
+          readyToInstall: true,
+        };
+      }
+      if (method === 'plugins.getAll') return [];
+      if (method === 'general.getSettings') return { elevated: false };
+      if (method === 'remote.getSettings') return { enabled: false };
+      if (method === 'hotkey.getAll') return [];
+      if (method === 'capture.pinGroupControl') return { totalCount: 0, groups: [] };
+      return { success: true };
+    });
+
+    const { container } = await act(async () => render(<TrayApp />));
+    expect(container.querySelector('.tray-update-banner--ready')).toBeTruthy();
+
+    const installButton = screen.getByRole('button', { name: /^Install$/i });
+    await act(async () => {
+      fireEvent.click(installButton);
+    });
+    expect(bridgeSpy).toHaveBeenCalledWith('tray.hide');
+    expect(bridgeSpy).toHaveBeenCalledWith('app.installUpdate');
+  });
+
+  it('uses three-zone sticky layout (header + independent scroll body + pinned footer) and reports exact 320px layout height immune to CSS transforms', async () => {
+    const { container } = await act(async () => render(<TrayApp />));
+    const header = container.querySelector('.tray-header-dock') as HTMLElement | null;
+    const scrollBody = container.querySelector('.tray-scroll-body') as HTMLElement | null;
+    const scrollInner = container.querySelector('.tray-scroll-inner') as HTMLElement | null;
+    const footer = container.querySelector('.tray-footer-dock') as HTMLElement | null;
+
+    expect(header).toBeTruthy();
+    expect(scrollBody).toBeTruthy();
+    expect(scrollInner).toBeTruthy();
+    expect(footer).toBeTruthy();
+    // 退出与管理员权限按钮必须位于独立吸底 Dock，绝不落入滚动区内被截断
+    expect(footer?.querySelector('.tray-footer-btn--admin')).toBeTruthy();
+    expect(footer?.querySelector('.tray-footer-btn--exit')).toBeTruthy();
+    expect(scrollBody?.querySelector('.tray-footer-btn--exit')).toBeNull();
+
+    // 模拟真实布局高度并触发 tray:show，断言上报精确 320px 宽与完整三段高度求和
+    Object.defineProperty(header!, 'offsetHeight', { configurable: true, value: 36 });
+    Object.defineProperty(scrollInner!, 'offsetHeight', { configurable: true, value: 490 });
+    Object.defineProperty(scrollInner!, 'scrollHeight', { configurable: true, value: 490 });
+    Object.defineProperty(footer!, 'offsetHeight', { configurable: true, value: 44 });
+
+    bridgeSpy.mockClear();
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('tray:show'));
+    });
+
+    const resizeCall = bridgeSpy.mock.calls.find((call: unknown[]) => call[0] === 'tray.resize');
+    expect(resizeCall).toBeTruthy();
+    expect(resizeCall?.[1]).toMatchObject({ width: 320 });
+    expect((resizeCall?.[1] as { height: number }).height).toBeGreaterThanOrEqual(572);
   });
 });

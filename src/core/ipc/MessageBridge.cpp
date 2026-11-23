@@ -1719,6 +1719,7 @@ bool isCoreBuiltinPlugin(const std::string& id) {
     return id == "gesture" || id == "capture" || id == "search" ||
            id == "keycast" || id == "dialogenhancer" || id == "dialog_enhancer" ||
            id == "spotlight" || id == "clipboard" || id == "remote_boost" || id == "remote" ||
+           id == "text_expander" || id == "textexpander" ||
            id == "picasa_viewer" || id == "picasaviewer" ||
            id == "file_locksmith" || id == "filelocksmith";
 }
@@ -2300,6 +2301,28 @@ void MessageBridge::registerBuiltinHandlers() {
         });
         existingIds.insert("clipboard");
 
+        // 内置一级模块：系统级文本扩展器 (text_expander，默认开启，关闭时零钩子零内存)
+        const bool textExpanderEnabled = ConfigManager::instance().has("/plugins/text_expander/enabled")
+            ? ConfigManager::instance().get<bool>("/plugins/text_expander/enabled", true)
+            : ConfigManager::instance().get<bool>("/textExpander/enabled", true);
+        plugins.push_back({
+            {"id", "text_expander"},
+            {"name", "Text Expander"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"phrase-expansion", "dynamic-macros", "privacy-guard", "zero-idle-when-off"}},
+            {"permissions", {"keyboard-hook", "input-synthesis"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", textExpanderEnabled},
+            {"active", textExpanderEnabled},
+            {"restartRequired", false},
+            {"state", textExpanderEnabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("text_expander");
+
         // 内置零常驻模块：文件占用解锁 (file_locksmith，纯 HKCU 右键菜单 + 按需原生解锁窗口，0 后台常驻内存)
         bool locksmithShiftOnly = false;
         const bool locksmithEnabled =
@@ -2348,6 +2371,19 @@ void MessageBridge::registerBuiltinHandlers() {
             EventBus::instance().publish(ClipboardStateChangedEvent{enabled});
             MessageBridge::instance().pushEvent("clipboard:stateChanged", {{"enabled", enabled}});
             MessageBridge::instance().pushEvent("plugins:changed", {{"id", "clipboard"}, {"enabled", enabled}});
+            releasePluginResourcesAndTrim();
+            return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "text_expander" || id == "textexpander") {
+            ConfigManager::instance().set<bool>("/textExpander/enabled", enabled);
+            ConfigManager::instance().set<bool>("/plugins/text_expander/enabled", enabled);
+            if (MessageBridge::instance().hasHandler("textExpander.updateSettings")) {
+                MessageBridge::instance().invokeHandler("textExpander.updateSettings", {{"enabled", enabled}});
+            } else {
+                MessageBridge::instance().pushEvent("textExpander:stateChanged", {{"enabled", enabled}});
+                MessageBridge::instance().pushEvent("plugins:changed", {{"id", "text_expander"}, {"enabled", enabled}});
+            }
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
         }
@@ -3010,6 +3046,14 @@ void MessageBridge::registerBuiltinHandlers() {
         std::string err;
         const bool ok = UpdateChecker::instance().installDownloadedUpdate(err);
         return {{"success", ok}, {"cancelled", err == "cancelled"}, {"error", err}};
+    });
+    registerHostHandler("app.dismissUpdate", [](const json&) -> json {
+        const bool dismissed = UpdateChecker::instance().dismissCurrentUpdate();
+        auto state = json::parse(UpdateChecker::instance().getStateJsonString(), nullptr, false);
+        if (!state.is_object()) state = json::object();
+        state["success"] = true;
+        state["dismissedAction"] = dismissed;
+        return state;
     });
     // ── 应用系统信息 ─────────────────────────────────────────────────────
     registerHostHandler("app.getSystemInfo", [](const json&) -> json {

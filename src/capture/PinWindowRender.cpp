@@ -320,6 +320,7 @@ void PinWindow::drawHoverToolbar() {
 }
 
 bool PinWindow::createRenderResources(const cv::Mat& image) {
+    invalidateZoomStageTexture();
     HRESULT hr;
 
     if (!m_d2dFactory) {

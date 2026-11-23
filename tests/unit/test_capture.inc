@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "capture/CaptureState.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/CaptureDropdownMenu.h"
 #include "capture/PinGroupManager.h"
 #include "capture/PinInputController.h"
@@ -6697,15 +6698,21 @@ TEST(ClipboardUtilsTest, TimestampedHdropFileNamePatternAndContent) {
     };
 
     cv::Mat testImage(32, 32, CV_8UC3, cv::Scalar(100, 150, 200));
-    ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage));
-
-    ASSERT_TRUE(openClipboardWithRetry());
-    HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
-    ASSERT_NE(hDrop, nullptr);
     wchar_t retrievedPath[MAX_PATH] = {};
-    const UINT pathChars = DragQueryFileW(hDrop, 0, retrievedPath, MAX_PATH);
-    EXPECT_GT(pathChars, 0u);
-    CloseClipboard();
+    UINT pathChars = 0;
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        ASSERT_TRUE(tools3000::capture::ClipboardUtils::copyImageToClipboard(testImage));
+        ASSERT_TRUE(openClipboardWithRetry());
+        HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+        if (hDrop != nullptr) {
+            pathChars = DragQueryFileW(hDrop, 0, retrievedPath, MAX_PATH);
+            CloseClipboard();
+            break;
+        }
+        CloseClipboard();
+        Sleep(25);
+    }
+    ASSERT_GT(pathChars, 0u);
 
     std::error_code ec;
     EXPECT_TRUE(std::filesystem::exists(retrievedPath, ec));
@@ -15466,6 +15473,386 @@ TEST(InPlaceTranslateEngineTest, LiveImageVisualQaWhenEnvSet) {
         }
     }
 }
+
+// -----------------------------------------------------------------------------
+// 截图历史框选区域记忆器 (CaptureRegionHistory — R / Shift+R) 防回退单元测试
+// -----------------------------------------------------------------------------
+TEST(CaptureRegionHistoryTest, EmptyHistoryAndInvalidRects) {
+    using tools3000::capture::CaptureRegionHistory;
+
+    CaptureRegionHistory history;
+    const RECT virtualBounds{0, 0, 1920, 1080};
+    RECT out{1, 2, 3, 4};
+
+    EXPECT_TRUE(history.empty());
+    EXPECT_FALSE(history.hasHistory());
+    EXPECT_EQ(history.size(), 0u);
+    EXPECT_EQ(history.cursorIndex(), CaptureRegionHistory::kUnsetCursor);
+    EXPECT_FALSE(history.stepOlder(virtualBounds, out));
+    EXPECT_FALSE(history.stepNewer(virtualBounds, out));
+
+    // 小于 4x4 的退化选区应被拒绝，不污染历史栈
+    EXPECT_FALSE(history.record(RECT{10, 10, 13, 100}));
+    EXPECT_FALSE(history.record(RECT{10, 10, 100, 13}));
+    EXPECT_FALSE(history.record(RECT{50, 50, 50, 50}));
+    EXPECT_TRUE(history.empty());
+
+    // 倒置坐标的最小合法 4x4 选区应自动规范化并成功入栈
+    EXPECT_TRUE(history.record(RECT{104, 204, 100, 200}));
+    EXPECT_EQ(history.size(), 1u);
+    EXPECT_TRUE(history.hasHistory());
+
+    // 非法虚拟桌面边界应安全返回 false 且不推进游标
+    EXPECT_FALSE(history.stepOlder(RECT{0, 0, 2, 1080}, out));
+    EXPECT_EQ(history.cursorIndex(), CaptureRegionHistory::kUnsetCursor);
+
+    ASSERT_TRUE(history.stepOlder(virtualBounds, out));
+    EXPECT_EQ(out.left, 100);
+    EXPECT_EQ(out.top, 200);
+    EXPECT_EQ(out.right, 104);
+    EXPECT_EQ(out.bottom, 204);
+}
+
+TEST(CaptureRegionHistoryTest, DeduplicationPromoteToTopAndCapacityEviction) {
+    using tools3000::capture::CaptureRegionHistory;
+
+    CaptureRegionHistory history;
+    const RECT vb{0, 0, 1920, 1080};
+    const RECT rA{10, 20, 210, 220};
+    const RECT rB{30, 40, 330, 340};
+    const RECT rC{50, 60, 450, 460};
+
+    // 1. 与栈顶完全相同：去重不重复压栈
+    EXPECT_TRUE(history.record(rA));
+    EXPECT_TRUE(history.record(rA));
+    EXPECT_EQ(history.size(), 1u);
+
+    // 2. 历史中间命中重复：提升至最新顶部
+    EXPECT_TRUE(history.record(rB));
+    EXPECT_TRUE(history.record(rC));
+    EXPECT_EQ(history.size(), 3u);
+    EXPECT_TRUE(history.record(rA));
+    EXPECT_EQ(history.size(), 3u);
+
+    RECT out{};
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, rA));
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, rC));
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, rB));
+
+    // 3. 容量上限 10 条：写入 12 条不同区域后淘汰最旧 2 条
+    history.clear();
+    EXPECT_TRUE(history.empty());
+    for (LONG i = 1; i <= 12; ++i) {
+        const RECT rc{i * 20, i * 15, i * 20 + 200, i * 15 + 120};
+        EXPECT_TRUE(history.record(rc));
+    }
+    EXPECT_EQ(history.size(), CaptureRegionHistory::kMaxEntries);
+
+    for (LONG expectedId = 12; expectedId >= 3; --expectedId) {
+        ASSERT_TRUE(history.stepOlder(vb, out));
+        EXPECT_EQ(out.left, expectedId * 20);
+        EXPECT_EQ(out.top, expectedId * 15);
+        EXPECT_EQ(out.right, expectedId * 20 + 200);
+        EXPECT_EQ(out.bottom, expectedId * 15 + 120);
+    }
+    // 抵达最旧后再次 stepOlder 保持停留在最旧条目（ID=3）
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_EQ(out.left, 60);
+    EXPECT_EQ(history.cursorIndex(), static_cast<int>(CaptureRegionHistory::kMaxEntries - 1));
+}
+
+TEST(CaptureRegionHistoryTest, BidirectionalNavigationAndResetCursor) {
+    using tools3000::capture::CaptureRegionHistory;
+
+    CaptureRegionHistory history;
+    const RECT vb{0, 0, 1920, 1080};
+    const RECT r1{100, 100, 300, 260};
+    const RECT r2{200, 150, 520, 410};
+    const RECT r3{400, 220, 900, 620};
+
+    ASSERT_TRUE(history.record(r1));
+    ASSERT_TRUE(history.record(r2));
+    ASSERT_TRUE(history.record(r3));
+
+    RECT out{};
+    // 连续 R (stepOlder): r3 -> r2 -> r1 -> r1
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r3));
+    EXPECT_EQ(history.cursorIndex(), 0);
+
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r2));
+    EXPECT_EQ(history.cursorIndex(), 1);
+
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r1));
+    EXPECT_EQ(history.cursorIndex(), 2);
+
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r1));
+    EXPECT_EQ(history.cursorIndex(), 2);
+
+    // 连续 Shift+R (stepNewer): r2 -> r3 -> r3
+    ASSERT_TRUE(history.stepNewer(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r2));
+    EXPECT_EQ(history.cursorIndex(), 1);
+
+    ASSERT_TRUE(history.stepNewer(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r3));
+    EXPECT_EQ(history.cursorIndex(), 0);
+
+    ASSERT_TRUE(history.stepNewer(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r3));
+    EXPECT_EQ(history.cursorIndex(), 0);
+
+    // 新截图会话 resetCursor 后重新从最新一条开始
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_EQ(history.cursorIndex(), 1);
+    history.resetCursor();
+    EXPECT_EQ(history.cursorIndex(), CaptureRegionHistory::kUnsetCursor);
+
+    ASSERT_TRUE(history.stepOlder(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r3));
+    EXPECT_EQ(history.cursorIndex(), 0);
+
+    // 未回溯时直接按 Shift+R 亦安全返回最新一条
+    history.resetCursor();
+    ASSERT_TRUE(history.stepNewer(vb, out));
+    EXPECT_TRUE(CaptureRegionHistory::rectEquals(out, r3));
+    EXPECT_EQ(history.cursorIndex(), 0);
+}
+
+TEST(CaptureRegionHistoryTest, VirtualBoundsClippingAndDisconnectedMonitorFallback) {
+    using tools3000::capture::CaptureRegionHistory;
+
+    const RECT singlePrimary{0, 0, 1920, 1080};
+    const RECT dualWithLeftMonitor{-1920, 0, 1920, 1080};
+    RECT out{};
+
+    // 1. 跨主屏与已拔除右副屏：保留可见交集并裁剪越界边
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{1700, 100, 2300, 500}));
+        ASSERT_TRUE(history.stepOlder(singlePrimary, out));
+        EXPECT_EQ(out.left, 1700);
+        EXPECT_EQ(out.top, 100);
+        EXPECT_EQ(out.right, 1920);
+        EXPECT_EQ(out.bottom, 500);
+    }
+
+    // 2. 完全位于已拔除右副屏：平移回主屏中心并保留原始尺寸 (600x400)
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{2200, 200, 2800, 600}));
+        ASSERT_TRUE(history.stepOlder(singlePrimary, out));
+        EXPECT_EQ(out.left, 660);
+        EXPECT_EQ(out.top, 340);
+        EXPECT_EQ(out.right, 1260);
+        EXPECT_EQ(out.bottom, 740);
+    }
+
+    // 3. 完全位于已拔除负坐标左副屏：平移回主屏中心并保留原始尺寸 (500x300)
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{-1200, 100, -700, 400}));
+        ASSERT_TRUE(history.stepOlder(singlePrimary, out));
+        EXPECT_EQ(out.left, 710);
+        EXPECT_EQ(out.top, 390);
+        EXPECT_EQ(out.right, 1210);
+        EXPECT_EQ(out.bottom, 690);
+    }
+
+    // 4. 4K 副屏超大选区在拔除后回落 1080p 主屏：自动限幅至 1920x1080 不越界
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{2000, 0, 5840, 2160}));
+        ASSERT_TRUE(history.stepOlder(singlePrimary, out));
+        EXPECT_EQ(out.left, 0);
+        EXPECT_EQ(out.top, 0);
+        EXPECT_EQ(out.right, 1920);
+        EXPECT_EQ(out.bottom, 1080);
+    }
+
+    // 5. 仅与主屏右缘重叠 2px (< kMinDimension)：不产生退化细条，自动回落中心保留完整 400x300
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{1918, 200, 2318, 500}));
+        ASSERT_TRUE(history.stepOlder(singlePrimary, out));
+        EXPECT_EQ(out.left, 760);
+        EXPECT_EQ(out.top, 390);
+        EXPECT_EQ(out.right, 1160);
+        EXPECT_EQ(out.bottom, 690);
+    }
+
+    // 6. 剩余双屏环境传入主屏边界：已拔除第 3 屏选区精准回落主屏中心而非双屏拼缝
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{2400, 100, 2800, 400}));
+        ASSERT_TRUE(history.stepOlder(dualWithLeftMonitor, out, &singlePrimary));
+        EXPECT_EQ(out.left, 760);
+        EXPECT_EQ(out.top, 390);
+        EXPECT_EQ(out.right, 1160);
+        EXPECT_EQ(out.bottom, 690);
+    }
+
+    // 7. 负坐标左副屏在线时：选区坐标原封不动精确还原
+    {
+        CaptureRegionHistory history;
+        ASSERT_TRUE(history.record(RECT{-1000, 120, -400, 520}));
+        ASSERT_TRUE(history.stepOlder(dualWithLeftMonitor, out, &singlePrimary));
+        EXPECT_EQ(out.left, -1000);
+        EXPECT_EQ(out.top, 120);
+        EXPECT_EQ(out.right, -400);
+        EXPECT_EQ(out.bottom, 520);
+    }
+}
+
+TEST(CaptureRegionHistoryTest, ShortcutHintOverlayExposesRegionHistoryShortcut) {
+    using tools3000::capture::ShortcutHintContext;
+    using tools3000::capture::ShortcutHintOverlay;
+
+    auto& hints = ShortcutHintOverlay::instance();
+    const ShortcutHintContext contexts[] = {
+        ShortcutHintContext::CaptureSelecting,
+        ShortcutHintContext::CaptureSelected,
+        ShortcutHintContext::RecordSelecting,
+    };
+
+    for (const auto ctx : contexts) {
+        const auto items = hints.getItemsForContext(ctx);
+        bool foundRegionHistory = false;
+        for (const auto& item : items) {
+            if (item.key == L"R / Shift+R") {
+                foundRegionHistory = true;
+                EXPECT_FALSE(item.label.empty());
+            }
+        }
+        EXPECT_TRUE(foundRegionHistory);
+    }
+}
+
+TEST(CaptureRegionHistoryTest, ConfigurableLimitPinnedImmunityCrudAndCycleKeyParsing) {
+    using tools3000::capture::CaptureRegionHistory;
+
+    CaptureRegionHistory history;
+    const RECT vb{0, 0, 1920, 1080};
+
+    // 1. 快捷键解析与提示胶囊文案格式化
+    EXPECT_EQ(CaptureRegionHistory::normalizeCycleKeyName("r"), "R");
+    EXPECT_EQ(CaptureRegionHistory::normalizeCycleKeyName("`"), "`");
+    EXPECT_EQ(CaptureRegionHistory::normalizeCycleKeyName("f2"), "F2");
+    EXPECT_EQ(CaptureRegionHistory::normalizeCycleKeyName("off"), "");
+    EXPECT_EQ(CaptureRegionHistory::parseCycleKeyVk("R"), static_cast<WPARAM>('R'));
+    EXPECT_EQ(CaptureRegionHistory::parseCycleKeyVk("`"), static_cast<WPARAM>(VK_OEM_3));
+    EXPECT_EQ(CaptureRegionHistory::parseCycleKeyVk("F2"), static_cast<WPARAM>(VK_F2));
+    EXPECT_EQ(CaptureRegionHistory::parseCycleKeyVk(""), static_cast<WPARAM>(0));
+    EXPECT_EQ(CaptureRegionHistory::formatCycleHintPair("F2"), L"F2 / Shift+F2");
+    EXPECT_TRUE(CaptureRegionHistory::formatCycleHintPair("").empty());
+
+    // 2. 自定义置顶固定选区永不被 LRU 上限或 clearUnpinned() 淘汰
+    history.setMaxEntries(2);
+    EXPECT_EQ(history.maxEntries(), 2u);
+    const std::string pinnedId = history.upsertCustomRegion(RECT{100, 100, 1380, 820}, "Tutorial 720p", true);
+    ASSERT_FALSE(pinnedId.empty());
+    EXPECT_EQ(history.pinnedCount(), 1u);
+
+    ASSERT_TRUE(history.record(RECT{10, 10, 210, 210}));
+    ASSERT_TRUE(history.record(RECT{20, 20, 220, 220}));
+    ASSERT_TRUE(history.record(RECT{30, 30, 230, 230}));
+    // 1 个置顶 + 2 个未置顶（最旧的 10,10 被淘汰，置顶完好保留）
+    EXPECT_EQ(history.size(), 3u);
+    EXPECT_EQ(history.pinnedCount(), 1u);
+
+    tools3000::capture::CaptureRegionEntry found{};
+    ASSERT_TRUE(history.findById(pinnedId, found));
+    EXPECT_EQ(found.name, "Tutorial 720p");
+    EXPECT_TRUE(found.pinned);
+
+    // 3. 缩容至 0：自动清空未置顶条目，同时完整保护置顶固定选区，且 stepOlder 仍可透传名称
+    history.setMaxEntries(0);
+    EXPECT_EQ(history.size(), 1u);
+    EXPECT_EQ(history.pinnedCount(), 1u);
+    EXPECT_FALSE(history.record(RECT{40, 40, 240, 240}));
+    RECT out{};
+    std::string outName;
+    ASSERT_TRUE(history.stepOlder(vb, out, nullptr, &outName));
+    EXPECT_EQ(outName, "Tutorial 720p");
+    EXPECT_EQ(out.right - out.left, 1280);
+    EXPECT_EQ(out.bottom - out.top, 720);
+
+    // 4. 重命名、取消置顶与删除
+    EXPECT_TRUE(history.rename(pinnedId, "Cover Box"));
+    ASSERT_TRUE(history.findById(pinnedId, found));
+    EXPECT_EQ(found.name, "Cover Box");
+    EXPECT_TRUE(history.removeById(pinnedId));
+    EXPECT_TRUE(history.empty());
+}
+
+TEST(PinZoomStageTest, ComputeSafeStageBoundsAvoidsFocusAssistAndRespectsBudget) {
+    using tools3000::capture::PinZoomStage;
+
+    // 1. 单屏 1080p：严格遵守 FocusAssistAvoidance 红线（物理高度至少 -1px，绝不触发全屏免打扰）
+    {
+        const RECT mon{0, 0, 1920, 1080};
+        const RECT virt{0, 0, 1920, 1080};
+        const RECT pin{400, 200, 900, 600};
+        const RECT target{300, 150, 1000, 650};
+        const auto b = PinZoomStage::computeSafeStageBounds(pin, target, mon, virt, 16384u);
+        EXPECT_TRUE(b.isValid());
+        EXPECT_EQ(b.left, 0);
+        EXPECT_EQ(b.top, 0);
+        EXPECT_EQ(b.width, 1920);
+        EXPECT_EQ(b.height, 1079);
+    }
+
+    // 2. 单屏 4K (3456x2160 高分屏)：同样严格执行 -1px 几何避让
+    {
+        const RECT mon{0, 0, 3456, 2160};
+        const RECT virt{0, 0, 3456, 2160};
+        const RECT pin{600, 400, 1800, 1200};
+        const RECT target{400, 200, 2400, 1600};
+        const auto b = PinZoomStage::computeSafeStageBounds(pin, target, mon, virt, 16384u);
+        EXPECT_TRUE(b.isValid());
+        EXPECT_EQ(b.width, 3456);
+        EXPECT_EQ(b.height, 2159);
+    }
+
+    // 3. 双 1080p 跨屏缩放（并集在 16M 像素预算内）：合并跨屏包围盒且不覆盖完整虚拟桌面
+    {
+        const RECT mon{0, 0, 1920, 1080};
+        const RECT virt{0, 0, 3840, 1080};
+        const RECT pin{1700, 100, 2100, 500};
+        const RECT target{1600, 80, 2300, 600};
+        const auto b = PinZoomStage::computeSafeStageBounds(pin, target, mon, virt, 16384u);
+        EXPECT_TRUE(b.isValid());
+        EXPECT_EQ(b.left, 0);
+        EXPECT_EQ(b.top, 0);
+        EXPECT_EQ(b.width, 2300);
+        EXPECT_EQ(b.height, 1079);
+        EXPECT_LE(static_cast<uint64_t>(b.width) * static_cast<uint64_t>(b.height),
+                  PinZoomStage::kMaxStagePixelBudget);
+    }
+
+    // 4. 超大双 4K 垂直错位跨屏超出 16M 像素显存预算时 (7680x2400 = 18.43M > 16.77M)：自动回退单屏并保留 -1px 避让
+    {
+        const RECT mon{0, 0, 3840, 2160};
+        const RECT virt{0, 0, 7680, 2400};
+        const RECT pin{3500, 0, 7600, 2360};
+        const RECT target{3400, 0, 7680, 2400};
+        const auto b = PinZoomStage::computeSafeStageBounds(pin, target, mon, virt, 16384u);
+        EXPECT_TRUE(b.isValid());
+        EXPECT_EQ(b.left, 0);
+        EXPECT_EQ(b.top, 0);
+        EXPECT_EQ(b.width, 3840);
+        EXPECT_EQ(b.height, 2159);
+        EXPECT_LE(static_cast<uint64_t>(b.width) * static_cast<uint64_t>(b.height),
+                  PinZoomStage::kMaxStagePixelBudget);
+    }
+}
+
 
 
 

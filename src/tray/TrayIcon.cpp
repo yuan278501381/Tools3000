@@ -120,7 +120,7 @@ static HICON loadThemeAppropriateIcon(UINT* outIconId = nullptr, HWND hwnd = nul
     return hIcon;
 }
 
-static HICON createBadgedUpdateIcon(HICON baseIcon, HWND hwnd) {
+static HICON createBadgedUpdateIcon(HICON baseIcon, HWND hwnd, bool readyToInstall) {
     if (!baseIcon) return nullptr;
 
     int cx = GetSystemMetrics(SM_CXSMICON);
@@ -168,12 +168,18 @@ static HICON createBadgedUpdateIcon(HICON baseIcon, HWND hwnd) {
     DrawIconEx(memDc, 0, 0, baseIcon, cx, cy, 0, nullptr, DI_NORMAL);
     SelectObject(memDc, oldBmp);
 
-    // 在图标右上角以亚像素抗锯齿合成朱砂红点 (#EF4444) + 纯白描边环，深浅任务栏皆高对比锐利可见
+    // 在图标右上角以亚像素抗锯齿合成双态高对比角标 + 纯白描边环：
+    //   - 发现新版本: 朱砂红 (#EF4444)
+    //   - 已下载就绪: 翡翠绿 (#10B981) + 内部亮绿高光核心 (#34D399)
     auto* px = static_cast<uint8_t*>(bits);
     const float radiusOuter = (std::max)(3.2f, static_cast<float>(cx) * 0.24f);
     const float radiusInner = (std::max)(2.1f, radiusOuter - (std::max)(1.0f, static_cast<float>(cx) * 0.06f));
+    const float radiusCore = radiusInner * 0.56f;
     const float centerX = static_cast<float>(cx) - radiusOuter - 0.5f;
     const float centerY = radiusOuter + 0.5f;
+    const uint8_t dotR = readyToInstall ? 16 : 239;
+    const uint8_t dotG = readyToInstall ? 185 : 68;
+    const uint8_t dotB = readyToInstall ? 129 : 68;
 
     auto blendOver = [](uint8_t* dst, uint8_t sr, uint8_t sg, uint8_t sb, float alpha) {
         const float a = std::clamp(alpha, 0.0f, 1.0f);
@@ -201,7 +207,11 @@ static HICON createBadgedUpdateIcon(HICON baseIcon, HWND hwnd) {
             blendOver(cell, 255, 255, 255, ringAlpha * 0.96f);
             if (dist <= radiusInner + 0.6f) {
                 const float dotAlpha = std::clamp(radiusInner + 0.5f - dist, 0.0f, 1.0f);
-                blendOver(cell, 239, 68, 68, dotAlpha);
+                blendOver(cell, dotR, dotG, dotB, dotAlpha);
+                if (readyToInstall && dist <= radiusCore + 0.5f) {
+                    const float coreAlpha = std::clamp(radiusCore + 0.4f - dist, 0.0f, 1.0f) * 0.55f;
+                    blendOver(cell, 110, 231, 183, coreAlpha);
+                }
             }
         }
     }
@@ -267,7 +277,7 @@ void TrayIcon::ensureEventSubscriptions() {
         bus.subscriberCount<tools3000::core::UpdateStatusChangedEvent>() == 0) {
         m_updateStatusSubId = bus.subscribe<tools3000::core::UpdateStatusChangedEvent>(
             [this](const tools3000::core::UpdateStatusChangedEvent& ev) {
-                setUpdateBadge(ev.hasUpdate, ev.readyToInstall, ev.latestVersion);
+                setUpdateBadge(ev.badgeVisible, ev.readyToInstall, ev.latestVersion);
             });
     }
 }
@@ -283,7 +293,7 @@ void TrayIcon::applyResolvedIconAndTooltipLocked() {
     releaseBadgedIconLocked();
     HICON displayIcon = m_icon;
     if (m_updateAvailable && m_icon) {
-        m_badgedIcon = createBadgedUpdateIcon(m_icon, m_hwnd);
+        m_badgedIcon = createBadgedUpdateIcon(m_icon, m_hwnd, m_updateReadyToInstall);
         if (m_badgedIcon) {
             displayIcon = m_badgedIcon;
         }
@@ -296,13 +306,25 @@ void TrayIcon::applyResolvedIconAndTooltipLocked() {
     if (m_updateAvailable) {
         const std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(m_updateLatestVersion);
         if (isEnglishLocale()) {
-            tip = m_updateReadyToInstall
-                ? (L"Tools3000 - Update " + verW + L" ready to install")
-                : (L"Tools3000 - Update " + verW + L" available");
+            if (verW.empty()) {
+                tip = m_updateReadyToInstall
+                    ? L"Tools3000 - Update ready to install"
+                    : L"Tools3000 - Update available";
+            } else {
+                tip = m_updateReadyToInstall
+                    ? (L"Tools3000 - Update " + verW + L" ready to install")
+                    : (L"Tools3000 - Update " + verW + L" available");
+            }
         } else {
-            tip = m_updateReadyToInstall
-                ? (L"Tools3000 — 新版本 " + verW + L" 已就绪，点击安装")
-                : (L"Tools3000 — 发现新版本 " + verW);
+            if (verW.empty()) {
+                tip = m_updateReadyToInstall
+                    ? L"Tools3000 — 新版本已下载就绪，点击安装"
+                    : L"Tools3000 — 发现新版本可更新";
+            } else {
+                tip = m_updateReadyToInstall
+                    ? (L"Tools3000 — 新版本 " + verW + L" 已就绪，点击安装")
+                    : (L"Tools3000 — 发现新版本 " + verW + L"，右键查看更新");
+            }
         }
     } else if (m_gesturePaused.load(std::memory_order_acquire)) {
         tip = isEnglishLocale() ? L"Tools3000 - Gesture Paused" : L"Tools3000 — 手势已暂停";
@@ -320,18 +342,18 @@ void TrayIcon::applyResolvedIconAndTooltipLocked() {
     }
 }
 
-void TrayIcon::setUpdateBadge(bool available, bool readyToInstall, const std::string& latestVersion) {
+void TrayIcon::setUpdateBadge(bool badgeVisible, bool readyToInstall, const std::string& latestVersion) {
     if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
         !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
         tools3000::core::MainThreadDispatcher::instance().postDeferred(
-            [this, available, readyToInstall, latestVersion]() {
-                setUpdateBadge(available, readyToInstall, latestVersion);
+            [this, badgeVisible, readyToInstall, latestVersion]() {
+                setUpdateBadge(badgeVisible, readyToInstall, latestVersion);
             });
         return;
     }
     std::lock_guard lock(m_mutex);
-    m_updateAvailable = available;
-    m_updateReadyToInstall = readyToInstall;
+    m_updateAvailable = badgeVisible;
+    m_updateReadyToInstall = badgeVisible && readyToInstall;
     m_updateLatestVersion = latestVersion;
     applyResolvedIconAndTooltipLocked();
 }
@@ -544,11 +566,16 @@ void TrayIcon::setTooltip(const std::wstring& tooltip) {
 
 void TrayIcon::setGesturePaused(bool paused) {
     m_gesturePaused.store(paused, std::memory_order_release);
-    if (isEnglishLocale()) {
-        setTooltip(paused ? L"Tools3000 - Gesture Paused" : L"Tools3000 - Desktop Utility");
-    } else {
-        setTooltip(paused ? L"Tools3000 — 手势已暂停" : L"Tools3000 — 桌面效率工具");
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().postDeferred([this]() {
+            std::lock_guard lock(m_mutex);
+            applyResolvedIconAndTooltipLocked();
+        });
+        return;
     }
+    std::lock_guard lock(m_mutex);
+    applyResolvedIconAndTooltipLocked();
 }
 
 bool TrayIcon::isCursorOnTrayIcon() const {

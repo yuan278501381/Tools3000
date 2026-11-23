@@ -96,18 +96,25 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
       <sub><b>File Locksmith</b> · Zero-RAM right-click, dedicated page picker &amp; one-click lock release</sub>
     </td>
   </tr>
+  <tr>
+    <td colspan="2" align="center" valign="top">
+      <img src="docs/images/en-US/text_expander_demo.webp" alt="System-wide Text Expander: instant snippet expansion, dynamic macros, and zero clipboard pollution" width="68%" /><br />
+      <sub><b>Text Expander</b> · Type <code>;date</code> or <code>;sig</code> anywhere for instant expansion with dynamic macros, password-manager guard, and zero clipboard history pollution</sub>
+    </td>
+  </tr>
 </table>
 
 | Module | Core Experience |
 | :--- | :--- |
 | **Instant File Search** | `Alt + Space` searches millions of files in ms alongside desktop/UWP apps (`app:`), 37 system tools (`cmd:env`, etc.), and Chrome/Edge/Brave/Vivaldi bookmarks (`bm:`/`b:`, showing real site icons completely offline); features **Live Watch** updates, **3 RAM tiers** (down to 0 MB idle sleep), Open Count tracking, draggable category tabs, `Space` QuickLook (Office, PDF, code, CAD, PSD, 3D, ZIP/7Z/RAR archives, TTF/OTF fonts & media preview), and a lightweight 350 KB CLI & MCP tool `tools3000-cli.exe`. |
 | **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with highlighted snippets and one-click line copy. |
-| **Persistent Clipboard History** | Press `Alt + V` (with tray menu access and quick tray toggle) for clipboard history that survives reboots; supports `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, and sensitive-app exclusion. |
+| **Persistent Clipboard History** | Press `Alt + V` (with tray menu access and quick tray toggle) for clipboard history that survives reboots; supports `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, and sensitive-app exclusion, native OLE drag-to-paste, and 1-click hide-pinned in other categories. |
+| **Text Expander** | Type short triggers (e.g. `;date`, `;now`, `;sig`) in any Windows app to expand full phrases, dynamic dates, clipboard templates, and cursor-positioned snippets; features password-manager auto-pause, zero-clipboard Unicode fast path, Windows privacy markers (zero history / `Win + V` pollution), and 140ms clipboard restore — zero hooks and zero RAM when off. |
 | **File Dialog Assistant** | Docks a quick-jump bar with Listary-style inline folder search directly onto Windows Open / Save As / Folder dialogs (including Tools3000's own dialogs), strictly protecting Save-As filenames from overwrite. |
 | **File Locksmith** | Find out what is locking a stubborn file and unlock it safely — via Explorer right-click (optional `Shift + Right-click`), Search right-click, or the built-in File Locksmith page. Uses zero background RAM, leaves system files untouched, and cleans up its menu automatically when disabled. |
 | **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
-| **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames. |
-| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with 120Hz damped zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click. |
+| **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, and sharing frames, plus `R / Shift + R` to cycle your last 10 capture regions. |
+| **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with 120Hz damped zoom, opacity, and click-through; organize multiple pins into color groups and snap-tile with one click (DirectComposition zero-resize GPU smooth zoom). |
 | **8-Language Offline OCR & In-Place Translation** | Pure local auto-detect OCR across 8 languages (Chinese, English, Japanese, Korean, Russian, Spanish, and Portuguese — on-demand lightweight language packs plus right-click per-image language switch); select/copy, highlight/underline, edit in place, extract tables/QR codes; plus **clean 1:1 in-place screenshot translation** (free dual channels + BYOK LLMs) with code protection and 0ms toggle. |
 | **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
 | **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; pause-to-cancel enabled by default, smart app window switching without duplicate launches (even across Chrome profiles), instant trigger without releasing, screen-edge wheel volume/brightness, 8-second easter egg, fullscreen game bypass, and Lua scripting. |
@@ -180,6 +187,7 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 | **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
 | **Picasa Photo Viewer / FastStone / Windows Photos** | Optional under-2 MB zero-dependency Rust recreation of the classic lightweight Picasa viewer (also works completely standalone), bringing faithful animations plus 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, and lossless flip | When you need full Google Picasa album catalog management, face recognition, or dedicated batch RAW editing |
 | **Listary Dialog Jump / PowerToys File Locksmith** | Listary-style inline folder search in Windows Open/Save and internal dialogs (protecting Save-As filenames); zero-RAM File Locksmith via Explorer right-click or built-in page | Full Listary custom launcher action workflows or deep kernel handle forensics |
+| **Espanso / Beeftext / AutoHotkey Snippets** | Built-in native Text Expander (ready out of the box, zero hooks when off) with immediate/boundary triggers, date/clipboard/cursor macros, password-manager auto-skip, live sandbox, and JSON import/export | Complex YAML form dialogs, shell-command dynamic output, or cross-platform Linux/macOS config sync |
 
 ---
 

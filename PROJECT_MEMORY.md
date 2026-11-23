@@ -6,6 +6,62 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 永久发版文档铁律：纯用户向 Release Notes、锚定上个正式 Release 与社区/GitHub Issue 署名规范
+- **强制执行准则（每次编写 `docs/RELEASE_NOTES_v*.md` 与执行 GitHub Release 时 100% 遵守）**：
+  1. **锚定上一个正式发布的 GitHub Release**：必须通过 `gh release list` 核实上一个已正式发布的 GitHub Release 作为变更对比基线，绝不以上一个本地提交为基线；严禁把尚未对外发布的新功能写成「修复」，严禁暴露中间开发迭代细节。
+  2. **纯用户向语言与结构**：面向真实终端用户撰写，聚焦可感知的新能力、交互改善、稳定性提升、入口位置与升级方式；禁止堆砌底层 C++/Rust 类名、宏名、内部文件名或代码实现术语；100% 严禁原生 Unicode Emoji。
+  3. **社区、用户与 GitHub Issue 真实署名**：
+     - 凡源自社区/用户反馈落地的功能或修复，必须在对应条目后精炼注明来源社区与用户名（例如：`（感谢 Linux.do @宫灵紫凝）`、`（感谢 Reddit r/windowsapps @redchrism、@iquizuanswer）`、`（感谢 V2EX @wildqueen）`）；仅知用户名未知社区时留空社区仅写 `（感谢 @username）`；
+     - 若对应 GitHub Issue，严格按 GitHub 惯例署名（例如：`(#7, @NuomiSeek)`、`(#6, @HedioKojima)`）；
+     - 署名必须基于实证记录（原帖/截图/Issue/日志），严禁编造或张冠李戴。
+
+### [2026-11-24] v1.4.5 实机极限精修：剪贴板 MECE 四维根治 + 历史与固定截图选区管理工作台 + 三端菜单 MECE 四域推荐排序
+- **剪贴板交互 MECE 四维架构根治 (`ClipboardWindow.{h,cpp}`, `ClipboardNativeDrag.{h,cpp}`, `ClipboardManager.{h,cpp}`, `main.cpp`, `ClipboardApp.tsx`)**：
+  1. **动态前景追踪与内部浮层防污染（根治「置顶切到软件 B 仍贴到软件 A」与「截屏 F1 后点粘贴失效」）**：`ClipboardWindow` 仅在可见期间挂载 `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT)`（隐藏/销毁即 `UnhookWinEvent`，闲置 0 钩子），跨进程实时刷新 `m_previousForegroundHwnd`；`ClipboardManager::normalizeValidTargetHwnd` 显式过滤 `WS_EX_NOACTIVATE` 及全量内部瞬态覆盖层（`Tools3000_CaptureOverlay`/`TrayWindow`/`ShortcutHintOverlay`/`Toast`/`Spotlight`/`PinWindow` 等）杜绝目标句柄污染；`sendCtrlVPasteAsync` 新增粘贴前二次活体校验 + `findFallbackTargetWindowBelow` Z-Order 兜底 + 防误贴自身搜索框守卫；3 条系统剪贴板写入路径统一采用 `openClipboardWithRetry(8x10ms)` 并补齐英文诊断日志。
+  2. **混合双引擎拖放（根治「高权限拖不进 AGY/Electron 聊天框」与「Sublime 选中态无法续拖到末尾」）**：第一引擎增强 OLE（新增 `CF_TEXT` 与 `CF_UNICODETEXT`/`HTML Format`/`CF_HDROP`/`CF_DIB`/`PNG` 并行）；当高权限向普通权限进程拖放遇 Windows UIPI 拦截、或编辑器选中态返回 `DROPEFFECT_NONE` 且非用户取消时，经 4 重安全落点过滤（`isSafeDropHitTestResult` 严禁标题栏/按钮/边框、非自身、非桌面、非任务栏）自动切入第二引擎 **Smart Drop-Paste**：无痕写入剪贴板（`m_suppressedSeq` 零历史污染）-> 精准虚拟桌面单击落点（同时聚焦输入框并解除 Sublime 选区）-> `Ctrl+V` 投递 -> 无激活浮顶保活。
+  3. **拖放后会话驻留态（根治「拖入 Chrome 地址栏后剪贴板消失」）**：将 `NATIVE_DRAG_HIDE_GRACE_MS` 提升至 `1200ms` 并引入 `m_dragSessionHold`（`outcome.delivered()` 后置位并无激活 `HWND_TOPMOST` 浮顶，防止 Chrome 地址栏延迟异步抢焦点关闭或压盖面板；`hide()`/`destroy()`/`setPinned(false)` 干净复位）。
+  4. **分级 `Esc` 与 `Ctrl+A` / 拖拽残留清零**：`main.cpp` 全局 `VK_ESCAPE` 钩子仅在剪贴板面板非前台激活态时直接隐藏，前台态放行由 `ClipboardApp.tsx` 执行分级退出（退出编辑 -> 清空 `Ctrl+A` 多选 -> 隐藏）；`clipboard:shown` 重置多选与点击抑制 ref，`startNativeDrag` 结束后 80ms 自动清零 `suppressClickItemIdRef`。
+- **历史与固定截图选区管理工作台 (`CaptureRegionHistory.h`, `ScreenCapture.h`, `CaptureOverlay.cpp`, `CaptureInputKeyboard.cpp`, `ShortcutHintOverlay.cpp`, `PluginEntry.cpp`, `CaptureRegionManagerCard.{tsx,css}`, `CapturePage.tsx`, `hotkeyCatalog.ts`, 8 语种 JSON)**：
+  1. 升级为完整实体 `CaptureRegionEntry{id, rect, name, pinned, updatedAt}`，跨重启持久化至 `/capture/regionHistoryItems`（兼容旧数组格式）；未置顶条目遵循 `/capture/regionHistoryLimit` (`0..50`，默认 `10`) LRU 淘汰，**已置顶固定选区永不自动淘汰**。
+  2. 双层快捷键全面暴露于设置页与全局热键一览：① 全局一步直达热键 `Repeat Last Capture`（默认 `Shift+F1`，直接带上次选区开启截图）；② 截图内可配单键 `/capture/regionHistoryKey`（`R / Shift+R`、`` ` / Shift+` ``、`F2 / Shift+F2`、`F4 / Shift+F4` 或关闭），同步联动 `ShortcutHintOverlay` 单一事实源提示条。
+  3. 新增模块化设置工作台 `CaptureRegionManagerCard`：支持实时列表、置顶/取消置顶、自定义命名、精准 `X/Y/W/H` 像素编辑与 `1280x720`/`1920x1080`/`1080x1080`/`800x600` 居中预设新增、一键「按此选区立即截图 (`capture.triggerWithRegion`)」及清空未置顶。
+- **三端菜单 MECE 四域推荐排序单一事实源 (`routes.ts`, `trayRegistry.ts`, `PluginsPage.test.tsx`)**：
+  - 经项目负责人确认采用 **MECE 四域语义成对推荐序**：`capture`（含 `history`/`ocr`）→ `clipboard` → `gesture`（含 `hotcorner`）→ `text_expander` → `search` → `dialog_enhancer` → `file_locksmith` → `picasa_viewer` → `keycast` → `spotlight` → `remote_boost`；左侧边栏、功能模块双列页与托盘 3x3+1 控制舱 100% 锁定同序；尊重 8 国语言文案自然长度，托盘胶囊保留原生省略截断与完整 Tooltip 提示，不做中文特化强改短词。
+
+### [2026-11-24] 永久架构铁律：跨前后端契约第 9 重 i18n 静态门禁 & 左右模块顺序单一事实源 (SSOT)
+- **背景与复盘**：在「通用设置 -> 全局快捷键」列表中曾出现 `Toggle Clipboard` 漏译裸英文，根因是 C++ 后端通过 `HotkeyManager::registerHotkey("Toggle Clipboard", ...)` 下发字符串后，前端 `GeneralPage.tsx` 手工维护的内联 `hotkeyNameMap` 漏加条目而静默回退 `entry.name`；另外右侧「功能模块」页与左侧边栏曾各自硬编码顺序导致左右排列错乱。
+- **永久根治防线（零人工记忆依赖，CI 强制拦截）**：
+  1. **全局快捷键单一事实源 (`ui/src/config/hotkeyCatalog.ts`)**：所有 C++ 注册热键名称的多语言映射唯一收口于 `HOTKEY_LABEL_KEYS` 与 `resolveHotkeyLabel(t, name)`，禁止页面内联硬编码映射表。
+  2. **第 9 重跨前后端契约 i18n 静态门禁 (`ui/scripts/check-i18n.js`)**：每次 `npm run lint` / `npm run build` / `deploy.ps1` 自动跨边界扫描：
+     - 全库 `src/**/*.{cpp,h}` 所有 `registerHotkey("...")` / `rebindHotkey("...")` 字面量 -> 强断言 100% 在 `hotkeyCatalog.ts` 注册且指向全 8 国字典真实存在的词条；
+     - `src/core/plugin/PluginManager.cpp` 所有 `patch["plugins"]["<id>"]["enabled"]` 内置模块 -> 强断言 100% 存在全 8 语种 `plugins.items.<id>.{name,description}`；
+     - `ui/src/config/routes.ts` 所有 `APP_ROUTES` -> 强断言 100% 存在全 8 语种 `sidebar.kw_<id>`。
+  3. **左右模块顺序单一事实源 (`ui/src/config/routes.ts`)**：`PluginsPage.tsx` 彻底废除硬编码 `PLUGIN_DISPLAY_ORDER` / `PLUGIN_NAV_MAP`，改由 `APP_ROUTES` 自动派生 `BUILTIN_PLUGIN_ORDER`、`getBuiltinPluginDisplayOrder`、`getBuiltinPluginPrimaryRoute` 与 `isPluginActiveInSet`；确保全开或任意子集关闭时，右侧模块卡片与左侧边栏「效率工具」相对顺序 100% 锁定一致（由 `PluginsPage.test.tsx` 回归断言守护）。
+  4. **托盘控制中心三段式零截断 + 0 形变精准测高规范 (`TrayWindow.cpp`, `WebViewWindowStyle.h`, `TrayApp.{tsx,css}`)**：
+     - *根因*：旧版 `.tray-menu` 挂了 `animation: trayPop` (`transform: scale(0.97)`), `reportSizeDirect()` 却用受 `transform` 缩放污染的 `getBoundingClientRect()` 测高，导致动画帧内触发测量时窗口高度缩水 ~20px 偶发切掉一半「退出」按钮；同时 `760 DIP` 硬上限与 276px 双列纵深无法承载 10+ 模块；
+     - *铁律*：托盘固定采用 **320px 宽 + 三段式刚性骨架（吸顶 Header/更新条 + 中央独立弹性滚动体 + 吸底管理员/退出 Dock）+ 3 列微晶 Bento 网格**；`trayPop` 仅允许纯 `opacity` 淡入（严禁在测高容器上施加 `transform: scale()`），测高严格累加 `offsetHeight`/`scrollHeight` 并监听 `header/scrollInner/footer` 三段 `ResizeObserver` + `document.fonts.ready`；宿主高度上限由真实显示器 `workArea` 动态约束且每次比对真实物理 `GetWindowRect`，确保未来扩展至 20+ 模块也绝不截断底栏。
+
+### [2026-11-23] 永久架构铁律：新增一级功能模块全链路全域联动与世界级交付标准（First-Class Module Standard）
+- **铁律触发条件**：凡在 Tools3000 中新增任意一个独立功能模块（例如「文本扩展器」「剪贴板历史」「文件占用解锁」等），必须按 **世界级软件标准** 一次完成以下 **7 维全域闭环联动**，严禁“只做半截核心、漏掉关联入口”：
+  1. **设置主界面开关与专属配置体系**：
+     - 「功能模块」总控页（`PluginsPage.tsx`）新增模块卡片与启停开关（支持按需开关，关闭时 0 常驻钩子/0 后台内存）；
+     - 侧边栏一级菜单（`ui/src/config/routes.ts`、`Sidebar.tsx`）与设置全局搜索索引（`ui/src/config/settingsSearchIndex.ts`，含 `Ctrl+K` 检索与未启用模块一键启用直达）同步注册；
+     - 独立高质感专属设置页面（如 `TextExpanderPage.{tsx,css}`），涵盖全部核心配置项、实时体验/沙盒或预览区与清晰快捷键说明。
+  2. **系统托盘右键菜单与现代托盘控制舱双通道联动**：
+     - 现代 WebView2 托盘面板（`ui/src/tray/trayRegistry.ts`、`TrayApp.tsx`）同步接入一键快捷开关磁贴（及适用时的快捷入口），实时响应 `plugins:changed` 与模块状态事件；
+     - 原生兜底右键菜单（`TrayIcon.{h,cpp}`）在必要时同步对齐入口与启停状态。
+  3. **新手引导（`OnboardingModal`）同步纳入**：
+     - 保持 4 步精炼节奏不臃肿，同步在能力矩阵、快捷键速查与开箱提示中体现新增核心模块，避免新手引导滞后于产品真实能力。
+  4. **全 8 国语言国际化与门禁闭环**：
+     - 同步覆盖 `zh`, `zh-TW`, `en`, `ja`, `ko`, `ru`, `pt-BR`, `es` 全部 8 套字典，100% 通过 7 重 i18n 门禁、排版底线（字号 `>= 0.83rem`、字重 `>= 500`）、CSS 变量门禁、零 Emoji 与纯矢量 SVG 规范。
+  5. **全 8 国 README 文案与高清动态演示资产同步**：
+     - 发版对外交付前，必须同步更新全部 8 份 `README*.md`（功能总览表、亮点介绍、快捷键/替代对照表）以及多语种 Bento 总览海报与对应功能的实机动态演示图（`.webp`/`.png`）。
+  6. **世界级工程品质红线（性能 / 内存 / 鲁棒性 / UX / UI）**：
+     - **性能与延迟**：输入/渲染热路径严禁阻塞与同步重分配（如钩子 0 阻塞异步投递、GPU 硬件合成零 Resize 缩放、绝不在热路径调用 `trimWorkingSet()`）；
+     - **内存治理**：遵循按需启停（`DEMAND_START` / 关闭即释放）、短命隔离重任务与冷路径优雅回收，守护主机待机极低内存占用；
+     - **用户体验与隐私边界**：零干扰默认值（敏感场景自动避让如密码管理器/游戏/快捷键录制态、剪贴板操作挂载 Windows 隐私排除标记防历史污染）、高分屏多屏 DPI 自适应、深浅主题与动态强调色完美一致；
+     - **自动化防回退测试**：同步补齐后端 C++ 单元测试与前端 Vitest 测试，严禁带病合入。
+
 ### [2026-11-23] v1.4.3 紧急稳定性热修：UTF-8 安全截断防检查更新崩溃、反馈通道 12 MiB 附图/1000 行日志/原生 Ctrl+V 贴图、以及 Win10 高精度 OCR 隔离防主进程闪退（Issue `#7`）
 - **三大真机必现/社区缺陷根因与永久防回退铁律**：
   1. **严禁对任意 UTF-8 字符串按字节裸调用 `resize(N)` / `substr(size - N)`（`UpdateChecker.cpp` & `FeedbackDiagnosticService.cpp` -> `nlohmann::json::type_error.316`）**：

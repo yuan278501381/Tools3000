@@ -54,6 +54,9 @@ public:
     /// 获取底层 Win32 HWND 句柄
     HWND hwnd() const { return m_hwnd; }
 
+    /// 恢复 WebView2 控件及最后一次可编辑输入框的键盘焦点
+    void restoreFocusToWebView();
+
     /// 创建并显示设置窗口
     void show(HINSTANCE hInstance);
 
@@ -131,6 +134,7 @@ private:
     std::chrono::steady_clock::time_point m_initializationStartedAt{};
     std::chrono::steady_clock::time_point m_showRequestedAt{};
     std::unordered_map<std::string, std::string> m_pendingEvents;
+    std::string m_pendingNavigatePath;
 
     // WebView2 组件（使用 void* 避免头文件依赖）
     Microsoft::WRL::ComPtr<ICoreWebView2Controller> m_controller;

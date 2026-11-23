@@ -18,6 +18,7 @@ import './Sidebar.css';
 import {
   APP_ROUTES,
   ROUTE_MAP,
+  isPluginActiveInSet,
   resolveExtensionRoute,
   type RouteItemConfig,
   type NavId,
@@ -49,6 +50,7 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   plugins: 'sidebar.kw_plugins',
   search: 'sidebar.kw_search',
   clipboard: 'sidebar.kw_clipboard',
+  text_expander: 'sidebar.kw_text_expander',
   gesture: 'sidebar.kw_gesture',
   hotcorner: 'sidebar.kw_hotcorner',
   capture: 'sidebar.kw_capture',
@@ -75,40 +77,51 @@ export const Sidebar: FC<SidebarProps> = ({
   const { t } = useTranslation();
   const [filterQuery, setFilterQuery] = useState('');
   const [enablingPluginId, setEnablingPluginId] = useState<string | null>(null);
-  const [updateBadge, setUpdateBadge] = useState<{ hasUpdate: boolean; readyToInstall: boolean; latestVersion: string }>({
+  const [updateBadge, setUpdateBadge] = useState<{
+    hasUpdate: boolean;
+    badgeVisible: boolean;
+    readyToInstall: boolean;
+    latestVersion: string;
+  }>({
     hasUpdate: false,
+    badgeVisible: false,
     readyToInstall: false,
     latestVersion: '',
   });
   const searchInputRef = useRef<HTMLInputElement>(null);
 
+  const applyUpdateBadgePayload = (raw: unknown) => {
+    if (!raw || typeof raw !== 'object') return;
+    const st = raw as {
+      hasUpdate?: boolean;
+      badgeVisible?: boolean;
+      dismissed?: boolean;
+      readyToInstall?: boolean;
+      latestVersion?: string;
+    };
+    if (typeof st.hasUpdate !== 'boolean' && typeof st.badgeVisible !== 'boolean') return;
+    const hasUpdate = Boolean(st.hasUpdate);
+    const badgeVisible = typeof st.badgeVisible === 'boolean'
+      ? st.badgeVisible
+      : (hasUpdate && !st.dismissed);
+    setUpdateBadge({
+      hasUpdate,
+      badgeVisible,
+      readyToInstall: Boolean(st.readyToInstall),
+      latestVersion: st.latestVersion ?? '',
+    });
+  };
+
   useEffect(() => {
-    bridgeRequest<{ hasUpdate?: boolean; readyToInstall?: boolean; latestVersion?: string }>(
-      'app.getUpdateState',
-      undefined,
-      { silent: true },
-    )
+    bridgeRequest<unknown>('app.getUpdateState', undefined, { silent: true })
       .then((st) => {
-        if (st && typeof st.hasUpdate === 'boolean') {
-          setUpdateBadge({
-            hasUpdate: st.hasUpdate,
-            readyToInstall: Boolean(st.readyToInstall),
-            latestVersion: st.latestVersion ?? '',
-          });
-        }
+        applyUpdateBadgePayload(st);
       })
       .catch(() => {});
   }, []);
 
   useBridgeEvent('update.state', (raw) => {
-    const st = raw as { hasUpdate?: boolean; readyToInstall?: boolean; latestVersion?: string } | undefined;
-    if (st && typeof st.hasUpdate === 'boolean') {
-      setUpdateBadge({
-        hasUpdate: st.hasUpdate,
-        readyToInstall: Boolean(st.readyToInstall),
-        latestVersion: st.latestVersion ?? '',
-      });
-    }
+    applyUpdateBadgePayload(raw);
   });
 
   useEffect(() => {
@@ -162,14 +175,8 @@ export const Sidebar: FC<SidebarProps> = ({
     return () => window.removeEventListener('keydown', handleGlobalKeyDown);
   }, []);
 
-  const isItemAvailable = (item: RouteItemConfig) => {
-    if (!item.requiresPlugin) return true;
-    if (!activePlugins) return false;
-    if (item.requiresPlugin === 'dialogenhancer' || item.requiresPlugin === 'dialog_enhancer') {
-      return activePlugins.has('dialogenhancer') || activePlugins.has('dialog_enhancer');
-    }
-    return activePlugins.has(item.requiresPlugin);
-  };
+  const isItemAvailable = (item: RouteItemConfig) =>
+    isPluginActiveInSet(activePlugins, item.requiresPlugin);
 
   const systemNavItems = APP_ROUTES.filter((r) => r.category === 'system');
   const availableCoreTools = APP_ROUTES.filter((r) => r.category === 'core_tools').filter(isItemAvailable);
@@ -423,16 +430,25 @@ export const Sidebar: FC<SidebarProps> = ({
         <span className="sidebar__item-label">
           {customLabel ?? t(item.labelKey as unknown as TemplateStringsArray)}
         </span>
-        {item.id === 'about' && updateBadge.hasUpdate && (
+        {item.id === 'about' && updateBadge.badgeVisible && (
           <span
-            className={`sidebar__update-dot${updateBadge.readyToInstall ? ' sidebar__update-dot--ready' : ''}`}
+            className={`sidebar__update-pill${updateBadge.readyToInstall ? ' sidebar__update-pill--ready' : ''}`}
             title={
               updateBadge.readyToInstall
                 ? t('about.updateReadyHint', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} ready` })
                 : t('about.updateAvailable', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} available` })
             }
-            aria-label={t('about.updateAvailable', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} available` })}
-          />
+            aria-label={
+              updateBadge.readyToInstall
+                ? t('about.updateReadyHint', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} ready` })
+                : t('about.updateAvailable', { version: updateBadge.latestVersion, defaultValue: `Update ${updateBadge.latestVersion} available` })
+            }
+          >
+            <span className="sidebar__update-pill-dot" aria-hidden="true" />
+            <span className="sidebar__update-pill-text">
+              {updateBadge.latestVersion || 'NEW'}
+            </span>
+          </span>
         )}
       </button>
     );

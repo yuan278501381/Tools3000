@@ -178,6 +178,18 @@ impl ClipboardStore {
         limit: usize,
         offset: usize,
     ) -> String {
+        self.query_json_with_options(query, filter_kind, group_id, limit, offset, false)
+    }
+
+    pub fn query_json_with_options(
+        &self,
+        query: &str,
+        filter_kind: &str,
+        group_id: &str,
+        limit: usize,
+        offset: usize,
+        exclude_pinned: bool,
+    ) -> String {
         let terms: Vec<String> = query
             .split_whitespace()
             .map(|s| s.to_lowercase())
@@ -186,11 +198,17 @@ impl ClipboardStore {
         let kind_filter = filter_kind.trim().to_ascii_lowercase();
         let group_filter = group_id.trim();
         let cap = if limit == 0 { 100 } else { limit.min(500) };
+        let should_exclude_pinned = exclude_pinned && kind_filter != "pinned";
 
         let mut total_matched = 0usize;
+        let mut total_pinned = 0usize;
+        let mut hidden_pinned = 0usize;
         let mut matched: Vec<&ClipboardEntry> = Vec::with_capacity(cap);
 
         for entry in &self.entries {
+            if entry.pinned {
+                total_pinned += 1;
+            }
             if !matches_kind_filter(entry, &kind_filter) {
                 continue;
             }
@@ -204,17 +222,25 @@ impl ClipboardStore {
             {
                 continue;
             }
+            if should_exclude_pinned && entry.pinned {
+                hidden_pinned += 1;
+                continue;
+            }
             if total_matched >= offset && matched.len() < cap {
                 matched.push(entry);
             }
             total_matched += 1;
         }
 
-        let mut out = String::with_capacity(matched.len().saturating_mul(288) + 96);
+        let mut out = String::with_capacity(matched.len().saturating_mul(288) + 128);
         out.push_str("{\"total\":");
         out.push_str(&self.entries.len().to_string());
         out.push_str(",\"matched\":");
         out.push_str(&total_matched.to_string());
+        out.push_str(",\"pinnedCount\":");
+        out.push_str(&total_pinned.to_string());
+        out.push_str(",\"hiddenPinnedCount\":");
+        out.push_str(&hidden_pinned.to_string());
         out.push_str(",\"items\":[");
         for (idx, item) in matched.iter().enumerate() {
             if idx > 0 {
@@ -730,6 +756,46 @@ mod tests {
             assert_eq!(reopened.delete_items_batch(&[id1, id2], false), 2);
             assert!(reopened.query_json("", "all", "", 10, 0).contains("\"total\":0"));
         }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn excludes_pinned_items_in_non_pinned_categories_while_keeping_pinned_tab_intact() {
+        let dir = make_temp_dir("exclude_pinned");
+        let mut store = ClipboardStore::open(dir.clone());
+        let id_pinned_text = store.add_item(0, "Pinned Alpha", "", 0, 0, "", "Code.exe", 12, 50, 30, "", "");
+        let id_normal_text = store.add_item(0, "Normal Beta", "", 0, 0, "", "Notepad.exe", 11, 50, 30, "", "");
+        let id_pinned_color = store.add_item(0, "#2563EB", "", 0, 0, "", "Figma.exe", 7, 50, 30, "", "");
+        assert_eq!(store.toggle_pin(id_pinned_text), Some(true));
+        assert_eq!(store.toggle_pin(id_pinned_color), Some(true));
+
+        // 1. exclude_pinned=false 时，all 返回全部 3 条，pinnedCount=2, hiddenPinnedCount=0
+        let all_with_pinned = store.query_json_with_options("", "all", "", 10, 0, false);
+        assert!(all_with_pinned.contains("\"matched\":3"), "actual={}", all_with_pinned);
+        assert!(all_with_pinned.contains("\"pinnedCount\":2"), "actual={}", all_with_pinned);
+        assert!(all_with_pinned.contains("\"hiddenPinnedCount\":0"), "actual={}", all_with_pinned);
+
+        // 2. exclude_pinned=true 时，all 与 text 仅返回非置顶项，hiddenPinnedCount=2
+        let all_without_pinned = store.query_json_with_options("", "all", "", 10, 0, true);
+        assert!(all_without_pinned.contains("\"total\":3"), "actual={}", all_without_pinned);
+        assert!(all_without_pinned.contains("\"matched\":1"), "actual={}", all_without_pinned);
+        assert!(all_without_pinned.contains("\"pinnedCount\":2"), "actual={}", all_without_pinned);
+        assert!(all_without_pinned.contains("\"hiddenPinnedCount\":2"), "actual={}", all_without_pinned);
+        assert!(all_without_pinned.contains("Normal Beta"), "actual={}", all_without_pinned);
+        assert!(!all_without_pinned.contains("Pinned Alpha"), "actual={}", all_without_pinned);
+        assert!(all_without_pinned.contains(&format!("\"id\":{}", id_normal_text)));
+
+        let text_without_pinned = store.query_json_with_options("", "text", "", 10, 0, true);
+        assert!(text_without_pinned.contains("\"matched\":1"), "actual={}", text_without_pinned);
+        assert!(text_without_pinned.contains("\"hiddenPinnedCount\":2"), "actual={}", text_without_pinned);
+
+        // 3. pinned 分类下即便传 exclude_pinned=true，依然完整保留全部置顶条目
+        let pinned_tab = store.query_json_with_options("", "pinned", "", 10, 0, true);
+        assert!(pinned_tab.contains("\"matched\":2"), "actual={}", pinned_tab);
+        assert!(pinned_tab.contains("\"hiddenPinnedCount\":0"), "actual={}", pinned_tab);
+        assert!(pinned_tab.contains("Pinned Alpha"), "actual={}", pinned_tab);
+        assert!(pinned_tab.contains("#2563EB"), "actual={}", pinned_tab);
 
         let _ = fs::remove_dir_all(&dir);
     }

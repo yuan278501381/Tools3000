@@ -11,6 +11,7 @@
 
 #include "ui/SettingsWindow.h"
 #include "ui/WebViewWindowStyle.h"
+#include "clipboard/ClipboardManager.h"
 #include "../resource.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
@@ -162,6 +163,7 @@ void SettingsWindow::smoothPresent() {
     if (m_controller) {
         m_controller->put_IsVisible(TRUE);
         syncWebViewDpi(m_controller.Get(), m_hwnd);
+        m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
     flushPendingEvents();
 
@@ -480,6 +482,95 @@ void SettingsWindow::onWebView2Ready() {
     web_security::applyNavigationPolicy(m_webView.Get());
     KeyboardPipeline::applyWebKeyboardPolicy(m_controller.Get(), m_config.devToolsEnabled);
 
+    // 注入轻量输入框焦点守护脚本：设置页失焦至剪贴板悬浮面板再切回时，自动把 DOM 焦点与选区恢复到原输入框
+    static constexpr const wchar_t* kFocusRestoreGuardScript = LR"JS(
+(() => {
+  if (window.__t3kFocusGuardInstalled) return;
+  window.__t3kFocusGuardInstalled = true;
+  let lastEditableRef = null;
+  let lastSelStart = null;
+  let lastSelEnd = null;
+  const nonTextInputTypes = new Set(['button','submit','reset','checkbox','radio','range','color','file','image','hidden']);
+  const isEditable = (el) => {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    if (el.isContentEditable) return true;
+    const tag = el.tagName;
+    if (tag === 'TEXTAREA') return !el.disabled && !el.readOnly;
+    if (tag === 'INPUT') {
+      const tp = (el.type || 'text').toLowerCase();
+      return !nonTextInputTypes.has(tp) && !el.disabled && !el.readOnly;
+    }
+    return false;
+  };
+  const snapshotSelection = (el) => {
+    try {
+      if (typeof el.selectionStart === 'number' && typeof el.selectionEnd === 'number') {
+        lastSelStart = el.selectionStart;
+        lastSelEnd = el.selectionEnd;
+      } else {
+        lastSelStart = null;
+        lastSelEnd = null;
+      }
+    } catch {
+      lastSelStart = null;
+      lastSelEnd = null;
+    }
+  };
+  document.addEventListener('focusin', (ev) => {
+    const target = ev.target;
+    if (isEditable(target)) {
+      lastEditableRef = typeof WeakRef === 'function' ? new WeakRef(target) : { deref: () => target };
+      snapshotSelection(target);
+    }
+  }, true);
+  document.addEventListener('pointerdown', (ev) => {
+    const target = ev.target;
+    if (!isEditable(target)) {
+      lastEditableRef = null;
+      lastSelStart = null;
+      lastSelEnd = null;
+    }
+  }, true);
+  for (const evtName of ['keyup', 'mouseup', 'select', 'input']) {
+    document.addEventListener(evtName, () => {
+      const active = document.activeElement;
+      if (isEditable(active)) {
+        lastEditableRef = typeof WeakRef === 'function' ? new WeakRef(active) : { deref: () => active };
+        snapshotSelection(active);
+      }
+    }, true);
+  }
+  window.__t3kRestoreLastInputFocus = () => {
+    const active = document.activeElement;
+    if (isEditable(active) && active.isConnected) {
+      return true;
+    }
+    const el = lastEditableRef && typeof lastEditableRef.deref === 'function' ? lastEditableRef.deref() : null;
+    if (!el || !el.isConnected || !isEditable(el)) return false;
+    const rects = el.getClientRects ? el.getClientRects() : null;
+    if (rects && rects.length === 0) return false;
+    try {
+      el.focus({ preventScroll: true });
+      if (lastSelStart !== null && lastSelEnd !== null && typeof el.setSelectionRange === 'function') {
+        el.setSelectionRange(lastSelStart, lastSelEnd);
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  };
+})();
+)JS";
+    m_webView->AddScriptToExecuteOnDocumentCreated(kFocusRestoreGuardScript, nullptr);
+
+    // 注册同进程剪贴板自动粘贴焦点恢复器，避免 ClipboardManager 反向依赖 SettingsWindow
+    tools3000::clipboard::ClipboardManager::instance().setTargetFocusRestorer(
+        [this](HWND targetHwnd) {
+            if (targetHwnd && targetHwnd == m_hwnd && IsWindow(m_hwnd) && !IsIconic(m_hwnd)) {
+                restoreFocusToWebView();
+            }
+        });
+
     // ── 注册 JS → C++ 消息监听 ─────────────────────────────────────────
     m_webView->add_WebMessageReceived(
         Callback<ICoreWebView2WebMessageReceivedEventHandler>(
@@ -558,6 +649,11 @@ void SettingsWindow::onWebView2Ready() {
                 args->get_IsSuccess(&success);
                 if (success) {
                     m_webViewReady = true;
+                    if (!m_pendingNavigatePath.empty()) {
+                        const std::string queuedPath = std::move(m_pendingNavigatePath);
+                        m_pendingNavigatePath.clear();
+                        navigateTo(queuedPath);
+                    }
                     if (m_showWhenReady) {
                         m_showWhenReady = false;
                         smoothPresent();
@@ -588,6 +684,11 @@ void SettingsWindow::onWebView2Ready() {
                     args->get_WebErrorStatus(&status);
                     LOG_ERROR("WebView2 导航失败, status={}", static_cast<int>(status));
                     m_webViewReady = true;
+                    if (!m_pendingNavigatePath.empty()) {
+                        const std::string queuedPath = std::move(m_pendingNavigatePath);
+                        m_pendingNavigatePath.clear();
+                        navigateTo(queuedPath);
+                    }
                     if (m_showWhenReady) {
                         m_showWhenReady = false;
                         smoothPresent();
@@ -724,12 +825,16 @@ void SettingsWindow::navigateTo(const std::string& path) {
         tools3000::core::MainThreadDispatcher::instance().post([this, path]() { navigateTo(path); });
         return;
     }
-    if (!m_webView || !m_webViewReady) return;
+    if (!m_webView || !m_webViewReady) {
+        m_pendingNavigatePath = path;
+        return;
+    }
 
     // 通过 JS 路由导航（采用 JSON 字符串序列化安全转义引号、反斜杠与控制字符）
     std::string script = "window.location.hash = " + nlohmann::json(path).dump() + ";";
     std::wstring wScript = tools3000::core::WinUtils::utf8ToWstring(script);
     m_webView->ExecuteScript(wScript.c_str(), nullptr);
+    pushEventToFrontend("settings:navigate", nlohmann::json({{"page", path}}).dump());
 }
 
 void SettingsWindow::flushPendingEvents() {
@@ -834,6 +939,30 @@ void SettingsWindow::startResize(const std::string& edge) {
 
 bool SettingsWindow::isMaximized() const {
     return m_hwnd && (IsZoomed(m_hwnd) != FALSE);
+}
+
+void SettingsWindow::restoreFocusToWebView() {
+    if (!tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().post([this]() {
+            restoreFocusToWebView();
+        });
+        return;
+    }
+    if (!m_hwnd || !IsWindow(m_hwnd) || IsIconic(m_hwnd)) return;
+
+    if (m_webView) {
+        m_suspendController.resume(m_webView.Get(), "settings");
+    }
+    SetActiveWindow(m_hwnd);
+    if (m_controller) {
+        m_controller->put_IsVisible(TRUE);
+        m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+    }
+    if (m_webView && m_webViewReady) {
+        m_webView->ExecuteScript(
+            L"window.__t3kRestoreLastInputFocus && window.__t3kRestoreLastInputFocus();",
+            nullptr);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1034,6 +1163,26 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
             mmi->ptMinTrackSize.x = (std::min)(minSize.cx, static_cast<LONG>(workW * 0.9f));
             mmi->ptMinTrackSize.y = (std::min)(minSize.cy, static_cast<LONG>(workH * 0.9f));
             return 0;
+        }
+
+        case WM_ACTIVATE: {
+            const WORD activeState = LOWORD(wParam);
+            const BOOL isMinimized = HIWORD(wParam) != 0;
+            if (self && activeState == WA_ACTIVE && !isMinimized && !IsIconic(hwnd) &&
+                self->m_controller && self->m_webViewReady) {
+                // 仅在程序化激活或 Alt+Tab 切回 (WA_ACTIVE) 时异步恢复 WebView2 焦点，
+                // 绝不干扰鼠标点击边缘缩放与标题栏拖拽 (WA_CLICKACTIVE)
+                const uint64_t generation = self->m_generation.load();
+                tools3000::core::MainThreadDispatcher::instance().postDeferred([self, generation]() {
+                    if (generation == self->m_generation.load() &&
+                        self->m_hwnd && IsWindow(self->m_hwnd) &&
+                        !IsIconic(self->m_hwnd) &&
+                        GetForegroundWindow() == self->m_hwnd) {
+                        self->restoreFocusToWebView();
+                    }
+                });
+            }
+            return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
 
         case WM_SYSCOMMAND:

@@ -13,6 +13,7 @@ import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { toast } from 'sonner';
 import { PinGroupSettingsCard } from '../components/PinGroupSettingsCard';
+import { CaptureRegionManagerCard } from '../components/CaptureRegionManagerCard';
 
 interface CaptureSettings {
   format: string;
@@ -38,6 +39,9 @@ interface CaptureSettings {
   watermarkPolicyForced?: boolean;
   shortcut?: string;
   saveDirectory?: string;
+  regionHistoryLimit?: number;
+  regionHistoryKey?: string;
+  regionHistoryCount?: number;
 }
 
 interface RecordingSettings {
@@ -138,6 +142,7 @@ export const CapturePage: FC = () => {
     watermarkText: '{user} · {host} · {date} {time}',
     watermarkAnchor: 3, watermarkScale: 1.0, watermarkOpacity: 0.16,
     watermarkPolicyForced: false,
+    regionHistoryLimit: 10, regionHistoryKey: 'R', regionHistoryCount: 0,
   });
   const [recording, setRecording] = useState<RecordingSettings>({
     format: 'mp4_h264', fps: 30, bitrate: 8, includeCursor: true, showClickEffects: false,
@@ -163,6 +168,7 @@ export const CapturePage: FC = () => {
   const [loading, setLoading] = useState(true);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [screenshotHotkey, setScreenshotHotkey] = useState('F1');
+  const [repeatCaptureHotkey, setRepeatCaptureHotkey] = useState('Shift+F1');
   const [recordHotkey, setRecordHotkey] = useState('Ctrl+Shift+R');
   const [recordPauseHotkey, setRecordPauseHotkey] = useState('Ctrl+Shift+P');
   const [recordSnapshotHotkey, setRecordSnapshotHotkey] = useState('Ctrl+Shift+S');
@@ -200,6 +206,7 @@ export const CapturePage: FC = () => {
       const hkList = Array.isArray(hotkeyData) ? hotkeyData : [];
       setHotkeys(hkList);
       setScreenshotHotkey(hkList.find(item => item.name === 'Screenshot')?.shortcut ?? 'F1');
+      setRepeatCaptureHotkey(hkList.find(item => item.name === 'Repeat Last Capture')?.shortcut ?? 'Shift+F1');
       setRecordHotkey(hkList.find(item => item.name === 'Record')?.shortcut ?? 'Ctrl+Shift+R');
       setRecordPauseHotkey(hkList.find(item => item.name === 'Record Pause')?.shortcut ?? 'Ctrl+Shift+P');
       setRecordSnapshotHotkey(hkList.find(item => item.name === 'Record Snapshot')?.shortcut ?? 'Ctrl+Shift+S');
@@ -262,11 +269,15 @@ export const CapturePage: FC = () => {
       });
   }, [t]);
 
-  const rebindHotkey = async (name: 'Screenshot' | 'Record' | 'Record Pause' | 'Record Snapshot', value: string) => {
+  const rebindHotkey = async (
+    name: 'Screenshot' | 'Repeat Last Capture' | 'Record' | 'Record Pause' | 'Record Snapshot',
+    value: string,
+  ) => {
     try {
       const result = await bridgeRequest<OperationResult>('hotkey.rebind', { name, hotkey: value });
       if (!result.success) throw new Error(result.error || t('hotkey.bindFailed'));
       if (name === 'Screenshot') setScreenshotHotkey(result.shortcut ?? value);
+      else if (name === 'Repeat Last Capture') setRepeatCaptureHotkey(result.shortcut ?? value);
       else if (name === 'Record') setRecordHotkey(result.shortcut ?? value);
       else if (name === 'Record Pause') setRecordPauseHotkey(result.shortcut ?? value);
       else setRecordSnapshotHotkey(result.shortcut ?? value);
@@ -628,6 +639,16 @@ export const CapturePage: FC = () => {
           />
         </Card>
       </SettingGroup>
+
+      <CaptureRegionManagerCard
+        repeatCaptureHotkey={repeatCaptureHotkey}
+        repeatCaptureHotkeyEntry={getHotkey('Repeat Last Capture')}
+        onRebindRepeatCaptureHotkey={(v) => void rebindHotkey('Repeat Last Capture', v)}
+        regionHistoryLimit={capture.regionHistoryLimit ?? 10}
+        regionHistoryKey={capture.regionHistoryKey ?? 'R'}
+        onUpdateRegionHistoryLimit={(limit) => updateCapture('regionHistoryLimit', limit)}
+        onUpdateRegionHistoryKey={(keyName) => updateCapture('regionHistoryKey', keyName)}
+      />
 
       <SettingGroup title={t('capture.beautyShellTitle')} icon={<Palette size={20} strokeWidth={2.5} />}>
         <Card>

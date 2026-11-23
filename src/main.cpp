@@ -78,6 +78,7 @@
 #include "ui/FileLocksmithWindow.h"
 #include "ui/QuickLookWindow.h"
 #include "clipboard/ClipboardManager.h"
+#include "text_expander/TextExpanderManager.h"
 #include "ui/QuickLookNavigation.h"
 #include "ui/TrayWindow.h"
 #include "ui/ToastOverlay.h"
@@ -1792,6 +1793,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 tools3000::ui::SettingsWindow::instance().navigateTo(
                     page.front() == '/' ? page : ("/" + page));
             }
+        } else if (action == "openAbout") {
+            showSettingsWindow();
+            tools3000::ui::SettingsWindow::instance().navigateTo("/about");
         } else if (action == "search") {
             auto& searchWnd = tools3000::ui::SearchWindow::instance();
             if (searchWnd.isForegroundActive()) searchWnd.minimize();
@@ -2039,6 +2043,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 {"plainTextByDefault", s.plainTextByDefault},
                 {"captureImages", s.captureImages},
                 {"captureFiles", s.captureFiles},
+                {"hidePinnedInOtherCategories", s.hidePinnedInOtherCategories},
                 {"excludedApps", s.excludedApps}
             };
         });
@@ -2055,6 +2060,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             if (params.contains("plainTextByDefault") && params["plainTextByDefault"].is_boolean()) s.plainTextByDefault = params["plainTextByDefault"].get<bool>();
             if (params.contains("captureImages") && params["captureImages"].is_boolean()) s.captureImages = params["captureImages"].get<bool>();
             if (params.contains("captureFiles") && params["captureFiles"].is_boolean()) s.captureFiles = params["captureFiles"].get<bool>();
+            if (params.contains("hidePinnedInOtherCategories") && params["hidePinnedInOtherCategories"].is_boolean()) {
+                s.hidePinnedInOtherCategories = params["hidePinnedInOtherCategories"].get<bool>();
+            }
             if (params.contains("excludedApps") && params["excludedApps"].is_string()) s.excludedApps = params["excludedApps"].get<std::string>();
 
             bool hotkeyChanged = false;
@@ -2086,7 +2094,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             const std::string groupId = params.is_object() ? params.value("groupId", "") : "";
             const uint32_t limit = params.is_object() ? params.value("limit", 80u) : 80u;
             const uint32_t offset = params.is_object() ? params.value("offset", 0u) : 0u;
-            return tools3000::clipboard::ClipboardManager::instance().queryItems(q, kind, limit, offset, groupId);
+            const bool excludePinned = params.is_object() && params.contains("excludePinned") && params["excludePinned"].is_boolean()
+                ? params["excludePinned"].get<bool>()
+                : (kind != "pinned" && tools3000::clipboard::ClipboardManager::instance().getSettings().hidePinnedInOtherCategories);
+            return tools3000::clipboard::ClipboardManager::instance().queryItems(q, kind, limit, offset, groupId, excludePinned);
         });
 
         mb.registerHostHandler("clipboard.getItem", [](const nlohmann::json& params) -> nlohmann::json {
@@ -2113,6 +2124,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
             const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItem(
                 id, plainTextOnly, autoPaste, prevHwnd);
+            LOG_INFO("Clipboard IPC pasteItem: id={}, plain={}, autoPaste={}, hideAfter={}, hasTarget={}, ok={}",
+                     id, plainTextOnly, autoPaste, hideAfter, prevHwnd != nullptr, ok);
             return {{"success", ok}};
         });
 
@@ -2253,6 +2266,40 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         });
     }
 
+    // 5.7. 系统级文本扩展器 (Text Expander，默认关闭 opt-in 零钩子，支持动态宏与无痕防污染展开)
+    {
+        tools3000::text_expander::TextExpanderManager::instance().initialize();
+
+        auto& mb = tools3000::core::MessageBridge::instance();
+        mb.registerHostHandler("textExpander.getSettings", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().getSettingsJson();
+        });
+        mb.registerHostHandler("textExpander.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().updateSettings(params);
+        });
+        mb.registerHostHandler("textExpander.listRules", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().listRulesJson();
+        });
+        mb.registerHostHandler("textExpander.upsertRule", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().upsertRule(params);
+        });
+        mb.registerHostHandler("textExpander.deleteRule", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().deleteRule(
+                params.is_object() ? params.value("id", std::string{}) : std::string{});
+        });
+        mb.registerHostHandler("textExpander.toggleRule", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().toggleRule(
+                params.is_object() ? params.value("id", std::string{}) : std::string{},
+                params.is_object() ? params.value("enabled", true) : true);
+        });
+        mb.registerHostHandler("textExpander.importRules", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().importRules(params);
+        });
+        mb.registerHostHandler("textExpander.exportRules", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::text_expander::TextExpanderManager::instance().exportRulesJson();
+        });
+    }
+
     tools3000::core::MessageBridge::instance().registerHostHandler("remote.resetDefaults", [](const nlohmann::json&) -> nlohmann::json {
         tools3000::core::RemoteMasterEngine::instance().resetDefaults();
         return {{"success", true}};
@@ -2335,9 +2382,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
         }
 
-        // 2. ESC：先收 QuickLook / 剪贴板面板；再通知手势/轮盘取消追踪，但不吞掉按键
+        // 2. ESC：先收 QuickLook / 非前台置顶剪贴板面板；当剪贴板面板位于前台获焦时，
+        //    放行 ESC 给前端执行分级退出（退出内联编辑 -> 退出分组编辑 -> 取消 Ctrl+A 多选 -> 隐藏窗口），
+        //    杜绝全局钩子强吞 ESC 导致 Ctrl+A 全选残留锁死双击粘贴。
         if (vkCode == VK_ESCAPE) {
-            if (tools3000::ui::ClipboardWindow::instance().isVisible()) {
+            auto& clipWnd = tools3000::ui::ClipboardWindow::instance();
+            if (clipWnd.isVisible() && !clipWnd.isForegroundActive()) {
                 tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {
                     tools3000::ui::ClipboardWindow::instance().hide();
                 });
@@ -2478,6 +2528,7 @@ void shutdownSubsystems() {
     tools3000::ui::ClipboardWindow::instance().destroy();
     tools3000::ui::QuickLookWindow::instance().destroy();
     tools3000::ui::TrayWindow::instance().destroy();
+    tools3000::text_expander::TextExpanderManager::instance().shutdown();
     tools3000::clipboard::ClipboardManager::instance().shutdown();
     tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().uninstall();

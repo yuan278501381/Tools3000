@@ -96,18 +96,25 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
       <sub><b>Desbloqueo de Archivos</b> · Detecta qué app bloquea un archivo desde el menú contextual, búsqueda o página dedicada y libéralo en 1 clic</sub>
     </td>
   </tr>
+  <tr>
+    <td colspan="2" align="center" valign="top">
+      <img src="docs/images/es-ES/text_expander_demo.webp" alt="Expansor de Texto Global: expansión instantánea de snippets, macros dinámicas y cero contaminación del historial" width="68%" /><br />
+      <sub><b>Expansor de Texto</b> · Escribe <code>;date</code> o <code>;sig</code> en cualquier app con macros dinámicas, protección de contraseñas y cero contaminación del portapapeles</sub>
+    </td>
+  </tr>
 </table>
 
 | Módulo | Qué ofrece |
 | :--- | :--- |
 | **Búsqueda Instantánea de Archivos** | Pulsa `Alt + Space` para buscar entre millones de archivos en ms junto a apps instaladas (`app:`), 37 herramientas de Windows (`cmd:env`, etc.) y marcadores de Edge/Chrome/Brave/Vivaldi (`bm:`/`b:`, mostrando los iconos reales de cada web completamente offline). Incluye **Live Watch**, **3 modos de RAM** (hasta 0 MB en reposo), contador de aperturas, pestañas arrastrables, vista previa con `Space` (Office, PDF, código, CAD, PSD, 3D, archivos ZIP/7Z/RAR, fuentes TTF/OTF y media) y la herramienta CLI/MCP `tools3000-cli.exe` (350 KB). |
 | **Búsqueda de Contenido** | Usa `content:` para buscar directamente dentro de Word, Excel, PDF, PowerPoint, CAD y código fuente con fragmentos resaltados y copia de línea en un clic. |
-| **Portapapeles Persistente** | Abre con `Alt + V` (o desde el menú y panel rápido de la bandeja) manteniendo todo el historial tras reiniciar; admite selección `Shift / Ctrl` para pegado combinado en orden y borrado en lote, HTML/RTF, grupos personalizados, edición directa, pegado rápido `Alt + 1..9` y exclusión de apps sensibles. |
+| **Portapapeles Persistente** | Abre con `Alt + V` (o desde el menú y panel rápido de la bandeja) manteniendo todo el historial tras reiniciar; admite selección `Shift / Ctrl` para pegado combinado en orden y borrado en lote, HTML/RTF, grupos personalizados, edición directa, pegado rápido `Alt + 1..9` y exclusión de apps sensibles, arrastre nativo OLE para pegar y ocultación rápida de fijados en otras categorías. |
+| **Expansor de Texto** | Escribe atajos cortos (`;date`, `;now`, `;sig`) en cualquier app de Windows para expandir frases, fechas dinámicas, plantillas con portapapeles y posición de cursor. Incluye pausa automática en gestores de contraseñas, entrada Unicode directa para ASCII, marcas privadas de Windows (sin ensuciar el historial ni `Win + V`) y restauración en 140ms — cero ganchos y cero RAM desactivado. |
 | **Asistente de Diálogos** | Añade automáticamente una barra de acceso rápido con búsqueda inline de carpetas estilo Listary en los cuadros Abrir / Guardar Como / Elegir Carpeta de Windows y en los propios diálogos de Tools3000, protegiendo siempre el nombre escrito al guardar. |
 | **Desbloqueo de Archivos** | Cuando un archivo no te deja borrarlo, descubre qué programa lo bloquea y libéralo con seguridad: desde el menú contextual del Explorador (opcionalmente solo con `Shift + Clic Derecho`), en resultados de búsqueda o desde la página dedicada en Configuración. Consume 0 MB inactivo, no altera el sistema y limpia el menú automáticamente al desactivarlo. |
 | **Captura con Desplazamiento** | Une automáticamente páginas web largas, chats y documentos con vista previa lateral en tiempo real, recorte superior/inferior no destructivo y anotación directa sobre la imagen larga. |
-| **Anotación Precisa** | `F1` se ajusta automáticamente a ventanas y controles de interfaz; incluye selector de color por píxel, lupa óptica discontinua, 6 tipos de flecha, numeración autoajustable, mosaico y marcos. |
-| **Pines en Pantalla y Grupos** | Fija capturas o contenido del portapapeles siempre encima (`F3`) con zoom fluido 120Hz, opacidad y paso de clics; organízalos en grupos de color, alterna visibilidad desde la barra superior o alinéalos en cuadrícula en un clic. |
+| **Anotación Precisa** | `F1` se ajusta automáticamente a ventanas y controles de interfaz; incluye selector de color por píxel, lupa óptica discontinua, 6 tipos de flecha, numeración autoajustable, mosaico y marcos, además de `R / Shift + R` para reutilizar las últimas 10 regiones de captura. |
+| **Pines en Pantalla y Grupos** | Fija capturas o contenido del portapapeles siempre encima (`F3`) con zoom fluido 120Hz, opacidad y paso de clics; organízalos en grupos de color, alterna visibilidad desde la barra superior o alinéalos en cuadrícula en un clic (zoom fluido GPU DirectComposition sin redimensionar). |
 | **OCR Local (8 Idiomas) y Traducción In Situ** | Reconocimiento 100% local con detección automática de 8 idiomas sin cambio manual (paquetes ligeros adicionales bajo demanda y cambio de idioma por clic derecho en cada pin); selecciona/copia, subraya, edita en el sitio y extrae tablas/QR, más **traducción limpia 1:1 directamente sobre la captura** (canales gratuitos + BYOK LLM), protección de código y cambio en 0 ms al original. |
 | **Grabación de pantalla y Estudio** | Graba la pantalla con superposición de teclas y clics y pasa al instante al Estudio: zoom automático inteligente en clics, fondos seleccionados, edición por forma de onda y exportación a **MP4**, **GIF listo para mensajería/WeChat** y **WebP animado**. |
 | **Gestos Globales de Ratón** | Mantén el botón derecho y desliza para cambiar pestañas, retroceder o cerrar ventanas; cancelar al pausar activo por defecto, cambio inteligente a ventanas ya abiertas (incluso distintos perfiles de Chrome), disparo inmediato, volumen/brillo en bordes, easter egg de 8s, pausa en juegos y scripts Lua. |
@@ -180,6 +187,7 @@ Cada utilidad especializada destaca en flujos muy concretos. Tools3000 cubre má
 | **Grabadores (ej. ShareX)** | Grabación de pantalla, teclas en pantalla, Estudio (edición por forma de onda y zoom de cursor), exportación a MP4, GIF y WebP | Si necesitas subida automática a 80+ nubes/S3/FTP/Webhook o pipelines FFmpeg muy personalizados |
 | **Picasa Photo Viewer / FastStone / Fotos de Windows** | Visor ligero Picasa opcional en Rust (< 2 MB, cero dependencias, ejecutable independiente): animaciones clásicas con 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW y volteo sin pérdidas | Si necesitas la biblioteca de álbumes y reconocimiento facial de Google Picasa completo o revelado RAW profesional por lotes |
 | **Listary Dialog Jump / PowerToys File Locksmith** | Búsqueda inline estilo Listary en diálogos Abrir/Guardar de Windows protegiendo el nombre al guardar; Desbloqueo de Archivos con 0 MB inactivo desde el menú contextual o página dedicada | Flujos de acciones personalizadas de Listary o inspección profunda de identificadores del kernel |
+| **Espanso / Beeftext / Snippets AutoHotkey** | Expansor nativo integrado (listo para usar, cero ganchos al desactivar) con disparo inmediato o por delimitador, macros de fecha/portapapeles/cursor, exclusión automática de gestores de contraseñas, caja de pruebas y JSON | Formularios YAML complejos, salida dinámica de comandos shell o sincronización con Linux/macOS |
 
 ---
 

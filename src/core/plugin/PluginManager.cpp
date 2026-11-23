@@ -101,6 +101,11 @@ bool configuredEnabled(const std::string& id) {
         if (config.has("/clipboard/enabled")) return config.get<bool>("/clipboard/enabled", true);
         return true;
     }
+    if (id == "text_expander" || id == "textexpander") {
+        if (config.has("/plugins/text_expander/enabled")) return config.get<bool>("/plugins/text_expander/enabled", true);
+        if (config.has("/textExpander/enabled")) return config.get<bool>("/textExpander/enabled", true);
+        return true;
+    }
     const auto key = pluginConfigKey(id);
     if (config.has(key)) return config.get<bool>(key, true);
     return true;
@@ -214,6 +219,16 @@ void PluginManager::reconcilePluginConfigs() {
     }
     patch["clipboard"]["enabled"] = clipboardEnabled;
     patch["plugins"]["clipboard"]["enabled"] = clipboardEnabled;
+
+    // 10. text_expander: /textExpander/enabled 与 /plugins/text_expander/enabled 强同构，默认开启（关闭时零钩子零内存）
+    bool textExpanderEnabled = true;
+    if (cfg.has("/plugins/text_expander/enabled")) {
+        textExpanderEnabled = cfg.get<bool>("/plugins/text_expander/enabled", true);
+    } else if (cfg.has("/textExpander/enabled")) {
+        textExpanderEnabled = cfg.get<bool>("/textExpander/enabled", true);
+    }
+    patch["textExpander"]["enabled"] = textExpanderEnabled;
+    patch["plugins"]["text_expander"]["enabled"] = textExpanderEnabled;
 
     cfg.mergePatch(patch, "/plugins");
 }

@@ -60,6 +60,10 @@ struct CaptureOptions {
     bool autoBypassFullscreen = true;  // 前台处于全屏独占应用时自动免打扰 (默认开启)
     bool includeCursor = false;        // 截图时合成/保留系统鼠标光标 (默认关闭)
     bool recordHistory = true;         // 是否写入截图历史记录 (快捷键 OCR 等瞬态捕获设为 false 防幽灵历史)
+    bool autoApplyLastRegion = false;  // 启动截图后自动套用最近一次历史选区（对应全局「复用上次区域截图」热键）
+    bool hasInitialRegion = false;     // 启动截图后自动套用指定的固定选区（供设置页「按此选区立即截图」直达）
+    RECT initialRegion{};              // 指定的物理虚拟桌面选区坐标
+    std::string initialRegionName;     // 可选固定选区显示名称（用于 HUD 轻提示）
     std::function<void(const cv::Mat&, const CaptureRegion&)> onImageCaptured; // 内存图像直达回调（无需落盘与污染剪贴板）
 };
 

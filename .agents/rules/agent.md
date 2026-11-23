@@ -132,9 +132,10 @@ trigger: always_on
    - 流水线严格按顺序执行：工作区纯净度检查 -> `VERSION` 单一事实源版本号递增 (+1) -> 自动提取生成 Release Notes -> 开发分支提交 -> 向 `main` 主干执行非快进合并（`--no-ff`） -> 全新洁净构建与打包（`deploy.ps1`） -> 全生命周期端到端门禁校验 -> 二进制 `ProductVersion` 强断言 -> 自动化 Authenticode 代码签名校验与安装包/便携包/SHA256SUMS 产物归档 -> 创建不可变带注释 Tag 与 GitHub Release -> 安全切回或创建下一阶段开发特性分支。
 3. **双圆环拓扑美学 (Visual Graph Integrity)**：
    - 确保在 Git Graph 中直观呈现出独立的开发支线与清晰的双父节点汇聚圆环（`merge(dev)`）。
-4. **发行版说明基线与社区反馈署名规范 (Release Notes Baseline & Community Attribution)**：
+4. **发行版说明用户向基线与社区/Issue 反馈署名规范 (User-Facing Release Notes & Community Attribution)**：
    - **锚定上一个已发布的 GitHub Release**：编写或更新 `docs/RELEASE_NOTES_v*.md` 时，必须以 **上一个正式发布的 GitHub Release**（通过 `gh release list` 核实）为变更对比基线，绝不以上一个本地 Git 提交为基线，严禁把未发布过的新功能写成「修复」或暴露中间开发迭代细节；
-   - **社区用户反馈精炼署名**：凡源自社区/用户反馈落地的功能或修复，须以精炼描述注明来源社区与用户名（如 `（感谢 V2EX @wildqueen）`）；仅知用户名未知社区时留空社区仅写 `@username`；若对应 GitHub Issue 则按 GitHub 惯例署名（如 `(#123, @username)`）。
+   - **纯用户向文档风格**：发版说明必须完全面向终端用户撰写，聚焦真实可感知的新功能、痛点解决、使用入口与升级方式，不堆砌底层代码类名/实现细节，且 100% 严禁原生 Unicode Emoji；
+   - **社区用户反馈与 GitHub Issue 精炼署名**：凡源自社区/用户反馈落地的功能或修复，须以精炼描述注明来源社区与用户名（如 `（感谢 V2EX @wildqueen）`、`（感谢 Linux.do @宫灵紫凝）`、`（感谢 Reddit r/windowsapps @redchrism、@iquizuanswer）`）；仅知用户名未知社区时留空社区仅写 `（感谢 @username）`；若对应 GitHub Issue 则按 GitHub 惯例署名（如 `(#123, @username)`）；所有署名均须实证核查，严禁杜撰。
 
 ---
 

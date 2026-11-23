@@ -28,6 +28,9 @@ public:
     void commitDropdownSelection(DropdownType type, int id);
     void executeToolbarCommand(const ToolbarButton& button);
     void updateHoverCursor(POINT point);
+    bool applyHistoryRegionSelection(HWND hwnd, bool stepNewer);
+    bool applyExplicitRegionSelection(HWND hwnd, const RECT& rawScreenRect, const std::string& labelUtf8 = {});
+    void showNoHistoryRegionToast(HWND hwnd);
     static void ensureCursorVisible();
     static HCURSOR getBeautifulCrosshairCursor(float dpiScale = 1.0f);
     static HCURSOR getCornerRadiusLiveCursor(int cornerIndex = 0, float dpiScale = 1.0f, bool isDragging = false);

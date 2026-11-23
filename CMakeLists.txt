@@ -362,6 +362,8 @@ add_custom_target(tools3000_clipboard_rs_target DEPENDS "${RUST_CLIPBOARD_LIB}")
 
 set(UI_OBJECT_SOURCES
     src/clipboard/ClipboardManager.cpp
+    src/clipboard/ClipboardNativeDrag.cpp
+    src/text_expander/TextExpanderManager.cpp
     src/ui/WebViewSuspend.cpp
     src/ui/SpotlightOverlay.cpp
     src/ui/SpotlightOverlayInputController.cpp

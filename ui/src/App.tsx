@@ -13,6 +13,8 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { lazy, Suspense, useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { Download, RotateCw, CheckCircle2, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { TitleBar } from './components/TitleBar';
 import { Sidebar, type NavId } from './components/Sidebar';
 import type { PluginStatus } from './pages/PluginsPage';
@@ -51,6 +53,7 @@ const KeyStatsPage = lazy(() => import('./pages/KeyStatsPage').then((module) => 
 const HotCornerPage = lazy(() => import('./pages/HotCornerPage').then((module) => ({ default: module.HotCornerPage })));
 const SearchPage = lazy(() => import('./pages/SearchPage').then((module) => ({ default: module.SearchPage })));
 const ClipboardPage = lazy(() => import('./pages/ClipboardPage').then((module) => ({ default: module.ClipboardPage })));
+const TextExpanderPage = lazy(() => import('./pages/TextExpanderPage').then((module) => ({ default: module.TextExpanderPage })));
 const KeycastPage = lazy(() => import('./pages/KeycastPage').then((module) => ({ default: module.KeycastPage })));
 const SpotlightPage = lazy(() => import('./pages/SpotlightPage').then((module) => ({ default: module.SpotlightPage })));
 const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then((module) => ({ default: module.DialogEnhancerPage })));
@@ -58,6 +61,67 @@ const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((modul
 const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
 const FileLocksmithPage = lazy(() => import('./pages/FileLocksmithPage').then((module) => ({ default: module.FileLocksmithPage })));
 const FeedbackModal = lazy(() => import('./components/FeedbackModal').then((module) => ({ default: module.FeedbackModal })));
+
+interface AppUpdateState {
+  hasUpdate: boolean;
+  badgeVisible: boolean;
+  dismissed: boolean;
+  isPortable: boolean;
+  status: string;
+  latestVersion: string;
+  progress: number;
+  readyToInstall: boolean;
+}
+
+const DEFAULT_APP_UPDATE_STATE: AppUpdateState = {
+  hasUpdate: false,
+  badgeVisible: false,
+  dismissed: false,
+  isPortable: false,
+  status: 'idle',
+  latestVersion: '',
+  progress: 0,
+  readyToInstall: false,
+};
+
+function normalizeAppUpdateState(raw: unknown): AppUpdateState | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const st = raw as {
+    hasUpdate?: boolean;
+    badgeVisible?: boolean;
+    dismissed?: boolean;
+    isPortable?: boolean;
+    status?: string;
+    latestVersion?: string;
+    progress?: number;
+    readyToInstall?: boolean;
+  };
+  if (typeof st.hasUpdate !== 'boolean' && typeof st.badgeVisible !== 'boolean') {
+    return null;
+  }
+  const hasUpdate = Boolean(st.hasUpdate);
+  const dismissed = Boolean(st.dismissed);
+  const badgeVisible = typeof st.badgeVisible === 'boolean'
+    ? st.badgeVisible
+    : (hasUpdate && !dismissed);
+  return {
+    hasUpdate,
+    badgeVisible,
+    dismissed,
+    isPortable: Boolean(st.isPortable),
+    status: st.status ?? 'idle',
+    latestVersion: st.latestVersion ?? '',
+    progress: typeof st.progress === 'number' ? st.progress : 0,
+    readyToInstall: Boolean(st.readyToInstall),
+  };
+}
+
+function resolveNavFromHash(rawHash: string): NavId | null {
+  const cleaned = rawHash.replace(/^#/, '').replace(/^\/+/, '').split(/[?#]/)[0].trim();
+  if (!cleaned) return null;
+  const match = PAGE_DEFINITIONS.find((p) => p.id === cleaned);
+  return match ? match.id : null;
+}
 
 const getInitialActivePluginIds = (): string[] | null => {
   try {
@@ -80,6 +144,10 @@ function App() {
   const [activePluginIds, setActivePluginIds] = useState<string[] | null>(() => getInitialActivePluginIds());
   const [activeNav, setActiveNav] = useState<NavId>(() => {
     try {
+      const fromHash = resolveNavFromHash(window.location.hash);
+      if (fromHash) {
+        return fromHash;
+      }
       const saved = localStorage.getItem('tools3000:last-nav');
       if (saved) {
         const cached = getInitialActivePluginIds();
@@ -101,6 +169,9 @@ function App() {
     }
     return 'general';
   });
+  const [updateState, setUpdateState] = useState<AppUpdateState>(DEFAULT_APP_UPDATE_STATE);
+  const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [dismissingUpdate, setDismissingUpdate] = useState(false);
   const getSystemTheme = (): Theme =>
     window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
 
@@ -115,6 +186,7 @@ function App() {
   const activeNavRef = useRef<NavId>(activeNav);
   const picasaWasActiveRef = useRef<boolean>(false);
   const locksmithWasActiveRef = useRef<boolean>(false);
+  const textExpanderWasActiveRef = useRef<boolean>(false);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
   const contentContainerRef = useRef<HTMLDivElement>(null);
 
@@ -129,6 +201,101 @@ function App() {
     }
   }, []);
 
+  // 响应宿主 SettingsWindow::navigateTo("/about") 驱动的 Hash 路由直达，并在消费后清理 hash 保障二次点击仍可触发
+  useEffect(() => {
+    const consumeHashRoute = () => {
+      const target = resolveNavFromHash(window.location.hash);
+      if (!target) return;
+      handleNavSelect(target);
+      try {
+        window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`);
+      } catch {
+        // 忽略受限历史栈异常
+      }
+    };
+    consumeHashRoute();
+    window.addEventListener('hashchange', consumeHashRoute);
+    return () => window.removeEventListener('hashchange', consumeHashRoute);
+  }, [handleNavSelect]);
+
+  useBridgeEvent('settings:navigate', (raw: unknown) => {
+    const page = typeof raw === 'string'
+      ? raw
+      : (raw && typeof raw === 'object' && typeof (raw as { page?: unknown }).page === 'string'
+        ? (raw as { page: string }).page
+        : '');
+    const target = resolveNavFromHash(page);
+    if (target) {
+      handleNavSelect(target);
+    }
+  });
+
+  useEffect(() => {
+    void bridgeRequest<unknown>('app.getUpdateState', undefined, { silent: true })
+      .then((st) => {
+        const normalized = normalizeAppUpdateState(st);
+        if (normalized) {
+          setUpdateState(normalized);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useBridgeEvent('update.state', (raw: unknown) => {
+    const normalized = normalizeAppUpdateState(raw);
+    if (normalized) {
+      setUpdateState(normalized);
+    }
+  });
+
+  const handleStripDownloadOrInstall = useCallback(async () => {
+    if (updateState.status === 'downloading' || installingUpdate) return;
+    if (updateState.readyToInstall) {
+      setInstallingUpdate(true);
+      try {
+        const res = await bridgeRequest<{ success?: boolean; cancelled?: boolean; error?: string }>('app.installUpdate');
+        if (res?.cancelled || res?.error === 'cancelled') {
+          setInstallingUpdate(false);
+          return;
+        }
+        if (!res?.success) {
+          setInstallingUpdate(false);
+          toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
+          return;
+        }
+        if (updateState.isPortable) {
+          setInstallingUpdate(false);
+        }
+      } catch {
+        setInstallingUpdate(false);
+        toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
+      }
+      return;
+    }
+    try {
+      const res = await bridgeRequest<unknown>('app.downloadUpdate');
+      const normalized = normalizeAppUpdateState(res);
+      if (normalized) {
+        setUpdateState(normalized);
+      }
+    } catch {
+      toast.error(t('about.updateFailed'));
+    }
+  }, [installingUpdate, t, updateState.isPortable, updateState.readyToInstall, updateState.status]);
+
+  const handleStripDismissUpdate = useCallback(async () => {
+    if (dismissingUpdate) return;
+    setDismissingUpdate(true);
+    setUpdateState((prev) => ({ ...prev, badgeVisible: false, dismissed: true }));
+    try {
+      await bridgeRequest('app.dismissUpdate');
+    } catch {
+      // 若宿主尚未接通 IPC 或短暂失败，保留本地关闭体验并在下次推送时自动对齐
+    } finally {
+      setDismissingUpdate(false);
+    }
+  }, [dismissingUpdate]);
+
   const applyPluginsSnapshot = useCallback((items: PluginStatus[]) => {
     const safeItems = Array.isArray(items) ? items : [];
     setPlugins(safeItems);
@@ -137,6 +304,7 @@ function App() {
       .map((p) => p.id);
     const picasaNowActive = activeList.includes('picasa_viewer');
     const locksmithNowActive = activeList.includes('file_locksmith');
+    const textExpanderNowActive = activeList.includes('text_expander');
     if (!picasaNowActive && picasaWasActiveRef.current && activeNavRef.current === 'picasa_viewer') {
       // 用户在 Picasa 图片查看器页面内就地关闭总开关时，保留当前页供查看停用态或直接重开
       setRetainedDisabledNav('picasa_viewer');
@@ -149,8 +317,15 @@ function App() {
     } else if (locksmithNowActive) {
       setRetainedDisabledNav((prev) => (prev === 'file_locksmith' ? null : prev));
     }
+    if (!textExpanderNowActive && textExpanderWasActiveRef.current && activeNavRef.current === 'text_expander') {
+      // 用户在文本扩展器页面内就地关闭总开关时，保留当前页供继续编辑规则或随时重开
+      setRetainedDisabledNav('text_expander');
+    } else if (textExpanderNowActive) {
+      setRetainedDisabledNav((prev) => (prev === 'text_expander' ? null : prev));
+    }
     picasaWasActiveRef.current = picasaNowActive;
     locksmithWasActiveRef.current = locksmithNowActive;
+    textExpanderWasActiveRef.current = textExpanderNowActive;
     setActivePluginIds(activeList);
     try {
       localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
@@ -192,7 +367,20 @@ function App() {
       return s;
     }
     // 默认全开（首启初态）
-    return new Set(['gesture', 'capture', 'search', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'remote_boost']);
+    return new Set([
+      'gesture',
+      'capture',
+      'search',
+      'clipboard',
+      'text_expander',
+      'textexpander',
+      'file_locksmith',
+      'keycast',
+      'spotlight',
+      'dialogenhancer',
+      'dialog_enhancer',
+      'remote_boost',
+    ]);
   }, [plugins, activePluginIds]);
 
   const handleAppearanceHydrated = useCallback((settings: AppearancePayload) => {
@@ -344,6 +532,8 @@ function App() {
       'capture',
       'search',
       'clipboard',
+      'text_expander',
+      'textexpander',
       'keycast',
       'spotlight',
       'dialogenhancer',
@@ -412,6 +602,7 @@ function App() {
       case 'history':         return <HistoryPage />;
       case 'search':          return <SearchPage />;
       case 'clipboard':       return <ClipboardPage />;
+      case 'text_expander':   return <TextExpanderPage />;
       case 'keycast':         return <KeycastPage />;
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;
@@ -459,6 +650,76 @@ function App() {
         />
         <main className="app__main" aria-labelledby="app-page-title">
           <AppToaster theme={theme} surface="settings" />
+
+          {/* ── 顶部更新轻提示条（红点全链路语义承接：进入设置即刻看清更新版本并可一键操作/忽略） ── */}
+          {updateState.badgeVisible && activeNav !== 'about' && (
+            <div
+              className={`app-update-strip${updateState.readyToInstall ? ' app-update-strip--ready' : ''}`}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="app-update-strip__left">
+                <span className="app-update-strip__dot" aria-hidden="true" />
+                {updateState.status === 'downloading' ? (
+                  <RotateCw size={14} className="app-update-strip__icon app-update-strip__icon--spin" aria-hidden="true" />
+                ) : updateState.readyToInstall ? (
+                  <CheckCircle2 size={14} className="app-update-strip__icon" aria-hidden="true" />
+                ) : (
+                  <Download size={14} className="app-update-strip__icon" aria-hidden="true" />
+                )}
+                <span className="app-update-strip__text">
+                  {updateState.status === 'downloading'
+                    ? t('about.downloadingDetail', {
+                        version: updateState.latestVersion,
+                        progress: updateState.progress,
+                        defaultValue: `Downloading ${updateState.latestVersion} (${updateState.progress}%)`,
+                      })
+                    : updateState.readyToInstall
+                      ? String(t('about.stripReadyMessage' as never, {
+                          version: updateState.latestVersion,
+                          defaultValue: `${updateState.latestVersion} is ready to install — restart to complete the update`,
+                        } as never))
+                      : String(t('about.stripAvailableMessage' as never, {
+                          version: updateState.latestVersion,
+                          defaultValue: `New version ${updateState.latestVersion} is available`,
+                        } as never))}
+                </span>
+              </div>
+              <div className="app-update-strip__actions">
+                <button
+                  type="button"
+                  className="app-update-strip__btn app-update-strip__btn--ghost"
+                  onClick={() => handleNavSelect('about')}
+                >
+                  {t('about.viewUpdate' as never, 'View Update')}
+                </button>
+                <button
+                  type="button"
+                  className="app-update-strip__btn app-update-strip__btn--primary"
+                  disabled={updateState.status === 'downloading' || installingUpdate}
+                  onClick={() => void handleStripDownloadOrInstall()}
+                >
+                  {updateState.status === 'downloading'
+                    ? `${updateState.progress}%`
+                    : updateState.readyToInstall
+                      ? (updateState.isPortable
+                          ? t('about.openDownloadedPortable', 'Open Portable Package')
+                          : t('about.installNowBtn' as never, 'Install Now'))
+                      : t('about.downloadNowBtn' as never, 'Download Now')}
+                </button>
+                <button
+                  type="button"
+                  className="app-update-strip__close"
+                  disabled={dismissingUpdate}
+                  onClick={() => void handleStripDismissUpdate()}
+                  title={t('about.dismissVersion' as never, 'Dismiss this version')}
+                  aria-label={t('about.dismissVersion' as never, 'Dismiss this version')}
+                >
+                  <X size={14} aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* ── 页面滚动流 (流体自适应双阶画布：表单 960px / 工作台 1280px + @container 感知) ── */}
           <div

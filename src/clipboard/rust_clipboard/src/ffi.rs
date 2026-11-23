@@ -103,21 +103,37 @@ pub unsafe extern "C" fn t3k_clip_query_json(
     limit: u32,
     offset: u32,
 ) -> *mut c_char {
+    t3k_clip_query_json_v2(query_utf8, filter_kind_utf8, group_id_utf8, limit, offset, 0)
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn t3k_clip_query_json_v2(
+    query_utf8: *const c_char,
+    filter_kind_utf8: *const c_char,
+    group_id_utf8: *const c_char,
+    limit: u32,
+    offset: u32,
+    exclude_pinned: i32,
+) -> *mut c_char {
     let query = cstr_to_str(query_utf8);
     let filter_kind = cstr_to_str(filter_kind_utf8);
     let group_id = cstr_to_str(group_id_utf8);
     if let Ok(guard) = store_slot().lock() {
         if let Some(store) = guard.as_ref() {
-            return string_to_c_ptr(store.query_json(
+            return string_to_c_ptr(store.query_json_with_options(
                 query,
                 filter_kind,
                 group_id,
                 limit as usize,
                 offset as usize,
+                exclude_pinned != 0,
             ));
         }
     }
-    string_to_c_ptr("{\"total\":0,\"matched\":0,\"items\":[]}".to_string())
+    string_to_c_ptr(
+        "{\"total\":0,\"matched\":0,\"pinnedCount\":0,\"hiddenPinnedCount\":0,\"items\":[]}"
+            .to_string(),
+    )
 }
 
 #[no_mangle]

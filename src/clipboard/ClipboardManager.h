@@ -41,6 +41,7 @@ struct ClipboardSettings {
     bool plainTextByDefault = false;
     bool captureImages = true;
     bool captureFiles = true;
+    bool hidePinnedInOtherCategories = false;
     std::string excludedApps =
         "KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe";
 };
@@ -64,7 +65,8 @@ public:
     /// 供 ClipboardWindow 与 SettingsPage 调用的高速 Rust 查询/操作接口
     nlohmann::json queryItems(const std::string& query, const std::string& kind,
                               uint32_t limit = 80, uint32_t offset = 0,
-                              const std::string& groupId = {}) const;
+                              const std::string& groupId = {},
+                              bool excludePinned = false) const;
     nlohmann::json getItem(uint64_t id) const;
     int togglePin(uint64_t id);
     bool deleteItem(uint64_t id);
@@ -92,12 +94,22 @@ public:
     std::filesystem::path getDataDir() const;
     std::filesystem::path getBlobsDir() const;
 
+    /// 核对系统剪贴板序列号，若存在尚未捕获的新内容立即触发一次补采（微秒级无变更短路）
+    void syncSystemClipboardIfNeeded();
+
     /// 注册内容变更通知回调（用于向独立悬浮面板推送实时更新，避免反向依赖 UI 层）
     void setChangeNotifier(std::function<void(const std::string&)> cb);
 
-    // ── 纯静态隐私策略工具函数（支持离线单元测试） ────────────────────────────
+    /// 注册同进程目标窗口焦点恢复回调（如 SettingsWindow WebView2 焦点恢复，避免反向依赖 UI 层）
+    void setTargetFocusRestorer(std::function<void(HWND)> cb);
+
+    // ── 纯静态隐私策略与窗口目标校验工具函数（支持离线单元测试） ────────────────
     static bool isExcludedProcessName(std::string_view processExeName, std::string_view excludedAppsCsv);
     static std::string fnv1a128Hex(const uint8_t* data, size_t len);
+    static bool isTransientInternalOverlayClass(std::wstring_view className) noexcept;
+    static HWND normalizeValidTargetHwnd(HWND candidate, HWND selfHwnd) noexcept;
+    static HWND findFallbackTargetWindowBelow(HWND selfHwnd) noexcept;
+    static bool isTargetForegroundActive(HWND targetHwnd) noexcept;
 
 private:
     ClipboardManager() = default;
@@ -129,7 +141,7 @@ private:
     bool writeFilesToSystemClipboard(const std::vector<std::wstring>& files);
     bool writePngImageToSystemClipboard(const std::filesystem::path& pngPath);
     std::filesystem::path resolveSafeBlobFile(const std::string& relName) const;
-    static void sendCtrlVPasteAsync(HWND targetHwnd);
+    void sendCtrlVPasteAsync(HWND targetHwnd);
 
     static constexpr UINT_PTR IDT_CLIP_DEBOUNCE = 4101;
     static constexpr UINT kDebounceMs = 45;
@@ -146,6 +158,8 @@ private:
     std::atomic<bool> m_enabled{false};
     std::atomic<DWORD> m_suppressedSeq{0};
     DWORD m_lastProcessedSeq = 0;
+    int m_openRetryCount = 0;
+    static constexpr int kMaxOpenRetries = 5;
 
     // 注册 Windows 官方隐私与富文本/图片剪贴板格式 ID
     UINT m_fmtExcludeMonitor = 0;
@@ -162,6 +176,7 @@ private:
 
     mutable std::mutex m_notifierMutex;
     std::function<void(const std::string&)> m_changeNotifier;
+    std::function<void(HWND)> m_targetFocusRestorer;
     void notifyChanged(const nlohmann::json& payload);
 };
 

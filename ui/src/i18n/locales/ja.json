@@ -52,7 +52,8 @@
     "remote_boost": "リモート操作強化",
     "picasa_viewer": "Picasa フォトビューアー",
     "clipboard": "クリップボード履歴",
-    "file_locksmith": "ファイルロック解除"
+    "file_locksmith": "ファイルロック解除",
+    "text_expander": "テキスト展開"
   },
   "navSubtitle": {
     "stats": "キーボード入力とマウス操作の利用アクティビティ",
@@ -75,7 +76,8 @@
     "remote_boost": "リモートデスクトップ向けホットキー透過・修飾キー緊急解放・IME 自動切替",
     "picasa_viewer": "Rust 再現の軽量 Picasa 画像ビューアー（全機能版ではありません）。有効化で対応形式を自動関連付け",
     "clipboard": "再起動後も消えない永続クリップボード履歴・高速検索・画像ピン留め／翻訳",
-    "file_locksmith": "常駐ゼロでファイル占有プロセスを確認・安全に解除"
+    "file_locksmith": "常駐ゼロでファイル占有プロセスを確認・安全に解除",
+    "text_expander": "短いキーワードをシステム全体で定型文・動的日付・テンプレートへ瞬時に展開"
   },
   "extension": {
     "statusRunning": "稼働中",
@@ -376,6 +378,10 @@
       "file_locksmith": {
         "name": "ファイルロック解除",
         "description": "HKCU 右クリックメニュー統合、バックグラウンド常駐ゼロでロック中のプロセスを特定し安全に解除します"
+      },
+      "text_expander": {
+        "name": "テキスト展開",
+        "description": "システム全体で動作する軽量スニペット展開エンジン。日付・クリップボード・カーソル位置マクロ、パスワード管理アプリ自動除外、履歴非汚染に対応。すぐに使えて、オフ時はフックもメモリ消費もゼロ。"
       }
     },
     "title": "モジュール＆拡張プラグイン"
@@ -527,7 +533,40 @@
     "saveFailed": "この設定を保存できませんでした",
     "browseFailed": "フォルダー選択ダイアログを開けませんでした",
     "openFolder": "フォルダーを開く",
-    "openFolderFailed": "保存フォルダーを開けませんでした"
+    "openFolderFailed": "保存フォルダーを開けませんでした",
+    "regionManagerTitle": "履歴・固定キャプチャ領域の管理",
+    "repeatLastCaptureShortcut": "前回の領域で再キャプチャ",
+    "repeatLastCaptureShortcutDesc": "直前のキャプチャ範囲を自動適用してスクリーンショットを即座に開始",
+    "regionCycleKeyLabel": "キャプチャ内の履歴領域切替キー",
+    "regionCycleKeyDesc": "選択画面で単押しすると古い履歴へ、Shift + キーで新しい履歴へ移動",
+    "regionKeyR": "R / Shift+R（PixPin 方式・推奨）",
+    "regionKeyBackquote": "` / Shift+`（バッククォート・矩形 R と競合なし）",
+    "regionKeyF2": "F2 / Shift+F2（ファンクションキー）",
+    "regionKeyF4": "F4 / Shift+F4（ファンクションキー）",
+    "regionKeyOff": "画面内キー切替を無効化",
+    "regionHistoryLimitLabel": "履歴領域の自動記憶件数",
+    "regionHistoryLimitDesc": "最近使用した選択範囲を再起動後も自動保持（固定ピン留め領域は自動削除されません）",
+    "regionLimitOff": "自動記憶オフ (0 件)",
+    "regionLimitCount": "直近 {{count}} 件",
+    "regionSummary": "合計 {{total}} 件 · 固定 {{pinned}} 件",
+    "regionAddFixed": "固定領域を追加",
+    "regionClearUnpinned": "未固定をクリア",
+    "regionQuickPresets": "クイックサイズ（メイン画面中央配置）：",
+    "regionFieldName": "領域名",
+    "regionNamePlaceholder": "例：チュートリアル枠 / カバー枠",
+    "regionFieldWidth": "幅 (W)",
+    "regionFieldHeight": "高さ (H)",
+    "regionInvalidSize": "有効な座標とサイズを入力してください（幅・高さは 4px 以上）",
+    "regionClearedToast": "未固定の履歴領域をクリアしました",
+    "regionEmptyHint": "範囲キャプチャを完了すると自動的に記録されます。「固定領域を追加」から手動作成も可能です。",
+    "regionUnnamedLabel": "履歴領域 #{{index}}",
+    "regionPinnedBadge": "固定",
+    "regionCaptureNow": "この領域で今すぐキャプチャ",
+    "regionCaptureNowShort": "キャプチャ",
+    "regionPin": "固定領域としてピン留め（自動削除対象外）",
+    "regionUnpin": "ピン留め解除",
+    "regionEdit": "名前と座標サイズを編集",
+    "regionDelete": "この領域を削除"
   },
   "history": {
     "title": "キャプチャ履歴",
@@ -1450,7 +1489,16 @@
     "openDownloadedPortable": "ポータブル版を開く",
     "installUpdateNow": "{{version}} をインストール",
     "downloadUpdateNow": "{{version}} をダウンロード",
-    "installUpdateFailed": "更新インストーラーの起動に失敗しました"
+    "installUpdateFailed": "更新インストーラーの起動に失敗しました",
+    "dismissVersion": "このバージョンを無視",
+    "downloadNowBtn": "今すぐダウンロード",
+    "installNowBtn": "今すぐインストール",
+    "stripAvailableMessage": "新しいバージョン {{version}} が利用可能です",
+    "stripReadyMessage": "{{version}} のインストール準備完了 — 再起動して更新を適用",
+    "versionDismissedHint": "このバージョンの通知バッジを非表示にしました。いつでも更新確認やダウンロードを再開できます。",
+    "versionDismissedToast": "{{version}} の更新バッジを非表示にしました",
+    "viewChangelogShort": "更新内容を表示",
+    "viewUpdate": "更新を表示"
   },
   "sidebar": {
     "groupSystem": "システム",
@@ -1489,7 +1537,8 @@
     "enableAndOpen": "有効にして開く",
     "kw_picasa_viewer": "picasa 画像 写真 ビューアー スライドショー 関連付け 形式 rust",
     "kw_clipboard": "クリップボード 履歴 コピー 貼り付け ピン留め clipboard",
-    "kw_file_locksmith": "ファイルロック 解除 プロセス 右クリック locksmith unlock"
+    "kw_file_locksmith": "ファイルロック 解除 プロセス 右クリック locksmith unlock",
+    "kw_text_expander": "テキスト展開 スニペット 定型文 辞書 テンプレート マクロ 省略 入力支援 text expander snippet"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000 へようこそ",
@@ -1544,7 +1593,23 @@
     "next": "次へ",
     "prev": "戻る",
     "skip": "スキップ",
-    "stepLabel": "ステップ {{current}} / {{total}}"
+    "stepLabel": "ステップ {{current}} / {{total}}",
+    "completeTipModules": "すべてのモジュールは「機能モジュール」やトレイからいつでも個別にオン／オフできます",
+    "completeTipPicasa": "「Picasa 画像ビューアー」からワンクリックで既定のビューアーに設定できます",
+    "completeTipTextExpander": "内蔵の「テキスト展開」ですぐに ;date や ;now を展開可能（いつでも編集・オフにできます）",
+    "edgeWheelTip": "画面左右端スクロール：システム音量や外部モニターのハードウェア輝度を直接調整",
+    "featureClipboard": "永続クリップボード",
+    "featureClipboardDesc": "Alt+V で再起動後も履歴保持、結合貼付、ピン分離、ネイティブドラッグ貼付",
+    "featurePicasa": "2 MB 未満 Rust Picasa ビューアー",
+    "featurePicasaDesc": "41 形式対応、4K 高 DPI ＆ 単体バイナリで瞬時起動",
+    "featurePresentRemote": "プレゼン演出＆リモート強化",
+    "featurePresentRemoteDesc": "キー表示、スポットライト強調、RDP/RustDesk 修飾キー固着の一括解除",
+    "featureStudio": "自動ズーム録画スタジオ",
+    "featureStudioDesc": "音声波形編集、クリック自動ズーム、ワンクリック GIF/MP4 書き出し",
+    "searchSyntaxLabel": "万能検索プレフィックス",
+    "searchSyntaxQuickLook": "QuickLook プレビュー",
+    "shortcutClipboard": "クリップボード履歴",
+    "shortcutPin": "履歴から画面ピン留め"
   },
   "hotkey": {
     "pressKeys": "キーまたは組み合わせを押してください...",
@@ -2263,7 +2328,9 @@
     "pillClipboard": "クリップボード",
     "pillClipboardFullDesc": "クリップボード履歴（即座に検索・グループ整理・一括貼り付け）",
     "pillFileLocksmith": "ロック解除",
-    "pillFileLocksmithFullDesc": "ファイルロック解除（常駐ゼロで右クリックから占有プロセスを確認）"
+    "pillFileLocksmithFullDesc": "ファイルロック解除（常駐ゼロで右クリックから占有プロセスを確認）",
+    "pillTextExpander": "定型文",
+    "pillTextExpanderFullDesc": "テキスト展開（システム全体の定型文・動的マクロ自動展開）"
   },
   "dialog": {
     "title": "ファイルダイアログ拡張",
@@ -3081,7 +3148,14 @@
     "actionPastePlain": "プレーン貼付",
     "actionEdit": "編集",
     "hintQuickPaste": "1〜9 番を即貼付",
-    "hintMultiSelect": "複数選択"
+    "hintMultiSelect": "複数選択",
+    "dragItemTip": "任意の入力欄やアプリへドラッグして直接貼り付け",
+    "hidePinnedBtn": "ピン隠す",
+    "hidePinnedTip": "他のカテゴリからピン留め項目を隠す（「ピン留め」タブのみで表示）",
+    "hintDragKey": "ドラッグ",
+    "hintDragPaste": "ドロップ貼り付け",
+    "showPinnedBtn": "ピン表示",
+    "showPinnedTip": "このカテゴリにピン留め項目を再表示"
   },
   "clipboardPage": {
     "overviewGroup": "永続クリップボード履歴",
@@ -3128,7 +3202,9 @@
     "saveBtn": "保存",
     "excludedSavedToast": "除外アプリ一覧を保存しました",
     "saveFailedToast": "クリップボード設定の保存に失敗しました",
-    "clearedToast": "{{count}} 件の履歴を削除しました"
+    "clearedToast": "{{count}} 件の履歴を削除しました",
+    "hidePinnedInOtherTitle": "他カテゴリでピン留め項目を非表示",
+    "hidePinnedInOtherDesc": "ピン留め項目を「ピン留め」タブ専用にし、すべて・テキスト・画像・ファイル・カラー一覧をすっきり保ちます。"
   },
   "feedback": {
     "attachLogs": "ローカル匿名化済みの環境情報と直近 1000 行の診断ログを添付",
@@ -3183,5 +3259,81 @@
     "pickFolder": "フォルダを選択",
     "inspectNow": "ロックを確認",
     "inspectFailed": "ファイルロック解除ウィンドウの起動に失敗しました"
+  },
+  "textExpander": {
+    "addRuleBtn": "スニペット追加",
+    "autoExcludeDesc": "パスワード管理アプリ、リモートデスクトップ、資格情報画面がアクティブな間は自動的に展開を一時停止します。",
+    "autoExcludeTitle": "パスワード管理・セキュア端末を自動除外",
+    "badgeMacros": "動的マクロ",
+    "badgeOptIn": "オフ時フックゼロ",
+    "badgePrivacy": "履歴を汚さない",
+    "caseSensitiveDesc": "大文字と小文字を厳密に区別して一致させます。",
+    "caseSensitiveTitle": "大文字・小文字を区別",
+    "clearSandboxBtn": "クリア",
+    "clearSearch": "検索をクリア",
+    "deleteRule": "スニペットを削除",
+    "editRule": "スニペットを編集",
+    "emptyRules": "スニペットがまだありません。最初の短縮定型文を作成しましょう。",
+    "emptySearch": "検索条件に一致するスニペットがありません。",
+    "enableNowBtn": "今すぐ有効化",
+    "errDuplicateTrigger": "同じトリガーとモードのスニペットが既に存在します",
+    "errEmptyTrigger": "トリガー文字列を入力してください",
+    "errTriggerNewline": "トリガー文字列に改行は含められません",
+    "errTriggerTooLong": "トリガー文字列は 64 文字以内にしてください",
+    "excludedProcessesDesc": "テキスト展開を常に無効にする実行ファイル名（ゲームやターミナル等）をカンマ区切りで指定します。",
+    "excludedProcessesTitle": "カスタム除外プロセス",
+    "exportBtn": "JSON 書出",
+    "exportFailedToast": "スニペットのエクスポートに失敗しました",
+    "exportSuccessToast": "スニペットをエクスポートしました",
+    "fieldLabel": "ラベル（任意）",
+    "fieldLabelHint": "ルール一覧に表示される分かりやすい名前",
+    "fieldLabelPlaceholder": "例：メール署名",
+    "fieldMode": "展開タイミング",
+    "fieldReplacement": "展開後のテキスト",
+    "fieldReplacementPlaceholder": "展開したい本文またはテンプレートを入力...",
+    "fieldTrigger": "トリガーキーワード",
+    "fieldTriggerHint": "誤爆防止のため ; や / で始めることを推奨します",
+    "heroDesc": "任意の Windows アプリで短いキーワードを入力するだけで定型文・動的日付・クリップボード連携・カーソル位置指定コードを瞬時に展開します。いつでもオフにでき、オフ時はフックを完全に解除します。",
+    "heroTitle": "システム全体テキスト展開",
+    "hitCount": "{{count}} 回使用",
+    "importBtn": "JSON 読込",
+    "importFailedToast": "スニペットのインポートに失敗しました",
+    "importInvalidToast": "JSON 形式が不正です：rules 配列が見つかりません",
+    "importSuccessToast": "{{count}} 件のスニペットをインポートしました",
+    "insertMacroTitle": "動的変数を挿入",
+    "macroClipboard": "クリップボード",
+    "macroCursor": "カーソル位置",
+    "macroDate": "現在日付",
+    "macroDateTime": "日時",
+    "macroTime": "現在時刻",
+    "modalAddTitle": "スニペットを追加",
+    "modalEditTitle": "スニペットを編集",
+    "modeDelimiterDesc": "トリガー入力後に Space・Tab・Enter を押したときのみ展開し、単語先頭の誤展開を防ぎます。",
+    "modeDelimiterShort": "区切りキー",
+    "modeDelimiterTitle": "区切りキー後に展開",
+    "modeImmediateDesc": "最後の文字を入力した瞬間に即座に展開します。",
+    "modeImmediateShort": "即時展開",
+    "modeImmediateTitle": "入力直後に即時展開",
+    "privacyBanner": "短い ASCII 定型文はクリップボードを使わず Unicode 直接入力します。複数行や日本語の貼り付け時は Windows プライバシー除外マーカーを付与し、Tools3000 履歴や Win+V を汚しません。",
+    "privacyGroup": "プライバシーと誤爆防止ガード",
+    "protectedAppsAria": "組み込み保護アプリ一覧",
+    "restoreClipboardDesc": "複数行や非 ASCII テキスト展開の 140ms 後に元のクリップボード内容を自動で復元します。",
+    "restoreClipboardTitle": "展開後に元のクリップボードを復元",
+    "ruleDeletedToast": "スニペットを削除しました",
+    "ruleDeleteFailed": "スニペットの削除に失敗しました",
+    "ruleSavedToast": "スニペットを保存しました",
+    "ruleSaveFailed": "スニペットの保存に失敗しました",
+    "rulesGroup": "スニペット一覧",
+    "sandboxAria": "テキスト展開ライブテスト欄",
+    "sandboxDisabledHint": "上のマスタースイッチを有効にすると、ここでトリガーの動作をすぐ試せます。",
+    "sandboxGroup": "ライブ体験サンドボックス",
+    "sandboxPlaceholder": "ここをクリックして ;date、;now、;thx などを入力し、即時展開を試してみてください...",
+    "saveExcludedBtn": "保存",
+    "saveFailed": "設定の保存に失敗しました",
+    "saveRuleBtn": "スニペットを保存",
+    "searchPlaceholder": "トリガー・ラベル・本文を検索...",
+    "statusActive": "稼働中",
+    "statusDisabled": "無効（フックゼロ）",
+    "tryTriggersLabel": "試してみる："
   }
 }

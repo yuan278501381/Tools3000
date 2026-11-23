@@ -5,6 +5,14 @@
 #include "clipboard/ClipboardManager.h"
 #include "clipboard/ClipboardRustFfi.h"
 
+extern "C" char* t3k_clip_query_json_v2(
+    const char* query_utf8,
+    const char* filter_kind_utf8,
+    const char* group_id_utf8,
+    uint32_t limit,
+    uint32_t offset,
+    int32_t exclude_pinned);
+
 #include "core/config/ConfigManager.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/MessageBridge.h"
@@ -23,6 +31,7 @@
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <memory>
 #include <sstream>
 
 using Microsoft::WRL::ComPtr;
@@ -331,6 +340,7 @@ bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::pa
     loaded.plainTextByDefault = cfg.get<bool>("/clipboard/plainTextByDefault", false);
     loaded.captureImages = cfg.get<bool>("/clipboard/captureImages", true);
     loaded.captureFiles = cfg.get<bool>("/clipboard/captureFiles", true);
+    loaded.hidePinnedInOtherCategories = cfg.get<bool>("/clipboard/hidePinnedInOtherCategories", false);
     loaded.excludedApps = cfg.get<std::string>(
         "/clipboard/excludedApps", loaded.excludedApps);
 
@@ -454,6 +464,7 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
             {"plainTextByDefault", clamped.plainTextByDefault},
             {"captureImages", clamped.captureImages},
             {"captureFiles", clamped.captureFiles},
+            {"hidePinnedInOtherCategories", clamped.hidePinnedInOtherCategories},
             {"excludedApps", clamped.excludedApps}
         }},
         {"plugins", {
@@ -468,6 +479,9 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
     if (m_initialized.load(std::memory_order_acquire)) {
         (void)t3k_clip_prune(static_cast<uint32_t>(clamped.maxItems), static_cast<uint32_t>(clamped.maxDays));
     }
+    tools3000::core::MessageBridge::instance().pushEvent(
+        "clipboard:settingsChanged",
+        {{"hidePinnedInOtherCategories", clamped.hidePinnedInOtherCategories}});
     return saved;
 }
 
@@ -497,6 +511,7 @@ LRESULT CALLBACK ClipboardManager::listenerWndProc(HWND hwnd, UINT msg, WPARAM w
     if (self) {
         if (msg == WM_CLIPBOARDUPDATE) {
             if (self->m_enabled.load(std::memory_order_acquire)) {
+                self->m_openRetryCount = 0;
                 // 45ms 轻量防抖，合并 Office/浏览器单次复制产生的多段写入
                 SetTimer(hwnd, IDT_CLIP_DEBOUNCE, kDebounceMs, nullptr);
             }
@@ -511,6 +526,27 @@ LRESULT CALLBACK ClipboardManager::listenerWndProc(HWND hwnd, UINT msg, WPARAM w
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
+void ClipboardManager::syncSystemClipboardIfNeeded() {
+    if (!m_initialized.load(std::memory_order_acquire) || !m_enabled.load(std::memory_order_acquire)) {
+        return;
+    }
+    const DWORD seq = GetClipboardSequenceNumber();
+    if (seq == 0 || seq == m_lastProcessedSeq) {
+        return;
+    }
+    if (seq == m_suppressedSeq.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (tools3000::core::MainThreadDispatcher::instance().isInitialized() &&
+        !tools3000::core::MainThreadDispatcher::instance().isOwnerThread()) {
+        tools3000::core::MainThreadDispatcher::instance().post([this]() {
+            handleClipboardUpdateDebounced();
+        });
+        return;
+    }
+    handleClipboardUpdateDebounced();
+}
+
 void ClipboardManager::handleClipboardUpdateDebounced() {
     if (!m_initialized.load(std::memory_order_acquire) || !m_enabled.load(std::memory_order_acquire)) {
         return;
@@ -518,11 +554,13 @@ void ClipboardManager::handleClipboardUpdateDebounced() {
 
     const DWORD seq = GetClipboardSequenceNumber();
     if (seq == 0 || seq == m_lastProcessedSeq) {
+        m_openRetryCount = 0;
         return;
     }
-    m_lastProcessedSeq = seq;
 
     if (seq == m_suppressedSeq.load(std::memory_order_acquire)) {
+        m_lastProcessedSeq = seq;
+        m_openRetryCount = 0;
         m_suppressedSeq.store(0, std::memory_order_release);
         return;
     }
@@ -535,19 +573,37 @@ void ClipboardManager::handleClipboardUpdateDebounced() {
         sourceApp = queryProcessExeNameFromHwnd(GetForegroundWindow());
     }
     if (isExcludedProcessName(sourceApp, snap.excludedApps)) {
+        m_lastProcessedSeq = seq;
+        m_openRetryCount = 0;
         return;
     }
 
-    // 2. 极速短持锁打开系统剪贴板（最多尝试 3 次短等，绝不阻塞 Ctrl+C / RDP）
+    // 2. 极速短持锁打开系统剪贴板；若源软件（微信/浏览器/Office）仍在持锁，绝不提前标记已处理，
+    //    通过非阻塞指数退避定时器重试（最多 5 次），彻底杜绝抢锁失败漏抓最新复制。
     bool opened = false;
     for (int attempt = 0; attempt < 3; ++attempt) {
         if (OpenClipboard(m_listenerHwnd)) {
             opened = true;
             break;
         }
-        Sleep(10);
+        Sleep(8);
     }
-    if (!opened) return;
+    if (!opened) {
+        if (m_listenerHwnd && IsWindow(m_listenerHwnd) && m_openRetryCount < kMaxOpenRetries) {
+            static constexpr UINT kRetryDelaysMs[kMaxOpenRetries] = {60, 120, 200, 320, 500};
+            const UINT delayMs = kRetryDelaysMs[m_openRetryCount];
+            ++m_openRetryCount;
+            SetTimer(m_listenerHwnd, IDT_CLIP_DEBOUNCE, delayMs, nullptr);
+            LOG_DEBUG("ClipboardManager: clipboard busy, scheduled retry {} in {}ms", m_openRetryCount, delayMs);
+        } else {
+            LOG_WARN("ClipboardManager: OpenClipboard failed after retries for seq={}", seq);
+            m_openRetryCount = 0;
+        }
+        return;
+    }
+
+    m_lastProcessedSeq = seq;
+    m_openRetryCount = 0;
 
     struct ClipboardGuard {
         ~ClipboardGuard() { CloseClipboard(); }
@@ -824,6 +880,105 @@ void ClipboardManager::setChangeNotifier(std::function<void(const std::string&)>
     m_changeNotifier = std::move(cb);
 }
 
+void ClipboardManager::setTargetFocusRestorer(std::function<void(HWND)> cb) {
+    std::lock_guard<std::mutex> lock(m_notifierMutex);
+    m_targetFocusRestorer = std::move(cb);
+}
+
+bool ClipboardManager::isTransientInternalOverlayClass(std::wstring_view className) noexcept {
+    if (className.empty()) return false;
+    // 允许作为粘贴目标的同进程交互窗（设置/搜索/解锁/OCR 结果）绝不在此名单中；
+    // 仅屏蔽瞬态全屏遮罩、浮层、提示条、托盘与贴图覆盖层，杜绝截屏 F1 或气泡污染粘贴目标句柄。
+    return className == L"Tools3000_CaptureOverlay" ||
+           className == L"Tools3000_ShortcutHint" ||
+           className == L"Tools3000_ShortcutHintOverlay" ||
+           className == L"Tools3000_Toast" ||
+           className == L"Tools3000_ToastOverlay" ||
+           className == L"Tools3000_Spotlight" ||
+           className == L"Tools3000_SpotlightOverlay" ||
+           className == L"Tools3000_RecordingIndicator" ||
+           className == L"Tools3000_TrayWindow" ||
+           className == L"Tools3000_GestureOverlay" ||
+           className == L"Tools3000_GestureTrail" ||
+           className == L"Tools3000_Keycast" ||
+           className == L"Tools3000_KeycastOverlay" ||
+           className == L"Tools3000_PinGroupBar" ||
+           className == L"Tools3000_PinWindow" ||
+           className == L"Tools3000_PinContextMenu" ||
+           className == L"Tools3000_RadialMenu" ||
+           className == L"Tools3000_QuickLook" ||
+           className == L"Tools3000_QuickLookWindow" ||
+           className == L"Tools3000_ScrollCapture" ||
+           className == L"Tools3000_ClipboardWindow" ||
+           className == L"Progman" ||
+           className == L"WorkerW" ||
+           className == L"NotifyIconOverflowWindow" ||
+           className == L"TopLevelWindowForOverflowXamlIsland";
+}
+
+HWND ClipboardManager::normalizeValidTargetHwnd(HWND candidate, HWND selfHwnd) noexcept {
+    if (!candidate || !IsWindow(candidate)) return nullptr;
+    HWND root = GetAncestor(candidate, GA_ROOT);
+    if (!root || !IsWindow(root)) {
+        root = candidate;
+    }
+    if (selfHwnd && (root == selfHwnd || IsChild(selfHwnd, root))) {
+        return nullptr;
+    }
+    if (!IsWindowVisible(root)) {
+        return nullptr;
+    }
+    if (tools3000::core::WinUtils::isTaskbarWindow(root)) {
+        return nullptr;
+    }
+    const LONG_PTR exStyle = GetWindowLongPtrW(root, GWL_EXSTYLE);
+    if ((exStyle & WS_EX_NOACTIVATE) != 0) {
+        return nullptr;
+    }
+    wchar_t cls[96]{};
+    const int clsLen = GetClassNameW(root, cls, static_cast<int>(std::size(cls)));
+    if (clsLen > 0) {
+        const std::wstring_view clsView(cls, static_cast<size_t>(clsLen));
+        if (isTransientInternalOverlayClass(clsView)) {
+            return nullptr;
+        }
+    }
+    return root;
+}
+
+HWND ClipboardManager::findFallbackTargetWindowBelow(HWND selfHwnd) noexcept {
+    HWND cur = selfHwnd ? GetWindow(selfHwnd, GW_HWNDNEXT) : GetTopWindow(nullptr);
+    int scanned = 0;
+    while (cur && scanned < 256) {
+        ++scanned;
+        if (IsWindowVisible(cur) && !IsIconic(cur)) {
+            const LONG_PTR exStyle = GetWindowLongPtrW(cur, GWL_EXSTYLE);
+            if ((exStyle & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT)) == 0) {
+                if (HWND valid = normalizeValidTargetHwnd(cur, selfHwnd)) {
+                    RECT rc{};
+                    if (GetWindowRect(valid, &rc) &&
+                        (rc.right - rc.left) >= 60 && (rc.bottom - rc.top) >= 40) {
+                        return valid;
+                    }
+                }
+            }
+        }
+        cur = GetWindow(cur, GW_HWNDNEXT);
+    }
+    return nullptr;
+}
+
+bool ClipboardManager::isTargetForegroundActive(HWND targetHwnd) noexcept {
+    if (!targetHwnd || !IsWindow(targetHwnd)) return false;
+    const HWND fg = GetForegroundWindow();
+    if (!fg) return false;
+    if (fg == targetHwnd) return true;
+    const HWND fgRoot = GetAncestor(fg, GA_ROOT);
+    if (fgRoot == targetHwnd) return true;
+    const HWND targetRoot = GetAncestor(targetHwnd, GA_ROOT);
+    return targetRoot != nullptr && (fg == targetRoot || fgRoot == targetRoot);
+}
+
 void ClipboardManager::notifyChanged(const nlohmann::json& payload) {
     tools3000::core::MessageBridge::instance().pushEvent("clipboard:updated", payload);
     std::function<void(const std::string&)> cb;
@@ -841,16 +996,16 @@ void ClipboardManager::notifyChanged(const nlohmann::json& payload) {
 
 nlohmann::json ClipboardManager::queryItems(
     const std::string& query, const std::string& kind, uint32_t limit, uint32_t offset,
-    const std::string& groupId) const {
+    const std::string& groupId, bool excludePinned) const {
     if (!m_initialized.load(std::memory_order_acquire)) {
-        return {{"total", 0}, {"matched", 0}, {"items", nlohmann::json::array()}};
+        return {{"total", 0}, {"matched", 0}, {"pinnedCount", 0}, {"hiddenPinnedCount", 0}, {"items", nlohmann::json::array()}};
     }
     const std::string raw = consumeRustJsonString(
-        t3k_clip_query_json(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset));
+        t3k_clip_query_json_v2(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset, excludePinned ? 1 : 0));
     try {
         return nlohmann::json::parse(raw);
     } catch (...) {
-        return {{"total", 0}, {"matched", 0}, {"items", nlohmann::json::array()}};
+        return {{"total", 0}, {"matched", 0}, {"pinnedCount", 0}, {"hiddenPinnedCount", 0}, {"items", nlohmann::json::array()}};
     }
 }
 
@@ -1000,11 +1155,28 @@ std::filesystem::path ClipboardManager::getBlobsDir() const {
     return m_blobsDir;
 }
 
+namespace {
+
+bool openClipboardWithRetry(HWND ownerHwnd, int maxAttempts = 8, DWORD sleepMs = 10) noexcept {
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
+        if (OpenClipboard(ownerHwnd)) {
+            return true;
+        }
+        Sleep(sleepMs);
+    }
+    return false;
+}
+
+}  // namespace
+
 bool ClipboardManager::writeTextToSystemClipboard(
     const std::wstring& wtext,
     const std::vector<uint8_t>& htmlBytes,
     const std::vector<uint8_t>& rtfBytes) {
-    if (!OpenClipboard(m_listenerHwnd)) return false;
+    if (!openClipboardWithRetry(m_listenerHwnd)) {
+        LOG_WARN("ClipboardManager: OpenClipboard failed when writing text (err={})", GetLastError());
+        return false;
+    }
     struct Guard { ~Guard() { CloseClipboard(); } } guard;
     EmptyClipboard();
 
@@ -1071,7 +1243,8 @@ bool ClipboardManager::writeFilesToSystemClipboard(const std::vector<std::wstrin
     *cursor = L'\0';
     GlobalUnlock(hDrop);
 
-    if (!OpenClipboard(m_listenerHwnd)) {
+    if (!openClipboardWithRetry(m_listenerHwnd)) {
+        LOG_WARN("ClipboardManager: OpenClipboard failed when writing files (err={})", GetLastError());
         GlobalFree(hDrop);
         return false;
     }
@@ -1092,7 +1265,10 @@ bool ClipboardManager::writePngImageToSystemClipboard(const std::filesystem::pat
         return false;
     }
 
-    if (!OpenClipboard(m_listenerHwnd)) return false;
+    if (!openClipboardWithRetry(m_listenerHwnd)) {
+        LOG_WARN("ClipboardManager: OpenClipboard failed when writing image (err={})", GetLastError());
+        return false;
+    }
     struct Guard { ~Guard() { CloseClipboard(); } } guard;
     EmptyClipboard();
 
@@ -1138,37 +1314,149 @@ bool ClipboardManager::writePngImageToSystemClipboard(const std::filesystem::pat
 }
 
 void ClipboardManager::sendCtrlVPasteAsync(HWND targetHwnd) {
-    std::thread([targetHwnd]() {
-        Sleep(55);
-        if (targetHwnd && IsWindow(targetHwnd)) {
-            SetForegroundWindow(targetHwnd);
-            Sleep(25);
+    HWND resolvedTarget = nullptr;
+    if (targetHwnd && IsWindow(targetHwnd)) {
+        resolvedTarget = GetAncestor(targetHwnd, GA_ROOT);
+        if (!resolvedTarget || !IsWindow(resolvedTarget)) {
+            resolvedTarget = targetHwnd;
         }
-        // 确保释放任何残留的修饰键，随后投递标准 Ctrl+V
-        std::array<INPUT, 6> inputs{};
-        inputs[0].type = INPUT_KEYBOARD;
-        inputs[0].ki.wVk = VK_MENU;
-        inputs[0].ki.dwFlags = KEYEVENTF_KEYUP;
+        // 二次活体与合法性校验：杜绝向已隐藏的同进程内部覆盖层或自身剪贴板窗发送 Ctrl+V
+        if (resolvedTarget && !normalizeValidTargetHwnd(resolvedTarget, nullptr)) {
+            LOG_WARN("ClipboardManager: rejected stale/internal paste target hwnd=0x{:X}",
+                     reinterpret_cast<uintptr_t>(resolvedTarget));
+            resolvedTarget = nullptr;
+        }
+    }
 
-        inputs[1].type = INPUT_KEYBOARD;
-        inputs[1].ki.wVk = VK_SHIFT;
-        inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+    if (!resolvedTarget) {
+        resolvedTarget = findFallbackTargetWindowBelow(GetForegroundWindow());
+        if (resolvedTarget) {
+            LOG_INFO("ClipboardManager: resolved fallback paste target below clipboard: exe={}",
+                     queryProcessExeNameFromHwnd(resolvedTarget));
+        }
+    }
 
-        inputs[2].type = INPUT_KEYBOARD;
-        inputs[2].ki.wVk = VK_CONTROL;
+    DWORD targetPid = 0;
+    if (resolvedTarget) {
+        GetWindowThreadProcessId(resolvedTarget, &targetPid);
+    }
+    const bool sameProcess = (targetPid != 0 && targetPid == GetCurrentProcessId());
+    const std::string targetExe = resolvedTarget ? queryProcessExeNameFromHwnd(resolvedTarget) : "";
 
-        inputs[3].type = INPUT_KEYBOARD;
-        inputs[3].ki.wVk = 'V';
+    if (!resolvedTarget) {
+        LOG_WARN("ClipboardManager: no valid visible paste target window; clipboard updated without auto Ctrl+V");
+        return;
+    }
 
-        inputs[4].type = INPUT_KEYBOARD;
-        inputs[4].ki.wVk = 'V';
-        inputs[4].ki.dwFlags = KEYEVENTF_KEYUP;
+    std::function<void(HWND)> restorer;
+    {
+        std::lock_guard<std::mutex> lock(m_notifierMutex);
+        restorer = m_targetFocusRestorer;
+    }
 
-        inputs[5].type = INPUT_KEYBOARD;
-        inputs[5].ki.wVk = VK_CONTROL;
-        inputs[5].ki.dwFlags = KEYEVENTF_KEYUP;
+    auto activationDone = std::make_shared<std::atomic<bool>>(false);
+    auto activateTarget = [resolvedTarget, sameProcess, restorer = std::move(restorer), activationDone]() {
+        if (resolvedTarget && IsWindow(resolvedTarget)) {
+            if (sameProcess) {
+                if (IsIconic(resolvedTarget)) {
+                    ShowWindow(resolvedTarget, SW_RESTORE);
+                }
+                if (IsWindowVisible(resolvedTarget)) {
+                    BringWindowToTop(resolvedTarget);
+                    SetForegroundWindow(resolvedTarget);
+                    SetActiveWindow(resolvedTarget);
+                    if (restorer) {
+                        restorer(resolvedTarget);
+                    }
+                }
+            } else {
+                (void)tools3000::core::WinUtils::activateWindowForeground(resolvedTarget);
+            }
+        }
+        activationDone->store(true, std::memory_order_release);
+    };
 
-        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+    if (resolvedTarget && dispatcher.isInitialized()) {
+        // 使用 postDeferred 确保严格排在 ClipboardWindow::hide() 之后在拥有前台权的 UI 主线程执行
+        if (!dispatcher.postDeferred(activateTarget)) {
+            activationDone->store(true, std::memory_order_release);
+        }
+    } else {
+        activateTarget();
+    }
+
+    std::thread([resolvedTarget, sameProcess, targetExe, activationDone]() {
+        constexpr DWORD kPollStepMs = 10;
+        constexpr DWORD kMaxDispatchWaitMs = 150;
+        constexpr DWORD kMaxForegroundWaitMs = 220;
+        constexpr DWORD kPostFocusSettleMs = 25;
+        constexpr DWORD kSameProcessWebViewSettleMs = 35;
+
+        // 1. 等待 UI 主线程完成隐藏面板与激活目标窗口动作
+        for (DWORD waited = 0; waited < kMaxDispatchWaitMs && !activationDone->load(std::memory_order_acquire);
+             waited += kPollStepMs) {
+            Sleep(kPollStepMs);
+        }
+
+        // 2. 以 10ms 步进确认目标窗口已真实进入前台（最多等待 220ms）
+        bool targetActive = false;
+        if (resolvedTarget && IsWindow(resolvedTarget)) {
+            bool retryTried = false;
+            for (DWORD waited = 0; waited < kMaxForegroundWaitMs; waited += kPollStepMs) {
+                if (isTargetForegroundActive(resolvedTarget)) {
+                    targetActive = true;
+                    break;
+                }
+                if (!retryTried && waited >= 80) {
+                    retryTried = true;
+                    AllowSetForegroundWindow(ASFW_ANY);
+                    (void)tools3000::core::WinUtils::activateWindowForeground(resolvedTarget);
+                }
+                Sleep(kPollStepMs);
+            }
+            if (!targetActive) {
+                targetActive = isTargetForegroundActive(resolvedTarget);
+            }
+        }
+
+        // 3. 前台到位后留出稳定缓冲，让 WebView2 / 目标输入控件完成焦点与光标落位
+        Sleep(sameProcess ? kSameProcessWebViewSettleMs : kPostFocusSettleMs);
+
+        // 安全守卫：若前台依然停留在剪贴板窗自身，绝不把 Ctrl+V 误贴进剪贴板搜索框
+        const HWND fgNow = GetForegroundWindow();
+        wchar_t fgCls[64]{};
+        if (fgNow && GetClassNameW(fgNow, fgCls, static_cast<int>(std::size(fgCls))) > 0 &&
+            std::wstring_view(fgCls) == L"Tools3000_ClipboardWindow") {
+            LOG_WARN("ClipboardManager: aborted auto Ctrl+V because clipboard window still holds foreground (targetExe={})",
+                     targetExe);
+            return;
+        }
+
+        // 4. 仅释放当前实际处于按下态的残留修饰键（避免无故发送孤立 Alt KEYUP 误激活目标菜单栏），随后发送 Ctrl+V
+        std::vector<INPUT> inputs;
+        inputs.reserve(10);
+        auto appendKey = [&inputs](WORD vk, DWORD flags) {
+            INPUT in{};
+            in.type = INPUT_KEYBOARD;
+            in.ki.wVk = vk;
+            in.ki.dwFlags = flags;
+            inputs.push_back(in);
+        };
+
+        if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) appendKey(VK_MENU, KEYEVENTF_KEYUP);
+        if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+        if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) appendKey(VK_LWIN, KEYEVENTF_KEYUP);
+        if ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) appendKey(VK_RWIN, KEYEVENTF_KEYUP);
+
+        appendKey(VK_CONTROL, 0);
+        appendKey('V', 0);
+        appendKey('V', KEYEVENTF_KEYUP);
+        appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+
+        const UINT sent = SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+        LOG_INFO("ClipboardManager: dispatched auto Ctrl+V (targetExe={}, fgReady={}, sent={}/{})",
+                 targetExe, targetActive, sent, inputs.size());
     }).detach();
 }
 

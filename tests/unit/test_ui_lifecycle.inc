@@ -466,10 +466,10 @@ TEST(SpotlightOverlayTest, LocalBoundingBoxAndFocusAssistExclusion) {
         EXPECT_GE(wideBounds.x + wideBounds.w, secondPt.x);
     }
 
-    // 验证托盘菜单拓宽基准宽度 (252px @ 96 DPI)
-    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(96).cx, 276);
-    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(144).cx, 414);
-    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(192).cx, 552);
+    // 验证托盘菜单三列微晶控制舱基准宽度 (320px @ 96 DPI)
+    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(96).cx, 320);
+    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(144).cx, 480);
+    EXPECT_EQ(tools3000::ui::TrayWindowStyle::windowSizeForDpi(192).cx, 640);
 
     // 3. 触发聚光灯模式
     spotlight.trigger(POINT{500, 500}, false);

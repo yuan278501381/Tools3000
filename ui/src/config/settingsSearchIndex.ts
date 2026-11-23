@@ -73,6 +73,11 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   // Clipboard
   { id: 'clip-history', navId: 'clipboard', labelKey: 'clipboardPage.enableTitle', descKey: 'clipboardPage.enableDesc', keywords: 'clipboard copy paste history pin ditto alt v rust jiantieban fuzhi zhantie' },
 
+  // Text Expander
+  { id: 'te-enable', navId: 'text_expander', labelKey: 'textExpander.heroTitle', descKey: 'textExpander.heroDesc', keywords: 'text expander snippet espanso beeftext macro template shortcut date time cursor duanyu wenben kuozhan tihuan' },
+  { id: 'te-rules', navId: 'text_expander', labelKey: 'textExpander.rulesGroup', descKey: 'textExpander.sandboxDisabledHint', keywords: 'snippet rules trigger immediate delimiter json import export guize chufaci' },
+  { id: 'te-privacy', navId: 'text_expander', labelKey: 'textExpander.privacyGroup', descKey: 'textExpander.autoExcludeDesc', keywords: 'password keepass 1password bitwarden restore clipboard exclude process yinsi mima' },
+
   // Gesture & HotCorner
   { id: 'gst-trigger', navId: 'gesture', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
   { id: 'gst-trail', navId: 'gesture', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline fade hint text brightness delete backspace guiji jianyin tishi liangdu shanchu' },

@@ -956,5 +956,8 @@
   "重点说明||Text": "重點說明",
   "静音||Off": "靜音",
   "高刷||Smooth": "高幀",
-  "鼠标自动运镜||Auto Zoom": "滑鼠自動運鏡"
+  "鼠标自动运镜||Auto Zoom": "滑鼠自動運鏡",
+  "Recent Region ": "歷史選區 ",
+  "No recent capture regions": "暫無歷史截圖選區",
+  "Reuse recent capture region": "重用歷史截圖區域"
 }

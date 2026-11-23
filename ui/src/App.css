@@ -43,6 +43,159 @@
   box-shadow: -1px 0 14px -8px rgba(24, 24, 27, 0.05), inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
+/* ── 顶部更新微晶玻璃通知条 (App Update Strip) ─────────────────────────────── */
+.app-update-strip {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px clamp(16px, 2.6vw, 30px);
+  background: color-mix(in srgb, var(--primary) 9%, var(--card-bg));
+  border-bottom: 1px solid color-mix(in srgb, var(--primary) 24%, var(--card-border));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  font-family: var(--font-sans);
+  box-sizing: border-box;
+  animation: fadeIn 0.16s var(--ease-smooth);
+}
+
+.app-update-strip--ready {
+  background: color-mix(in srgb, var(--success) 10%, var(--card-bg));
+  border-bottom-color: color-mix(in srgb, var(--success) 28%, var(--card-border));
+}
+
+.app-update-strip__left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.app-update-strip__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--danger) 24%, transparent);
+  flex-shrink: 0;
+}
+
+.app-update-strip--ready .app-update-strip__dot {
+  background: var(--success);
+  box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--success) 24%, transparent);
+}
+
+.app-update-strip__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.app-update-strip--ready .app-update-strip__icon {
+  color: var(--success);
+}
+
+.app-update-strip__icon--spin {
+  animation: app-update-strip-spin 0.85s linear infinite;
+}
+
+@keyframes app-update-strip-spin {
+  to { transform: rotate(360deg); }
+}
+
+.app-update-strip__text {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.app-update-strip__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.app-update-strip__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast);
+}
+
+.app-update-strip__btn--ghost {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  color: var(--text-primary);
+}
+
+.app-update-strip__btn--ghost:hover {
+  background: var(--ghost-hover-bg);
+  border-color: color-mix(in srgb, var(--primary) 35%, var(--card-border));
+}
+
+.app-update-strip__btn--primary {
+  background: var(--primary);
+  border: 1px solid transparent;
+  color: #ffffff;
+}
+
+.app-update-strip--ready .app-update-strip__btn--primary {
+  background: var(--success);
+}
+
+.app-update-strip__btn--primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.app-update-strip__btn--primary:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.app-update-strip__close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.app-update-strip__close:hover:not(:disabled) {
+  background: var(--ghost-hover-bg);
+  border-color: var(--card-border);
+  color: var(--text-primary);
+}
+
+.app-update-strip__close:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* ── 滚动内容流 (流体自适应双阶画布 + @container 感知，彻底解放宽工作台) ─── */
 .app__content {
   container-type: inline-size;

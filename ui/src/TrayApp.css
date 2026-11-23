@@ -84,31 +84,111 @@ html[data-surface="tray"] #root {
   height: 100% !important;
   max-height: 100vh;
   box-sizing: border-box;
-  overflow-y: auto;
-  overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--tray-border) transparent;
+  overflow: hidden;
   box-shadow: inset 0 1px 0 var(--tray-inset-highlight);
-  animation: trayPop 0.14s cubic-bezier(0.16, 1, 0.3, 1);
-  transform-origin: bottom center;
+  animation: trayPop 0.12s ease-out;
 }
 
-.tray-menu::-webkit-scrollbar {
+.tray-header-dock {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.tray-scroll-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tray-border) transparent;
+}
+
+.tray-scroll-body::-webkit-scrollbar {
   width: 4px;
 }
 
-.tray-menu::-webkit-scrollbar-track {
+.tray-scroll-body::-webkit-scrollbar-track {
   background: transparent;
 }
 
-.tray-menu::-webkit-scrollbar-thumb {
+.tray-scroll-body::-webkit-scrollbar-thumb {
   background: var(--tray-border);
   border-radius: 4px;
 }
 
+.tray-scroll-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.tray-footer-dock {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--tray-divider);
+}
+
+.tray-footer-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 9px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--tray-text-secondary);
+  font-size: 12.5px;
+  font-weight: 550;
+  line-height: 1.4;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  box-sizing: border-box;
+  outline: none;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.tray-footer-btn:hover:not(:disabled) {
+  background: var(--tray-hover);
+  color: var(--tray-text);
+}
+
+.tray-footer-btn:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.tray-footer-btn:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.tray-footer-btn--admin {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+  background: var(--tray-bento-well);
+  border-color: var(--tray-bento-border);
+}
+
+.tray-footer-btn--exit {
+  flex: 0 0 auto;
+  justify-content: center;
+  padding: 0 11px;
+  border-color: color-mix(in srgb, var(--danger) 20%, transparent);
+  background: color-mix(in srgb, var(--danger) 6%, transparent);
+}
+
+/* 纯透明度淡入：严禁在顶层布局容器叠加 transform: scale()，杜绝任何几何测量误差 */
 @keyframes trayPop {
-  0% { opacity: 0; transform: scale(0.97) translateY(4px); }
-  100% { opacity: 1; transform: scale(1) translateY(0); }
+  0% { opacity: 0; }
+  100% { opacity: 1; }
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -159,7 +239,7 @@ html[data-surface="tray"] #root {
  * ───────────────────────────────────────────────────────────────────────────── */
 .tray-control-center {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 4px;
   padding: 4px;
   border-radius: 10px;
@@ -170,14 +250,14 @@ html[data-surface="tray"] #root {
 .tray-pill {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 6px 8px;
+  gap: 5px;
+  padding: 5.5px 6.5px;
   min-width: 0;
   border-radius: 7px;
   border: 1px solid transparent;
   background: var(--tray-tile-idle-bg);
   color: var(--tray-text-muted);
-  font-size: 12.5px;
+  font-size: 12px;
   line-height: 1.4;
   font-weight: 500;
   cursor: pointer;
@@ -189,10 +269,11 @@ html[data-surface="tray"] #root {
   outline: none;
 }
 
-.tray-pill--wide,
-.tray-pill:last-child:nth-child(odd) {
-  grid-column: span 2;
+.tray-pill--wide {
+  grid-column: 1 / -1;
+  gap: 7px;
   padding: 6.5px 9px;
+  font-size: 12.5px;
 }
 
 .tray-pill:hover {
@@ -218,9 +299,9 @@ html[data-surface="tray"] #root {
 }
 
 .tray-pill__icon-wrap {
-  width: 20px;
-  height: 20px;
-  border-radius: 6px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -324,39 +405,58 @@ html[data-surface="tray"] #root {
 }
 
 .tray-update-banner {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  margin-top: 6px;
-  padding: 7px 10px;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--primary) 35%, transparent);
+  margin: 0 0 6px 0;
+  padding: 5px 6px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, transparent);
   background: color-mix(in srgb, var(--primary) 10%, transparent);
-  color: var(--text-primary);
+  color: var(--tray-text);
   font-family: var(--font-sans);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
+  box-sizing: border-box;
+  overflow: hidden;
   transition: background 0.16s ease, border-color 0.16s ease;
-}
-
-.tray-update-banner:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 16%, transparent);
-  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
 }
 
 .tray-update-banner--ready {
   border-color: color-mix(in srgb, var(--success) 42%, transparent);
-  background: color-mix(in srgb, var(--success) 12%, transparent);
+  background: color-mix(in srgb, var(--success) 11%, transparent);
 }
 
-.tray-update-banner__info {
-  display: inline-flex;
+.tray-update-banner__main {
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  flex: 1;
   min-width: 0;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tray-text);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.tray-update-banner__main:hover:not(:disabled) {
+  background: var(--tray-hover);
+}
+
+.tray-update-banner__main:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+.tray-update-banner__main:disabled {
+  cursor: default;
+  opacity: 0.7;
 }
 
 .tray-update-banner__dot {
@@ -364,32 +464,107 @@ html[data-surface="tray"] #root {
   height: 7px;
   border-radius: 50%;
   background: var(--danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 24%, transparent);
   flex-shrink: 0;
 }
 
 .tray-update-banner--ready .tray-update-banner__dot {
   background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 24%, transparent);
+}
+
+.tray-update-banner__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.tray-update-banner--ready .tray-update-banner__icon {
+  color: var(--success);
+}
+
+.tray-update-banner__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1;
 }
 
 .tray-update-banner__text {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--tray-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.tray-update-banner__sub {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.25;
+  color: var(--tray-text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.tray-update-banner__btn {
-  padding: 2px 7px;
+.tray-update-banner__action {
+  padding: 4px 9px;
   border-radius: 999px;
+  border: 0;
   background: var(--primary);
   color: #ffffff;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.35;
+  cursor: pointer;
   flex-shrink: 0;
   font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  transition: filter 0.14s ease, transform 0.1s ease, opacity 0.14s ease;
 }
 
-.tray-update-banner--ready .tray-update-banner__btn {
+.tray-update-banner__action:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+.tray-update-banner__action:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.tray-update-banner__action:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 1px;
+}
+
+.tray-update-banner__action:disabled {
+  cursor: default;
+  opacity: 0.78;
+}
+
+.tray-update-banner--ready .tray-update-banner__action {
   background: var(--success);
+}
+
+.tray-update-banner__progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  pointer-events: none;
+}
+
+.tray-update-banner__progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.22s ease;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

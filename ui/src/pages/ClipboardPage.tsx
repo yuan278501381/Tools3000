@@ -40,6 +40,7 @@ interface ClipboardSettings {
   plainTextByDefault: boolean;
   captureImages: boolean;
   captureFiles: boolean;
+  hidePinnedInOtherCategories: boolean;
   excludedApps: string;
 }
 
@@ -61,6 +62,7 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   plainTextByDefault: false,
   captureImages: true,
   captureFiles: true,
+  hidePinnedInOtherCategories: false,
   excludedApps: 'KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe',
 };
 
@@ -121,6 +123,16 @@ export const ClipboardPage: FC = () => {
 
   useBridgeEvent('clipboard:updated', () => {
     void refreshStats();
+  });
+
+  useBridgeEvent('clipboard:settingsChanged', (rawData) => {
+    const data = rawData as Partial<ClipboardSettings> | undefined;
+    if (typeof data?.hidePinnedInOtherCategories === 'boolean') {
+      setSettings((prev) => ({
+        ...prev,
+        hidePinnedInOtherCategories: data.hidePinnedInOtherCategories as boolean,
+      }));
+    }
   });
 
   const patchSettings = async (patch: Partial<ClipboardSettings>) => {
@@ -267,6 +279,20 @@ export const ClipboardPage: FC = () => {
               id="clipboard-capture-files-toggle"
               checked={settings.captureFiles}
               onChange={(v) => void patchSettings({ captureFiles: v })}
+            />
+          </SettingRow>
+
+          <SettingRow
+            label={t('clipboardPage.hidePinnedInOtherTitle', 'Hide Pinned Items in Other Categories')}
+            description={t(
+              'clipboardPage.hidePinnedInOtherDesc',
+              'Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors.',
+            )}
+          >
+            <Toggle
+              id="clipboard-hide-pinned-toggle"
+              checked={settings.hidePinnedInOtherCategories}
+              onChange={(v) => void patchSettings({ hidePinnedInOtherCategories: v })}
             />
           </SettingRow>
         </Card>

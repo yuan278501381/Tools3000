@@ -1002,9 +1002,9 @@ TEST(DpiUtilsTest, HighDpiSharedMetrics) {
     const SIZE tray100 = tools3000::ui::TrayWindowStyle::windowSizeForDpi(96);
     const SIZE tray150 = tools3000::ui::TrayWindowStyle::windowSizeForDpi(144);
     const SIZE tray200 = tools3000::ui::TrayWindowStyle::windowSizeForDpi(192);
-    EXPECT_TRUE(tray100.cx == 276 && tray100.cy == 388);
-    EXPECT_TRUE(tray150.cx == 414 && tray150.cy == 582);
-    EXPECT_TRUE(tray200.cx == 552 && tray200.cy == 776);
+    EXPECT_TRUE(tray100.cx == 320 && tray100.cy == 460);
+    EXPECT_TRUE(tray150.cx == 480 && tray150.cy == 690);
+    EXPECT_TRUE(tray200.cx == 640 && tray200.cy == 920);
 
     const SIZE settings100 = tools3000::ui::SettingsWindowStyle::windowSizeForDpi(96);
     const SIZE settings150 = tools3000::ui::SettingsWindowStyle::windowSizeForDpi(144);
@@ -5194,7 +5194,17 @@ TEST(TranslationServiceTest, LiveNetworkFreeChannelsSmokeWhenEnabled) {
 }
 
 #include "clipboard/ClipboardManager.h"
+#include "clipboard/ClipboardNativeDrag.h"
 #include "clipboard/ClipboardRustFfi.h"
+#include "ui/ClipboardWindow.h"
+
+extern "C" char* t3k_clip_query_json_v2(
+    const char* query_utf8,
+    const char* filter_kind_utf8,
+    const char* group_id_utf8,
+    uint32_t limit,
+    uint32_t offset,
+    int32_t exclude_pinned);
 
 TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
     using tools3000::clipboard::ClipboardManager;
@@ -5295,6 +5305,216 @@ TEST(ClipboardManagerTest, PrivacyBlocklistAndRustPersistenceAcrossRestart) {
     t3k_clip_free_string(statsRaw);
     EXPECT_EQ(stats.value("totalCount", 0), 1);
     EXPECT_EQ(stats.value("pinnedCount", 0), 1);
+}
+
+TEST(ClipboardManagerTest, TargetWindowNormalizationAndDragAutoHidePolicy) {
+    using tools3000::clipboard::ClipboardManager;
+    using tools3000::ui::ClipboardWindow;
+
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(nullptr, nullptr), nullptr);
+
+    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HWND selfWnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW, L"STATIC", L"T3KClipSelf", WS_POPUP,
+        -2000, -2000, 40, 40, nullptr, nullptr, hInst, nullptr);
+    HWND selfChild = CreateWindowExW(
+        0, L"STATIC", L"T3KClipSelfChild", WS_CHILD,
+        0, 0, 10, 10, selfWnd, nullptr, hInst, nullptr);
+    HWND otherWnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW, L"STATIC", L"T3KClipOther", WS_POPUP,
+        -2000, -2000, 40, 40, nullptr, nullptr, hInst, nullptr);
+    HWND otherChild = CreateWindowExW(
+        0, L"STATIC", L"T3KClipOtherChild", WS_CHILD,
+        0, 0, 10, 10, otherWnd, nullptr, hInst, nullptr);
+    ASSERT_NE(selfWnd, nullptr);
+    ASSERT_NE(selfChild, nullptr);
+    ASSERT_NE(otherWnd, nullptr);
+    ASSERT_NE(otherChild, nullptr);
+
+    // 不可见窗口被拒绝；可见自身及子窗口被拒绝；外部可见窗口及其子窗口归一化为顶层 GA_ROOT
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(otherWnd, selfWnd), nullptr);
+    ShowWindow(selfWnd, SW_SHOWNOACTIVATE);
+    ShowWindow(otherWnd, SW_SHOWNOACTIVATE);
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(selfWnd, selfWnd), nullptr);
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(selfChild, selfWnd), nullptr);
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(otherWnd, selfWnd), otherWnd);
+    EXPECT_EQ(ClipboardManager::normalizeValidTargetHwnd(otherChild, selfWnd), otherWnd);
+
+    DestroyWindow(otherChild);
+    DestroyWindow(otherWnd);
+    DestroyWindow(selfChild);
+    DestroyWindow(selfWnd);
+
+    // 原生拖拽期间、拖拽会话驻留期及结束后 1200ms 内严禁自动隐藏（即便未置顶）
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, true, 5000, 1000, 0));
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, false, 5200, 1000, 5000));
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, false, 6199, 1000, 5000));
+    EXPECT_TRUE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, false, 6200, 1000, 5000));
+    // 拖放成功后的会话驻留态 (dragSessionHold=true)：即使超过 1200ms（如 Chrome 地址栏延迟抢焦点），也保持面板驻留不消失
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, false, 20000, 1000, 5000, true));
+    // 置顶态、缩放态、刚呼出 200ms 内同样不可隐藏
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, true, false, false, 6000, 1000, 0));
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, true, false, 6000, 1000, 0));
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(true, false, false, false, false, 1150, 1000, 0));
+
+    // 内部瞬态覆盖层与桌面外壳绝不可污染目标窗口句柄（如截屏 F1 后 CaptureOverlay 或托盘窗），
+    // 而同进程可输入窗口（设置页/搜索页）与外部应用窗正常放行
+    EXPECT_TRUE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_CaptureOverlay"));
+    EXPECT_TRUE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_TrayWindow"));
+    EXPECT_TRUE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_ShortcutHintOverlay"));
+    EXPECT_TRUE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_ClipboardWindow"));
+    EXPECT_TRUE(ClipboardManager::isTransientInternalOverlayClass(L"Progman"));
+    EXPECT_FALSE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_SettingsWindow"));
+    EXPECT_FALSE(ClipboardManager::isTransientInternalOverlayClass(L"Tools3000_SearchWindow"));
+    EXPECT_FALSE(ClipboardManager::isTransientInternalOverlayClass(L"Chrome_WidgetWin_1"));
+
+    // 热键呼出策略（修复连按三下才呼出 / 掉后台误关）：
+    // 1. 仅当已显示、未处于冷启等待揭示、且确实位于前台激活态时，再次按下热键才执行隐藏
+    EXPECT_TRUE(ClipboardWindow::shouldHideOnToggle(true, false, true));
+    // 2. 窗口虽可见但掉到后台被其他窗口遮挡时，按 Alt+V 必须强力前置拉起，绝不隐藏
+    EXPECT_FALSE(ClipboardWindow::shouldHideOnToggle(true, false, false));
+    // 3. 冷启动 WebView 正在等待首帧揭示期间，按 Alt+V 必须继续前置展示，绝不中途取消隐藏
+    EXPECT_FALSE(ClipboardWindow::shouldHideOnToggle(true, true, true));
+    EXPECT_FALSE(ClipboardWindow::shouldHideOnToggle(true, true, false));
+    // 4. 隐藏态当然不可再隐藏
+    EXPECT_FALSE(ClipboardWindow::shouldHideOnToggle(false, false, false));
+    EXPECT_FALSE(ClipboardWindow::shouldHideOnToggle(false, false, true));
+}
+
+TEST(ClipboardManagerTest, ExcludePinnedQueryV2AndNativeDragDataObject) {
+    using namespace tools3000::clipboard;
+
+    // 1. Rust FFI v2 查询：验证 exclude_pinned 对非置顶分类生效、对 pinned 分类保持完整
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::filesystem::path clipTestDir =
+        std::filesystem::path(tempDir) /
+        (L"Tools3000_ClipboardExcludePinnedTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(clipTestDir, ec);
+
+    struct DirCleanup {
+        std::filesystem::path dir;
+        ~DirCleanup() {
+            t3k_clip_shutdown();
+            std::error_code e;
+            std::filesystem::remove_all(dir, e);
+        }
+    } cleanup{clipTestDir};
+
+    const std::string dirUtf8 = tools3000::core::WinUtils::wstringToUtf8(clipTestDir.wstring());
+    ASSERT_EQ(t3k_clip_init(dirUtf8.c_str()), 1);
+
+    const uint64_t idPinned = t3k_clip_add_item(0, "Pinned snippet", "", 0, 0, "", "Code.exe", 0, 100, 30, "", "");
+    const uint64_t idNormal = t3k_clip_add_item(0, "Regular snippet", "", 0, 0, "", "Notepad.exe", 0, 100, 30, "", "");
+    ASSERT_GT(idPinned, 0u);
+    ASSERT_GT(idNormal, 0u);
+    ASSERT_EQ(t3k_clip_toggle_pin(idPinned), 1);
+
+    char* rawExcluded = t3k_clip_query_json_v2("", "all", "", 20, 0, 1);
+    ASSERT_NE(rawExcluded, nullptr);
+    const auto excludedJson = nlohmann::json::parse(rawExcluded);
+    t3k_clip_free_string(rawExcluded);
+    EXPECT_EQ(excludedJson.value("total", 0), 2);
+    EXPECT_EQ(excludedJson.value("matched", 0), 1);
+    EXPECT_EQ(excludedJson.value("pinnedCount", 0), 1);
+    EXPECT_EQ(excludedJson.value("hiddenPinnedCount", 0), 1);
+    ASSERT_EQ(excludedJson["items"].size(), 1u);
+    EXPECT_EQ(excludedJson["items"][0].value("id", 0ull), idNormal);
+    EXPECT_FALSE(excludedJson["items"][0].value("pinned", true));
+
+    char* rawPinnedTab = t3k_clip_query_json_v2("", "pinned", "", 20, 0, 1);
+    ASSERT_NE(rawPinnedTab, nullptr);
+    const auto pinnedTabJson = nlohmann::json::parse(rawPinnedTab);
+    t3k_clip_free_string(rawPinnedTab);
+    EXPECT_EQ(pinnedTabJson.value("matched", 0), 1);
+    EXPECT_EQ(pinnedTabJson.value("hiddenPinnedCount", 0), 0);
+    ASSERT_EQ(pinnedTabJson["items"].size(), 1u);
+    EXPECT_EQ(pinnedTabJson["items"][0].value("id", 0ull), idPinned);
+
+    // 2. 纯 Win32 COM IDataObject / IEnumFORMATETC / IDropSource 协议与载荷验证
+    NativeDragPayload payload;
+    payload.unicodeText = L"C:\\Tools\\demo.exe";
+    const std::string htmlSample = "Version:0.9\r\n<b>Hello</b>";
+    payload.htmlBytes.assign(htmlSample.begin(), htmlSample.end());
+    payload.filePaths.push_back(L"C:\\Tools\\demo.exe");
+
+    auto dataObj = createNativeDragDataObject(payload);
+    ASSERT_NE(dataObj.Get(), nullptr);
+
+    FORMATETC textFe{CF_UNICODETEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    EXPECT_EQ(dataObj->QueryGetData(&textFe), S_OK);
+    STGMEDIUM textMed{};
+    ASSERT_EQ(dataObj->GetData(&textFe, &textMed), S_OK);
+    ASSERT_EQ(textMed.tymed, TYMED_HGLOBAL);
+    ASSERT_NE(textMed.hGlobal, nullptr);
+    const auto* lockedText = static_cast<const wchar_t*>(GlobalLock(textMed.hGlobal));
+    ASSERT_NE(lockedText, nullptr);
+    EXPECT_EQ(std::wstring(lockedText), L"C:\\Tools\\demo.exe");
+    GlobalUnlock(textMed.hGlobal);
+    ReleaseStgMedium(&textMed);
+
+    FORMATETC dropFe{CF_HDROP, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    EXPECT_EQ(dataObj->QueryGetData(&dropFe), S_OK);
+    STGMEDIUM dropMed{};
+    ASSERT_EQ(dataObj->GetData(&dropFe, &dropMed), S_OK);
+    ASSERT_EQ(dropMed.tymed, TYMED_HGLOBAL);
+    ASSERT_NE(dropMed.hGlobal, nullptr);
+    const UINT fileCount = DragQueryFileW(static_cast<HDROP>(dropMed.hGlobal), 0xFFFFFFFFu, nullptr, 0);
+    EXPECT_EQ(fileCount, 1u);
+    wchar_t extractedPath[MAX_PATH]{};
+    ASSERT_GT(DragQueryFileW(static_cast<HDROP>(dropMed.hGlobal), 0, extractedPath, MAX_PATH), 0u);
+    EXPECT_EQ(std::wstring(extractedPath), L"C:\\Tools\\demo.exe");
+    ReleaseStgMedium(&dropMed);
+
+    FORMATETC missingDibFe{CF_DIB, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    EXPECT_EQ(dataObj->QueryGetData(&missingDibFe), DV_E_FORMATETC);
+
+    FORMATETC ansiFe{CF_TEXT, nullptr, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};
+    EXPECT_EQ(dataObj->QueryGetData(&ansiFe), S_OK);
+    STGMEDIUM ansiMed{};
+    ASSERT_EQ(dataObj->GetData(&ansiFe, &ansiMed), S_OK);
+    ASSERT_EQ(ansiMed.tymed, TYMED_HGLOBAL);
+    ASSERT_NE(ansiMed.hGlobal, nullptr);
+    const auto* lockedAnsi = static_cast<const char*>(GlobalLock(ansiMed.hGlobal));
+    ASSERT_NE(lockedAnsi, nullptr);
+    EXPECT_EQ(std::string(lockedAnsi), "C:\\Tools\\demo.exe");
+    GlobalUnlock(ansiMed.hGlobal);
+    ReleaseStgMedium(&ansiMed);
+
+    Microsoft::WRL::ComPtr<IEnumFORMATETC> enumFmt;
+    ASSERT_EQ(dataObj->EnumFormatEtc(DATADIR_GET, enumFmt.GetAddressOf()), S_OK);
+    ASSERT_NE(enumFmt.Get(), nullptr);
+    FORMATETC enumerated[5]{};
+    ULONG fetched = 0;
+    EXPECT_EQ(enumFmt->Next(5, enumerated, &fetched), S_FALSE);
+    EXPECT_EQ(fetched, 4u); // CF_HDROP + HTML Format + CF_UNICODETEXT + CF_TEXT
+    EXPECT_EQ(enumFmt->Reset(), S_OK);
+
+    auto dropSource = createNativeDropSource();
+    ASSERT_NE(dropSource.Get(), nullptr);
+    EXPECT_EQ(dropSource->QueryContinueDrag(TRUE, MK_LBUTTON), DRAGDROP_S_CANCEL);
+    EXPECT_EQ(dropSource->QueryContinueDrag(FALSE, 0), DRAGDROP_S_DROP);
+    EXPECT_EQ(dropSource->QueryContinueDrag(FALSE, MK_LBUTTON), S_OK);
+    EXPECT_EQ(dropSource->GiveFeedback(DROPEFFECT_COPY), DRAGDROP_S_USEDEFAULTCURSORS);
+
+    // 3. 混合双引擎落点安全过滤与 Smart Drop-Paste 回退策略验证（防跨 UIPI 失效 / 防 Sublime 选区拒收 / 防误点标题栏）
+    EXPECT_TRUE(isSafeDropHitTestResult(HTCLIENT));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTCAPTION));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTCLOSE));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMINBUTTON));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMAXBUTTON));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTSYSMENU));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMENU));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTLEFT));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTBORDER));
+
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_COPY, false, true, true));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_CANCEL, DROPEFFECT_NONE, true, true, true));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, false, true));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, false));
+    EXPECT_TRUE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, true));
+    EXPECT_TRUE(shouldFallbackToSmartDropPaste(S_OK, DROPEFFECT_NONE, false, true, true));
 }
 
 

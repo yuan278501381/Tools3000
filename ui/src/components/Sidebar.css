@@ -170,19 +170,42 @@
   line-height: 1.5;
 }
 
-.sidebar__update-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--danger);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--danger) 24%, transparent);
+.sidebar__update-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+  color: var(--danger);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.35;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+  white-space: nowrap;
   flex-shrink: 0;
 }
 
-.sidebar__update-dot--ready {
-  background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 24%, transparent);
+.sidebar__update-pill--ready {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  border-color: color-mix(in srgb, var(--success) 34%, transparent);
+  color: var(--success);
+}
+
+.sidebar__update-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.sidebar__update-pill-text {
+  line-height: 1.3;
 }
 
 /* ── 导航区域 (Linear / Raycast 级单色线性图标 + 温润浮雕激活胶囊) ────────── */
@@ -317,6 +340,8 @@
 }
 
 .sidebar__item-label {
+  flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -493,8 +518,17 @@
   }
   .sidebar__logo-text,
   .sidebar__section-label,
-  .sidebar__item-label {
+  .sidebar__item-label,
+  .sidebar__update-pill-text {
     display: none;
+  }
+  .sidebar__update-pill {
+    position: absolute;
+    top: 6px;
+    right: 12px;
+    margin-left: 0;
+    padding: 2px;
+    gap: 0;
   }
   .sidebar__item {
     justify-content: center;

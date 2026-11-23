@@ -31,8 +31,8 @@
   container-type: inline-size;
   container-name: onboarding-card;
   position: relative;
-  width: min(820px, 92vw);
-  min-height: min(520px, 90vh);
+  width: min(860px, 92vw);
+  min-height: min(560px, 90vh);
   max-height: 94vh;
   margin: auto;
   flex-shrink: 0;
@@ -145,36 +145,34 @@
 
 .onboarding__subtitle {
   font-size: 0.92rem;
+  font-weight: 500;
   color: var(--text-muted);
-  margin-bottom: 28px;
+  margin-bottom: 22px;
   line-height: 1.5;
 }
 
-/* ── 功能卡片矩阵 (7 大核心能力闭环) ────────────────────────────────────── */
+/* ── 功能卡片矩阵 (2x4 共 8 张旗舰能力卡 · 12 核全景) ─────────────────────── */
 .onboarding__features {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   width: 100%;
-  max-width: 760px;
+  max-width: 790px;
 }
 
 .onboarding__feature-card {
-  flex: 0 1 calc(25% - 10px);
-  min-width: 150px;
-  max-width: 172px;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
-  padding: 13px 10px;
+  padding: 12px 10px;
   border-radius: 12px;
   background: var(--card-bg);
   border: 1px solid var(--card-border);
   box-shadow: var(--shadow-sm), var(--card-highlight);
   transition: border-color 160ms ease, transform 180ms var(--ease-spring), box-shadow 160ms ease;
   text-align: center;
+  min-width: 0;
 }
 
 .onboarding__feature-card:hover {
@@ -251,6 +249,71 @@
   font-weight: 600;
   color: var(--text-secondary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+  white-space: nowrap;
+}
+
+/* ── 搜索融合指令微晶速查条 ───────────────────────────────────────────────── */
+.onboarding__search-tips {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+  max-width: 640px;
+  padding: 9px 14px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-elevated));
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--card-border));
+  box-sizing: border-box;
+}
+
+.onboarding__search-tips-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.onboarding__search-tips-chips {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.onboarding__syntax-chip {
+  padding: 2px 7px;
+  border-radius: 6px;
+  background: var(--bg-primary);
+  border: 1px solid var(--card-border);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--primary);
+}
+
+.onboarding__syntax-chip--accent {
+  background: var(--primary-dim);
+  border-color: color-mix(in srgb, var(--primary) 34%, transparent);
+  color: var(--text-primary);
+}
+
+.onboarding__syntax-sep {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.onboarding__syntax-note {
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  color: var(--text-secondary);
 }
 
 /* ── 手势与屏幕演示双翼展厅 ──────────────────────────────────────────────── */
@@ -359,6 +422,26 @@
   color: var(--text-primary);
 }
 
+.onboarding__edge-wheel-tip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, var(--card-border));
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.onboarding__edge-wheel-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
 .onboarding__spotlight-list {
   display: flex;
   flex-direction: column;
@@ -405,6 +488,37 @@
 @keyframes onboarding-pulse {
   0%, 100% { box-shadow: 0 0 0 0 var(--primary-glow); }
   50%      { box-shadow: 0 0 0 16px transparent; }
+}
+
+.onboarding__complete-tips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  max-width: 520px;
+  margin-top: 4px;
+}
+
+.onboarding__complete-tip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--text-xs, 0.84rem);
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  text-align: left;
+}
+
+.onboarding__complete-tip-icon {
+  color: var(--primary);
+  flex-shrink: 0;
 }
 
 /* ── 底部导航 ─────────────────────────────────────────────────────────────── */
@@ -474,11 +588,8 @@
 /* ── 响应式 (容器查询与视口回退) ─────────────────────────────────────────── */
 @container onboarding-card (max-width: 780px) {
   .onboarding__features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     max-width: 540px;
-  }
-  .onboarding__feature-card {
-    flex: 0 1 calc(33.333% - 10px);
-    max-width: 165px;
   }
   .onboarding__showcase-grid {
     grid-template-columns: 1fr;
@@ -488,11 +599,8 @@
 
 @container onboarding-card (max-width: 560px) {
   .onboarding__features {
-    max-width: 380px;
-  }
-  .onboarding__feature-card {
-    flex: 0 1 calc(50% - 10px);
-    max-width: 180px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 420px;
   }
   .onboarding__shortcuts {
     grid-template-columns: 1fr;
@@ -503,9 +611,8 @@
   .onboarding__card {
     min-height: 420px;
   }
-  .onboarding__feature-card {
-    flex: 1 1 100%;
-    max-width: 100%;
+  .onboarding__features {
+    grid-template-columns: 1fr;
   }
   .onboarding__step {
     padding: 32px 16px 16px;
@@ -514,11 +621,8 @@
 
 @media (max-width: 840px) {
   .onboarding__features {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     max-width: 540px;
-  }
-  .onboarding__feature-card {
-    flex: 0 1 calc(33.333% - 10px);
-    max-width: 165px;
   }
   .onboarding__showcase-grid {
     grid-template-columns: 1fr;
@@ -528,11 +632,8 @@
 
 @media (max-width: 600px) {
   .onboarding__features {
-    max-width: 380px;
-  }
-  .onboarding__feature-card {
-    flex: 0 1 calc(50% - 10px);
-    max-width: 180px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    max-width: 420px;
   }
   .onboarding__shortcuts {
     grid-template-columns: 1fr;
@@ -543,9 +644,8 @@
   .onboarding__card {
     min-height: 420px;
   }
-  .onboarding__feature-card {
-    flex: 1 1 100%;
-    max-width: 100%;
+  .onboarding__features {
+    grid-template-columns: 1fr;
   }
   .onboarding__step {
     padding: 32px 16px 16px;

@@ -23,6 +23,7 @@
 #include "capture/PinGroupBarOverlay.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/TextReplaceEngine.h"
 #include "capture/ShortcutHintOverlay.h"
 #include "capture/ScrollCapture.h"
@@ -995,10 +996,103 @@ public:
             return {{"success", true}};
         });
 
+        auto serializeRegionHistoryItems = []() -> nlohmann::json {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& entry : CaptureRegionHistory::instance().entries()) {
+                arr.push_back({
+                    {"id", entry.id},
+                    {"l", entry.rect.left},
+                    {"t", entry.rect.top},
+                    {"r", entry.rect.right},
+                    {"b", entry.rect.bottom},
+                    {"name", entry.name},
+                    {"pinned", entry.pinned},
+                    {"updatedAt", entry.updatedAt}
+                });
+            }
+            return arr;
+        };
+
+        auto buildRegionHistoryStatePayload = [serializeRegionHistoryItems]() -> nlohmann::json {
+            const auto& rh = CaptureRegionHistory::instance();
+            return {
+                {"items", serializeRegionHistoryItems()},
+                {"maxEntries", rh.maxEntries()},
+                {"pinnedCount", rh.pinnedCount()},
+                {"primaryWidth", GetSystemMetrics(SM_CXSCREEN)},
+                {"primaryHeight", GetSystemMetrics(SM_CYSCREEN)}
+            };
+        };
+
+        auto persistAndBroadcastRegionHistory = [serializeRegionHistoryItems, buildRegionHistoryStatePayload]() -> bool {
+            const auto arr = serializeRegionHistoryItems();
+            const bool saved = tools3000::core::ConfigManager::instance().set<nlohmann::json>(
+                "/capture/regionHistoryItems", arr);
+            tools3000::core::MessageBridge::instance().pushEvent(
+                "capture:regionHistoryChanged",
+                buildRegionHistoryStatePayload());
+            return saved;
+        };
+
+        // 加载历史截图选区记忆上限与跨重启持久化快照（兼容旧数组格式与完整对象格式）
+        {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            const int limit = std::clamp(
+                cfg.get<int>("/capture/regionHistoryLimit",
+                             static_cast<int>(CaptureRegionHistory::kDefaultMaxEntries)),
+                static_cast<int>(CaptureRegionHistory::kMinConfigurableEntries),
+                static_cast<int>(CaptureRegionHistory::kMaxConfigurableEntries));
+            auto& regionHistory = CaptureRegionHistory::instance();
+            regionHistory.setMaxEntries(static_cast<std::size_t>(limit));
+            const auto savedItems = cfg.get<nlohmann::json>("/capture/regionHistoryItems", nlohmann::json::array());
+            if (savedItems.is_array() && !savedItems.empty()) {
+                std::vector<CaptureRegionEntry> restored;
+                restored.reserve(savedItems.size());
+                for (const auto& entry : savedItems) {
+                    if (entry.is_object() &&
+                        entry.contains("l") && entry.contains("t") &&
+                        entry.contains("r") && entry.contains("b") &&
+                        entry["l"].is_number_integer() && entry["t"].is_number_integer() &&
+                        entry["r"].is_number_integer() && entry["b"].is_number_integer()) {
+                        CaptureRegionEntry item{};
+                        item.id = entry.value("id", std::string{});
+                        item.rect = RECT{
+                            entry["l"].get<LONG>(),
+                            entry["t"].get<LONG>(),
+                            entry["r"].get<LONG>(),
+                            entry["b"].get<LONG>()
+                        };
+                        item.name = entry.value("name", std::string{});
+                        item.pinned = entry.value("pinned", false);
+                        item.updatedAt = entry.value("updatedAt", static_cast<int64_t>(0));
+                        restored.push_back(std::move(item));
+                    } else if (entry.is_array() && entry.size() == 4 &&
+                               entry[0].is_number_integer() && entry[1].is_number_integer() &&
+                               entry[2].is_number_integer() && entry[3].is_number_integer()) {
+                        CaptureRegionEntry item{};
+                        item.rect = RECT{
+                            entry[0].get<LONG>(),
+                            entry[1].get<LONG>(),
+                            entry[2].get<LONG>(),
+                            entry[3].get<LONG>()
+                        };
+                        restored.push_back(std::move(item));
+                    }
+                }
+                regionHistory.loadEntries(restored);
+            }
+        }
+
         auto& hotkeys = tools3000::core::HotkeyManager::instance();
         hotkeys.registerHotkey("Screenshot", configuredHotkey("Screenshot", {tools3000::core::ModKey::None, VK_F1}), []() {
             g_ocrPending.store(false);
             tools3000::capture::ScreenCapture::instance().startCapture(configuredCaptureOptions());
+        });
+        hotkeys.registerHotkey("Repeat Last Capture", configuredHotkey("Repeat Last Capture", {tools3000::core::ModKey::Shift, VK_F1}), []() {
+            g_ocrPending.store(false);
+            auto opts = configuredCaptureOptions();
+            opts.autoApplyLastRegion = true;
+            tools3000::capture::ScreenCapture::instance().startCapture(opts);
         });
         hotkeys.registerHotkey("Record", configuredHotkey("Record", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Shift, 'R'}), []() {
             toggleRecording();
@@ -1062,8 +1156,144 @@ public:
                 {"watermarkPolicyForced", wmCfg.policyForced},
                 {"sizeUnit", config.get<std::string>("/capture/sizeUnit", "px")},
                 {"showSizePosition", config.get<bool>("/capture/showSizePosition", true)},
-                {"showSizeUnit", config.get<bool>("/capture/showSizeUnit", true)}
+                {"showSizeUnit", config.get<bool>("/capture/showSizeUnit", true)},
+                {"regionHistoryLimit", std::clamp(
+                    config.get<int>("/capture/regionHistoryLimit",
+                                    static_cast<int>(CaptureRegionHistory::kDefaultMaxEntries)),
+                    static_cast<int>(CaptureRegionHistory::kMinConfigurableEntries),
+                    static_cast<int>(CaptureRegionHistory::kMaxConfigurableEntries))},
+                {"regionHistoryKey", CaptureRegionHistory::normalizeCycleKeyName(
+                    config.get<std::string>("/capture/regionHistoryKey", "R"))},
+                {"regionHistoryCount", static_cast<int>(CaptureRegionHistory::instance().size())}
             };
+        });
+
+        mb.registerHandler("capture.getRegionHistory", [buildRegionHistoryStatePayload](const nlohmann::json&) -> nlohmann::json {
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = true;
+            return payload;
+        });
+
+        mb.registerHandler("capture.upsertRegionHistory", [persistAndBroadcastRegionHistory, buildRegionHistoryStatePayload](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object()) return {{"success", false}, {"error", "invalid payload"}};
+            if (!params.contains("l") || !params.contains("t") || !params.contains("r") || !params.contains("b") ||
+                !params["l"].is_number_integer() || !params["t"].is_number_integer() ||
+                !params["r"].is_number_integer() || !params["b"].is_number_integer()) {
+                return {{"success", false}, {"error", "invalid region coordinates"}};
+            }
+            const RECT rawRect{
+                params["l"].get<LONG>(),
+                params["t"].get<LONG>(),
+                params["r"].get<LONG>(),
+                params["b"].get<LONG>()
+            };
+            const std::string name = params.value("name", std::string{});
+            const bool pinned = params.value("pinned", true);
+            const std::string existingId = params.value("id", std::string{});
+            const std::string id = CaptureRegionHistory::instance().upsertCustomRegion(
+                rawRect, name, pinned, existingId);
+            if (id.empty()) {
+                return {{"success", false}, {"error", "invalid region size or limit reached"}};
+            }
+            const bool saved = persistAndBroadcastRegionHistory();
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = saved;
+            payload["id"] = id;
+            return payload;
+        });
+
+        mb.registerHandler("capture.setRegionPinned", [persistAndBroadcastRegionHistory, buildRegionHistoryStatePayload](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object() || !params.contains("id") || !params["id"].is_string() ||
+                !params.contains("pinned") || !params["pinned"].is_boolean()) {
+                return {{"success", false}, {"error", "invalid payload"}};
+            }
+            const bool ok = CaptureRegionHistory::instance().setPinned(
+                params["id"].get<std::string>(), params["pinned"].get<bool>());
+            if (!ok) return {{"success", false}, {"error", "region not found or pinned limit reached"}};
+            const bool saved = persistAndBroadcastRegionHistory();
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = saved;
+            return payload;
+        });
+
+        mb.registerHandler("capture.renameRegion", [persistAndBroadcastRegionHistory, buildRegionHistoryStatePayload](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object() || !params.contains("id") || !params["id"].is_string() ||
+                !params.contains("name") || !params["name"].is_string()) {
+                return {{"success", false}, {"error", "invalid payload"}};
+            }
+            const bool ok = CaptureRegionHistory::instance().rename(
+                params["id"].get<std::string>(), params["name"].get<std::string>());
+            if (!ok) return {{"success", false}, {"error", "region not found"}};
+            const bool saved = persistAndBroadcastRegionHistory();
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = saved;
+            return payload;
+        });
+
+        mb.registerHandler("capture.deleteRegion", [persistAndBroadcastRegionHistory, buildRegionHistoryStatePayload](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object() || !params.contains("id") || !params["id"].is_string()) {
+                return {{"success", false}, {"error", "invalid payload"}};
+            }
+            const bool ok = CaptureRegionHistory::instance().removeById(params["id"].get<std::string>());
+            if (!ok) return {{"success", false}, {"error", "region not found"}};
+            const bool saved = persistAndBroadcastRegionHistory();
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = saved;
+            return payload;
+        });
+
+        mb.registerHandler("capture.clearRegionHistory", [persistAndBroadcastRegionHistory, buildRegionHistoryStatePayload](const nlohmann::json& params) -> nlohmann::json {
+            const bool includePinned = params.is_object() && params.value("includePinned", false);
+            if (includePinned) {
+                CaptureRegionHistory::instance().clear();
+            } else {
+                (void)CaptureRegionHistory::instance().clearUnpinned();
+            }
+            const bool saved = persistAndBroadcastRegionHistory();
+            auto payload = buildRegionHistoryStatePayload();
+            payload["success"] = saved;
+            payload["regionHistoryCount"] = static_cast<int>(CaptureRegionHistory::instance().size());
+            return payload;
+        });
+
+        mb.registerHandler("capture.triggerWithRegion", [runOnUiThread](const nlohmann::json& params) -> nlohmann::json {
+            if (!params.is_object()) return {{"success", false}, {"error", "invalid payload"}};
+            RECT targetRect{};
+            std::string targetName;
+            bool found = false;
+            if (params.contains("id") && params["id"].is_string()) {
+                CaptureRegionEntry entry{};
+                if (CaptureRegionHistory::instance().findById(params["id"].get<std::string>(), entry)) {
+                    targetRect = entry.rect;
+                    targetName = entry.name;
+                    found = true;
+                }
+            }
+            if (!found && params.contains("l") && params.contains("t") &&
+                params.contains("r") && params.contains("b") &&
+                params["l"].is_number_integer() && params["t"].is_number_integer() &&
+                params["r"].is_number_integer() && params["b"].is_number_integer()) {
+                targetRect = RECT{
+                    params["l"].get<LONG>(),
+                    params["t"].get<LONG>(),
+                    params["r"].get<LONG>(),
+                    params["b"].get<LONG>()
+                };
+                targetName = params.value("name", std::string{});
+                found = CaptureRegionHistory::isValidRect(targetRect);
+            }
+            if (!found) {
+                return {{"success", false}, {"error", "region not found"}};
+            }
+            runOnUiThread([targetRect, targetName]() {
+                g_ocrPending.store(false);
+                auto opts = configuredCaptureOptions();
+                opts.hasInitialRegion = true;
+                opts.initialRegion = targetRect;
+                opts.initialRegionName = targetName;
+                tools3000::capture::ScreenCapture::instance().startCapture(opts);
+            });
+            return {{"success", true}};
         });
 
         mb.registerHandler("capture.pickWatermarkImage", [](const nlohmann::json&) -> nlohmann::json {
@@ -1110,7 +1340,7 @@ public:
             return {{"success", true}, {"path", chosenUtf8}};
         });
 
-        mb.registerHandler("capture.updateSettings", [runOnUiThread](const nlohmann::json& params) -> nlohmann::json {
+        mb.registerHandler("capture.updateSettings", [runOnUiThread, persistAndBroadcastRegionHistory](const nlohmann::json& params) -> nlohmann::json {
             static const std::unordered_set<std::string> formats = {"png", "jpg", "jpeg", "webp", "bmp"};
             static const std::unordered_set<std::string> themes = {
                 "studio_slate", "paper_chalk", "silk_mist", "midnight_graphite", "pure_minimal",
@@ -1118,6 +1348,7 @@ public:
                 "airy_glacier", "dusk_mountains", "misty_lake_dawn"
             };
             static const std::unordered_set<std::string> sizeUnits = {"px", "dp"};
+            static const std::unordered_set<std::string> regionKeys = {"", "R", "`", "F2", "F4"};
             static const std::unordered_set<std::string> boolKeys = {
                 "saveToFile", "copyToClipboard", "includeCursor", "showCrosshair", "autoDetectWindow",
                 "showShortcutHints", "autoBypassFullscreen", "beautyShellEnabled",
@@ -1154,17 +1385,35 @@ public:
                     return {{"success", false}, {"error", "invalid watermark opacity"}};
                 if (key == "sizeUnit" && (!value.is_string() || !sizeUnits.contains(value.get<std::string>())))
                     return {{"success", false}, {"error", "invalid size unit"}};
+                if (key == "regionHistoryLimit" && (!value.is_number_integer() ||
+                    value.get<int>() < static_cast<int>(CaptureRegionHistory::kMinConfigurableEntries) ||
+                    value.get<int>() > static_cast<int>(CaptureRegionHistory::kMaxConfigurableEntries)))
+                    return {{"success", false}, {"error", "regionHistoryLimit must be between 0 and 50"}};
+                if (key == "regionHistoryKey" && (!value.is_string() || !regionKeys.contains(
+                    CaptureRegionHistory::normalizeCycleKeyName(value.get<std::string>()))))
+                    return {{"success", false}, {"error", "invalid region history shortcut key"}};
                 if (boolKeys.contains(key) && !value.is_boolean())
                     return {{"success", false}, {"error", key + " must be boolean"}};
                 if (key != "format" && key != "quality" && key != "saveDirectory" &&
                     key != "beautyShellTheme" && key != "beautyShellPadding" && key != "beautyShellRadius" &&
                     key != "watermarkMode" && key != "watermarkAnchor" && key != "watermarkImagePath" &&
                     key != "watermarkText" && key != "watermarkScale" && key != "watermarkOpacity" &&
-                    key != "sizeUnit" && !boolKeys.contains(key))
+                    key != "sizeUnit" && key != "regionHistoryLimit" && key != "regionHistoryKey" &&
+                    !boolKeys.contains(key))
                     return {{"success", false}, {"error", "unsupported setting: " + key}};
             }
+            nlohmann::json normalizedParams = params;
+            if (normalizedParams.contains("regionHistoryKey") && normalizedParams["regionHistoryKey"].is_string()) {
+                normalizedParams["regionHistoryKey"] = CaptureRegionHistory::normalizeCycleKeyName(
+                    normalizedParams["regionHistoryKey"].get<std::string>());
+            }
             const bool saved = tools3000::core::ConfigManager::instance().mergePatch(
-                {{"capture", params}}, "/capture");
+                {{"capture", normalizedParams}}, "/capture");
+            if (saved && normalizedParams.contains("regionHistoryLimit")) {
+                const int newLimit = normalizedParams.at("regionHistoryLimit").get<int>();
+                CaptureRegionHistory::instance().setMaxEntries(static_cast<std::size_t>(newLimit));
+                (void)persistAndBroadcastRegionHistory();
+            }
             if (saved && params.contains("showShortcutHints")) {
                 const bool enabled = params.at("showShortcutHints").get<bool>();
                 runOnUiThread([enabled]() {
@@ -2786,7 +3035,7 @@ public:
         bridge.unregisterHandlersByPrefix("history.");
 
         auto& hotkeys = tools3000::core::HotkeyManager::instance();
-        for (const char* name : {"Screenshot", "Record", "Record Pause", "Record Snapshot", "OCR", "Pin Toggle",
+        for (const char* name : {"Screenshot", "Repeat Last Capture", "Record", "Record Pause", "Record Snapshot", "OCR", "Pin Toggle",
                                  "Pin Paste", "Pin Hide All", "Pin Arrange",
                                  "Mute System Audio", "Mute Microphone"}) {
             hotkeys.unregisterHotkey(name);
