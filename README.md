@@ -21,14 +21,14 @@
 
 <br />
 
-Tools3000 将日常高频的**文件与书签搜索（含 CLI / MCP）、文档内容搜索、持久化剪贴板历史、滚动长截图、精准截图标注、桌面贴图与贴图组、高精度离线文本识别与原位翻译、录屏（自动运镜演播室、支持导出微信 GIF 与动态 WebP）、全局鼠标手势与 Rust 轻量看图器**整合为单一原生软件。待机仅占约十余 MB 内存、核心功能 100% 本地离线运行，同时适配个人电脑（`x64` / `ARM64`）与 Windows Server 多用户并发办公。
+Tools3000 将日常高频的**文件/应用/系统命令与原站图标书签搜索（含实时刷新、3 档内存省电模式及命令行/MCP）、文档内容搜索、重启不丢的剪贴板历史、文件对话框内嵌即搜、文件占用解锁、滚动长截图、精准截图标注、桌面贴图与贴图组、8 国语言自动离线识字与无痕原位翻译、录屏（自动运镜演播室、支持导出微信 GIF 与动态 WebP）、全局鼠标手势与 Rust 轻量看图器**整合为单一原生软件。核心功能 100% 本地离线运行、完整支持中文及多语言安装目录与用户名，待机仅占十余 MB 内存（搜索后台支持闲置 0 MB 休眠），同时适配个人电脑（`x64` / `ARM64`）与 Windows Server 多用户并发办公。
 
 ---
 
 ## 核心功能一览
 
 <p align="center">
-  <img src="docs/images/zh-CN/feature_bento_overview.png" alt="Tools3000 十大核心功能一图速览" width="100%" />
+  <img src="docs/images/zh-CN/feature_bento_overview.png" alt="Tools3000 十二大核心功能一图速览" width="100%" />
 </p>
 
 ---
@@ -38,12 +38,12 @@ Tools3000 将日常高频的**文件与书签搜索（含 CLI / MCP）、文档�
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/search_demo.webp" alt="毫秒级文件搜索与空格快速预览" width="100%" /><br />
-      <sub><b>极速文件搜索与空格预览</b> · 关键词或拼音首字母秒查，按空格免打开直看</sub>
+      <img src="docs/images/zh-CN/search_demo.webp" alt="毫秒级文件、应用、命令与原站图标书签融合搜索及空格快速预览" width="100%" /><br />
+      <sub><b>极速融合搜索与空格预览</b> · 原图标直达应用/知乎等书签/系统命令，Live 实时刷新与空格直看文档/压缩包/字体</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/ocr_live_text_demo.webp" alt="高精度离线文本识别、贴图划选与原位改字" width="100%" /><br />
-      <sub><b>高精度离线文本识别与批注</b> · 纯本地离线、准确率高于微信截图 OCR，拖选复制/波浪线/改字</sub>
+      <img src="docs/images/zh-CN/ocr_live_text_demo.webp" alt="全 8 语种高精度离线文本识别、贴图划选与原位改字" width="100%" /><br />
+      <sub><b>全 8 语种离线文本识别与批注</b> · 跨语种零切换离线识字、准确率高于微信截图 OCR，拖选复制/波浪线/改字</sub>
     </td>
   </tr>
   <tr>
@@ -73,33 +73,45 @@ Tools3000 将日常高频的**文件与书签搜索（含 CLI / MCP）、文档�
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/zh-CN/mouse_gesture_demo.webp" alt="全局鼠标手势与屏幕边缘滚轮" width="100%" /><br />
-      <sub><b>全局鼠标手势</b> · 按住右键一划关标签、不松键瞬发切页、边缘滚轮调音量</sub>
+      <sub><b>全局鼠标手势</b> · 默认停顿自动取消防误触、应用参数精准切窗、不松键瞬发与边缘滚轮调音量</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/zh-CN/translate_demo.webp" alt="微信级截图原位翻译与代码标识符保护" width="100%" /><br />
-      <sub><b>微信级截图原位翻译</b> · 免 Key 双通道 + BYOK 大模型，1:1 原位覆写、代码原样保护与 0ms 原译瞬切</sub>
+      <sub><b>微信级截图原位翻译</b> · 免 Key 双通道 + 自定义大模型，智能擦除无痕覆盖、代码原样保留与 0ms 原译瞬切</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/clipboard_demo.webp" alt="纯 Rust 持久化剪贴板历史与 Shift/Ctrl 批量合并粘贴" width="100%" /><br />
-      <sub><b>持久化剪贴板历史 (Alt + V)</b> · 纯 Rust 重启不丢，支持 Shift/Ctrl 批量按序合并粘贴、富文本与分组管理</sub>
+      <img src="docs/images/zh-CN/clipboard_demo.webp" alt="重启不丢的剪贴板历史与 Shift/Ctrl 批量合并粘贴" width="100%" /><br />
+      <sub><b>剪贴板历史 (Alt + V)</b> · 关机重启不丢，Shift/Ctrl 按序合并粘贴、富文本、分组与托盘快捷开关</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/dialog_enhancer_demo.webp" alt="文件对话框助手 Listary 风格内嵌即搜即跳" width="100%" /><br />
+      <sub><b>文件对话框助手</b> · 打开/另存为及软件自身弹窗直接搜目录一键跳，另存为文件名绝不覆盖</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/zh-CN/file_locksmith_demo.webp" alt="文件占用解锁与托盘快捷开关" width="100%" /><br />
+      <sub><b>文件占用解锁</b> · 右键文件、搜索结果或页内直选，秒查占用进程并一键安全解锁</sub>
     </td>
   </tr>
 </table>
 
 | 模块 | 核心体验 |
 | :--- | :--- |
-| **极速文件搜索** | `Alt + Space` 全盘百万文件毫秒秒搜，支持中文全拼与首字母、`bm:` 直搜 Chrome/Edge/Firefox 浏览器书签、默认「打开次数」频次列与自定义拖拽分类栏排序；选中按 `Space` 免打开快速预览（图片、Office、PDF、代码、CAD、PSD 与 3D 模型）；内置 350 KB 零依赖纯 Rust `tools3000-cli.exe`（支持命令行脚本与 MCP Server 接入 AI Agent）。 |
+| **极速文件搜索** | `Alt + Space` 全盘百万文件毫秒秒搜，融合中文全拼/首字母、已安装软件（`app:`）、37 个常用 Windows 系统工具（`cmd:env` 等）与 Edge/Chrome/Brave/Vivaldi 浏览器书签（`bm:`/`b:`，纯离线直接显示网站原本图标）；支持 **实时刷新**（新下载/新建文件直接出现）、**3 档内存模式**（含闲置 0 MB 休眠）、打开次数统计与自定义拖拽分类栏；选中按 `Space` 免打开快速预览（文档、PDF、代码、CAD、PSD、3D、压缩包 ZIP/7Z/RAR、字体 TTF/OTF 与音视频画面）；并附带 350 KB 轻量命令行与 MCP 工具 `tools3000-cli.exe`。 |
 | **文档内容搜索** | `content:` 直接穿透检索 Word、Excel、PDF、PPT、CAD 与源代码正文，实时高亮上下文片段并支持点击行号一键复制。 |
-| **持久化剪贴板历史** | `Alt + V` 秒呼（亦可在系统托盘右键菜单一键打开），基于纯 Rust 原子持久化引擎重启不丢；支持 `Shift / Ctrl` 固定锚点批量按序合并粘贴与删除、HTML/RTF 富文本、收藏分组、内联编辑、`Alt + 1..9` 极速瞬贴、颜色色块与敏感应用屏蔽。 |
+| **剪贴板历史** | `Alt + V` 秒呼（支持托盘右键快捷打开与托盘面板一键开关），关机重启不丢历史记录；支持 `Shift / Ctrl` 按序批量合并粘贴与删除、HTML/RTF 富文本、收藏分组、内联编辑、`Alt + 1..9` 极速瞬贴、颜色色块与敏感应用自动跳过。 |
+| **文件对话框助手** | 在 Windows 原生「打开 / 另存为 / 选择文件夹」及 Tools3000 自身弹窗上方自动出现快捷导览条，像 Listary 一样直接输入搜目录一键跳转；另存为模式下严格保护底部文件名不被覆盖。 |
+| **文件占用解锁** | 删不掉文件时一键找出谁在占用：在资源管理器右键文件或文件夹（可选仅按住 `Shift + 右键` 显示）、搜索结果右键，或在设置页内直接选择文件/文件夹，都能秒查占用进程并一键安全解锁；平时零内存常驻、不改系统底层，关闭即自动清理右键项。 |
 | **滚动长截图** | 网页、文档与聊天记录自动滚动无缝拼接，右侧实时预览，支持首尾无损裁切（随时往回拖恢复）与长图原位标注。 |
 | **精准截图标注** | `F1` 自动吸附窗口与界面控件，支持像素级取色、默认虚线光学放大镜、6 种箭头、自愈步骤序号、隐私马赛克与美化分享壳。 |
 | **桌面贴图与贴图组** | `F3` 一键将截图或剪贴板图像置顶悬浮，支持 120Hz 阻尼无级缩放、透明调节与鼠标穿透；内置多贴图分组管理，可通过顶部导览条按组秒切显隐或一键磁吸整齐平铺。 |
-| **高精度离线文本识别与原位翻译** | 纯本地离线识别，实测代码、JSON 与复杂排版识别准确率高于微信截图 OCR，支持原图/贴图划选复制、波浪线/荧光笔批注、原位无痕改字及表格/二维码提取；并内置**微信级截图原位 1:1 翻译**（免 Key 双通道开箱即译 + 自定义 OpenAI 兼容大模型），原生支持代码标识符自动保护与 0ms 原图/译文瞬切。 |
+| **8 国语言离线识字与原位翻译** | 纯本地离线跨语种零切换识字（自动识别中/英/日/韩/俄/西/葡截图，4 套轻量语言包按需下载，贴图右键可单图强制切语种），支持划选复制、波浪线/荧光笔批注、原位无痕改字与表格/二维码提取；内置**微信级无痕原位 1:1 翻译**（免 Key 双通道 + 自定义 OpenAI 兼容大模型），代码原样保留与 0ms 原译瞬切。 |
 | **录屏与自动运镜演播室** | 录屏联动键鼠回显，停止即进演播室——光标点击处智能自动运镜聚焦，搭配多款质感壁纸与声波时间轴剪辑；支持一键导出 **MP4**、**微信直发 GIF**（免点直播表情 / 可双击放大高清大图分档）与**高清动态 WebP**。 |
-| **全局鼠标手势** | 按住右键一划即可切标签、后退、关窗口，支持不松键瞬发、屏幕边缘滚轮调音量、分应用专属手势与全屏游戏自动避让。 |
-| **演示特效与远控助手** | 投屏清透键帽与双击 `Ctrl` 聚光灯；系统“打开 / 另存为”弹窗快捷导览条；mstsc、RustDesk、ToDesk、向日葵等远控系统热键直通与卡键一键释放。 |
+| **全局鼠标手势** | 按住右键一划即可切标签、后退、关窗口；默认开启「划动中途停顿自动取消」防误触，支持「运行程序」精准切回已有窗口（含 Chrome 多开不同配置）、不松键瞬发、屏幕边缘滚轮调音量/硬件亮度、8 秒彩蛋、全屏游戏自动避让与 Lua 扩展。 |
+| **演示特效与远控助手** | 投屏清透键帽与双击 `Ctrl` 聚光灯；mstsc、RustDesk、ToDesk、向日葵等远控系统热键直通与卡键一键释放；侧边栏左下角内置支持本机隐私自动打码的「问题反馈」与诊断包导出通道。 |
 | **Picasa 图片查看器（Rust 复刻 · 可选）** | 基于 Rust + Direct2D 复刻的经典 Picasa 轻量图片查看器（**非原版 Google Picasa 全功能套件**）。**单文件不足 2 MB、零外部运行库依赖，既可随 Tools3000 使用也可直接拎出来完全独立使用**；安装默认不勾选，勾选或设置页启用即自动关联全部 41 种支持的图片格式（附经典拍立得图标与原生深浅自适应关联面板）。在高度还原原版丝滑阻尼光标缩放、胶片缩略图涟漪、关闭收拢与整屏交叉叠化幻灯片动效的同时，**补足了原版缺失的现代功能**：4K High-DPI 100%~250%+ 物理像素锐度与 60~240Hz VSync 硬件渲染、WebP / AVIF / HEIC / SVG / QOI / DDS / 主流相机 RAW 解码、动图逐帧/倍速播控、水平与垂直无损镜像翻转及全 8 语种界面。 |
 
 ---
@@ -167,21 +179,35 @@ scoop install tools3000/tools3000
 | **WGestures / StrokesPlus** | 按住右键一划切标签/后退/关窗、不松键瞬发、屏幕边缘滚轮调音量、四角触发、全屏游戏自动避让与内置 Lua 扩展 | 需要极复杂的多键组合触发（如左键按住加右键手势）、复杂窗体区域条件或多年沉淀的宏录制脚本 |
 | **各类录屏工具（如 ShareX）** | 录屏、键鼠回显、停止即进自动运镜演播室（声波剪辑与鼠标运镜），一键导出 MP4、微信直发 GIF 与动态 WebP | 需要 80+ 图床/S3/FTP/Webhook 截完自动上传工作流，或高度定制的自定义 FFmpeg 批处理流水线 |
 | **Picasa 看图器 / FastStone / Windows 照片** | 可选内置不足 2 MB 的 Rust 复刻 Picasa 轻量看图器（亦可零依赖独立运行），极速开图、经典跟手动效，并补齐 4K High-DPI、WebP/AVIF/HEIC/SVG/RAW 与无损翻转等现代能力 | 需要原版 Google Picasa 的相册库扫描管理、人脸识别，或专业批量转码/RAW 后期调色修图软件 |
+| **Listary 对话框跳转 / PowerToys File Locksmith** | 在 Windows「打开 / 另存为」与自身弹窗内直接输入搜目录一键跳转（严守另存文件名不覆盖）；「文件占用解锁」平时零常驻，右键文件或页内直选即可秒查占用进程并一键解锁 | 需要 Listary 全套自定义动作流/外部启动器插件，或极深度的内核句柄级强制拆锁分析 |
 
 ---
 
-## 常用快捷键
+## 常用快捷键与入口/文件位置速查
 
 所有快捷键均可在设置中心自由修改并自动检测冲突：
 
 | 快捷键 | 功能 |
 | :--- | :--- |
-| `Alt + Space` | 呼出 / 隐藏极速搜索（支持 `bm:` 搜书签，选中结果按 `Space` 快速预览） |
-| `Alt + V` | 呼出 / 隐藏持久化剪贴板历史（支持 `Shift / Ctrl` 批量合并粘贴与 `Alt + 1..9` 瞬贴，亦可在托盘右键菜单打开） |
+| `Alt + Space` | 呼出 / 隐藏极速搜索（支持 `app:` / `cmd:` / `bm:` / `content:`，选中结果按 `Space` 快速预览） |
+| `Alt + V` | 呼出 / 隐藏剪贴板历史（支持 `Shift / Ctrl` 按序合并粘贴与 `Alt + 1..9` 瞬贴，也可在托盘右键菜单打开） |
 | `F1` | 区域截图、标注与一键原位翻译 |
 | `F3` | 将剪贴板图像或文本置顶贴图 |
 | 快速双击 `Ctrl` | 唤起 / 关闭鼠标聚光灯 |
 | `Ctrl + Alt + Backspace` | 远控修饰键卡死一键释放（或快速双击右侧 `Ctrl`） |
+
+### 界面入口与本地数据路径
+
+完整兼容包含中文、日文、韩文、俄文、西葡等非英文字符的安装目录与 Windows 用户名：
+
+| 项目 | 界面入口 / 标准安装路径 | 绿色便携版路径 |
+| :--- | :--- | :--- |
+| **文件占用解锁** | 设置：`系统总控 -> 功能模块`、`效率工具 -> 文件占用解锁`；快捷：`托盘右键面板`、`文件右键`、`搜索结果右键` | 同左（仅写入当前用户右键项，平时零常驻、关闭即自动清理） |
+| **搜索原图标 / 实时刷新 / 内存模式** | `效率工具 -> 文件搜索`（图标风格 / 实时监控 / 服务内存管理）；搜索窗底部状态栏支持一键开关实时监控 | 同左（浏览器书签原站图标纯离线读取本地缓存，零联网） |
+| **多语种离线识字包** | `效率工具 -> 文本识别与翻译` / 贴图右键 `识字语种`；模型存于 `%LOCALAPPDATA%\Tools3000\models\ocr\` | `<程序目录>\data\models\ocr\` |
+| **剪贴板历史数据** | 托盘右键面板一键开关；数据存于 `%LOCALAPPDATA%\Tools3000\clipboard\` | `<程序目录>\data\clipboard\` |
+| **全局配置与诊断日志** | 配置 `%LOCALAPPDATA%\Tools3000\config\config.json`；日志 `%LOCALAPPDATA%\Tools3000\logs\tools3000.log`（左下角「问题反馈」导出前会自动抹除路径用户名、IP、邮箱等隐私） | `<程序目录>\data\config\` 与 `<程序目录>\data\logs\` |
+| **独立命令行与看图工具** | `C:\Program Files\Tools3000\tools3000-cli.exe`（命令行 / MCP）与 `Tools3000_Picasa_Viewer.exe`（独立看图器） | `<程序目录>\tools3000-cli.exe` 与 `Tools3000_Picasa_Viewer.exe` |
 
 ---
 
@@ -204,11 +230,11 @@ scoop install tools3000/tools3000
 
 ## Star History
 
-<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+<a href="https://www.star-history.com/#yuan278501381/tools3000&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
-   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
  </picture>
 </a>
 

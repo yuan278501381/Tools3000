@@ -21,14 +21,14 @@
 
 <br />
 
-Tools3000은 매일 자주 쓰는 **초고속 파일·북마크 검색(CLI / MCP 포함), 문서 본문 검색, 영구 클립보드 기록, 자동 스크롤 긴 캡처, 정밀 스크린샷 주석, 화면 고정(핀) 및 그룹 관리, 오프라인 고정밀 OCR·제자리 번역, 화면 녹화(자동 줌 스튜디오 · MP4 / 메신저용 GIF / 애니메이션 WebP 내보내기), 전역 마우스 제스처, Rust 경량 뷰어**를 하나의 네이티브 Windows 앱으로 통합했습니다. 대기 메모리는 약 십수 MB 수준이며 핵심 기능은 100% 로컬 오프라인으로 동작하고, 개인 PC(`x64` / `ARM64`)는 물론 Windows Server 다중 사용자 동시 작업 환경까지 완벽히 지원합니다.
+Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 원본 아이콘 북마크 검색(실시간 반영·3단계 메모리·CLI / MCP 포함), 문서 본문 검색, 재부팅 후에도 유지되는 클립보드 기록, 파일 대화상자 내장 검색, 파일 잠금 해제, 자동 스크롤 긴 캡처, 정밀 스크린샷 주석, 화면 고정(핀) 및 그룹 관리, 8개국어 자동 오프라인 OCR·깔끔한 원위치 번역, 화면 녹화(자동 줌 스튜디오 · MP4 / 메신저용 GIF / 애니메이션 WebP 내보내기), 전역 마우스 제스처, Rust 경량 뷰어**를 하나의 네이티브 Windows 앱으로 통합했습니다. 핵심 기능은 100% 로컬 오프라인으로 동작하며 한국어 등 비영어 설치 폴더와 사용자 이름을 완벽히 지원합니다. 대기 메모리는 약 십수 MB 수준(검색 서비스 대기 시 0 MB 절전 가능)이며 개인 PC(`x64` / `ARM64`)와 Windows Server 다중 사용자 동시 작업 환경 모두에 최적화되어 있습니다.
 
 ---
 
 ## 핵심 기능 한눈에 보기
 
 <p align="center">
-  <img src="docs/images/ko-KR/feature_bento_overview.png" alt="Tools3000 10대 핵심 기능 개요" width="100%" />
+  <img src="docs/images/ko-KR/feature_bento_overview.png" alt="Tools3000 12대 핵심 기능 개요" width="100%" />
 </p>
 
 ---
@@ -38,12 +38,12 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·북마크 검색(CLI / MCP
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/search_demo.webp" alt="밀리초 파일 검색 및 스페이스바 빠른 미리보기" width="100%" /><br />
-      <sub><b>초고속 파일 검색 및 빠른 미리보기</b> · 수백만 파일을 밀리초 만에 찾고 Space 키로 바로 확인</sub>
+      <img src="docs/images/ko-KR/search_demo.webp" alt="밀리초 파일·앱·명령·원본 아이콘 북마크 통합 검색 및 Space 빠른 미리보기" width="100%" /><br />
+      <sub><b>초고속 통합 검색 및 빠른 미리보기</b> · 앱·원본 Favicon 북마크·시스템 도구 통합, 실시간 반영 및 압축/글꼴 Space 미리보기</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/ocr_live_text_demo.webp" alt="오프라인 고정밀 OCR, 텍스트 선택 및 제자리 수정" width="100%" /><br />
-      <sub><b>오프라인 고정밀 OCR 및 주석</b> · 100% 로컬 처리, 드래그 복사 · 물결 밑줄 · 제자리 텍스트 수정 지원</sub>
+      <img src="docs/images/ko-KR/ocr_live_text_demo.webp" alt="8개국어 오프라인 OCR, 텍스트 선택 및 원위치 수정" width="100%" /><br />
+      <sub><b>8개국어 오프라인 OCR 및 주석</b> · 언어 전환 없이 자동 인식, 드래그 복사 · 물결 밑줄 · 원위치 텍스트 수정 지원</sub>
     </td>
   </tr>
   <tr>
@@ -73,33 +73,45 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·북마크 검색(CLI / MCP
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/ko-KR/mouse_gesture_demo.webp" alt="전역 마우스 제스처 및 화면 가장자리 휠 볼륨 조절" width="100%" /><br />
-      <sub><b>전역 마우스 제스처</b> · 우클릭 드래그로 탭 닫기, 버튼 떼기 전 즉시 실행, 화면 가장자리 휠 볼륨 조절</sub>
+      <sub><b>전역 마우스 제스처</b> · 멈춤 자동 취소 기본 활성, 기존 창 스마트 전환, 즉시 실행 및 화면 가장자리 휠 볼륨</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/translate_demo.webp" alt="스크린샷 제자리 1:1 번역 및 코드 식별자 보호" width="100%" /><br />
-      <sub><b>스크린샷 제자리 번역</b> · 키 없이 무료 번역 + BYOK 지원, 1:1 무왜곡 덮어쓰기 · 코드 보호 · 0ms 원문 전환</sub>
+      <img src="docs/images/ko-KR/translate_demo.webp" alt="스크린샷 원위치 1:1 번역 및 코드 보호" width="100%" /><br />
+      <sub><b>스크린샷 원위치 번역</b> · 키 없이 무료 번역 + BYOK 지원, 깔끔한 1:1 덮어쓰기 · 코드 보호 · 0ms 원문 전환</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/clipboard_demo.webp" alt="순수 Rust 영구 클립보드 기록 및 Shift/Ctrl 병합 붙여넣기" width="100%" /><br />
-      <sub><b>영구 클립보드 기록 (Alt + V)</b> · 순수 Rust 재부팅 영구 보관, Shift/Ctrl 순차 병합 붙여넣기 · 서식 · 그룹 관리</sub>
+      <img src="docs/images/ko-KR/clipboard_demo.webp" alt="영구 클립보드 기록 및 Shift/Ctrl 병합 붙여넣기" width="100%" /><br />
+      <sub><b>영구 클립보드 기록 (Alt + V)</b> · 재부팅 후에도 유지, Shift/Ctrl 순차 병합 붙여넣기 · 서식 · 트레이 스위치</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/ko-KR/dialog_enhancer_demo.webp" alt="파일 대화상자 도우미 Listary 스타일 내장 즉시 검색" width="100%" /><br />
+      <sub><b>파일 대화상자 도우미</b> · Windows 열기/저장 창에서 폴더 즉시 검색·이동, 저장 파일명은 절대 덮어쓰지 않음</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/ko-KR/file_locksmith_demo.webp" alt="파일 잠금 해제 및 트레이 스위치" width="100%" /><br />
+      <sub><b>파일 잠금 해제</b> · 우클릭·검색 결과·전용 페이지에서 점유 앱을 즉시 찾고 원클릭 안전 해제</sub>
     </td>
   </tr>
 </table>
 
 | 모듈 | 주요 기능 |
 | :--- | :--- |
-| **초고속 파일 검색** | `Alt + Space`로 전체 드라이브의 수백만 개 파일을 밀리초 단위로 검색합니다. `bm:` Chrome/Edge/Firefox 북마크 직검색, 기본 '열기 횟수' 열, 드래그 정렬 카테고리 바를 지원하며 `Space` 키로 이미지·Office·PDF·코드·CAD·PSD·3D 모델을 즉시 미리 봅니다. AI 에이전트용 350 KB 순수 Rust `tools3000-cli.exe`(CLI & MCP 서버)도 내장합니다. |
+| **초고속 파일 검색** | `Alt + Space`로 수백만 개 파일을 밀리초 만에 검색하며 설치된 앱(`app:`), 37개 Windows 시스템 도구(`cmd:env` 등), Edge/Chrome/Brave/Vivaldi 북마크(`bm:`/`b:`, 로컬에서 원본 웹사이트 아이콘 오프라인 표시)를 통합합니다. **실시간 변경 반영(Live)**, **3단계 메모리 정책**(대기 0 MB 절전 포함), 열기 횟수 표시, 드래그 정렬 카테고리 바, `Space` 빠른 미리보기(문서·PDF·코드·CAD·PSD·3D·ZIP/7Z/RAR 압축·TTF/OTF 글꼴·미디어)와 350 KB 경량 CLI/MCP 도구 `tools3000-cli.exe`를 내장합니다. |
 | **문서 본문 검색** | `content:` 접두사로 Word, Excel, PDF, PowerPoint, CAD 및 소스 코드 내부 텍스트를 검색하고, 강조된 문맥과 행 번호 클릭 원클릭 복사를 지원합니다. |
-| **영구 클립보드 기록** | `Alt + V`(또는 시스템 트레이 우클릭 메뉴)로 즉시 호출하며 순수 Rust 원자 저장으로 재부팅 후에도 유지됩니다. `Shift / Ctrl` 고정 기준점 순차 병합 붙여넣기·일괄 삭제, HTML/RTF 서식, 즐겨찾기 그룹, 인라인 편집, `Alt + 1..9` 즉시 붙여넣기, 민감 앱 제외를 지원합니다. |
+| **영구 클립보드 기록** | `Alt + V`(또는 트레이 우클릭 메뉴·트레이 제어 센터 원클릭 전환)로 즉시 호출하며 재부팅 후에도 유지됩니다. `Shift / Ctrl` 순차 병합 붙여넣기·일괄 삭제, HTML/RTF 서식, 즐겨찾기 그룹, 인라인 편집, `Alt + 1..9` 즉시 붙여넣기, 민감 앱 제외를 지원합니다. |
+| **파일 대화상자 도우미** | Windows 열기/다른 이름으로 저장/폴더 선택 창과 Tools3000 자체 대화상자 상단에 빠른 이동 바를 자동 표시합니다. Listary 스타일로 폴더를 즉시 검색해 이동하며 저장 파일명은 안전하게 보호합니다. |
+| **파일 잠금 해제** | 삭제되지 않는 파일을 잡고 있는 앱을 즉시 찾아 안전하게 해제합니다. 탐색기 우클릭(선택적으로 `Shift + 우클릭` 시에만 표시), 검색 결과 우클릭 또는 설정 내 전용 페이지에서 바로 파일을 선택해 검사할 수 있으며 평소 상주 메모리는 0 MB이고 끄면 우클릭 메뉴도 자동 정리됩니다. |
 | **자동 스크롤 긴 캡처** | 긴 웹페이지, 문서, 메신저 대화를 자동 스크롤로 매끄럽게 이어 붙입니다. 우측 실시간 미리보기, 상하단 무손실 자르기(언제든 드래그로 복원), 긴 이미지 직접 주석을 지원합니다. |
 | **정밀 스크린샷 주석** | `F1`으로 창과 UI 컨트롤에 자동 스냅해 캡처합니다. 픽셀 컬러 피커, 기본 점선 광학 돋보기, 6종 화살표, 자동 재정렬 번호, 프라이버시 모자이크, 공유 프레임을 제공합니다. |
 | **화면 고정 핀 및 그룹** | `F3`으로 스크린샷이나 클립보드 이미지를 항상 위에 고정하고 120Hz 부드러운 무단계 줌, 투명도, 클릭 투과를 지원합니다. 색상 그룹으로 묶어 상단 바에서 표시 전환하거나 원클릭으로 깔끔하게 정렬할 수 있습니다. |
-| **오프라인 고정밀 OCR 및 제자리 번역** | 완전 오프라인 고정밀 OCR(드래그 복사, 물결선·형광펜 주석, 제자리 텍스트 수정, 표·QR 추출)에 더해 **1:1 무왜곡 스크린샷 제자리 번역**(무료 듀얼 채널 + BYOK OpenAI 호환 모델)을 내장했습니다. 코드 식별자 자동 보호 및 0ms 원본/번역 즉시 전환을 지원합니다. |
-| **화면 녹화 및 스튜디오** | 키/클릭 오버레이가 포함된 화면 녹화 후 자동으로 스튜디오로 이동합니다. 클릭 지점 스마트 자동 줌, 프리미엄 배경, 파형 타임라인 편집을 지원하며 **MP4**, **메신저용 GIF(WeChat 최적화 등급)**, **고화질 애니메이션 WebP**로 원클릭 내보내기가 가능합니다. |
-| **전역 마우스 제스처** | 우클릭 드래그만으로 탭 전환, 뒤로 가기, 창 닫기를 수행합니다. 키를 떼기 전 즉시 실행, 화면 가장자리 휠 볼륨 조절, 앱별 규칙, 전체 화면 게임 자동 우회를 지원합니다. |
-| **프레젠테이션 및 원격 도우미** | 깔끔한 키 입력 표시 및 `Ctrl` 두 번 누르기 스포트라이트, Windows 열기/저장 대화 상자 빠른 이동 바, mstsc·RustDesk·ToDesk·AnyDesk 원격 단축키 패스스루 및 키 걸림 해제 기능을 제공합니다. |
+| **8개국어 오프라인 OCR 및 원위치 번역** | 언어 전환 없이 한·일·중·영·러·스·포 스크린샷을 100% 로컬 자동 인식합니다(추가 4개 경량 언어팩 필요 시 다운로드, 핀 우클릭으로 개별 언어 지정 가능). 드래그 복사, 물결선·형광펜 주석, 원위치 텍스트 수정, 표·QR 추출에 더해 **깔끔한 1:1 원위치 번역**(무료 2채널 + BYOK OpenAI 호환 모델), 코드 보호, 0ms 원본/번역 전환을 지원합니다. |
+| **화면 녹화 및 스튜디오** | 키/클릭 오버레이가 포함된 화면 녹화 후 자동으로 스튜디오로 이동합니다. 클릭 지점 스마트 자동 줌, 프리미엄 배경, 파형 타임라인 편집을 지원하며 **MP4**, **메신저용 GIF**, **고화질 애니메이션 WebP**로 원클릭 내보내기가 가능합니다. |
+| **전역 마우스 제스처** | 우클릭 드래그만으로 탭 전환, 뒤로 가기, 창 닫기를 수행합니다. 실수 방지를 위한 '멈춤 자동 취소' 기본 활성, 기존 창 스마트 전환(Chrome 다중 프로필 구분 포함), 즉시 실행, 화면 가장자리 휠 볼륨/밝기, 8초 이스터에그, 게임 자동 우회, Lua 확장을 지원합니다. |
+| **프레젠테이션 및 원격 도우미** | 깔끔한 키 입력 표시 및 `Ctrl` 두 번 누르기 스포트라이트, mstsc·RustDesk·ToDesk·AnyDesk 원격 단축키 패스스루 및 키 걸림 해제, 좌측 하단 '피드백'에서 사용자 이름·IP·이메일 등을 자동 마스킹하는 진단 리포트 내보내기를 제공합니다. |
 | **Picasa 이미지 뷰어 (Rust 재구현 · 선택)** | Rust + Direct2D로 재구현한 클래식 경량 Picasa 이미지 뷰어입니다(**뷰어 전용 · 원본 Google Picasa 전체 기능 제품군 아님**). **2 MB 미만의 단일 실행 파일이자 외부 런타임 의존성 제로로 Tools3000과 함께 쓰거나 단독 복사해 독립 실행할 수 있습니다.** 설치 시 기본 비활성화되며 활성화하면 41종 지원 이미지 형식을 자동 연결합니다(클래식 폴라로이드 아이콘 및 다크/라이트 대응 Direct2D 설정 UI 포함). 커서 기준 부드러운 줌, 필름스트립 파동, 크로스 디졸브 슬라이드쇼를 충실히 재현하면서도 **원본에 없던 최신 기능을 보완**했습니다: 4K High-DPI(100%–250%+) 선명도, 60–240Hz VSync, WebP / AVIF / HEIC / SVG / QOI / DDS / 카메라 RAW 디코딩, 애니메이션 프레임 제어, 무손실 좌우/상하 반전 및 8개 언어 UI 지원. |
 
 ---
@@ -167,21 +179,35 @@ scoop install tools3000/tools3000
 | **WGestures / StrokesPlus** | 우클릭 드래그 탭/뒤로/닫기, 즉시 트리거, 화면 가장자리 휠 볼륨, 핫 코너, 전체 화면 게임 우회, Lua 확장 | 복잡한 다중 버튼 조합 제스처나 장기간 축적된 매크로 스크립트를 사용하는 경우 |
 | **화면 녹화 도구 (ShareX 등)** | 화면 녹화, 키 입력 오버레이, 자동 줌 스튜디오(파형 편집 및 마우스 자동 줌) 및 MP4 / GIF / WebP 원클릭 내보내기 | 80+ 클라우드/S3/FTP 자동 업로드 워크플로나 커스텀 FFmpeg 배치 파이프라인이 필요한 경우 |
 | **Picasa 뷰어 / FastStone / Windows 사진** | 2 MB 미만·외부 의존성 제로의 Rust 재구현 경량 Picasa 뷰어(단독 실행 가능) — 클래식 애니메이션에 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, 무손실 반전 보강 | 원본 Google Picasa의 앨범 라이브러리 관리·얼굴 인식이나 전문 일괄 RAW 현상·편집이 필요한 경우 |
+| **Listary 대화상자 이동 / PowerToys File Locksmith** | Windows 열기/저장 창에서 Listary 스타일 폴더 즉시 검색·이동(저장 파일명 보호); 상주 0 MB '파일 잠금 해제'로 우클릭 또는 전용 페이지에서 즉시 잠금 해제 | Listary 전체 커스텀 런처 액션 워크플로나 커널 핸들 단위의 심층 분석이 필요한 경우 |
 
 ---
 
-## 기본 단축키
+## 기본 단축키 및 설정·데이터 경로
 
 모든 단축키는 설정 화면에서 자유롭게 변경할 수 있으며 충돌을 실시간으로 감지합니다:
 
 | 단축키 | 동작 |
 | :--- | :--- |
-| `Alt + Space` | 초고속 검색 열기 / 닫기 (`bm:` 북마크 지원, 선택 항목에서 `Space`로 빠른 미리보기) |
+| `Alt + Space` | 초고속 검색 열기 / 닫기 (`app:`, `cmd:`, `bm:`, `content:` 지원, 선택 항목에서 `Space`로 빠른 미리보기) |
 | `Alt + V` | 영구 클립보드 기록 열기 / 닫기 (`Shift / Ctrl` 병합 붙여넣기 및 `Alt + 1..9` 즉시 붙여넣기, 트레이 메뉴에서도 실행 가능) |
-| `F1` | 영역 스크린샷, 주석 및 원클릭 제자리 번역 |
+| `F1` | 영역 스크린샷, 주석 및 원클릭 원위치 번역 |
 | `F3` | 클립보드 이미지 또는 텍스트 화면 고정(핀) |
 | `Ctrl` 빠르게 두 번 누르기 | 마우스 스포트라이트 켜기 / 끄기 |
 | `Ctrl + Alt + Backspace` | 원격 데스크톱 조합 키 걸림 즉시 해제 (또는 오른쪽 `Ctrl` 두 번 누르기) |
+
+### 기능 위치 및 로컬 데이터 경로
+
+한국어·중국어·일본어 등 비영어 문자가 포함된 설치 경로와 Windows 사용자 이름을 완벽히 지원합니다:
+
+| 항목 | 설정 메뉴 / 표준 설치 경로 | 포터블 버전 경로 |
+| :--- | :--- | :--- |
+| **파일 잠금 해제** | 설정: `시스템 -> 기능 모듈`, `생산성 도구 -> 파일 잠금 해제`; 트레이 패널 · 탐색기 우클릭 · 검색 결과 우클릭 | 동일 (사용자 전용 메뉴, 상주 0 MB, 비활성화 시 자동 정리) |
+| **검색 아이콘 / Live / 메모리 모드** | `생산성 도구 -> 파일 검색` (아이콘 스타일 / 실시간 감시 / 메모리 관리); 검색창 하단 상태바에서도 실시간 감시 전환 | 동일 (북마크 아이콘은 로컬 캐시에서 오프라인으로만 읽음) |
+| **8개국어 오프라인 OCR 팩** | `생산성 도구 -> OCR 및 번역` / 핀 우클릭 `인식 언어`; `%LOCALAPPDATA%\Tools3000\models\ocr\` | `<앱 폴더>\data\models\ocr\` |
+| **클립보드 기록 데이터** | 트레이 제어 센터에서 원클릭 전환; `%LOCALAPPDATA%\Tools3000\clipboard\` | `<앱 폴더>\data\clipboard\` |
+| **설정 및 진단 로그** | `%LOCALAPPDATA%\Tools3000\config\config.json` 및 `%LOCALAPPDATA%\Tools3000\logs\tools3000.log` (좌측 하단 '피드백'은 개인정보를 로컬에서 자동 마스킹) | `<앱 폴더>\data\config\` 및 `<앱 폴더>\data\logs\` |
+| **독립 CLI 및 뷰어** | `C:\Program Files\Tools3000\tools3000-cli.exe`(CLI/MCP) 및 `Tools3000_Picasa_Viewer.exe` | `<앱 폴더>\tools3000-cli.exe` 및 `Tools3000_Picasa_Viewer.exe` |
 
 ---
 
@@ -203,11 +229,11 @@ scoop install tools3000/tools3000
 
 ## Star History
 
-<a href="https://www.star-history.com/#yuan278501381/Tools3000&Date">
+<a href="https://www.star-history.com/#yuan278501381/tools3000&Date">
  <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
-   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/Tools3000&type=Date" />
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
+   <img alt="Tools3000 Star History Chart" src="https://api.star-history.com/svg?repos=yuan278501381/tools3000&type=Date" />
  </picture>
 </a>
 

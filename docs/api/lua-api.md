@@ -44,6 +44,7 @@ Delete/Backspace/Home/End/Left/Right/Up/Down/PageUp/PageDown/Insert`；单个字
 |------|------|
 | `easy.clipboard.getText()` | 返回剪贴板文本（无则空串） |
 | `easy.clipboard.setText(s)` | 写入文本到剪贴板，返回是否成功 |
+| `easy.clipboard.captureSelected()` | 发送 `Ctrl+C` 捕获当前选中文本并返回（自动保护原剪贴板内容） |
 
 ## easy.shell — 进程 / 打开
 | 函数 | 说明 |
@@ -65,6 +66,9 @@ Delete/Backspace/Home/End/Left/Right/Up/Down/PageUp/PageDown/Insert`；单个字
 | `easy.window.restore([hwnd])` | 还原 |
 | `easy.window.close([hwnd])` | 关闭窗口 |
 | `easy.window.setTopmost(bool, [hwnd])` | 置顶 / 取消置顶 |
+| `easy.window.activateByExe(exeName, [cmdLineContains])` | 按进程名（可选命令行子串，如 Chrome `--user-data-dir`）查找并激活已有窗口，返回是否命中 |
+| `easy.window.toggleByExe(exeName, [cmdLineContains])` | 若匹配窗口已在前台则最小化，否则激活前置；返回 `"activated"` / `"minimized"` / `"not_found"` |
+| `easy.window.focusByTitle(titleSubstr, [optionalExeName])` | 按窗口标题子串（可选限定进程名）激活对应窗口，返回是否成功 |
 
 ## easy.screen — 屏幕
 | 函数 | 说明 |
