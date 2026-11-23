@@ -6,6 +6,11 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 国际化文档拓扑升级：主 README 切换为英文，简体中文沉淀为 README.zh-CN.md
+- **架构决策**：为最大化 GitHub 全球检索、Glama MCP Registry (`Overview` 默认读取根目录 `README.md`)、Awesome Lists 及海外开发社区转化率，采用开源全球化标准文档布局：
+  - 根目录 `README.md` 为**完整英文版**（顶部导航首位 `English`，次位醒目 `[简体中文](README.zh-CN.md)`）；
+  - 根目录 `README.zh-CN.md` 为**完整简体中文版**，删除冗余 `README.en.md`，全库保持整洁 8 语种文档（`README.md`, `README.zh-CN.md`, `README.zh-TW.md`, `README.ja.md`, `README.ko.md`, `README.ru.md`, `README.pt-BR.md`, `README.es.md`）。
+
 ### [2026-11-24] 永久发版文档铁律：纯用户向 Release Notes、锚定上个正式 Release 与社区/GitHub Issue 署名规范
 - **强制执行准则（每次编写 `docs/RELEASE_NOTES_v*.md` 与执行 GitHub Release 时 100% 遵守）**：
   1. **锚定上一个正式发布的 GitHub Release**：必须通过 `gh release list` 核实上一个已正式发布的 GitHub Release 作为变更对比基线，绝不以上一个本地提交为基线；严禁把尚未对外发布的新功能写成「修复」，严禁暴露中间开发迭代细节。
