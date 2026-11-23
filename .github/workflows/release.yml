@@ -359,7 +359,7 @@ jobs:
 
       - name: Create GitHub Release and Upload Assets (Manual Dispatch Only)
         if: github.event_name == 'workflow_dispatch' && inputs.publish_release == true && steps.release-gate.outputs.allow_upload == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: Tools3000 ${{ env.RELEASE_TAG }}
