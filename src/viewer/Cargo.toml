@@ -19,7 +19,7 @@ resvg = { version = "0.45", default-features = false }
 
 # 微软官方零成本 Win32 / Direct2D / DirectComposition / DirectWrite / WIC 绑定
 [dependencies.windows]
-version = "0.58"
+version = "0.62"
 features = [
     "Foundation_Numerics",
     "Win32_Foundation",
