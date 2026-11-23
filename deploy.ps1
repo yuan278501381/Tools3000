@@ -1237,7 +1237,7 @@ try {
         Write-Log "已指定 -SkipInstaller，跳过安装包生成。" "WARN"
     } elseif ($ISCC) {
         Write-Log "找到 Inno Setup 编译器: $ISCC"
-        $InstallerScript = Join-Path $ScriptDir "installer.iss"
+        $InstallerScript = Join-Path $ScriptDir "packaging\installer\installer.iss"
         
         if (Test-Path $InstallerScript) {
             $LzmaThreads = [Math]::Min([Math]::Max(2, [Environment]::ProcessorCount), 8)
@@ -1246,6 +1246,7 @@ try {
                 Remove-Item -Force -LiteralPath $TargetSetupFile -ErrorAction SilentlyContinue
             }
             $InnoArgs = @(
+                "/O$OutputDir",
                 "/DTools3000Version=$ProjectVersion",
                 "/DTools3000Architecture=$Arch",
                 "/DTools3000SetupBaseFilename=$SetupBaseName",
@@ -1440,7 +1441,7 @@ Write-Log "======================================================="
 
 if ($Install) {
     Write-Log "正在执行自动化 CLI 安装..." "INFO"
-    & pwsh.exe -File (Join-Path $ScriptDir "install.ps1") -Silent -Launch
+    & pwsh.exe -File (Join-Path $ScriptDir "packaging\installer\install.ps1") -Silent -Launch
     if ($LASTEXITCODE -ne 0) { throw "自动化 CLI 安装失败，退出码: $LASTEXITCODE" }
 }
 

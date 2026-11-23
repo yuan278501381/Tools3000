@@ -67,7 +67,7 @@ endfunction()
 function(tools3000_add_plugin_manifest TARGET)
     set(MANIFEST_OUTPUT "${CMAKE_BINARY_DIR}/bin/plugins/${TARGET}.plugin.json")
     configure_file(
-        "${CMAKE_SOURCE_DIR}/plugins/${TARGET}.plugin.json.in"
+        "${CMAKE_SOURCE_DIR}/resources/plugins/${TARGET}.plugin.json.in"
         "${MANIFEST_OUTPUT}"
         @ONLY
     )

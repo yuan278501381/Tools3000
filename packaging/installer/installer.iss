@@ -16,6 +16,8 @@
 #endif
 
 [Setup]
+SourceDir=..\..
+OutputDir=..\..\Output
 AppName=Tools3000
 AppVersion={#Tools3000Version}
 UninstallDisplayName=Tools3000

@@ -2,7 +2,7 @@
 
 Thank you for your interest in contributing to **Tools3000**! Whether you are fixing a bug, proposing a feature, improving performance, or refining one of our 8 UI languages, contributions from both human developers and AI-assisted workflows are warmly welcome.
 
-> 中文开发者请同时参阅 [开发者指南 (docs/DEVELOPER.md)](docs/DEVELOPER.md)。
+> 中文开发者请同时参阅 [开发者指南 (docs/DEVELOPER.md)](../docs/DEVELOPER.md)。
 
 ---
 
@@ -28,7 +28,7 @@ Tools3000 is a native Windows desktop productivity suite built with zero Electro
 4. **Node.js >= 20** & `npm`
 5. **PowerShell 7 (`pwsh`)**
 
-You can bootstrap local build tools via `pwsh ./setup_local_build_tools.ps1`.
+You can bootstrap local build tools via `pwsh ./scripts/setup_local_build_tools.ps1`.
 
 ---
 
@@ -73,4 +73,4 @@ cargo build --release --manifest-path src/cli/Cargo.toml
 2. Ensure `npm run lint`, `npx tsc -b`, `npm test` (under `ui/`), and relevant native/Rust tests pass cleanly.
 3. Open a Pull Request describing **what user problem it solves** and **how it was verified**.
 
-By contributing to Tools3000, you agree that your contributions will be licensed under the [GPL-3.0 License](LICENSE) with the [Windows System & WebView2 Linking Exception](LICENSE-EXCEPTION.md).
+By contributing to Tools3000, you agree that your contributions will be licensed under the [GPL-3.0 License](../LICENSE) with the [Windows System & WebView2 Linking Exception](../LICENSE-EXCEPTION.md).

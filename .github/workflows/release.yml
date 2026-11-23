@@ -261,7 +261,7 @@ jobs:
 
           $SetupBaseName = "Tools3000-$Tag-Setup"
           $CompressionArg = if ($env:GITHUB_EVENT_NAME -eq "workflow_dispatch") { "/DCompressionLevel=lzma2/ultra64" } else { "/DCompressionLevel=lzma2/fast" }
-          & $ISCC "/DTools3000Version=$Ver" "/DTools3000Architecture=x64" "/DTools3000SetupBaseFilename=$SetupBaseName" "/DDeployDir=deploy_dist" $CompressionArg "installer.iss"
+          & $ISCC "/OOutput" "/DTools3000Version=$Ver" "/DTools3000Architecture=$ArchVal" "/DTools3000SetupBaseFilename=$SetupBaseName" "/DDeployDir=deploy_dist" $CompressionArg "packaging\installer\installer.iss"
           if ($LASTEXITCODE -ne 0) { throw "ISCC compilation failed with exit code $LASTEXITCODE" }
 
           $SetupPath = "Output\$SetupBaseName.exe"

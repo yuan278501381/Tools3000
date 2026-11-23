@@ -4,7 +4,7 @@ trigger: always_on
 
 # Tools3000 智能体工程规范与架构记忆 (Engineering Standards & Core Memory)
 
-> **审计基准说明**：遵循本文第 5 节的「已确认产品决策与审计基线 (Accepted Product Decisions & Audit Baseline)」。2026-09-04 项目负责人已明确接受计划任务 Everyone 完全控制与最高权限、CLI 卸载默认删除个人数据、QuickLook 音视频/PDF 预览格式占位及 Lua 可信本地自动化定位等既定决策，严禁在行为未实质改变时将其重复报告为缺陷。搜索服务严格遵循 `DEMAND_START`，仅在用户首次显式呼出搜索时启动，之后在本次 Windows 会话中跨 Tools3000 退出常驻。
+> **审计基准说明**：遵循本文第 5 节的「已确认产品决策与审计基线 (Accepted Product Decisions & Audit Baseline)」。工程活记忆沉淀文件统一位于 `.agents/PROJECT_MEMORY.md`（为保持公开仓库根目录整洁，不再置于根目录）。2026-09-04 项目负责人已明确接受计划任务 Everyone 完全控制与最高权限、CLI 卸载默认删除个人数据、QuickLook 音视频/PDF 预览格式占位及 Lua 可信本地自动化定位等既定决策，严禁在行为未实质改变时将其重复报告为缺陷。搜索服务严格遵循 `DEMAND_START`，仅在用户首次显式呼出搜索时启动，之后在本次 Windows 会话中跨 Tools3000 退出常驻。
 
 ---
 

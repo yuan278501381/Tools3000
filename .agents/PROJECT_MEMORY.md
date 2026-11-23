@@ -6,6 +6,14 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 仓库根目录文件结构整理（44 -> 22 项）与安全优先 Dependabot 配置
+- **根目录极简主义（Single-Viewport Root Rule）**：
+  1. 7 份副语种 README 统一移入 `docs/i18n/`（根目录仅保留唯一英文主 `README.md`）；
+  2. `CODE_OF_CONDUCT.md`、`CONTRIBUTING.md`、`SECURITY.md`、`.gitmessage` 移入 `.github/`（GitHub 原生自动识别），`PRIVACY.md` 移入 `docs/PRIVACY.md`，`PROJECT_MEMORY.md` 移入 `.agents/PROJECT_MEMORY.md`；
+  3. 删除早期废弃重复的 `manifests/winget/`，归档旧 `CHANGELOG.md` 至 `docs/archive/`；
+  4. `installer.iss`、`install.*`、`uninstall.*` 下沉至 `packaging/installer/`（`SourceDir=..\..` + `ISCC` 实测通过），`setup_local_build_tools.ps1` 移入 `scripts/`，`plugins/*.in` 并入 `resources/plugins/`；
+  5. `.github/dependabot.yml` 设为 `open-pull-requests-limit: 0`（保持 GitHub/Glama 安全告警开启，彻底消除常规版本升级刷屏 PR）。
+
 ### [2026-11-24] 开源工程与社区治理基建完善：全绿 CI、Dependabot、社区治理五件套、中英双语 GitHub Pages 官网、Winget 官方源 PR 与 Glama 绿灯
 - **工程与增长基建闭环**：
   1. **修复历史红叉工作流并建立全绿门禁 (`.github/workflows/ci.yml`, `release.yml`, `dependabot.yml`)**：定位并修复 `release.yml` 第 53 行 Job 级 `env` 非法引用 `runner.temp` 导致每次 Push 0s 失败的缺陷，将其收敛为手动云发版备用通道（含 `x64`/`arm64` 选项）；新建 `ci.yml` 守护每次 Push/PR（Ubuntu 前端 ESLint + 7 大全库静态门禁 + `tsc -b` + Vitest 267 项 + Linux/Windows x64/ARM64 Rust CLI & MCP 实机自省测试）；配置 `dependabot.yml` 覆盖 `/ui`、4 个 Rust Cargo 目录与 GitHub Actions。

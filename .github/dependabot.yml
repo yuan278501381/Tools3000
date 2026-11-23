@@ -1,43 +1,40 @@
+# Security-first Dependabot configuration:
+# Keeps GitHub Dependency Graph & Dependabot security alerts/updates active (100% compliant with Glama),
+# while setting open-pull-requests-limit: 0 on routine version bumps to prevent noisy PR spam.
 version: 2
 updates:
   - package-ecosystem: "npm"
     directory: "/ui"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "cargo"
     directory: "/src/cli"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 3
+      interval: "monthly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "cargo"
     directory: "/src/viewer"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "cargo"
     directory: "/src/clipboard/rust_clipboard"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 3
+      interval: "monthly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "cargo"
     directory: "/src/service/rust_content"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 3
+      interval: "monthly"
+    open-pull-requests-limit: 0
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 0
