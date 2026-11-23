@@ -48,9 +48,55 @@ namespace {
 
 using json = nlohmann::json;
 constexpr size_t MaxBridgeMessageBytes = 1024 * 1024;
+constexpr size_t MaxFeedbackBridgeMessageBytes = 12 * 1024 * 1024;
+
+size_t resolveBridgeMessageSizeLimit(std::string_view messageJson) noexcept {
+    const std::string_view head = messageJson.substr(0, (messageJson.size() < 512u) ? messageJson.size() : 512u);
+    const size_t keyPos = head.find("\"method\"");
+    if (keyPos != std::string_view::npos) {
+        size_t pos = keyPos + 8;
+        while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+        if (pos < head.size() && head[pos] == ':') {
+            ++pos;
+            while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+            if (pos < head.size() && head[pos] == '"') {
+                ++pos;
+                const size_t endQuote = head.find('"', pos);
+                if (endQuote != std::string_view::npos) {
+                    const std::string_view method = head.substr(pos, endQuote - pos);
+                    if (method == "feedback.submit" || method == "feedback.preview") {
+                        return MaxFeedbackBridgeMessageBytes;
+                    }
+                }
+            }
+        }
+    }
+    return MaxBridgeMessageBytes;
+}
+
+int extractFallbackRequestId(std::string_view messageJson) noexcept {
+    const std::string_view head = messageJson.substr(0, (messageJson.size() < 512u) ? messageJson.size() : 512u);
+    const size_t keyPos = head.find("\"id\"");
+    if (keyPos == std::string_view::npos) return 0;
+    size_t pos = keyPos + 4;
+    while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+    if (pos >= head.size() || head[pos] != ':') return 0;
+    ++pos;
+    while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+    long long val = 0;
+    bool hasDigit = false;
+    while (pos < head.size() && head[pos] >= '0' && head[pos] <= '9') {
+        hasDigit = true;
+        val = val * 10 + (head[pos] - '0');
+        if (val > 2147483647LL) return 0;
+        ++pos;
+    }
+    return hasDigit ? static_cast<int>(val) : 0;
+}
 
 std::string bridgeErrorResponse(int id, int code, std::string_view message) {
-    return json{{"id", id}, {"error", {{"code", code}, {"message", std::string(message)}}}}.dump();
+    return json{{"id", id}, {"error", {{"code", code}, {"message", std::string(message)}}}}
+        .dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 std::string bridgeRawSuccessResponse(int id, std::string_view rawResultJson) {
@@ -1041,9 +1087,11 @@ size_t MessageBridge::unregisterHandlersByPrefix(const std::string& prefix) {
 std::string MessageBridge::handleMessage(const std::string& messageJson) {
     TraceId::Scope scope;
     int id = 0;
-    if (messageJson.size() > MaxBridgeMessageBytes) {
+    const size_t maxBytes = resolveBridgeMessageSizeLimit(messageJson);
+    if (messageJson.size() > maxBytes) {
+        id = extractFallbackRequestId(messageJson);
         LOG_WARN("拒绝过大的 IPC 消息: {} bytes", messageJson.size());
-        return bridgeErrorResponse(id, -32600, "Request exceeds 1 MiB limit");
+        return bridgeErrorResponse(id, -32600, "Request exceeds size limit");
     }
     try {
         auto request = json::parse(messageJson);
@@ -1124,21 +1172,21 @@ std::string MessageBridge::handleMessage(const std::string& messageJson) {
             {"id", id},
             {"result", result}
         };
-        return response.dump();
+        return response.dump(-1, ' ', false, json::error_handler_t::replace);
     } catch (const std::exception& e) {
         LOG_ERROR("IPC 处理器异常: id={}, error={}", id, e.what());
         json response = {
             {"id", id},
             {"error", {{"code", -32603}, {"message", std::string("Internal error: ") + e.what()}}}
         };
-        return response.dump();
+        return response.dump(-1, ' ', false, json::error_handler_t::replace);
     } catch (...) {
         LOG_ERROR("IPC 处理器未知异常: id={}", id);
         json response = {
             {"id", id},
             {"error", {{"code", -32603}, {"message", "Internal error: unknown exception"}}}
         };
-        return response.dump();
+        return response.dump(-1, ' ', false, json::error_handler_t::replace);
     }
 }
 
@@ -1476,9 +1524,11 @@ void MessageBridge::markMethodAsync(const std::string& method) {
 void MessageBridge::handleMessageAsync(const std::string& messageJson, AsyncResponder responder) {
     if (!responder) return;
 
-    if (messageJson.size() > MaxBridgeMessageBytes) {
+    const size_t maxBytes = resolveBridgeMessageSizeLimit(messageJson);
+    if (messageJson.size() > maxBytes) {
+        const int rejectedId = extractFallbackRequestId(messageJson);
         LOG_WARN("拒绝过大的异步 IPC 消息: {} bytes", messageJson.size());
-        responder(bridgeErrorResponse(0, -32600, "Request exceeds 1 MiB limit"));
+        responder(bridgeErrorResponse(rejectedId, -32600, "Request exceeds size limit"));
         return;
     }
 

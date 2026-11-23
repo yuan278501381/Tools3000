@@ -13,9 +13,30 @@ enum class Surface { Settings, Search, Tray, QuickLook, Clipboard };
 // WebView bridge is a control plane, not a bulk-data channel.  Keep malformed
 // renderer input from forcing unbounded UTF conversion / JSON allocations.
 constexpr size_t MaxBridgeMessageBytes = 1024 * 1024;
+// 仅对 Settings 表面内带截图附件的 feedback.submit / feedback.preview 放宽上限（6 MB PNG Base64 + 日志约 8.5 MiB）。
+constexpr size_t MaxFeedbackAttachmentBridgeBytes = 12 * 1024 * 1024;
 
 inline bool isBridgeMessageSizeAcceptable(size_t byteCount) noexcept {
     return byteCount <= MaxBridgeMessageBytes;
+}
+
+inline bool isFeedbackAttachmentBridgeRequest(std::string_view message) noexcept {
+    // JSON-RPC 头部恒位于报文起始处（{"id":...,"method":"feedback.submit","params":{...}}），
+    // 仅扫描前 512 字节即可 O(1) 安全判定，无需对超大载荷全量解析。
+    const std::string_view head = message.substr(0, (message.size() < 512u) ? message.size() : 512u);
+    const size_t keyPos = head.find("\"method\"");
+    if (keyPos == std::string_view::npos) return false;
+    size_t pos = keyPos + 8;
+    while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+    if (pos >= head.size() || head[pos] != ':') return false;
+    ++pos;
+    while (pos < head.size() && (head[pos] == ' ' || head[pos] == '\t' || head[pos] == '\r' || head[pos] == '\n')) ++pos;
+    if (pos >= head.size() || head[pos] != '"') return false;
+    ++pos;
+    const size_t endQuote = head.find('"', pos);
+    if (endQuote == std::string_view::npos) return false;
+    const std::string_view method = head.substr(pos, endQuote - pos);
+    return method == "feedback.submit" || method == "feedback.preview";
 }
 
 inline bool startsWithInsensitive(std::wstring_view value, std::wstring_view prefix) noexcept {
@@ -63,7 +84,9 @@ inline bool isTrustedUri(std::wstring_view uri) noexcept {
 
 inline bool isBridgeMethodAllowed(std::string_view message, Surface surface) {
     if (!isBridgeMessageSizeAcceptable(message.size())) {
-        return false;
+        return surface == Surface::Settings &&
+               message.size() <= MaxFeedbackAttachmentBridgeBytes &&
+               isFeedbackAttachmentBridgeRequest(message);
     }
     if (surface == Surface::Settings) return true;
     try {

@@ -5,7 +5,6 @@ import {
   useRef,
   type FC,
   type ChangeEvent,
-  type ClipboardEvent,
 } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -21,9 +20,13 @@ import {
   ShieldCheck,
   Loader2,
   Trash2,
+  AlertCircle,
 } from 'lucide-react';
+import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
 import './FeedbackModal.css';
+
+const MAX_FEEDBACK_SCREENSHOT_BYTES = 6 * 1024 * 1024;
 
 type FeedbackType = 'bug' | 'feature' | 'performance' | 'other';
 
@@ -49,9 +52,28 @@ interface FeedbackSubmitResponse {
   totalRedactions?: number;
 }
 
+interface FeedbackClipboardImageResponse {
+  ok?: boolean;
+  tooLarge?: boolean;
+  dataUri?: string;
+  fileName?: string;
+  byteSize?: number;
+}
+
 interface FeedbackModalProps {
   open: boolean;
   onClose: () => void;
+}
+
+function isEditableElement(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable;
+}
+
+function isSupportedImageFile(file: File): boolean {
+  if (file.type && file.type.startsWith('image/')) return true;
+  return /\.(png|jpe?g|webp|bmp|gif)$/i.test(file.name);
 }
 
 export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
@@ -71,21 +93,143 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitResult, setSubmitResult] = useState<FeedbackSubmitResponse | null>(null);
+  const [errorMessage, setErrorMessage] = useState('');
   const [copiedMarkdown, setCopiedMarkdown] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const lastPasteHandledAtRef = useRef<number>(0);
+
+  const handleClose = useCallback(() => {
+    setErrorMessage('');
+    onClose();
+  }, [onClose]);
+
+  const attachImageBlob = useCallback((blob: Blob, preferredName: string, showToast: boolean) => {
+    if (blob.size > MAX_FEEDBACK_SCREENSHOT_BYTES) {
+      const msg = t('feedback.screenshotTooLarge', 'Screenshot exceeds the 6 MB limit. Please choose a smaller image.');
+      setErrorMessage(msg);
+      toast.error(msg);
+      return;
+    }
+    setErrorMessage('');
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setScreenshotDataUri(reader.result);
+        setScreenshotName(preferredName || 'clipboard-screenshot.png');
+        if (showToast) {
+          toast.success(t('feedback.screenshotAttached', 'Screenshot attached from clipboard.'));
+        }
+      }
+    };
+    reader.readAsDataURL(blob);
+  }, [t]);
+
+  const tryNativeClipboardImagePaste = useCallback(async () => {
+    try {
+      const res = await bridgeRequest<FeedbackClipboardImageResponse>(
+        'feedback.readClipboardImage',
+        {},
+        { silent: true },
+      );
+      if (res?.tooLarge) {
+        const msg = t('feedback.screenshotTooLarge', 'Screenshot exceeds the 6 MB limit. Please choose a smaller image.');
+        setErrorMessage(msg);
+        toast.error(msg);
+        return true;
+      }
+      if (res?.ok && res.dataUri) {
+        setErrorMessage('');
+        setScreenshotDataUri(res.dataUri);
+        setScreenshotName(res.fileName || 'clipboard-screenshot.png');
+        toast.success(t('feedback.screenshotAttached', 'Screenshot attached from clipboard.'));
+        return true;
+      }
+    } catch {
+      // Ignore native clipboard probe errors when clipboard has no image
+    }
+    return false;
+  }, [t]);
 
   useEffect(() => {
     if (!open) return;
+    panelRef.current?.focus();
+
+    let nativePasteTimer: number | null = null;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        handleClose();
+        return;
+      }
+      if (!submitResult && (e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'v') {
+        if (!isEditableElement(e.target)) {
+          // 非文本编辑焦点下 WebView2 可能不派发 DOM paste 事件：短延迟后由 Win32 原生剪贴板兜底捞图
+          if (nativePasteTimer !== null) window.clearTimeout(nativePasteTimer);
+          nativePasteTimer = window.setTimeout(() => {
+            if (Date.now() - lastPasteHandledAtRef.current > 180) {
+              lastPasteHandledAtRef.current = Date.now();
+              void tryNativeClipboardImagePaste();
+            }
+          }, 35);
+        }
       }
     };
+
+    const onWindowPaste = (e: globalThis.ClipboardEvent) => {
+      if (submitResult) return;
+      const dt = e.clipboardData;
+      if (dt) {
+        const items = dt.items;
+        if (items) {
+          for (let i = 0; i < items.length; i += 1) {
+            const item = items[i];
+            if (item.type.startsWith('image/')) {
+              const blob = item.getAsFile();
+              if (blob) {
+                e.preventDefault();
+                lastPasteHandledAtRef.current = Date.now();
+                attachImageBlob(blob, blob.name || 'clipboard-screenshot.png', true);
+                return;
+              }
+            }
+          }
+        }
+        const files = dt.files;
+        if (files && files.length > 0) {
+          for (let i = 0; i < files.length; i += 1) {
+            const file = files[i];
+            if (isSupportedImageFile(file)) {
+              e.preventDefault();
+              lastPasteHandledAtRef.current = Date.now();
+              attachImageBlob(file, file.name || 'clipboard-screenshot.png', true);
+              return;
+            }
+          }
+        }
+        // 若用户正在输入框粘贴纯文本，100% 放行原生文字粘贴不干扰
+        const plainText = dt.getData('text/plain');
+        if (plainText && isEditableElement(e.target)) {
+          return;
+        }
+      }
+
+      // DOM clipboardData 未暴露图片（常见于 WebView2 下 Win32 CF_BITMAP / CF_HDROP 截图），走原生剪贴板兜底
+      if (Date.now() - lastPasteHandledAtRef.current > 180) {
+        lastPasteHandledAtRef.current = Date.now();
+        void tryNativeClipboardImagePaste();
+      }
+    };
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+    window.addEventListener('paste', onWindowPaste);
+    return () => {
+      if (nativePasteTimer !== null) window.clearTimeout(nativePasteTimer);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('paste', onWindowPaste);
+    };
+  }, [open, submitResult, handleClose, attachImageBlob, tryNativeClipboardImagePaste]);
 
   const buildPayload = useCallback(
     () => ({
@@ -105,64 +249,65 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
       setPreviewOpen(false);
       return;
     }
+    setErrorMessage('');
     setPreviewOpen(true);
     setPreviewLoading(true);
     try {
       const res = await bridgeRequest<FeedbackPreviewResponse>('feedback.preview', buildPayload(), { silent: true });
-      if (res) {
+      if (res && res.ok !== false) {
         setPreviewData(res);
+      } else {
+        setPreviewOpen(false);
+        const msg = t('feedback.previewFailed', 'Failed to collect redacted diagnostic preview.');
+        setErrorMessage(msg);
+        toast.error(msg);
       }
+    } catch (error) {
+      setPreviewOpen(false);
+      const detail = error instanceof Error && error.message ? error.message : '';
+      const msg = t('feedback.previewFailed', 'Failed to collect redacted diagnostic preview.');
+      setErrorMessage(detail ? `${msg} (${detail})` : msg);
+      toast.error(msg, detail ? { description: detail } : undefined);
     } finally {
       setPreviewLoading(false);
     }
-  }, [previewOpen, buildPayload]);
+  }, [previewOpen, buildPayload, t]);
 
   const handleFileChange = useCallback((e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || file.size > 6 * 1024 * 1024) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === 'string') {
-        setScreenshotDataUri(reader.result);
-        setScreenshotName(file.name);
-      }
-    };
-    reader.readAsDataURL(file);
-  }, []);
-
-  const handlePaste = useCallback((e: ClipboardEvent<HTMLDivElement>) => {
-    const items = e.clipboardData?.items;
-    if (!items) return;
-    for (let i = 0; i < items.length; i += 1) {
-      const item = items[i];
-      if (item.type.startsWith('image/')) {
-        const blob = item.getAsFile();
-        if (!blob || blob.size > 6 * 1024 * 1024) continue;
-        const reader = new FileReader();
-        reader.onload = () => {
-          if (typeof reader.result === 'string') {
-            setScreenshotDataUri(reader.result);
-            setScreenshotName('clipboard-screenshot.png');
-          }
-        };
-        reader.readAsDataURL(blob);
-        break;
-      }
-    }
-  }, []);
+    e.target.value = '';
+    if (!file) return;
+    attachImageBlob(file, file.name, false);
+  }, [attachImageBlob]);
 
   const handleSubmit = useCallback(async () => {
     if (!description.trim() && !title.trim()) return;
+    setErrorMessage('');
     setSubmitting(true);
     try {
       const res = await bridgeRequest<FeedbackSubmitResponse>('feedback.submit', buildPayload(), { silent: true });
-      if (res) {
+      if (res && res.ok !== false) {
         setSubmitResult(res);
+        toast.success(
+          res.mode === 'relay_submitted'
+            ? t('feedback.submittedRelayTitle', 'Feedback Submitted Successfully')
+            : t('feedback.exportedLocalTitle', 'Redacted Diagnostic Bundle Ready'),
+        );
+      } else {
+        const fallbackMsg = t('feedback.submitFailed', 'Failed to submit feedback or export diagnostic bundle.');
+        const detail = res?.errorMessage || '';
+        setErrorMessage(detail ? `${fallbackMsg} (${detail})` : fallbackMsg);
+        toast.error(fallbackMsg, detail ? { description: detail } : undefined);
       }
+    } catch (error) {
+      const fallbackMsg = t('feedback.submitFailed', 'Failed to submit feedback or export diagnostic bundle.');
+      const detail = error instanceof Error && error.message ? error.message : '';
+      setErrorMessage(detail ? `${fallbackMsg} (${detail})` : fallbackMsg);
+      toast.error(fallbackMsg, detail ? { description: detail } : undefined);
     } finally {
       setSubmitting(false);
     }
-  }, [description, title, buildPayload]);
+  }, [description, title, buildPayload, t]);
 
   const handleCopyMarkdown = useCallback(async (text: string) => {
     if (!text) return;
@@ -180,8 +325,8 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
   const canSubmit = Boolean((title.trim() || description.trim()) && !submitting);
 
   return (
-    <div className="fb-backdrop" role="dialog" aria-modal="true" aria-label={t('feedback.modalTitle', 'Give Feedback')} onPaste={handlePaste}>
-      <div className="fb-panel">
+    <div className="fb-backdrop" role="dialog" aria-modal="true" aria-label={t('feedback.modalTitle', 'Give Feedback')}>
+      <div className="fb-panel" ref={panelRef} tabIndex={-1}>
         <header className="fb-header">
           <div className="fb-header-title">
             <h2>{t('feedback.modalTitle', 'Give Feedback')}</h2>
@@ -193,7 +338,7 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
           <button
             type="button"
             className="fb-close-btn"
-            onClick={onClose}
+            onClick={handleClose}
             aria-label={t('common.close', 'Close')}
           >
             <X size={18} aria-hidden="true" />
@@ -201,6 +346,12 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
         </header>
 
         <div className="fb-body">
+          {errorMessage && (
+            <div className="fb-error-banner" role="alert">
+              <AlertCircle size={16} aria-hidden="true" />
+              <span>{errorMessage}</span>
+            </div>
+          )}
           {submitResult ? (
             <div className="fb-result-card">
               <div className="fb-result-header">
@@ -400,7 +551,7 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
                     checked={includeLogs}
                     onChange={(e) => setIncludeLogs(e.target.checked)}
                   />
-                  <span>{t('feedback.attachLogs', 'Attach redacted environment info and latest 200 log lines')}</span>
+                  <span>{t('feedback.attachLogs', 'Attach redacted environment info and latest 1000 log lines')}</span>
                 </label>
                 <button
                   type="button"
@@ -449,7 +600,7 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
               {t('feedback.dualTrackNote', 'All personal paths, tokens, emails, IPs and SIDs are scrubbed locally before export or upload.')}
             </span>
             <div className="fb-footer-actions">
-              <button type="button" className="fb-btn fb-btn-secondary" onClick={onClose}>
+              <button type="button" className="fb-btn fb-btn-secondary" onClick={handleClose}>
                 {t('common.cancel', 'Cancel')}
               </button>
               <button

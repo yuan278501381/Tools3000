@@ -437,6 +437,14 @@ std::string UpdateChecker::extractExpectedSha256ForAsset(
     return {};
 }
 
+std::string UpdateChecker::formatReleaseNotesSummary(std::string_view rawNotes, size_t maxBytes) {
+    if (rawNotes.empty()) return {};
+    if (rawNotes.size() <= maxBytes) {
+        return WinUtils::sanitizeUtf8(rawNotes);
+    }
+    return WinUtils::truncateUtf8Head(rawNotes, maxBytes) + "...";
+}
+
 std::string UpdateChecker::getStateJsonString() const {
     std::lock_guard lock(m_stateMutex);
     const auto& s = m_state;
@@ -456,7 +464,7 @@ std::string UpdateChecker::getStateJsonString() const {
         {"autoDownloadUpdates", ConfigManager::instance().get<bool>("/general/autoDownloadUpdates", true)},
         {"error", s.error}
     };
-    return payload.dump();
+    return payload.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 void UpdateChecker::broadcastStateLocked(bool emitLegacyResult, bool emitToast) {
@@ -717,6 +725,11 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
 }
 
 void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAvailable) {
+    struct BusyGuard {
+        std::atomic<bool>& flag;
+        ~BusyGuard() noexcept { flag.store(false); }
+    } busyGuard{m_busy};
+
     UpdateStateSnapshot next{};
     next.status = "error";
     next.currentVersion = CurrentVersion;
@@ -811,12 +824,7 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
                         next.releaseUrl = releaseUrl;
                         next.error.clear();
 
-                        std::string notes = response.value("body", "");
-                        if (notes.size() > 600) {
-                            notes.resize(600);
-                            notes += "...";
-                        }
-                        next.releaseNotes = std::move(notes);
+                        next.releaseNotes = formatReleaseNotesSummary(response.value("body", ""), 600);
 
                         if (available) {
                             const auto picked = pickBestAsset(response, next.isPortable);

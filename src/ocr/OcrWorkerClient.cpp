@@ -17,7 +17,7 @@ namespace tools3000::ocr {
 
 namespace {
 
-constexpr DWORD kOcrRequestTimeoutMs = 120000; // 单图超长/冷启安全超时 120s
+constexpr DWORD kOcrRequestTimeoutMs = 45000; // 单图冷启/推理安全超时 45s，防止驱动挂死长期阻塞
 
 } // namespace
 
@@ -35,11 +35,20 @@ void OcrWorkerClient::setTestOverride(
     const std::filesystem::path& workerExePath,
     int idleSecondsOverride) {
     shutdownWorker();
+    m_safeCpuModeLatched.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> lock(m_configMutex);
     m_testOverrideSet = true;
     m_testOverrideEnabled = enabled;
     m_testWorkerExePath = workerExePath;
     m_idleSecondsOverride = idleSecondsOverride;
+}
+
+bool OcrWorkerClient::isSafeCpuModeLatched() const noexcept {
+    return m_safeCpuModeLatched.load(std::memory_order_acquire);
+}
+
+void OcrWorkerClient::resetSafeCpuModeForTest() noexcept {
+    m_safeCpuModeLatched.store(false, std::memory_order_release);
 }
 
 bool OcrWorkerClient::isOutOfProcessAvailable() const {
@@ -95,6 +104,7 @@ void OcrWorkerClient::closeWorkerLocked(bool sendShutdownCmd) {
     m_childPid.store(0, std::memory_order_release);
     m_workerTier.clear();
     m_workerModelDir.clear();
+    m_workerSafeCpuMode = false;
 }
 
 void OcrWorkerClient::shutdownWorker() {
@@ -105,8 +115,15 @@ void OcrWorkerClient::shutdownWorker() {
 bool OcrWorkerClient::ensureWorkerConnectedLocked(
     const std::filesystem::path& exePath,
     const std::string& modelTier,
-    const std::filesystem::path& modelDir) {
-    if (m_pipe && isChildAliveLocked() && m_workerTier == modelTier && m_workerModelDir == modelDir) {
+    const std::filesystem::path& modelDir,
+    bool safeCpuMode,
+    bool* outReusedExisting) {
+    if (outReusedExisting) *outReusedExisting = false;
+    if (m_pipe && isChildAliveLocked() &&
+        m_workerTier == modelTier &&
+        m_workerModelDir == modelDir &&
+        m_workerSafeCpuMode == safeCpuMode) {
+        if (outReusedExisting) *outReusedExisting = true;
         return true;
     }
     closeWorkerLocked(/*sendShutdownCmd=*/true);
@@ -134,12 +151,15 @@ bool OcrWorkerClient::ensureWorkerConnectedLocked(
         }
     }
 
-    const std::vector<std::wstring> args = {
+    std::vector<std::wstring> args = {
         std::wstring(worker::Constants::kFlagWorkerMode) + worker::Constants::kModeOcr,
         std::wstring(worker::Constants::kFlagPipeName) + pipeName,
         std::wstring(worker::Constants::kFlagParentPid) + std::to_wstring(GetCurrentProcessId()),
         std::wstring(worker::Constants::kFlagIdleSeconds) + std::to_wstring(idleSec),
     };
+    if (safeCpuMode) {
+        args.push_back(std::wstring(worker::Constants::kFlagSafeCpuMode) + L"1");
+    }
 
     worker::ScopedHandle childProc;
     DWORD childPid = 0;
@@ -163,8 +183,9 @@ bool OcrWorkerClient::ensureWorkerConnectedLocked(
     m_childPid.store(childPid, std::memory_order_release);
     m_workerTier = modelTier;
     m_workerModelDir = modelDir;
-    LOG_INFO("OcrWorkerClient: isolated OCR worker started (pid={}, idleTimeoutSec={}, tier={})",
-             childPid, idleSec, modelTier);
+    m_workerSafeCpuMode = safeCpuMode;
+    LOG_INFO("OcrWorkerClient: isolated OCR worker started (pid={}, idleTimeoutSec={}, tier={}, safeCpu={})",
+             childPid, idleSec, modelTier, safeCpuMode ? "true" : "false");
     return true;
 }
 
@@ -235,10 +256,11 @@ bool OcrWorkerClient::runSingleRequestLocked(
         outStats,
         outActiveTier,
         /*overlapped=*/true,
-        kOcrRequestTimeoutMs);
+        kOcrRequestTimeoutMs,
+        m_childProcess.get());
 }
 
-bool OcrWorkerClient::extractText(
+OcrWorkerExtractStatus OcrWorkerClient::extractTextEx(
     const cv::Mat& bgrImage,
     const std::filesystem::path& modelDir,
     const std::string& modelTier,
@@ -247,7 +269,7 @@ bool OcrWorkerClient::extractText(
     DeepOcrRunStats& outStats,
     std::string& outActiveTier) {
     if (!isOutOfProcessAvailable()) {
-        return false;
+        return OcrWorkerExtractStatus::WorkerUnavailable;
     }
 
     std::filesystem::path overrideExe;
@@ -259,20 +281,33 @@ bool OcrWorkerClient::extractText(
     }
     const std::filesystem::path exePath = worker::resolveHostWorkerExecutablePath(overrideExe);
     if (exePath.empty()) {
-        return false;
+        return OcrWorkerExtractStatus::WorkerUnavailable;
     }
 
     std::lock_guard<std::mutex> lock(m_mutex);
     const auto tWallStart = std::chrono::steady_clock::now();
-    for (int attempt = 0; attempt < 2; ++attempt) {
-        if (!ensureWorkerConnectedLocked(exePath, modelTier, modelDir)) {
-            return false;
+    bool safeCpu = m_safeCpuModeLatched.load(std::memory_order_acquire);
+    bool triedFreshNormal = false;
+
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        bool reusedExisting = false;
+        if (!ensureWorkerConnectedLocked(exePath, modelTier, modelDir, safeCpu, &reusedExisting)) {
+            if (!safeCpu) {
+                m_safeCpuModeLatched.store(true, std::memory_order_release);
+                safeCpu = true;
+                LOG_WARN("OcrWorkerClient: OCR worker startup/handshake failed; retrying in CPU-only safe mode");
+                continue;
+            }
+            LOG_ERROR("OcrWorkerClient: isolated OCR worker unavailable even in CPU-only safe mode; refusing unsafe in-process fallback");
+            return OcrWorkerExtractStatus::WorkerFailed;
         }
+
         if (runSingleRequestLocked(bgrImage, modelDir, modelTier, scriptMode, outResults, outStats, outActiveTier)) {
             const long long wallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - tWallStart).count();
-            LOG_INFO("DeepOcrEngine: isolated worker (pid={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
+            LOG_INFO("DeepOcrEngine: isolated worker (pid={}, safeCpu={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
                      m_childPid.load(std::memory_order_acquire),
+                     safeCpu ? "true" : "false",
                      outResults.size(),
                      outStats.detectedQuads,
                      outStats.stripCount,
@@ -288,14 +323,51 @@ bool OcrWorkerClient::extractText(
                      outStats.refineMs,
                      outStats.activeSessions,
                      outActiveTier);
-            return true;
+            return OcrWorkerExtractStatus::Succeeded;
         }
-        // 子进程可能刚触发闲置退出，清理句柄并透明重试一次
+
+        DWORD exitCode = STILL_ACTIVE;
+        if (m_childProcess) {
+            GetExitCodeProcess(m_childProcess.get(), &exitCode);
+        }
+        const DWORD failedPid = m_childPid.load(std::memory_order_acquire);
         closeWorkerLocked(/*sendShutdownCmd=*/false);
+
+        if (reusedExisting && !triedFreshNormal) {
+            // 复用的老子进程可能刚好在请求临界点触发闲置自退出，先原模式干净重启一次
+            triedFreshNormal = true;
+            LOG_INFO("OcrWorkerClient: reused OCR worker (pid={}, exitCode=0x{:X}) disconnected, restarting fresh worker",
+                     failedPid, static_cast<unsigned int>(exitCode));
+            continue;
+        }
+
+        if (!safeCpu) {
+            // 新拉起的子进程在推理中崩溃、异常退出或超时：自动闩锁纯 CPU 安全模式再隔离重试一次，彻底绕过问题 GPU/DirectML 驱动
+            m_safeCpuModeLatched.store(true, std::memory_order_release);
+            safeCpu = true;
+            LOG_WARN("OcrWorkerClient: isolated OCR worker (pid={}, exitCode=0x{:X}) crashed or timed out during inference; latching CPU-only safe worker mode and retrying once",
+                     failedPid, static_cast<unsigned int>(exitCode));
+            continue;
+        }
+
+        LOG_ERROR("OcrWorkerClient: isolated OCR worker failed even in CPU-only safe mode (pid={}, exitCode=0x{:X}); refusing unsafe in-process fallback",
+                  failedPid, static_cast<unsigned int>(exitCode));
+        break;
     }
 
-    LOG_WARN("OcrWorkerClient: isolated OCR request failed after retry, falling back to in-process engine");
-    return false;
+    return OcrWorkerExtractStatus::WorkerFailed;
+}
+
+bool OcrWorkerClient::extractText(
+    const cv::Mat& bgrImage,
+    const std::filesystem::path& modelDir,
+    const std::string& modelTier,
+    const std::string& scriptMode,
+    std::vector<OcrResult>& outResults,
+    DeepOcrRunStats& outStats,
+    std::string& outActiveTier) {
+    return extractTextEx(bgrImage, modelDir, modelTier, scriptMode, outResults, outStats, outActiveTier) ==
+           OcrWorkerExtractStatus::Succeeded;
 }
 
 } // namespace tools3000::ocr

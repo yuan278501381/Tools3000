@@ -618,7 +618,7 @@ void ClipboardWindow::initializeWebView2() {
                                     {"event", eventName},
                                     {"data", data}
                                 };
-                                const std::string payload = envelope.dump();
+                                const std::string payload = envelope.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
                                 const bool isAppearance = (eventName == "appearance:changed");
                                 tools3000::core::MainThreadDispatcher::instance().post(
                                     [this, generation, payload, isAppearance]() {

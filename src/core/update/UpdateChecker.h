@@ -40,6 +40,7 @@ public:
     static bool isNewerVersion(std::string_view candidate, std::string_view current);
     static bool isTrustedReleaseDownloadUrl(std::string_view url) noexcept;
     static std::string extractExpectedSha256ForAsset(std::string_view sha256SumsBody, std::string_view assetName);
+    static std::string formatReleaseNotesSummary(std::string_view rawNotes, size_t maxBytes = 600);
     static std::wstring buildInstallerParameters();
 
 private:

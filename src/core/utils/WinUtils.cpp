@@ -3924,4 +3924,107 @@ bool WinUtils::hasValidAuthenticodeSignature(const std::filesystem::path& filePa
     return status == ERROR_SUCCESS;
 }
 
+namespace {
+
+size_t utf8ValidSequenceLength(std::string_view input, size_t pos) noexcept {
+    if (pos >= input.size()) return 0;
+    const unsigned char b0 = static_cast<unsigned char>(input[pos]);
+    if (b0 < 0x80u) return 1;
+    if (b0 >= 0xC2u && b0 <= 0xDFu) {
+        if (pos + 1 < input.size()) {
+            const unsigned char b1 = static_cast<unsigned char>(input[pos + 1]);
+            if ((b1 & 0xC0u) == 0x80u) return 2;
+        }
+        return 0;
+    }
+    if (b0 >= 0xE0u && b0 <= 0xEFu) {
+        if (pos + 2 < input.size()) {
+            const unsigned char b1 = static_cast<unsigned char>(input[pos + 1]);
+            const unsigned char b2 = static_cast<unsigned char>(input[pos + 2]);
+            if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u) {
+                // 排除 overlong (E0 80..9F) 与 UTF-16 代理项 (ED A0..BF)
+                if (b0 == 0xE0u && b1 < 0xA0u) return 0;
+                if (b0 == 0xEDu && b1 >= 0xA0u) return 0;
+                return 3;
+            }
+        }
+        return 0;
+    }
+    if (b0 >= 0xF0u && b0 <= 0xF4u) {
+        if (pos + 3 < input.size()) {
+            const unsigned char b1 = static_cast<unsigned char>(input[pos + 1]);
+            const unsigned char b2 = static_cast<unsigned char>(input[pos + 2]);
+            const unsigned char b3 = static_cast<unsigned char>(input[pos + 3]);
+            if ((b1 & 0xC0u) == 0x80u && (b2 & 0xC0u) == 0x80u && (b3 & 0xC0u) == 0x80u) {
+                // 排除 overlong (F0 80..8F) 与超出 U+10FFFF (F4 90..BF)
+                if (b0 == 0xF0u && b1 < 0x90u) return 0;
+                if (b0 == 0xF4u && b1 >= 0x90u) return 0;
+                return 4;
+            }
+        }
+        return 0;
+    }
+    return 0;
+}
+
+}  // namespace
+
+std::string WinUtils::sanitizeUtf8(std::string_view input) {
+    if (input.empty()) return {};
+    std::string out;
+    out.reserve(input.size());
+    size_t i = 0;
+    while (i < input.size()) {
+        const size_t seqLen = utf8ValidSequenceLength(input, i);
+        if (seqLen > 0) {
+            out.append(input.data() + i, seqLen);
+            i += seqLen;
+        } else {
+            out.append("\xEF\xBF\xBD", 3);
+            ++i;
+        }
+    }
+    return out;
+}
+
+std::string WinUtils::truncateUtf8Head(std::string_view input, size_t maxBytes) {
+    if (input.empty() || maxBytes == 0) return {};
+    std::string out;
+    out.reserve((std::min)(input.size(), maxBytes));
+    size_t i = 0;
+    while (i < input.size()) {
+        const size_t seqLen = utf8ValidSequenceLength(input, i);
+        if (seqLen > 0) {
+            if (out.size() + seqLen > maxBytes) break;
+            out.append(input.data() + i, seqLen);
+            i += seqLen;
+        } else {
+            if (out.size() + 3 > maxBytes) break;
+            out.append("\xEF\xBF\xBD", 3);
+            ++i;
+        }
+    }
+    return out;
+}
+
+std::string WinUtils::truncateUtf8Tail(std::string_view input, size_t maxBytes, bool alignToLineStart) {
+    if (input.empty() || maxBytes == 0) return {};
+    if (input.size() <= maxBytes) {
+        return sanitizeUtf8(input);
+    }
+    size_t start = input.size() - maxBytes;
+    // 跳过落在多字节序列中间的 UTF-8 续字节 (10xxxxxx)
+    while (start < input.size() &&
+           (static_cast<unsigned char>(input[start]) & 0xC0u) == 0x80u) {
+        ++start;
+    }
+    if (alignToLineStart && start < input.size()) {
+        const size_t nl = input.find('\n', start);
+        if (nl != std::string_view::npos && nl + 1 < input.size()) {
+            start = nl + 1;
+        }
+    }
+    return sanitizeUtf8(input.substr(start));
+}
+
 }  // namespace tools3000::core

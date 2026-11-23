@@ -6,6 +6,21 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] v1.4.3 紧急稳定性热修：UTF-8 安全截断防检查更新崩溃、反馈通道 12 MiB 附图/1000 行日志/原生 Ctrl+V 贴图、以及 Win10 高精度 OCR 隔离防主进程闪退（Issue `#7`）
+- **三大真机必现/社区缺陷根因与永久防回退铁律**：
+  1. **严禁对任意 UTF-8 字符串按字节裸调用 `resize(N)` / `substr(size - N)`（`UpdateChecker.cpp` & `FeedbackDiagnosticService.cpp` -> `nlohmann::json::type_error.316`）**：
+     - *真机铁证*：`UpdateChecker.cpp` 原 `notes.resize(600); notes += "...";` 将中文 Release Notes 第 600 字节从 3 字节汉字中间劈断，触发 `nlohmann::json::dump()` 抛 `invalid UTF-8 byte at index 600: 0x2E`，导致「关于」页检查更新点击毫无反应；`FeedbackDiagnosticService.cpp` 存在完全同源的 `2400`/`2600` 字节硬切片缺陷；
+     - *铁律*：统一在 `WinUtils.{h,cpp}` 沉淀 `sanitizeUtf8` / `truncateUtf8Head` / `truncateUtf8Tail`，严禁对多语种文本按字节硬截断；同时 `UpdateChecker`、`FeedbackDiagnosticService`、`MessageBridge` 及 `SettingsWindow`/`TrayWindow`/`ClipboardWindow` 全部 `json::dump` 统一启用 `json::error_handler_t::replace` 兜底，且 `UpdateChecker::workerMain` 增加 RAII `BusyGuard` 防止异常锁死状态。
+  2. **反馈弹窗 12 MiB 附图分级放行 + 1000 行日志与崩溃摘要 + `Ctrl+V` 原生 WIC 贴图三层兜底 (`WebViewOriginPolicy.h`, `MessageBridge.cpp`, `FeedbackDiagnosticService.{h,cpp}`, `main.cpp`, `FeedbackModal.{tsx,css}`, `useBridge.ts`)**：
+     - 保持常规 IPC `MaxBridgeMessageBytes = 1 MiB` 红线不变，仅对 `Surface::Settings` 放行 `<= 12 MiB` 的 `feedback.submit` / `feedback.preview`，且 `MessageBridge` 超限拒收时解析回传真实请求 `id`（非 `0`）防止前端 Promise 永远悬挂；
+     - 诊断包日志采集由 `200` 行升级至 `1000` 行（`512 KB` 尾窗）并自动附带 `%LOCALAPPDATA%\Tools3000\crashes\` 近 7 天最新脱敏崩溃/`terminate` 报告；
+     - `FeedbackModal.tsx` 补齐全部 `catch` / `ok=false` / 超 6 MB 报错条与 Toast 提示，`useBridge.ts` 纳入 5 分钟长超时预算；弹窗打开自动聚焦并挂 `window` 全局 `paste`/`keydown` 监听 + `feedback.readClipboardImage` Win32 WIC 原生剪贴板读图（覆盖 `CF_BITMAP`/`CF_DIB`/`CF_HDROP`），零干扰文本框纯文本粘贴。
+  3. **Win10 安装高精度 OCR 引擎包后截图贴图卡死并后台退出（GitHub Issue `#7`）四重根治 (`DeepOcrEngine.{h,cpp}`, `OcrWorkerClient.{h,cpp}`, `OcrWorkerHost.cpp`, `OcrWorkerProtocol.h`, `OcrEngine.cpp`, `PinWindowOcr.cpp`, `CaptureInput.cpp`)**：
+     - **C++/WinRT 铁律**：`winrt::hresult_error` 不继承自 `std::exception`！任何 WinML/WinRT 调用块及后台 `std::thread` 必须补齐 `catch (const winrt::hresult_error&)` 与 `catch (...)`，严禁漏捕穿透线程边界触发 `std::terminate()` 杀主进程；
+     - **进程隔离硬边界**：`OcrWorkerClient` 新增 `OcrWorkerExtractStatus` 精细隔离状态与 `45s` 超时 + 子进程句柄 `abortEvent` 0 ms 崩溃唤醒；子进程推理崩溃/超时自动闩锁 `--safe-cpu=1` 纯 CPU 安全模式隔离重试一次；若仍失败直接返回 `WorkerFailed`，**严禁回退宿主主进程内执行 DirectML/WinML**，由上层 `OcrEngine` 平滑降级至 `Windows.Media.Ocr`；
+     - **Win10 & 低显存防 TDR**：90.5 MB Server 复核模型仅在 Win11+（`WinUtils::isWindows11OrNewer()`）且独立显存 `>= 2 GiB` 时启用 GPU 静态桶；Win10 及核显/低显存自动走 WinML CPU，加载探测阶段同步校验 `detModel` 会话，运行期 GPU 异常自动熔断自愈至 CPU。
+  4. **全量验证**：前端 ESLint + 7 重静态门禁 + 全量 Vitest（含 `FeedbackModal.test.tsx`）+ Vite 生产构建 100% 通过；原生 C++ 全量 **851/851 PASSED**（3 路并发 87.31s）。
+
 ### [2026-11-23] 社区综合十项旗舰升级全栈落地：8 语种跨代码页路径治理、剪贴板零黑屏、QuickLook Win11 根治、手势切窗与 8 秒无语彩蛋、DialogEnhancer 除 Bug 与按需内搜、File Locksmith、搜索 3 档内存与 Live Watch 实时刷新、应用/命令融合排序、方案 C 脱敏反馈通道
 - **核心架构决策与实机排坑控制点**：
   1. **全 8 语种跨代码页 Unicode 路径全链路治理 + 第 7 重 CI 静态门禁 (`WinUtils.{h,cpp}`, `PluginManager.{h,cpp}`, `service/main.cpp`, `MftParser.cpp`, `CaptureDelayLoadHook.cpp`, `ui/scripts/check-path-encoding.mjs`)**：

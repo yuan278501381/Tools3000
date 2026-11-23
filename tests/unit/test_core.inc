@@ -5399,6 +5399,98 @@ TEST(FeedbackAndArchiveTest, TenRulePrivacyRedactionAndZipRoundTrip) {
     std::filesystem::remove(zipPath, ec);
 }
 
+TEST(UpdateCheckerTest, ReleaseNotesSummaryTruncatesUtf8SafelyAtBoundary) {
+    using tools3000::core::UpdateChecker;
+    using tools3000::core::WinUtils;
+
+    // 构造故意让 3 字节中文字符跨过 600 字节边界的发布说明（复现 v1.4.2 检查更新 type_error.316 根因）
+    std::string notes = "A"; // 1 字节 ASCII 偏移，使第 600 字节恰好落在中文字符中间字节
+    for (int i = 0; i < 240; ++i) {
+        notes += "功能更新与架构升级";
+    }
+    const std::string summary = UpdateChecker::formatReleaseNotesSummary(notes, 600);
+    EXPECT_LE(summary.size(), 603u);
+    EXPECT_TRUE(summary.ends_with("..."));
+
+    // 严格模式 nlohmann::json::dump() 绝不能抛出 type_error.316
+    nlohmann::json payload = {
+        {"status", "available"},
+        {"latestVersion", "1.4.3"},
+        {"releaseNotes", summary},
+    };
+    EXPECT_NO_THROW({
+        const std::string serialized = payload.dump();
+        EXPECT_NE(serialized.find("1.4.3"), std::string::npos);
+    });
+
+    // 验证 WinUtils UTF-8 清洗、前截断与尾截断原语
+    const std::string corrupted = std::string("前缀") + "\xE4\xB8" + ".后缀";
+    const std::string cleaned = WinUtils::sanitizeUtf8(corrupted);
+    EXPECT_NO_THROW((void)nlohmann::json({{"text", cleaned}}).dump());
+
+    const std::string tail = WinUtils::truncateUtf8Tail(notes, 200, false);
+    EXPECT_LE(tail.size(), 200u);
+    EXPECT_NO_THROW((void)nlohmann::json({{"tail", tail}}).dump());
+}
+
+TEST(FeedbackAndArchiveTest, OversizedChineseFeedbackAndBridgePayloadLimits) {
+    using tools3000::core::FeedbackDiagnosticService;
+    using tools3000::core::FeedbackSubmissionInput;
+    using tools3000::core::MessageBridge;
+
+    // 1. 构造超长多语种反馈文本（跨 2600 字节边界），验证预览输出与 GitHub URL 100% 合法 UTF-8
+    FeedbackSubmissionInput input;
+    input.feedbackType = "bug";
+    input.title = "测试关于页检查更新与反馈提交";
+    input.description = "X";
+    for (int i = 0; i < 400; ++i) {
+        input.description += "中文反馈内容与診断ログテスト";
+    }
+    input.includeLogs = true;
+
+    const auto preview = FeedbackDiagnosticService::buildDiagnosticPreview(input);
+    EXPECT_GE(FeedbackDiagnosticService::kDefaultLogLines, 1000u);
+    const nlohmann::json previewJson = {
+        {"environment", preview.environment},
+        {"redactedMainLog", preview.redactedMainLog},
+        {"redactedServiceLog", preview.redactedServiceLog},
+        {"redactedLatestCrash", preview.redactedLatestCrash},
+        {"markdownReport", preview.markdownReport},
+        {"githubIssueUrl", preview.githubIssueUrl},
+    };
+    EXPECT_NO_THROW({
+        const std::string serialized = previewJson.dump();
+        EXPECT_NE(serialized.find("markdownReport"), std::string::npos);
+    });
+
+    // 2. 验证 MessageBridge 对普通超 1 MiB 载荷返回真实请求 id（非 0），同时放行 <=12 MiB 的 feedback.submit
+    auto& mb = MessageBridge::instance();
+    bool sawFeedbackSubmit = false;
+    mb.registerHandler("feedback.submit", [&sawFeedbackSubmit](const nlohmann::json& params) -> nlohmann::json {
+        sawFeedbackSubmit = params.contains("screenshotDataUri");
+        return {{"ok", true}, {"mode", "fallback_local"}};
+    });
+
+    const std::string bigNormalPayload =
+        std::string(R"({"id":77,"method":"test.oversized","params":{"blob":")") +
+        std::string(1100 * 1024, 'A') + R"("}})";
+    const std::string normalRespRaw = mb.handleMessage(bigNormalPayload);
+    const auto normalResp = nlohmann::json::parse(normalRespRaw);
+    EXPECT_EQ(normalResp.value("id", 0), 77);
+    ASSERT_TRUE(normalResp.contains("error"));
+
+    const std::string bigFeedbackPayload =
+        std::string(R"({"id":88,"method":"feedback.submit","params":{"title":"shot","screenshotDataUri":"data:image/png;base64,)") +
+        std::string(2 * 1024 * 1024, 'B') + R"("}})";
+    const std::string feedbackRespRaw = mb.handleMessage(bigFeedbackPayload);
+    const auto feedbackResp = nlohmann::json::parse(feedbackRespRaw);
+    EXPECT_EQ(feedbackResp.value("id", 0), 88);
+    EXPECT_FALSE(feedbackResp.contains("error"));
+    EXPECT_TRUE(sawFeedbackSubmit);
+
+    mb.unregisterHandler("feedback.submit");
+}
+
 TEST(FileLocksmithTest, RiskClassificationAndProtection) {
     using tools3000::core::FileLocksmithEngine;
     using tools3000::core::LockProcessRisk;

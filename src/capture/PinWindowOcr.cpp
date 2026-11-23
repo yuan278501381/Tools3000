@@ -466,7 +466,16 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                 return;
             }
             tools3000::core::TraceId::Scope traceScope;
-            auto page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy, scriptModeOverride);
+            tools3000::ocr::OcrPageExtraction page{};
+            try {
+                page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy, scriptModeOverride);
+            } catch (const std::exception& e) {
+                LOG_ERROR("PinWindow: background OCR thread exception: {}", e.what());
+                return;
+            } catch (...) {
+                LOG_ERROR("PinWindow: background OCR thread unknown exception");
+                return;
+            }
             if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 return;
             }

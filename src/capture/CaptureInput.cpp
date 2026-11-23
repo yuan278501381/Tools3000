@@ -1684,20 +1684,28 @@ void CaptureInput::ensureSelectionOcrForTextMarkup() {
     CaptureInput* selfPtr = this;
 
     std::thread([cropImg = std::move(cropImg), reqSeq, statePtr, rendererPtr, selfPtr]() mutable {
-        auto ocrLines = tools3000::ocr::OcrEngine::instance().extractText(cropImg);
         std::vector<CaptureState::SelectionOcrBlock> parsedBlocks;
-        parsedBlocks.reserve(ocrLines.size());
-        for (auto& line : ocrLines) {
-            if (line.text.empty() || line.box.width <= 0 || line.box.height <= 0) continue;
-            CaptureState::SelectionOcrBlock blk;
-            blk.text = std::move(line.text);
-            blk.origBox = line.box;
-            blk.layoutRegionId = line.layoutRegionId;
-            blk.alignedRowId = line.alignedRowId;
-            blk.charBoxes = !line.charBoxes.empty()
-                ? std::move(line.charBoxes)
-                : tools3000::ocr::OcrEngine::buildProportionalCharBoxes(blk.text, blk.origBox);
-            parsedBlocks.push_back(std::move(blk));
+        try {
+            auto ocrLines = tools3000::ocr::OcrEngine::instance().extractText(cropImg);
+            parsedBlocks.reserve(ocrLines.size());
+            for (auto& line : ocrLines) {
+                if (line.text.empty() || line.box.width <= 0 || line.box.height <= 0) continue;
+                CaptureState::SelectionOcrBlock blk;
+                blk.text = std::move(line.text);
+                blk.origBox = line.box;
+                blk.layoutRegionId = line.layoutRegionId;
+                blk.alignedRowId = line.alignedRowId;
+                blk.charBoxes = !line.charBoxes.empty()
+                    ? std::move(line.charBoxes)
+                    : tools3000::ocr::OcrEngine::buildProportionalCharBoxes(blk.text, blk.origBox);
+                parsedBlocks.push_back(std::move(blk));
+            }
+        } catch (const std::exception& e) {
+            LOG_ERROR("CaptureInput: background selection OCR exception: {}", e.what());
+            parsedBlocks.clear();
+        } catch (...) {
+            LOG_ERROR("CaptureInput: background selection OCR unknown exception");
+            parsedBlocks.clear();
         }
 
         tools3000::core::MainThreadDispatcher::instance().post(

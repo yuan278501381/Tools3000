@@ -91,9 +91,10 @@ struct DeepOcrEngine::WinMlContext {
         nullptr, nullptr, nullptr, nullptr};
     waml::LearningModelSession cpuFallbackRecSession{nullptr};
 
-    // 二阶高精度 Server 复核按需单一甜点会话（GPU 优先单一 2x640 桶仅多耗 ~165ms；无 GPU 时优雅回退 CPU 单会话）
+    // 二阶高精度 Server 复核按需单一甜点会话（仅 Win11+ 且 >=2GB 独立显存走 GPU 2x640 桶；Win10 及核显/低显存自动走 CPU 防 TDR 卡死）
     std::filesystem::path serverRecPath;
     bool serverCascadeEnabled = false;
+    bool allowServerGpu = false;
     bool serverSessionOnGpu = false;
     waml::LearningModel serverRecModel{nullptr};
     waml::LearningModelDevice cpuDevice{nullptr};
@@ -284,46 +285,78 @@ struct DeepOcrEngine::WinMlContext {
     }
 
     waml::LearningModelSession* ensureDetSession(size_t idx) {
-        if (idx >= kDetSpecs.size()) return nullptr;
+        if (idx >= kDetSpecs.size() || !detModel || !device) return nullptr;
         if (!detBucketSessions[idx]) {
-            // DirectML 大尺寸检测桶（[1]=1280x1024 横屏大图 与 [2]=960x1280 竖屏长图）实施互斥单活：
-            // 桌面连拍 99% 同方向 0 重编开销，跨横/竖切换时释放旧大桶并触发 DXGI Trim，削减 ~400-500MB 峰值提交内存
-            if (usingDirectMLGpu && (idx == 1 || idx == 2)) {
-                const size_t otherLargeIdx = (idx == 1) ? 2 : 1;
-                if (detBucketSessions[otherLargeIdx]) {
-                    try { detBucketSessions[otherLargeIdx].Close(); } catch (...) {}
-                    detBucketSessions[otherLargeIdx] = nullptr;
-                    if (ownedDxgiDevice) {
-                        ownedDxgiDevice->Trim();
+            try {
+                // DirectML 大尺寸检测桶（[1]=1280x1024 横屏大图 与 [2]=960x1280 竖屏长图）实施互斥单活：
+                // 桌面连拍 99% 同方向 0 重编开销，跨横/竖切换时释放旧大桶并触发 DXGI Trim，削减 ~400-500MB 峰值提交内存
+                if (usingDirectMLGpu && (idx == 1 || idx == 2)) {
+                    const size_t otherLargeIdx = (idx == 1) ? 2 : 1;
+                    if (detBucketSessions[otherLargeIdx]) {
+                        try { detBucketSessions[otherLargeIdx].Close(); } catch (...) {}
+                        detBucketSessions[otherLargeIdx] = nullptr;
+                        if (ownedDxgiDevice) {
+                            ownedDxgiDevice->Trim();
+                        }
                     }
                 }
+                waml::LearningModelSessionOptions opts;
+                opts.CloseModelOnSessionCreation(false);
+                detBucketSessions[idx] = waml::LearningModelSession(detModel, device, opts);
+            } catch (const winrt::hresult_error& e) {
+                LOG_WARN("DeepOcrEngine: ensureDetSession({}) WinRT error hr=0x{:08X}",
+                         idx, static_cast<uint32_t>(e.code().value));
+                detBucketSessions[idx] = nullptr;
+                return nullptr;
+            } catch (...) {
+                LOG_WARN("DeepOcrEngine: ensureDetSession({}) failed with unknown exception", idx);
+                detBucketSessions[idx] = nullptr;
+                return nullptr;
             }
-            waml::LearningModelSessionOptions opts;
-            opts.CloseModelOnSessionCreation(false);
-            detBucketSessions[idx] = waml::LearningModelSession(detModel, device, opts);
         }
         return &detBucketSessions[idx];
     }
 
     waml::LearningModelSession* ensureRecSession(size_t idx) {
+        if (!recModel) return nullptr;
         if (!usingDirectMLGpu || !supportsBatchEval) {
             if (!cpuFallbackRecSession) {
-                if (!cpuDevice) {
-                    cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
+                try {
+                    if (!cpuDevice) {
+                        cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
+                    }
+                    waml::LearningModelSessionOptions opts;
+                    opts.CloseModelOnSessionCreation(false);
+                    cpuFallbackRecSession = waml::LearningModelSession(
+                        recModel, (usingDirectMLGpu && device) ? device : cpuDevice, opts);
+                } catch (const winrt::hresult_error& e) {
+                    LOG_WARN("DeepOcrEngine: ensureRecSession(fallback) WinRT error hr=0x{:08X}",
+                             static_cast<uint32_t>(e.code().value));
+                    cpuFallbackRecSession = nullptr;
+                    return nullptr;
+                } catch (...) {
+                    cpuFallbackRecSession = nullptr;
+                    return nullptr;
                 }
-                waml::LearningModelSessionOptions opts;
-                opts.CloseModelOnSessionCreation(false);
-                cpuFallbackRecSession = waml::LearningModelSession(
-                    recModel, usingDirectMLGpu ? device : cpuDevice, opts);
             }
             return &cpuFallbackRecSession;
         }
 
-        if (idx >= kRecSpecs.size()) return nullptr;
+        if (idx >= kRecSpecs.size() || !device) return nullptr;
         if (!recBucketSessions[idx]) {
-            waml::LearningModelSessionOptions opts;
-            opts.CloseModelOnSessionCreation(false);
-            recBucketSessions[idx] = waml::LearningModelSession(recModel, device, opts);
+            try {
+                waml::LearningModelSessionOptions opts;
+                opts.CloseModelOnSessionCreation(false);
+                recBucketSessions[idx] = waml::LearningModelSession(recModel, device, opts);
+            } catch (const winrt::hresult_error& e) {
+                LOG_WARN("DeepOcrEngine: ensureRecSession({}) WinRT error hr=0x{:08X}",
+                         idx, static_cast<uint32_t>(e.code().value));
+                recBucketSessions[idx] = nullptr;
+                return nullptr;
+            } catch (...) {
+                recBucketSessions[idx] = nullptr;
+                return nullptr;
+            }
         }
         return &recBucketSessions[idx];
     }
@@ -346,9 +379,23 @@ struct DeepOcrEngine::WinMlContext {
 
             waml::LearningModelSessionOptions opts;
             opts.CloseModelOnSessionCreation(true);
-            if (usingDirectMLGpu && supportsBatchEval && device) {
-                serverRecSession = waml::LearningModelSession(serverRecModel, device, opts);
-                serverSessionOnGpu = true;
+            if (usingDirectMLGpu && supportsBatchEval && allowServerGpu && device) {
+                try {
+                    serverRecSession = waml::LearningModelSession(serverRecModel, device, opts);
+                    serverSessionOnGpu = true;
+                } catch (...) {
+                    allowServerGpu = false;
+                    serverSessionOnGpu = false;
+                    serverRecSession = nullptr;
+                    // GPU 创建失败时关闭可能损坏的模型引用并重新在 CPU 上安全加载
+                    if (!serverRecModel) {
+                        serverRecModel = waml::LearningModel::LoadFromFilePath(serverRecPath.wstring());
+                    }
+                    if (!cpuDevice) {
+                        cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
+                    }
+                    serverRecSession = waml::LearningModelSession(serverRecModel, cpuDevice, opts);
+                }
             } else {
                 if (!cpuDevice) {
                     cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
@@ -358,6 +405,14 @@ struct DeepOcrEngine::WinMlContext {
             }
             serverRecModel = nullptr;
             return &serverRecSession;
+        } catch (const winrt::hresult_error& e) {
+            LOG_WARN("DeepOcrEngine: server rec session failed (hr=0x{:08X}), disabling server cascade for session",
+                     static_cast<uint32_t>(e.code().value));
+            serverCascadeEnabled = false;
+            serverSessionOnGpu = false;
+            serverRecModel = nullptr;
+            serverRecSession = nullptr;
+            return nullptr;
         } catch (...) {
             serverCascadeEnabled = false;
             serverSessionOnGpu = false;
@@ -606,6 +661,9 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                 ctx->recOutName = ctx->recModel.OutputFeatures().GetAt(0).Name();
 
                 bool gpuReady = false;
+                SIZE_T selectedDedicatedVram = 0;
+                const bool forceCpuOnly = isForceCpuOnlyMode();
+                if (!forceCpuOnly) {
                 try {
                     waml::LearningModelDevice gpuDev{nullptr};
                     // 优先自建独占高性能 D3D11 设备绑定至 WinML，确保闲置卸载时随设备销毁 100% 释放 DirectML 专用私有内存
@@ -626,6 +684,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                                 }
                             }
                             if (bestAdapter) {
+                                selectedDedicatedVram = bestVram;
                                 Microsoft::WRL::ComPtr<ID3D11Device> d3d11;
                                 Microsoft::WRL::ComPtr<ID3D11DeviceContext> d3dCtx;
                                 const D3D_FEATURE_LEVEL reqFl = D3D_FEATURE_LEVEL_11_0;
@@ -665,6 +724,10 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                     waml::LearningModelSessionOptions probeOpts;
                     probeOpts.CloseModelOnSessionCreation(false);
 
+                    // 同步验证 detModel 能在当前 GPU 设备上创建会话，并直接复用至首桶 [0]，
+                    // 杜绝 Win10 老版 DirectML 仅通过 rec 探测却在推理阶段 det 会话创建时崩溃
+                    waml::LearningModelSession detProbe(ctx->detModel, gpuDev, probeOpts);
+
                     bool batchOk = false;
                     try {
                         // 使用甜点主力 16x320 桶 ([1]) 一次性完成批处理探测并直接复用，永不触发 DirectML 大张量显存悬崖
@@ -699,12 +762,19 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                     }
 
                     if (gpuReady) {
+                        ctx->detBucketSessions[0] = std::move(detProbe);
                         ctx->device = gpuDev;
                         ctx->usingDirectMLGpu = true;
                         ctx->supportsBatchEval = batchOk;
+                        // 90.5 MB Server 复核模型仅在 Win11+ 且 >= 2GB 独显上启用 GPU 静态桶；
+                        // Win10 旧版 DirectML 及核显/低显存设备自动走 WinML CPU 会话，彻底规避 WDDM TDR 桌面卡死与显存崩溃
+                        constexpr SIZE_T kMinServerGpuVramBytes = 2ULL * 1024ULL * 1024ULL * 1024ULL;
+                        ctx->allowServerGpu = tools3000::core::WinUtils::isWindows11OrNewer() &&
+                                              selectedDedicatedVram >= kMinServerGpuVramBytes;
                     }
                 } catch (...) {
                     gpuReady = false;
+                }
                 }
 
                 if (!gpuReady) {
@@ -722,6 +792,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                     ctx->cpuDevice = ctx->device;
                     ctx->usingDirectMLGpu = false;
                     ctx->supportsBatchEval = false;
+                    ctx->allowServerGpu = false;
                 }
 
                 m_winMl = std::move(ctx);
@@ -731,10 +802,11 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                 m_modelsLoaded = true;
                 m_modelsLoadedAtomic.store(true, std::memory_order_release);
                 m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, tier={}, dict={} keys)",
+                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, tier={}, serverGpu={}, dict={} keys)",
                          m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD",
                          m_winMl->supportsBatchEval ? " + CompactBatchCascade" : "",
                          m_loadedModelTier,
+                         m_winMl->allowServerGpu ? "true" : "false",
                          m_dictKeys.size());
                 return true;
             }
@@ -793,8 +865,19 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         m_modelsLoadedAtomic.store(true, std::memory_order_release);
         LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (tier={}, dict={} keys)", m_loadedModelTier, m_dictKeys.size());
         return true;
+    } catch (const winrt::hresult_error& e) {
+        LOG_ERROR("DeepOcrEngine: WinRT exception loading PP-OCRv4 models: hr=0x{:08X}",
+                  static_cast<uint32_t>(e.code().value));
+        m_modelsLoaded = false;
+        m_modelsLoadedAtomic.store(false, std::memory_order_release);
+        return false;
     } catch (const std::exception& e) {
         LOG_ERROR("DeepOcrEngine: exception loading PP-OCRv4 models: {}", e.what());
+        m_modelsLoaded = false;
+        m_modelsLoadedAtomic.store(false, std::memory_order_release);
+        return false;
+    } catch (...) {
+        LOG_ERROR("DeepOcrEngine: unknown exception loading PP-OCRv4 models");
         m_modelsLoaded = false;
         m_modelsLoadedAtomic.store(false, std::memory_order_release);
         return false;
@@ -1106,47 +1189,44 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
 
     // 生产宿主环境优先通过独立 OCR Worker 子进程 (--worker=ocr) 执行 DirectML GPU 推理：
     // 主进程 0 加载 DirectML/ONNX Runtime/显卡内核驱动，子进程采用两阶段智能热保活（60s 软修剪 + 15 分钟 OS 双归零退出）。
+    // 若独立子进程在推理中崩溃或超时（WorkerFailed），绝不回退到主进程执行 DirectML/WinML 以免拖垮整个宿主程序！
     if (OcrWorkerClient::instance().isOutOfProcessAvailable()) {
         std::vector<OcrResult> workerResults;
         DeepOcrRunStats workerStats{};
         std::string workerActiveTier;
-        if (OcrWorkerClient::instance().extractText(
-                bgr,
-                modelDir,
-                effectiveModelTier(),
-                effectiveScriptMode,
-                workerResults,
-                workerStats,
-                workerActiveTier)) {
+        const OcrWorkerExtractStatus status = OcrWorkerClient::instance().extractTextEx(
+            bgr,
+            modelDir,
+            effectiveModelTier(),
+            effectiveScriptMode,
+            workerResults,
+            workerStats,
+            workerActiveTier);
+        if (status == OcrWorkerExtractStatus::Succeeded) {
             {
                 std::lock_guard<std::mutex> statsLock(m_statsMutex);
                 m_lastRunStats = workerStats;
             }
             return workerResults;
         }
+        if (status == OcrWorkerExtractStatus::WorkerFailed) {
+            LOG_WARN("DeepOcrEngine: isolated OCR worker failed; aborting DeepOCR without unsafe in-process fallback");
+            return {};
+        }
     }
 
     const auto tTotalStart = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lock(m_inferMutex);
-    const auto tLoadStart = std::chrono::steady_clock::now();
-    if (!ensureModelsLoadedLocked(modelDir)) {
-        return {};
-    }
-    const auto tInferStart = std::chrono::steady_clock::now();
-    const long long loadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        tInferStart - tLoadStart).count();
-
     struct ActivityTouchGuard {
         DeepOcrEngine* self = nullptr;
         ~ActivityTouchGuard() {
             if (self) self->touchActivityAndScheduleIdleUnload();
         }
     } activityGuard{this};
-    if (m_useWinMl) {
-        ensureComApartmentInitialized();
-    }
 
+    const cv::Mat originalBgr = bgr;
     std::vector<OcrResult> rawBlocks;
+    long long loadMs = 0;
     long long detMs = 0;
     long long packMs = 0;
     long long recMs = 0;
@@ -1158,7 +1238,36 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
     std::string detectedScript = "cjk";
     bool pageRotated90Or270 = false;
     bool pageRotated270Ccw = false;
-    try {
+
+    for (int inferAttempt = 0; inferAttempt < 2; ++inferAttempt) {
+        bgr = originalBgr;
+        rawBlocks.clear();
+        detMs = 0;
+        packMs = 0;
+        recMs = 0;
+        refineMs = 0;
+        serverRefinedCount = 0;
+        detectedQuadCount = 0;
+        packedStripCount = 0;
+        bucketProfile.clear();
+        detectedScript = "cjk";
+        pageRotated90Or270 = false;
+        pageRotated270Ccw = false;
+
+        const auto tLoadStart = std::chrono::steady_clock::now();
+        if (!ensureModelsLoadedLocked(modelDir)) {
+            return {};
+        }
+        const auto tInferStart = std::chrono::steady_clock::now();
+        loadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            tInferStart - tLoadStart).count();
+
+        if (m_useWinMl) {
+            ensureComApartmentInitialized();
+        }
+
+        bool gpuErrorNeedsCpuRetry = false;
+        try {
         // 0. 自适应视觉增强前处理（红章压字穿透 + 阴影纸面/手写光照归一化 / 拍屏摩尔纹抑制；清晰数字截图 0 拷贝直通）
         bool applyPreprocToRec = false;
         cv::Mat detSourceBgr = preprocessImageForDetection(bgr, &applyPreprocToRec);
@@ -1347,6 +1456,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         }
                     }
                 }
+            } else {
+                throw std::runtime_error("WinML GPU det session unavailable");
             }
             }
         } else {
@@ -2608,7 +2719,24 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                                         [&](int b, CtcDecodeOutput&& srvDec) {
                                             maybeAcceptServerDecode(hardCandidates[cpos + static_cast<size_t>(b)], std::move(srvDec));
                                         });
+                                } catch (const winrt::hresult_error& e) {
+                                    LOG_WARN("DeepOcrEngine: server GPU refine WinRT error hr=0x{:08X}, disabling GPU server bucket",
+                                             static_cast<uint32_t>(e.code().value));
+                                    m_winMl->allowServerGpu = false;
+                                    m_winMl->serverSessionOnGpu = false;
+                                    if (m_winMl->serverRecSession) {
+                                        try { m_winMl->serverRecSession.Close(); } catch (...) {}
+                                        m_winMl->serverRecSession = nullptr;
+                                    }
+                                    break;
                                 } catch (...) {
+                                    m_winMl->allowServerGpu = false;
+                                    m_winMl->serverSessionOnGpu = false;
+                                    if (m_winMl->serverRecSession) {
+                                        try { m_winMl->serverRecSession.Close(); } catch (...) {}
+                                        m_winMl->serverRecSession = nullptr;
+                                    }
+                                    break;
                                 }
                                 cpos += static_cast<size_t>(actualB);
                             }
@@ -2761,9 +2889,44 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
             rescueMissedUnderscores(bgr, blk);
             normalizeStructuredJsonPunctuation(blk);
         }
-    } catch (const std::exception& e) {
-        LOG_ERROR("DeepOcrEngine: inference exception: {}", e.what());
-        return {};
+        } catch (const winrt::hresult_error& e) {
+            const uint32_t hr = static_cast<uint32_t>(e.code().value);
+            if (m_useWinMl && m_winMl && m_winMl->usingDirectMLGpu && inferAttempt == 0) {
+                LOG_WARN("DeepOcrEngine: WinML GPU inference threw hr=0x{:08X}, latching CPU-only fallback and retrying once", hr);
+                gpuErrorNeedsCpuRetry = true;
+            } else {
+                LOG_ERROR("DeepOcrEngine: WinRT inference exception: hr=0x{:08X}", hr);
+                return {};
+            }
+        } catch (const std::exception& e) {
+            if (m_useWinMl && m_winMl && m_winMl->usingDirectMLGpu && inferAttempt == 0) {
+                LOG_WARN("DeepOcrEngine: WinML GPU inference failed ({}), latching CPU-only fallback and retrying once", e.what());
+                gpuErrorNeedsCpuRetry = true;
+            } else {
+                LOG_ERROR("DeepOcrEngine: inference exception: {}", e.what());
+                return {};
+            }
+        } catch (...) {
+            if (m_useWinMl && m_winMl && m_winMl->usingDirectMLGpu && inferAttempt == 0) {
+                LOG_WARN("DeepOcrEngine: WinML GPU inference unknown exception, latching CPU-only fallback and retrying once");
+                gpuErrorNeedsCpuRetry = true;
+            } else {
+                LOG_ERROR("DeepOcrEngine: inference unknown exception");
+                return {};
+            }
+        }
+
+        if (gpuErrorNeedsCpuRetry) {
+            m_gpuRuntimeBlacklisted.store(true, std::memory_order_release);
+            m_modelsLoaded = false;
+            m_modelsLoadedAtomic.store(false, std::memory_order_release);
+            m_bucketsPrecompiled = false;
+            m_useWinMl = false;
+            m_winMl.reset();
+            m_activeSessionCountAtomic.store(0, std::memory_order_release);
+            continue;
+        }
+        break;
     }
 
     if (rawBlocks.empty()) {
@@ -2834,6 +2997,27 @@ size_t DeepOcrEngine::activeSessionCount() const noexcept {
 DeepOcrRunStats DeepOcrEngine::lastRunStats() const noexcept {
     std::lock_guard<std::mutex> sl(m_statsMutex);
     return m_lastRunStats;
+}
+
+void DeepOcrEngine::setForceCpuOnlyModeForWorker(bool forceCpu) noexcept {
+    m_forceCpuOnlyForWorker.store(forceCpu, std::memory_order_release);
+}
+
+bool DeepOcrEngine::isForceCpuOnlyMode() const noexcept {
+    if (m_forceCpuOnlyForWorker.load(std::memory_order_acquire) ||
+        m_gpuRuntimeBlacklisted.load(std::memory_order_acquire)) {
+        return true;
+    }
+    return worker::envFlagEnabled(L"TOOLS3000_OCR_FORCE_CPU");
+}
+
+bool DeepOcrEngine::isGpuRuntimeBlacklisted() const noexcept {
+    return m_gpuRuntimeBlacklisted.load(std::memory_order_acquire);
+}
+
+void DeepOcrEngine::resetCpuSafeModeForTest() noexcept {
+    m_forceCpuOnlyForWorker.store(false, std::memory_order_release);
+    m_gpuRuntimeBlacklisted.store(false, std::memory_order_release);
 }
 
 void DeepOcrEngine::setIdleUnloadTimeoutForTest(int seconds) noexcept {

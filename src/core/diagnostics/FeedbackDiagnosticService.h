@@ -47,11 +47,20 @@ struct FeedbackBundlePreview {
     nlohmann::json environment;
     std::string redactedMainLog;
     std::string redactedServiceLog;
+    std::string redactedLatestCrash;
     std::string markdownReport;
     std::string githubIssueUrl;
     uint32_t totalRedactions = 0;
     bool relayConfigured = false;
     std::string relayEndpoint;
+};
+
+struct ClipboardImageAttachment {
+    bool ok = false;
+    bool tooLarge = false;
+    std::string dataUri;
+    std::string fileName;
+    size_t byteSize = 0;
 };
 
 struct FeedbackSubmitOutcome {
@@ -67,12 +76,19 @@ struct FeedbackSubmitOutcome {
 
 class TOOLS3000CORE_API FeedbackDiagnosticService {
 public:
+    static constexpr size_t kDefaultLogLines = 1000;
+    static constexpr size_t kMaxScreenshotAttachmentBytes = 6u * 1024u * 1024u;
+
     /// 对任意文本执行 10 维本地隐私正则脱敏（纯函数，可用于离线单测验证）
     static RedactionReport redactSensitiveText(const std::string& input);
 
-    /// 采集脱敏运行环境快照与最近 N 行主程序/搜索服务日志（绝不唤醒已停服的搜索服务）
+    /// 采集脱敏运行环境快照与最近 N 行主程序/搜索服务日志及近期崩溃摘要（绝不唤醒已停服的搜索服务）
     static FeedbackBundlePreview buildDiagnosticPreview(const FeedbackSubmissionInput& input,
-                                                        size_t maxLogLines = 200);
+                                                        size_t maxLogLines = kDefaultLogLines);
+
+    /// 从 Windows 原生剪贴板读取截图位图 (CF_BITMAP/CF_DIB) 或复制的图像文件 (CF_HDROP) 并编码为 Data URI
+    static ClipboardImageAttachment readClipboardImageAsDataUri(
+        size_t maxImageBytes = kMaxScreenshotAttachmentBytes);
 
     /// 将脱敏环境快照、日志、Markdown 报告及可选截图打包为本地 .zip 诊断包
     static bool exportDiagnosticZipBundle(const FeedbackSubmissionInput& input,

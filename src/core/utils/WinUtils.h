@@ -451,6 +451,15 @@ public:
 
     /// 应急输入状态自愈与清理：强制释放鼠标捕获、解除光标裁剪并使用 VK_F24 中立脉冲安全释放被卡住的修饰键
     static void emergencyFlushInputState() noexcept;
+
+    /// 清理任意 UTF-8 字节串中的孤立续字节与非法多字节序列（替换为 U+FFFD），确保可安全传入 nlohmann::json::dump()
+    static std::string sanitizeUtf8(std::string_view input);
+
+    /// 按字节上限从头部安全截断 UTF-8 字符串，严格对齐码点边界绝不劈断多字节字符，并保证输出为合法 UTF-8
+    static std::string truncateUtf8Head(std::string_view input, size_t maxBytes);
+
+    /// 按字节上限从尾部安全保留 UTF-8 字符串，严格对齐码点边界（可选对齐至下一完整行首），保证输出为合法 UTF-8
+    static std::string truncateUtf8Tail(std::string_view input, size_t maxBytes, bool alignToLineStart = false);
 };
 
 }  // namespace tools3000::core

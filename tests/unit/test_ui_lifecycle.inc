@@ -22,6 +22,27 @@ TEST(WebViewSecurityTest, RejectsOversizedBridgePayload) {
         tools3000::ui::web_security::MaxBridgeMessageBytes + 1));
 }
 
+TEST(WebViewSecurityTest, AllowsFeedbackAttachmentPayloadsUpTo12MiBOnlyOnSettings) {
+    using namespace tools3000::ui::web_security;
+
+    const std::string largeFeedbackSubmit =
+        std::string(R"({"id":9,"method":"feedback.submit","params":{"screenshotDataUri":")") +
+        std::string(2 * 1024 * 1024, 'A') + R"("}})";
+    const std::string largeGeneralCall =
+        std::string(R"({"id":10,"method":"general.getSettings","params":{"pad":")") +
+        std::string(2 * 1024 * 1024, 'A') + R"("}})";
+
+    EXPECT_TRUE(isFeedbackAttachmentBridgeRequest(largeFeedbackSubmit));
+    EXPECT_FALSE(isFeedbackAttachmentBridgeRequest(largeGeneralCall));
+
+    // 仅 Settings 窗口放行 <=12 MiB 的 feedback.submit / feedback.preview，其余表面与方法仍严守 1 MiB 上限
+    EXPECT_TRUE(isBridgeMethodAllowed(largeFeedbackSubmit, Surface::Settings));
+    EXPECT_FALSE(isBridgeMethodAllowed(largeFeedbackSubmit, Surface::Tray));
+    EXPECT_FALSE(isBridgeMethodAllowed(largeFeedbackSubmit, Surface::Search));
+    EXPECT_FALSE(isBridgeMethodAllowed(largeFeedbackSubmit, Surface::QuickLook));
+    EXPECT_FALSE(isBridgeMethodAllowed(largeGeneralCall, Surface::Settings));
+}
+
 TEST(WebViewSecurityTest, AllowsTrayRequiredMethods) {
     using tools3000::ui::web_security::isBridgeMethodAllowed;
     using tools3000::ui::web_security::Surface;

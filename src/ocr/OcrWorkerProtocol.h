@@ -141,19 +141,20 @@ inline bool readOcrResults(
     DeepOcrRunStats& outStats,
     std::string& outActiveTier,
     bool overlappedHandle = false,
-    DWORD timeoutMs = INFINITE) {
+    DWORD timeoutMs = INFINITE,
+    HANDLE abortEvent = nullptr) {
     outLines.clear();
     outStats = {};
     outActiveTier.clear();
 
     ResponseHeader hdr{};
-    if (!worker::readPod(pipe, hdr, overlappedHandle, timeoutMs)) return false;
+    if (!worker::readPod(pipe, hdr, overlappedHandle, timeoutMs, abortEvent)) return false;
     if (hdr.magic != kProtocolMagic || hdr.version != kProtocolVersion || hdr.status != 0 || hdr.lineCount > kMaxOcrLines) {
         return false;
     }
 
     WireRunStats wireStats{};
-    if (!worker::readPod(pipe, wireStats, overlappedHandle, timeoutMs)) return false;
+    if (!worker::readPod(pipe, wireStats, overlappedHandle, timeoutMs, abortEvent)) return false;
     outStats.totalMs = wireStats.totalMs;
     outStats.loadMs = wireStats.loadMs;
     outStats.detMs = wireStats.detMs;
@@ -164,14 +165,14 @@ inline bool readOcrResults(
     outStats.stripCount = wireStats.stripCount;
     outStats.serverRefinedCount = wireStats.serverRefinedCount;
     outStats.activeSessions = wireStats.activeSessions;
-    if (!worker::readString(pipe, outStats.bucketProfile, overlappedHandle, timeoutMs)) return false;
-    if (!worker::readString(pipe, outStats.detectedScript, overlappedHandle, timeoutMs)) return false;
-    if (!worker::readString(pipe, outActiveTier, overlappedHandle, timeoutMs)) return false;
+    if (!worker::readString(pipe, outStats.bucketProfile, overlappedHandle, timeoutMs, abortEvent)) return false;
+    if (!worker::readString(pipe, outStats.detectedScript, overlappedHandle, timeoutMs, abortEvent)) return false;
+    if (!worker::readString(pipe, outActiveTier, overlappedHandle, timeoutMs, abortEvent)) return false;
 
     outLines.reserve(hdr.lineCount);
     for (uint32_t i = 0; i < hdr.lineCount; ++i) {
         WireLineHeader lh{};
-        if (!worker::readPod(pipe, lh, overlappedHandle, timeoutMs)) return false;
+        if (!worker::readPod(pipe, lh, overlappedHandle, timeoutMs, abortEvent)) return false;
         if (lh.textBytes > worker::Constants::kMaxIpcStringBytes || lh.charBoxCount > kMaxCharBoxes) {
             return false;
         }
@@ -182,13 +183,13 @@ inline bool readOcrResults(
         item.alignedRowId = lh.alignedRowId;
         if (lh.textBytes > 0) {
             item.text.resize(lh.textBytes);
-            if (!worker::readExact(pipe, item.text.data(), lh.textBytes, overlappedHandle, timeoutMs)) {
+            if (!worker::readExact(pipe, item.text.data(), lh.textBytes, overlappedHandle, timeoutMs, abortEvent)) {
                 return false;
             }
         }
         if (lh.charBoxCount > 0) {
             std::vector<WireRect> rects(lh.charBoxCount);
-            if (!worker::readExact(pipe, rects.data(), rects.size() * sizeof(WireRect), overlappedHandle, timeoutMs)) {
+            if (!worker::readExact(pipe, rects.data(), rects.size() * sizeof(WireRect), overlappedHandle, timeoutMs, abortEvent)) {
                 return false;
             }
             item.charBoxes.reserve(lh.charBoxCount);
