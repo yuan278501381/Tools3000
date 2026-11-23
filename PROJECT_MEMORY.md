@@ -22,7 +22,7 @@
   5. **同行尾部时间戳剥离 + 微重叠去重 + 次级灰字无损保色 + 噪声防火墙**：
      - *根治*：预处理自动剥离同行尾部独立紧凑时间戳（如 `...Artwork C...  8d` 剥出 `8d` 写入 `detachedObstacleRects` 自动避障）与 OCR 切片微重叠前缀（如 `...Voted` + `ed  Precinct Maps`）；`ensureReadableTextBgr` 保色阈值由 `0.32f -> 0.16f` 并在低对比时温和插值推升至 `0.28f`（根治深色模式次级灰字变刺眼纯白）；`looksLikeIdentifierOrSerialCode` 增补首字母大写产品名+尾数字（`Tools3000`/`Win11`，排除小写 `for2026`），`isTranslatableText` 拦截无多字母单词的孤立单字母噪声/坐标（`"Q"`/`"s"`/`"257 D, 178 R"`）。
   6. **合规翻译回归样本集入库 (`tests/fixtures/translate/`)**：
-     - 严格剔除含真实服务器 IP 与账密的 Postman 截图并清理临时产物，归档 9 张涵盖暗色侧边栏、NYTimes、Yahoo、SAP B1、Hacker News、AlternativeTo、暗色技术文档、云联管理端与工业装箱卡的合规测试原图及说明文档，并在 `tests/unit/test_capture.inc` 新增回归断言 2.10~2.12 与全 8 场景实图验收闭环。
+     - 归档 10 张涵盖暗色侧边栏、NYTimes、Yahoo、SAP B1、Hacker News、AlternativeTo、暗色技术文档、云联管理端、工业装箱卡与脱敏版暗色 Postman API 界面的合规测试原图及说明文档（Postman 样本已将所有公/私网 IP、用户名、密码、SessionId 与项目名全面替换为 RFC 5737 测试网段 `192.0.2.10`/`198.51.100.x` 与虚构占位符，零泄密风险），并在 `tests/unit/test_capture.inc` 新增回归断言 2.10~2.12 与全场景实图验收闭环。
 
 ### [2026-11-23] 应用内一键更新「点安装闪退且版本未升」根治（`taskkill /t` 进程树自爆 + `skipifsilent` 不重启）
 - **实机黑匣子根因（100% 日志实锤）**：

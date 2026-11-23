@@ -1,6 +1,6 @@
 # Tools3000 截图原位翻译回归测试样本集
 
-本目录存放用于端到端自动化回归测试与视觉审片验收的真实场景原图（已严格剔除含账号/密码/服务器凭据的 Postman 等敏感截图，仅保留经项目负责人确认合规的测试原图，由 Git 版本管理）。
+本目录存放用于端到端自动化回归测试与视觉审片验收的真实场景原图（所有涉及真实服务器 IP、账号、密码、会话令牌及客户环境名的 Postman 样本已全面替换为 RFC 5737 测试网段 `192.0.2.x` / `198.51.100.x` 与虚拟占位凭据，确认零泄密风险后由 Git 版本管理）。
 
 配合 `tests/unit/test_capture.inc` 中的 `InPlaceTranslateEngineTest.LiveImageVisualQaWhenEnvSet`（设置 `TOOLS3000_LIVE_TRANSLATE_QA_IMG` 与 `TOOLS3000_LIVE_TRANSLATE_QA_OUT` 环境变量运行，可选 `TOOLS3000_LIVE_TRANSLATE_QA_VERBOSE=1` 输出逐行几何与样式诊断），可持续守护以下核心排版质量红线永不回退：
 
@@ -23,3 +23,4 @@
 | `dark_markdown_codebadges.jpg` | 中 -> 英 | 暗色中文技术文档 + 悬挂缩进列表 + 行内代码胶囊 | 悬挂缩进多行列表段合并、行内代码徽章残影擦净、多行正文统一字号平滑归一 |
 | `gnway_admin_dialog.jpg` | 中 -> 英 | 经典 Win32 管理端树菜单 + 表格 + 模态错误弹窗 | `AS0002` 编码与 `V8.6.0.724` 版本号原样保留、表格短单元格 `是/是/是` 独立分离不合并、弹窗 `确定` 居中按钮 |
 | `packing_card_handheld.jpg` | 中 -> 英 | 工业产品装箱卡表格 + 二维码 + 料号编码 | 二维码区域零侵入、工业料号 `ZZ00445707`/`501023856AA`/`HB0502000441` 保留原样、单元格译文严守表格线不跨行踩线 |
+| `postman_api_dark_sanitized.png` | 英 -> 中 | 暗色 Postman API 调试界面（IP/账密/SessionId 已全面脱敏） | 代码语义防火墙回归：`POST`/`GET`/`PWD`/`BaseUrl`/`CmpnyDB`/`DEMO_SAP`/`Demo@24Pass`/`{{BaseUrl}}/Login`/JSON 响应体与左侧接口树代码标识符原样保护，同时正常翻译常规 UI 面板标签 |
