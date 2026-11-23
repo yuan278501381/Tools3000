@@ -221,7 +221,7 @@ Compatibilidad total con carpetas de instalación y nombres de usuario de Window
 
 ## Comentarios y cocreación
 
-- **Reportar un error**: utiliza la **[plantilla de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
+- **Reportar un error**: la vía más rápida es desde la propia aplicación — haz clic en **`Enviar comentarios`** en la esquina inferior izquierda de Configuración (o en **`Configuración -> Acerca de -> Enviar comentarios`**). Admite pegar capturas con `Ctrl + V` y oculta localmente rutas de usuario, correos, IPs y tokens antes de exportar el paquete de diagnóstico (con las últimas 1000 líneas de registro) o prellenar un Issue de GitHub. También puedes reportarlo manualmente mediante la **[plantilla de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Proponer mejoras**: abre un **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** o conversa en **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
 - **Cocrear código**: los Pull Requests son bienvenidos — consulta la **[Guía para desarrolladores](docs/DEVELOPER.md)** y la **[Guía de empaquetado](packaging/README.md)**.
 

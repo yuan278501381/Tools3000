@@ -221,7 +221,7 @@ scoop install tools3000/tools3000
 
 ## 피드백 및 기여
 
-- **버그 제보**: **[Bug Report 템플릿](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**으로 재현 단계를 남겨 주세요.
+- **버그 제보**: 앱 안에서 **설정 창 왼쪽 하단 `피드백 보내기`**(또는 **`설정 -> 정보 -> 피드백 보내기`**)를 이용하면 가장 빠릅니다. `Ctrl + V`로 스크린샷을 바로 붙여넣을 수 있으며, 사용자 경로·이메일·IP·토큰 등을 로컬에서 자동 비식별화한 뒤 진단 번들(최근 1000줄 로그 포함) 내보내기 또는 GitHub Issue 자동 입력을 지원합니다. **[Bug Report 템플릿](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**으로 직접 제보할 수도 있습니다.
 - **기능 제안**: **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 또는 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**에서 의견을 나눠 주세요.
 - **오픈소스 공창**: Pull Request를 환영합니다. 자세한 내용은 **[개발자 가이드](docs/DEVELOPER.md)** 및 **[패키징 가이드](packaging/README.md)**를 참고하세요.
 

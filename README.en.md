@@ -221,7 +221,7 @@ Full compatibility with install folders and Windows usernames containing Chinese
 
 ## Feedback & Co-Creation
 
-- **Report a Bug**: Encountered an edge case or compatibility issue? Submit it via the **[Bug Report template](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
+- **Report a Bug**: The fastest way is inside the app — click **`Give Feedback`** in the bottom-left of the Settings sidebar (or **`Settings -> About -> Give Feedback`**). You can paste screenshots with `Ctrl + V`, and Tools3000 locally redacts usernames, emails, IPs, and tokens before exporting a diagnostic bundle (with the latest 1000 log lines) or pre-filling a GitHub Issue. You can also submit directly via the **[Bug Report template](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Share Ideas**: Propose features via **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** or join **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
 - **Co-Create**: Pull Requests (human or AI-assisted) are warmly welcome — see the **[Developer Guide](docs/DEVELOPER.md)** and **[Packaging Guide](packaging/README.md)**.
 

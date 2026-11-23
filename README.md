@@ -221,7 +221,7 @@ scoop install tools3000/tools3000
 
 ## 参与共创与反馈
 
-- **报告问题**：遇到任何边界兼容性或识别/录制问题，欢迎通过 **[Bug Report 模板](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 提交。
+- **报告问题**：推荐直接在软件内点击 **设置窗口左下角「问题反馈」**（或 **`设置 -> 关于 -> 问题反馈`**），支持 `Ctrl + V` 直接粘贴截图，并在本地自动抹除用户名路径、邮箱、IP 与密钥等隐私后一键导出诊断包（含最近 1000 行日志）或预填 GitHub Issue；也可以直接通过 **[Bug Report 模板](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 手动提交。
 - **需求建议**：有好用的顺手小功能想法，欢迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
 - **社区交流与友链**：欢迎前往 **[LINUX DO](https://linux.do/)** 社区分享使用体验与改进建议。
 - **代码共创**：非常欢迎提交 Pull Request（也欢迎借助 AI 共同打磨），构建与开发细节请参阅 **[开发者指南](docs/DEVELOPER.md)** 与 **[包管理器维护说明](packaging/README.md)**。

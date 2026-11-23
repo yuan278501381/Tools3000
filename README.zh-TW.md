@@ -221,7 +221,7 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 
 ## 參與共創與回饋
 
-- **問題回報**：歡迎透過 **[Bug Report 範本](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 提供重現步驟與環境資訊。
+- **問題回報**：建議直接在軟體內點擊 **設定視窗左下角「問題回饋」**（或 **`設定 -> 關於 -> 問題回饋`**），支援 `Ctrl + V` 直接貼上截圖，並在本機自動遮蔽使用者名稱路徑、信箱、IP 與金鑰後一鍵匯出診斷套件（含最近 1000 行日誌）或預填 GitHub Issue；亦可直接透過 **[Bug Report 範本](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 手動提交。
 - **功能建議**：歡迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
 - **開源共創**：歡迎提交 Pull Request，建置細節參閱 **[開發者指南](docs/DEVELOPER.md)** 與 **[套件管理器說明](packaging/README.md)**。
 

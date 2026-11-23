@@ -221,7 +221,7 @@ Compatibilidade total com pastas de instalação e nomes de usuário do Windows 
 
 ## Feedback e cocriação
 
-- **Relatar um bug**: use o **[modelo de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
+- **Relatar um bug**: o caminho mais rápido é dentro do próprio app — clique em **`Enviar feedback`** no canto inferior esquerdo da barra lateral de Configurações (ou **`Configurações -> Sobre -> Enviar feedback`**). Você pode colar capturas de tela com `Ctrl + V`, e o Tools3000 oculta localmente caminhos de usuário, e-mails, IPs e tokens antes de exportar o pacote de diagnóstico (com as últimas 1000 linhas de log) ou pré-preencher uma GitHub Issue. Também é possível enviar manualmente pelo **[modelo de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Sugerir recursos**: envie um **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** ou participe das **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
 - **Contribuir com código**: Pull Requests são muito bem-vindos — consulte o **[Guia do desenvolvedor](docs/DEVELOPER.md)** e o **[Guia de empacotamento](packaging/README.md)**.
 
