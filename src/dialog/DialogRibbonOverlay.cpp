@@ -503,7 +503,7 @@ void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd,
         // 严禁在主 UI 线程直接做跨进程 inspectDialog
         DialogNavigator::instance().postAsyncTask([this, dialogHwnd, processId, processName, initialFolder]() {
             if (!IsWindow(dialogHwnd)) return;
-            const DialogControlSnapshot snap = DialogNavigator::inspectDialog(dialogHwnd, false);
+            const DialogControlSnapshot snap = DialogNavigator::inspectDialog(dialogHwnd, true);
             if (snap.isProgressOrTransfer || snap.isPropertySheet ||
                 snap.architecture == DialogArchitecture::Unknown) {
                 return;
@@ -525,7 +525,7 @@ void DialogRibbonOverlay::attachToDialog(HWND dialogHwnd,
     }
 
     if (architecture == DialogArchitecture::Unknown) {
-        const DialogControlSnapshot snap = DialogNavigator::inspectDialog(dialogHwnd, false);
+        const DialogControlSnapshot snap = DialogNavigator::inspectDialog(dialogHwnd, true);
         if (snap.isProgressOrTransfer || snap.isPropertySheet ||
             snap.architecture == DialogArchitecture::Unknown) {
             return;

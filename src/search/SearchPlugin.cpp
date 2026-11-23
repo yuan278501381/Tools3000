@@ -2059,41 +2059,66 @@ public:
             };
         });
 
-        mb.registerHandler("search.getFileIcon", [](const nlohmann::json& params) -> nlohmann::json {
-            std::string ext = params.value("ext", "");
-            bool isDir = params.value("isDirectory", false);
-            std::string path = params.value("path", "");
+        auto resolveIconDataUri = [](const std::string& extIn,
+                                     bool isDir,
+                                     const std::string& path,
+                                     const std::string& resultType,
+                                     const std::string& browserSource) -> std::string {
+            const bool isBookmark = (resultType == "bookmark") ||
+                tools3000::search::BrowserBookmarkIndex::isSafeHttpUrl(path);
+            if (isBookmark) {
+                return tools3000::search::BrowserBookmarkIndex::instance().getBookmarkIconBase64(
+                    path, browserSource);
+            }
+            const bool isCommand = (resultType == "command") ||
+                (path.size() >= 6 && _strnicmp(path.c_str(), "cmd://", 6) == 0);
+            if (isCommand) {
+                const std::string cmdId = tools3000::search::SystemCommandCatalog::extractCommandIdFromUri(path);
+                if (!cmdId.empty()) {
+                    const std::wstring nativePath =
+                        tools3000::search::SystemCommandCatalog::resolveNativeIconPath(cmdId);
+                    if (!nativePath.empty()) {
+                        return tools3000::core::WinUtils::getFileTypeIconBase64(L"", false, nativePath);
+                    }
+                }
+                return {};
+            }
+            std::string ext = extIn;
             if (ext.empty() && !isDir && path.size() >= 6 &&
                 _strnicmp(path.c_str(), "shell:", 6) == 0) {
                 ext = ".exe";
             }
-            std::string base64 = tools3000::core::WinUtils::getFileTypeIconBase64(
+            return tools3000::core::WinUtils::getFileTypeIconBase64(
                 tools3000::core::WinUtils::utf8ToWstring(ext),
                 isDir,
                 tools3000::core::WinUtils::utf8ToWstring(path));
+        };
+
+        mb.registerHandler("search.getFileIcon", [resolveIconDataUri](const nlohmann::json& params) -> nlohmann::json {
+            const std::string ext = params.value("ext", "");
+            const bool isDir = params.value("isDirectory", false);
+            const std::string path = params.value("path", "");
+            const std::string resultType = params.value("resultType", "");
+            const std::string browserSource = params.value("browserSource", "");
+            const std::string base64 = resolveIconDataUri(ext, isDir, path, resultType, browserSource);
             return {{"success", true}, {"iconBase64", base64}};
         });
 
-        mb.registerHandler("search.batchGetIcons", [](const nlohmann::json& params) -> nlohmann::json {
+        mb.registerHandler("search.batchGetIcons", [resolveIconDataUri](const nlohmann::json& params) -> nlohmann::json {
             nlohmann::json result = nlohmann::json::object();
             if (params.contains("items") && params["items"].is_array()) {
                 for (const auto& item : params["items"]) {
-                    std::string ext = item.value("ext", "");
-                    bool isDir = item.value("isDirectory", false);
-                    std::string path = item.value("path", "");
+                    const std::string ext = item.value("ext", "");
+                    const bool isDir = item.value("isDirectory", false);
+                    const std::string path = item.value("path", "");
+                    const std::string resultType = item.value("resultType", "");
+                    const std::string browserSource = item.value("browserSource", "");
                     std::string key = item.value("key", "");
                     if (key.empty()) {
                         key = isDir ? "::dir::" : (!path.empty() ? ("path:" + tools3000::core::WinUtils::toLower(path)) : ext);
                     }
-                    if (ext.empty() && !isDir && path.size() >= 6 &&
-                        _strnicmp(path.c_str(), "shell:", 6) == 0) {
-                        ext = ".exe";
-                    }
                     if (!result.contains(key)) {
-                        result[key] = tools3000::core::WinUtils::getFileTypeIconBase64(
-                            tools3000::core::WinUtils::utf8ToWstring(ext),
-                            isDir,
-                            tools3000::core::WinUtils::utf8ToWstring(path));
+                        result[key] = resolveIconDataUri(ext, isDir, path, resultType, browserSource);
                     }
                 }
             }

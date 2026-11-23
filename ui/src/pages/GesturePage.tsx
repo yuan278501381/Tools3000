@@ -172,7 +172,7 @@ export const GesturePage: FC = () => {
   const [minSegmentDistance, setMinSegmentDistance] = useState(24);
   const [shapeMatchThreshold, setShapeMatchThreshold] = useState(75);
   const [scribbleCancel, setScribbleCancel] = useState(true);
-  const [pauseCancelEnabled, setPauseCancelEnabled] = useState(false);
+  const [pauseCancelEnabled, setPauseCancelEnabled] = useState(true);
   const [pauseCancelMs, setPauseCancelMs] = useState(700);
   const [triggerButton, setTriggerButton] = useState('right');
   const [trailColorMode, setTrailColorMode] = useState<'auto' | 'custom'>('auto');
@@ -277,7 +277,7 @@ export const GesturePage: FC = () => {
         setShowActionHint(state.showActionHint ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
         setScribbleCancel(state.enableScribbleCancel ?? true);
-        setPauseCancelEnabled(state.pauseCancelEnabled ?? false);
+        setPauseCancelEnabled(state.pauseCancelEnabled ?? true);
         setPauseCancelMs(state.pauseCancelMs ?? 700);
         setTargetMode(state.targetMode === 'foreground' ? 'foreground' : 'underPointer');
         setTrailColorMode(state.trailColorMode ?? 'auto');

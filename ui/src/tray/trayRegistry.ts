@@ -8,8 +8,10 @@ import {
   Keyboard,
   Camera,
   Search,
+  ClipboardList,
   Sparkles,
   FolderSymlink,
+  LockOpen,
   Cast,
 } from 'lucide-react';
 
@@ -118,6 +120,16 @@ export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
     order: 40,
   },
   {
+    id: 'clipboard',
+    pluginId: 'clipboard',
+    labelKey: 'tray.pillClipboard',
+    fallbackLabel: 'Clipboard',
+    descKey: 'tray.pillClipboardFullDesc',
+    fallbackDesc: 'Clipboard History (Instant recall, search & multi-paste)',
+    icon: ClipboardList,
+    order: 45,
+  },
+  {
     id: 'spotlight',
     pluginId: 'spotlight',
     labelKey: 'tray.pillSpotlight',
@@ -137,6 +149,17 @@ export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
     fallbackDesc: 'Dialog Enhancer (Instant jump & recent paths in dialogs)',
     icon: FolderSymlink,
     order: 60,
+  },
+  {
+    id: 'file_locksmith',
+    pluginId: 'file_locksmith',
+    aliasPluginIds: ['file_locksmith', 'filelocksmith'],
+    labelKey: 'tray.pillFileLocksmith',
+    fallbackLabel: 'Unlock',
+    descKey: 'tray.pillFileLocksmithFullDesc',
+    fallbackDesc: 'File Locksmith (Zero-resident Explorer right-click file lock inspector)',
+    icon: LockOpen,
+    order: 65,
   },
   {
     id: 'remote_boost',

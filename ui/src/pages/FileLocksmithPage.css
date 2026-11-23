@@ -1,0 +1,137 @@
+.file-locksmith-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.file-locksmith-page__loading {
+  padding: 24px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.file-locksmith-hero {
+  padding: 18px 20px;
+}
+
+.file-locksmith-hero__left {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.file-locksmith-hero__icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #f59e0b, #ea580c);
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.file-locksmith-hero__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.file-locksmith-hero__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.file-locksmith-hero__title-row h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.file-locksmith-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 0.83rem;
+  font-weight: 600;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.file-locksmith-status.is-active {
+  background: color-mix(in srgb, #10b981 14%, transparent);
+  color: #10b981;
+  border-color: color-mix(in srgb, #10b981 30%, transparent);
+}
+
+.file-locksmith-status__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.file-locksmith-hero__desc {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.file-locksmith-hero__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.file-locksmith-inspect {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.file-locksmith-inspect__desc {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.file-locksmith-inspect__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-locksmith-inspect__input {
+  flex: 1 1 260px;
+  min-width: 180px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 500;
+  outline: none;
+}
+
+.file-locksmith-inspect__input:focus {
+  border-color: var(--primary);
+}

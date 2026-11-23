@@ -51,7 +51,8 @@
     "dialog_enhancer": "Assistente de Diálogos",
     "remote_boost": "Assistência Remota",
     "picasa_viewer": "Visualizador Picasa",
-    "clipboard": "Área de Transferência"
+    "clipboard": "Área de Transferência",
+    "file_locksmith": "Desbloqueio de Arquivos"
   },
   "navSubtitle": {
     "stats": "Estatísticas de uso do teclado e do mouse",
@@ -73,7 +74,8 @@
     "markdown_preview": "Prévia rápida com a tecla Espaço para arquivos Markdown e código",
     "remote_boost": "Túnel de atalhos do sistema, liberação de teclas travadas e sanitização inteligente de IME",
     "picasa_viewer": "Recriação leve em Rust do visualizador Picasa (não é o pacote completo); associa todos os formatos ao ativar",
-    "clipboard": "Histórico persistente após reiniciar, busca instantânea e Pin/Tradução de imagens em 1 clique"
+    "clipboard": "Histórico persistente após reiniciar, busca instantânea e Pin/Tradução de imagens em 1 clique",
+    "file_locksmith": "Inspecione processos bloqueadores e desbloqueie sem uso em segundo plano"
   },
   "extension": {
     "statusRunning": "Em execução",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "Área de Transferência",
         "description": "Gerenciador leve em Rust com histórico persistente após reinicialização, proteção para gerenciadores de senhas e envio direto de imagens para Pin F3 / OCR / Tradução."
+      },
+      "file_locksmith": {
+        "name": "Desbloqueio de Arquivos",
+        "description": "Integração HKCU no menu de contexto com zero RAM em segundo plano para inspecionar e desbloquear arquivos em uso"
       }
     },
     "title": "Módulos e Extensões"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "Desativado",
     "enableAndOpen": "Ativar e abrir",
     "kw_picasa_viewer": "picasa foto imagem visualizador apresentacao associacao formato rust",
-    "kw_clipboard": "area de transferencia historico copiar colar fixar persistente clipboard"
+    "kw_clipboard": "area de transferencia historico copiar colar fixar persistente clipboard",
+    "kw_file_locksmith": "desbloquear arquivo bloqueio processo menu locksmith unlock"
   },
   "onboarding": {
     "welcomeTitle": "Bem-vindo ao Tools3000",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "Mostrar tudo",
     "pinCloseAll": "Fechar tudo",
     "confirmCloseGroup": "Fechar todas as fixações deste grupo?",
-    "confirmCloseAll": "Fechar todas as fixações na tela?"
+    "confirmCloseAll": "Fechar todas as fixações na tela?",
+    "pillClipboard": "Clipboard",
+    "pillClipboardFullDesc": "Histórico da Área de Transferência (busca rápida, grupos e colagem múltipla)",
+    "pillFileLocksmith": "Desbloquear",
+    "pillFileLocksmithFullDesc": "Desbloqueio de Arquivos (menu de contexto do Explorador sem processo residente)"
   },
   "dialog": {
     "title": "Assistente de Diálogos de Arquivo",
@@ -3154,5 +3165,19 @@
     "typeOther": "Feedback geral",
     "typePerformance": "Desempenho e memória",
     "viewIssue": "Ver Issue"
+  },
+  "fileLocksmith": {
+    "heroTitle": "Desbloqueio de Arquivos (Zero Residente)",
+    "statusRegistered": "Menu de Contexto Ativo",
+    "statusInactive": "Menu de Contexto Desativado",
+    "heroDesc": "Integração pura via HKCU sem injeção de DLL no Explorador e 0 MB em repouso. Abre uma janela nativa leve apenas sob demanda.",
+    "contextMenuGroup": "Integração ao Menu de Contexto do Explorador",
+    "instantInspectGroup": "Inspecionar e Desbloquear Agora",
+    "instantInspectDesc": "Selecione qualquer arquivo ou pasta bloqueada aqui para ver os processos em uso e liberar com segurança.",
+    "pathPlaceholder": "Digite ou escolha o caminho de um arquivo ou pasta...",
+    "pickFile": "Escolher Arquivo",
+    "pickFolder": "Escolher Pasta",
+    "inspectNow": "Inspecionar Bloqueios",
+    "inspectFailed": "Falha ao abrir a janela de Desbloqueio de Arquivos"
   }
 }

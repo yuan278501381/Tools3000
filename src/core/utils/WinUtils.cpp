@@ -756,6 +756,125 @@ bool isDynamicInstanceIconExtension(std::wstring_view normalizedExt) noexcept {
            normalizedExt == L"url";
 }
 
+bool startsWithAsciiCaseInsensitiveW(std::wstring_view text, std::wstring_view prefix) noexcept {
+    if (text.size() < prefix.size()) return false;
+    return _wcsnicmp(text.data(), prefix.data(), prefix.size()) == 0;
+}
+
+std::string encodeBgraBufferToPngDataUri(const BYTE* pixels, int width, int height) {
+    if (!pixels || width <= 0 || height <= 0 || !ensureGdiplusStarted()) {
+        return {};
+    }
+    Gdiplus::Bitmap gdiBmp(width, height, width * 4, PixelFormat32bppARGB, const_cast<BYTE*>(pixels));
+    if (gdiBmp.GetLastStatus() != Gdiplus::Ok) {
+        return {};
+    }
+    CLSID pngClsid{};
+    UINT num = 0, size = 0;
+    Gdiplus::GetImageEncodersSize(&num, &size);
+    if (size > 0) {
+        auto pCodecsBuf = std::make_unique<uint8_t[]>(size);
+        auto* pCodecs = reinterpret_cast<Gdiplus::ImageCodecInfo*>(pCodecsBuf.get());
+        if (Gdiplus::GetImageEncoders(num, size, pCodecs) == Gdiplus::Ok) {
+            for (UINT j = 0; j < num; ++j) {
+                if (wcscmp(pCodecs[j].MimeType, L"image/png") == 0) {
+                    pngClsid = pCodecs[j].Clsid;
+                    break;
+                }
+            }
+        }
+    }
+    if (pngClsid == CLSID{}) {
+        return {};
+    }
+    IStream* pStream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(nullptr, TRUE, &pStream)) || !pStream) {
+        return {};
+    }
+    std::string out;
+    if (gdiBmp.Save(pStream, &pngClsid, nullptr) == Gdiplus::Ok) {
+        STATSTG statstg{};
+        HGLOBAL hMem = nullptr;
+        if (SUCCEEDED(pStream->Stat(&statstg, STATFLAG_NONAME)) &&
+            statstg.cbSize.QuadPart > 0 &&
+            SUCCEEDED(GetHGlobalFromStream(pStream, &hMem)) && hMem) {
+            const SIZE_T allocSize = GlobalSize(hMem);
+            const SIZE_T pngSize = static_cast<SIZE_T>(statstg.cbSize.QuadPart);
+            if (pngSize <= allocSize) {
+                const auto* pData = static_cast<const uint8_t*>(GlobalLock(hMem));
+                if (pData) {
+                    std::vector<uint8_t> pngBuf(pData, pData + pngSize);
+                    GlobalUnlock(hMem);
+                    out = "data:image/png;base64," + WinUtils::base64Encode(pngBuf);
+                }
+            }
+        }
+    }
+    pStream->Release();
+    return out;
+}
+
+std::string extractShellItemImageBase64(const std::wstring& parsingName) {
+    if (parsingName.empty()) return {};
+    Microsoft::WRL::ComPtr<IShellItem> shellItem;
+    if (FAILED(SHCreateItemFromParsingName(parsingName.c_str(), nullptr, IID_PPV_ARGS(&shellItem))) ||
+        !shellItem) {
+        return {};
+    }
+    Microsoft::WRL::ComPtr<IShellItemImageFactory> factory;
+    if (FAILED(shellItem.As(&factory)) || !factory) {
+        return {};
+    }
+    HBITMAP hBmp = nullptr;
+    const SIZE targetSize{32, 32};
+    HRESULT hr = factory->GetImage(targetSize, SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK, &hBmp);
+    if (FAILED(hr) || !hBmp) {
+        hr = factory->GetImage(targetSize, SIIGBF_RESIZETOFIT, &hBmp);
+    }
+    if (FAILED(hr) || !hBmp) {
+        return {};
+    }
+
+    std::string out;
+    BITMAP bm{};
+    if (GetObjectW(hBmp, sizeof(bm), &bm) && bm.bmWidth > 0 && bm.bmHeight != 0) {
+        const int width = bm.bmWidth;
+        const int height = bm.bmHeight < 0 ? -bm.bmHeight : bm.bmHeight;
+        BITMAPINFO bi{};
+        bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bi.bmiHeader.biWidth = width;
+        bi.bmiHeader.biHeight = -height;
+        bi.bmiHeader.biPlanes = 1;
+        bi.bmiHeader.biBitCount = 32;
+        bi.bmiHeader.biCompression = BI_RGB;
+
+        std::vector<uint32_t> pixels(static_cast<size_t>(width) * static_cast<size_t>(height), 0u);
+        HDC hdcScreen = GetDC(nullptr);
+        if (hdcScreen) {
+            if (GetDIBits(hdcScreen, hBmp, 0, static_cast<UINT>(height),
+                          pixels.data(), &bi, DIB_RGB_COLORS) > 0) {
+                bool hasAlpha = false;
+                for (uint32_t px : pixels) {
+                    if ((px & 0xFF000000u) != 0) {
+                        hasAlpha = true;
+                        break;
+                    }
+                }
+                if (!hasAlpha) {
+                    for (uint32_t& px : pixels) {
+                        px |= 0xFF000000u;
+                    }
+                }
+                out = encodeBgraBufferToPngDataUri(
+                    reinterpret_cast<const BYTE*>(pixels.data()), width, height);
+            }
+            ReleaseDC(nullptr, hdcScreen);
+        }
+    }
+    DeleteObject(hBmp);
+    return out;
+}
+
 } // namespace
 
 void WinUtils::clearFileTypeIconCacheForTesting() {
@@ -799,10 +918,11 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
         normalizedExt = std::move(extFromPath);
     }
 
+    const bool isShellUri = startsWithAsciiCaseInsensitiveW(effectiveFilePath, L"shell:");
     const bool hasLocalFilePath =
         !effectiveFilePath.empty() && effectiveFilePath.rfind(L"\\\\", 0) != 0;
     const bool useInstanceIcon =
-        !isDirectory && hasLocalFilePath && isDynamicInstanceIconExtension(normalizedExt);
+        !isDirectory && hasLocalFilePath && (isShellUri || isDynamicInstanceIconExtension(normalizedExt));
 
     std::wstring key;
     if (isDirectory) {
@@ -826,9 +946,23 @@ std::string WinUtils::getFileTypeIconBase64(const std::wstring& extension,
     SHFILEINFOW sfi{};
     DWORD_PTR hr = 0;
 
+    // 0. UWP / MSIX / shell:AppsFolder 应用：通过 IShellItemImageFactory 直接提取 Windows 原生应用高清图标
+    if (isShellUri) {
+        std::string shellBase64 = extractShellItemImageBase64(effectiveFilePath);
+        if (!shellBase64.empty()) {
+            std::lock_guard<std::mutex> lock(fileTypeIconCacheMutex());
+            auto& cache = fileTypeIconCache();
+            if (cache.size() >= 2048) {
+                cache.clear();
+            }
+            cache[key] = shellBase64;
+            return shellBase64;
+        }
+    }
+
     // 1. 仅对自带实例级自定义图标的动态后缀（.exe/.lnk/.ico/.cur/.ani/.scr/.msc/.cpl/.appref-ms/.url）
     //    访问真实本地路径提取内嵌图标；其余所有静态后缀与普通目录 100% 走内存虚拟属性零磁盘 I/O 提取。
-    if (useInstanceIcon) {
+    if (useInstanceIcon && !isShellUri) {
         const DWORD attrs = GetFileAttributesW(effectiveFilePath.c_str());
         if (attrs != INVALID_FILE_ATTRIBUTES) {
             hr = SHGetFileInfoW(
@@ -2856,6 +2990,240 @@ bool WinUtils::openFolderAndSelectItem(const std::wstring& filePath) {
     return true;
 }
 
+namespace {
+
+// 微软官方桌面 Explorer 降权启动协议（Raymond Chen / PowerToys Run 标配）：
+// 当 Tools3000 以管理员 (High IL) 运行时，直接 ShellExecuteW 拉起 Chrome/Edge/桌面应用会让子进程继承
+// 管理员令牌与 Job Object，引发已有普通权限 Chrome 单实例死锁、沙箱异常或拖放失效。
+// 委托给桌面 explorer.exe (Medium IL) 的 IShellDispatch2::ShellExecute 可彻底避免高权限传染与阻塞。
+bool tryShellExecuteViaDesktopExplorer(const std::wstring& target,
+                                       const std::wstring& args,
+                                       const std::wstring& workingDir,
+                                       const std::wstring& verb,
+                                       int showCmd) noexcept {
+    Microsoft::WRL::ComPtr<IShellWindows> shellWindows;
+    if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_LOCAL_SERVER,
+                                IID_PPV_ARGS(&shellWindows))) || !shellWindows) {
+        return false;
+    }
+
+    VARIANT vEmpty{};
+    VariantInit(&vEmpty);
+    long hwndDesktop = 0;
+    Microsoft::WRL::ComPtr<IDispatch> dispDesktop;
+    if (FAILED(shellWindows->FindWindowSW(&vEmpty, &vEmpty, SWC_DESKTOP, &hwndDesktop,
+                                          SWFO_NEEDDISPATCH, &dispDesktop)) || !dispDesktop) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IServiceProvider> serviceProvider;
+    if (FAILED(dispDesktop.As(&serviceProvider)) || !serviceProvider) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IShellBrowser> shellBrowser;
+    if (FAILED(serviceProvider->QueryService(SID_STopLevelBrowser, IID_PPV_ARGS(&shellBrowser))) ||
+        !shellBrowser) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IShellView> shellView;
+    if (FAILED(shellBrowser->QueryActiveShellView(&shellView)) || !shellView) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDispatch> dispView;
+    if (FAILED(shellView->GetItemObject(SVGIO_BACKGROUND, IID_PPV_ARGS(&dispView))) || !dispView) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IShellFolderViewDual> folderView;
+    if (FAILED(dispView.As(&folderView)) || !folderView) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDispatch> dispApp;
+    if (FAILED(folderView->get_Application(&dispApp)) || !dispApp) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IShellDispatch2> shellDispatch;
+    if (FAILED(dispApp.As(&shellDispatch)) || !shellDispatch) {
+        return false;
+    }
+
+    BSTR bstrFile = SysAllocString(target.c_str());
+    if (!bstrFile) return false;
+
+    VARIANT vArgs{};
+    VARIANT vDir{};
+    VARIANT vVerb{};
+    VARIANT vShow{};
+    VariantInit(&vArgs);
+    VariantInit(&vDir);
+    VariantInit(&vVerb);
+    VariantInit(&vShow);
+
+    if (!args.empty()) {
+        vArgs.vt = VT_BSTR;
+        vArgs.bstrVal = SysAllocString(args.c_str());
+    }
+    if (!workingDir.empty()) {
+        vDir.vt = VT_BSTR;
+        vDir.bstrVal = SysAllocString(workingDir.c_str());
+    }
+    if (!verb.empty()) {
+        vVerb.vt = VT_BSTR;
+        vVerb.bstrVal = SysAllocString(verb.c_str());
+    }
+    vShow.vt = VT_I4;
+    vShow.lVal = showCmd;
+
+    const HRESULT hr = shellDispatch->ShellExecute(bstrFile, vArgs, vDir, vVerb, vShow);
+
+    SysFreeString(bstrFile);
+    VariantClear(&vArgs);
+    VariantClear(&vDir);
+    VariantClear(&vVerb);
+    VariantClear(&vShow);
+    return SUCCEEDED(hr);
+}
+
+bool launchShellTargetBoundedSta(const std::wstring& target,
+                                 const std::wstring& args,
+                                 const std::wstring& workingDir,
+                                 const std::wstring& verb,
+                                 bool preferUnelevated,
+                                 bool suppressUiErrors) {
+    struct LaunchState {
+        std::mutex mutex;
+        std::condition_variable cv;
+        bool finished = false;
+        bool success = false;
+        DWORD lastError = ERROR_SUCCESS;
+    };
+
+    auto state = std::make_shared<LaunchState>();
+    const bool useExplorerDeElevation = preferUnelevated && WinUtils::isCurrentProcessElevated();
+
+    std::thread staThread([state, target, args, workingDir, verb, useExplorerDeElevation, suppressUiErrors]() {
+        ScopedStaComGuard comGuard;
+        bool launched = false;
+        DWORD err = ERROR_SUCCESS;
+
+        if (useExplorerDeElevation) {
+            launched = tryShellExecuteViaDesktopExplorer(target, args, workingDir, verb, SW_SHOWNORMAL);
+        }
+
+        if (!launched) {
+            SHELLEXECUTEINFOW sei{};
+            sei.cbSize = sizeof(sei);
+            sei.fMask = SEE_MASK_ASYNCOK | (suppressUiErrors ? SEE_MASK_FLAG_NO_UI : 0u);
+            sei.lpVerb = verb.empty() ? nullptr : verb.c_str();
+            sei.lpFile = target.c_str();
+            sei.lpParameters = args.empty() ? nullptr : args.c_str();
+            sei.lpDirectory = workingDir.empty() ? nullptr : workingDir.c_str();
+            sei.nShow = SW_SHOWNORMAL;
+            if (ShellExecuteExW(&sei) != FALSE) {
+                launched = true;
+            } else {
+                err = GetLastError();
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            state->success = launched;
+            state->lastError = err;
+            state->finished = true;
+        }
+        state->cv.notify_all();
+    });
+
+    const bool onUiThread = MainThreadDispatcher::instance().isOwnerThread();
+    const auto waitBudget = onUiThread
+        ? std::chrono::milliseconds(180)
+        : std::chrono::milliseconds(1500);
+
+    bool completedInTime = false;
+    bool ok = false;
+    DWORD err = ERROR_SUCCESS;
+    {
+        std::unique_lock<std::mutex> lock(state->mutex);
+        completedInTime = state->cv.wait_for(lock, waitBudget, [&state]() { return state->finished; });
+        if (completedInTime) {
+            ok = state->success;
+            err = state->lastError;
+        }
+    }
+
+    if (completedInTime) {
+        if (staThread.joinable()) staThread.join();
+        if (!ok) {
+            LOG_WARN("WinUtils: shell launch failed, error={}, target={}",
+                     err, WinUtils::wstringToUtf8(target));
+        }
+        return ok;
+    }
+
+    if (staThread.joinable()) {
+        staThread.detach();
+    }
+    LOG_WARN("WinUtils: shell launch exceeded {}ms wait budget on {} thread; detached STA worker for {}",
+             waitBudget.count(), onUiThread ? "UI" : "worker", WinUtils::wstringToUtf8(target));
+    return true;
+}
+
+}  // namespace
+
+bool WinUtils::openProgram(const std::wstring& filePath,
+                           const std::wstring& args,
+                           const std::wstring& workingDir) {
+    if (filePath.empty()) return false;
+    const auto first = filePath.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) return false;
+    const auto last = filePath.find_last_not_of(L" \t\r\n");
+    const std::wstring trimmed = filePath.substr(first, last - first + 1);
+
+    if (startsWithAsciiCaseInsensitiveW(trimmed, L"http://") ||
+        startsWithAsciiCaseInsensitiveW(trimmed, L"https://")) {
+        return openUrl(trimmed);
+    }
+
+    const bool isShellUri = startsWithAsciiCaseInsensitiveW(trimmed, L"shell:");
+    if (!isShellUri) {
+        // 仅对含路径分隔符或盘符的显式本地路径做存在性预检；裸程序名（如 notepad.exe）交由 Shell/PATH 解析
+        const bool looksExplicitPath =
+            trimmed.find(L'\\') != std::wstring::npos ||
+            trimmed.find(L'/') != std::wstring::npos ||
+            (trimmed.size() >= 2 && trimmed[1] == L':');
+        if (looksExplicitPath && GetFileAttributesW(trimmed.c_str()) == INVALID_FILE_ATTRIBUTES) {
+            LOG_WARN("WinUtils: openProgram target no longer exists: {}", wstringToUtf8(trimmed));
+            return false;
+        }
+    }
+
+    std::wstring effectiveDir = workingDir;
+    if (effectiveDir.empty() && !isShellUri) {
+        std::error_code ec;
+        const std::filesystem::path p(trimmed);
+        if (!std::filesystem::is_directory(p, ec) && p.has_parent_path()) {
+            const auto parent = p.parent_path();
+            if (!parent.empty() && std::filesystem::is_directory(parent, ec)) {
+                effectiveDir = parent.wstring();
+            }
+        }
+    }
+
+    return launchShellTargetBoundedSta(
+        trimmed,
+        args,
+        effectiveDir,
+        isShellUri ? L"" : L"open",
+        /*preferUnelevated=*/true,
+        /*suppressUiErrors=*/true);
+}
+
 bool WinUtils::openFile(const std::wstring& filePath) {
     if (filePath.empty()) return false;
     const auto first = filePath.find_first_not_of(L" \t\r\n");
@@ -2863,23 +3231,16 @@ bool WinUtils::openFile(const std::wstring& filePath) {
     const auto last = filePath.find_last_not_of(L" \t\r\n");
     const std::wstring trimmed = filePath.substr(first, last - first + 1);
 
-    const auto startsWithCaseInsensitive = [](std::wstring_view s, std::wstring_view prefix) {
-        if (s.size() < prefix.size()) return false;
-        return _wcsnicmp(s.data(), prefix.data(), prefix.size()) == 0;
-    };
-    if (startsWithCaseInsensitive(trimmed, L"http://") ||
-        startsWithCaseInsensitive(trimmed, L"https://")) {
+    if (startsWithAsciiCaseInsensitiveW(trimmed, L"http://") ||
+        startsWithAsciiCaseInsensitiveW(trimmed, L"https://")) {
         return openUrl(trimmed);
     }
-    if (GetFileAttributesW(filePath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        LOG_WARN("WinUtils: openFile target no longer exists: {}", wstringToUtf8(filePath));
+    if (!startsWithAsciiCaseInsensitiveW(trimmed, L"shell:") &&
+        GetFileAttributesW(trimmed.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        LOG_WARN("WinUtils: openFile target no longer exists: {}", wstringToUtf8(trimmed));
         return false;
     }
-    const auto result = reinterpret_cast<INT_PTR>(
-        ShellExecuteW(nullptr, L"open", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-    if (result > 32) return true;
-    LOG_WARN("WinUtils: openFile failed, shellCode={}, path={}", result, wstringToUtf8(filePath));
-    return false;
+    return openProgram(trimmed);
 }
 
 bool WinUtils::openUrl(const std::wstring& url) {
@@ -2889,12 +3250,8 @@ bool WinUtils::openUrl(const std::wstring& url) {
     const auto last = url.find_last_not_of(L" \t\r\n");
     const std::wstring trimmed = url.substr(first, last - first + 1);
 
-    const auto startsWithCaseInsensitive = [](std::wstring_view s, std::wstring_view prefix) {
-        if (s.size() < prefix.size()) return false;
-        return _wcsnicmp(s.data(), prefix.data(), prefix.size()) == 0;
-    };
-    if (!startsWithCaseInsensitive(trimmed, L"http://") &&
-        !startsWithCaseInsensitive(trimmed, L"https://")) {
+    if (!startsWithAsciiCaseInsensitiveW(trimmed, L"http://") &&
+        !startsWithAsciiCaseInsensitiveW(trimmed, L"https://")) {
         LOG_WARN("WinUtils: openUrl rejected non-http(s) scheme: {}", wstringToUtf8(trimmed));
         return false;
     }
@@ -2902,24 +3259,36 @@ bool WinUtils::openUrl(const std::wstring& url) {
         LOG_WARN("WinUtils: openUrl rejected incomplete scheme: {}", wstringToUtf8(trimmed));
         return false;
     }
-    const auto result = reinterpret_cast<INT_PTR>(
-        ShellExecuteW(nullptr, L"open", trimmed.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
-    if (result > 32) return true;
-    LOG_WARN("WinUtils: openUrl failed, shellCode={}, url={}", result, wstringToUtf8(trimmed));
-    return false;
+    return launchShellTargetBoundedSta(
+        trimmed,
+        L"",
+        L"",
+        L"open",
+        /*preferUnelevated=*/true,
+        /*suppressUiErrors=*/true);
 }
 
 bool WinUtils::openWithNotepad(const std::wstring& filePath) {
     if (filePath.empty()) return false;
     const std::wstring args = L"\"" + filePath + L"\"";
-    return reinterpret_cast<INT_PTR>(
-        ShellExecuteW(nullptr, L"open", L"notepad.exe", args.c_str(), nullptr, SW_SHOWNORMAL)) > 32;
+    return launchShellTargetBoundedSta(
+        L"notepad.exe",
+        args,
+        L"",
+        L"open",
+        /*preferUnelevated=*/true,
+        /*suppressUiErrors=*/true);
 }
 
 bool WinUtils::openFileAsAdmin(const std::wstring& filePath) {
     if (filePath.empty()) return false;
-    return reinterpret_cast<INT_PTR>(
-        ShellExecuteW(nullptr, L"runas", filePath.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+    return launchShellTargetBoundedSta(
+        filePath,
+        L"",
+        L"",
+        L"runas",
+        /*preferUnelevated=*/false,
+        /*suppressUiErrors=*/false);
 }
 
 bool WinUtils::showFileProperties(const std::wstring& filePath) {

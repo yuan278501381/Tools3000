@@ -1382,12 +1382,68 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         auto& cfg = tools3000::core::ConfigManager::instance();
         cfg.set<bool>("/general/shellMenuLocksmithEnabled", enabled);
         cfg.set<bool>("/general/shellMenuShiftOnly", shiftOnly);
+        cfg.set<bool>("/plugins/file_locksmith/enabled", enabled);
         const std::wstring verbLabel = tools3000::core::trW(
             L"使用 Tools3000 查看文件占用/解锁",
             L"Inspect File Locks with Tools3000");
         const bool ok = tools3000::core::FileLocksmithEngine::syncExplorerContextMenu(
             enabled, shiftOnly, tools3000::core::WinUtils::getExePath().wstring(), verbLabel);
+        if (ok) {
+            tools3000::core::MessageBridge::instance().pushEvent("fileLocksmith:stateChanged", {
+                {"enabled", enabled},
+                {"shiftOnly", shiftOnly}
+            });
+            tools3000::core::MessageBridge::instance().pushEvent("plugins:changed", {
+                {"id", "file_locksmith"},
+                {"enabled", enabled}
+            });
+        }
         return {{"success", ok}, {"enabled", enabled}, {"shiftOnly", shiftOnly}};
+    });
+    tools3000::core::MessageBridge::instance().registerAsyncHostHandler("system.browseFileLocksmithTarget", [](const nlohmann::json& params) -> nlohmann::json {
+        const bool pickFolder = params.value("folder", false);
+        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        const bool needUninit = SUCCEEDED(comHr);
+        struct ScopedCom {
+            bool active;
+            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
+        } comScope{needUninit};
+        if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+            return {{"success", false}};
+        }
+        IFileDialog* dialog = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                    IID_PPV_ARGS(&dialog))) || !dialog) {
+            return {{"success", false}};
+        }
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        if (pickFolder) {
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        } else {
+            dialog->SetOptions(options | FOS_FORCEFILESYSTEM);
+        }
+        const bool isZh = tools3000::core::isUiLanguageChinese();
+        dialog->SetTitle(pickFolder
+            ? tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件夹", L"Select Folder to Inspect Locks")
+            : tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件", L"Select File to Inspect Locks"));
+        std::string selectedUtf8;
+        if (SUCCEEDED(dialog->Show(nullptr))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
+                PWSTR rawPath = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
+                    selectedUtf8 = tools3000::core::WinUtils::wstringToUtf8(rawPath);
+                    CoTaskMemFree(rawPath);
+                }
+                item->Release();
+            }
+        }
+        dialog->Release();
+        if (selectedUtf8.empty()) {
+            return {{"success", false}, {"cancelled", true}};
+        }
+        return {{"success", true}, {"path", selectedUtf8}};
     });
 
     // 方案 C 双轨应用内问题反馈与 10 维隐私脱敏诊断通道（全异步执行，绝不阻塞 UI 消息泵）

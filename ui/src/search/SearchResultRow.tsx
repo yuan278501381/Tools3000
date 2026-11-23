@@ -178,12 +178,6 @@ function renderFileIcon(
   iconHint?: string,
 ): ReactNode {
   const iconSize = density === 'compact' ? 15 : density === 'comfortable' ? 18 : 16;
-  if (resultType === 'bookmark') {
-    return <Globe className="file-icon file-icon--bookmark" size={iconSize} aria-hidden="true" />;
-  }
-  if (resultType === 'command') {
-    return renderCommandIcon(iconHint, iconSize);
-  }
   if (iconStyle === 'native' && iconBase64) {
     return (
       <img
@@ -205,6 +199,12 @@ function renderFileIcon(
         draggable={false}
       />
     );
+  }
+  if (resultType === 'bookmark') {
+    return <Globe className="file-icon file-icon--bookmark" size={iconSize} aria-hidden="true" />;
+  }
+  if (resultType === 'command') {
+    return renderCommandIcon(iconHint, iconSize);
   }
 
   if (resultType === 'app') {

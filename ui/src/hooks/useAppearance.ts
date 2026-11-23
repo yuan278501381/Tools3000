@@ -45,7 +45,10 @@ export const normalizeAccentColor = (
 ): AccentColorId => (isAccentColor(val) ? val : fallback);
 
 const systemTheme = (): Theme =>
-  window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  typeof window !== 'undefined' && typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
 
 const applyTheme = (preference: ThemePreference) => {
   const theme = preference === 'system' ? systemTheme() : preference;
@@ -264,7 +267,10 @@ export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload)
   });
 
   useLayoutEffect(() => {
-    const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+    const mediaQuery =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-color-scheme: dark)')
+        : null;
     const onSystemThemeChanged = () => {
       if (preferenceRef.current === 'system') {
         applyTheme('system');
@@ -296,7 +302,7 @@ export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload)
     };
 
     syncFromLocalStorage();
-    mediaQuery.addEventListener('change', onSystemThemeChanged);
+    mediaQuery?.addEventListener('change', onSystemThemeChanged);
 
     let channel: BroadcastChannel | null = null;
     try {
@@ -380,7 +386,7 @@ export function useAppearance(onSettingsHydrated?: (settings: AppearancePayload)
     refreshFromBridge();
 
     return () => {
-      mediaQuery.removeEventListener('change', onSystemThemeChanged);
+      mediaQuery?.removeEventListener('change', onSystemThemeChanged);
       window.removeEventListener('storage', onStorage);
       window.removeEventListener('tools3000:accent-changed', onAccentChanged);
       window.removeEventListener('tools3000:theme-changed', onThemeChanged);

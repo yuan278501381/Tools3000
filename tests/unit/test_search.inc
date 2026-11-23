@@ -5096,3 +5096,38 @@ TEST(SearchLiveWatchTest, IndexGenerationAdvancesOnSnapshotImportAndAllowedReadO
     const uint64_t genAfterImport2 = parser->getIndexGeneration();
     EXPECT_GT(genAfterImport2, genAfterImport1);
 }
+
+TEST(SearchNativeIconResolutionTest, ResolvesOfflineBookmarkOriginSystemCommandsAndNativeAppIcons) {
+    using namespace tools3000::search;
+    using tools3000::core::WinUtils;
+
+    // 1. 书签 Origin 提取校验
+    EXPECT_EQ(BrowserBookmarkIndex::extractOriginLower("https://ZhuanLan.Zhihu.com/p/648167641?a=1#top"),
+              "https://zhuanlan.zhihu.com/");
+    EXPECT_EQ(BrowserBookmarkIndex::extractOriginLower("http://Example.ORG"), "http://example.org/");
+    EXPECT_TRUE(BrowserBookmarkIndex::extractOriginLower("javascript:alert(1)").empty());
+
+    // 2. 系统命令原生 Windows 图标路径解析（cmd / taskmgr / env->sysdm.cpl / settings->空回退矢量）
+    const std::wstring cmdPath = SystemCommandCatalog::resolveNativeIconPath("cmd");
+    EXPECT_FALSE(cmdPath.empty());
+    const std::wstring envPath = SystemCommandCatalog::resolveNativeIconPath("env");
+    EXPECT_FALSE(envPath.empty());
+    EXPECT_NE(WinUtils::toLower(envPath).find(L"sysdm.cpl"), std::wstring::npos);
+
+    // 3. 本地真实 Windows 图标提取（cmd.exe 与离线书签 Favicon/浏览器回退）
+    const std::string cmdIcon = WinUtils::getFileTypeIconBase64(L"", false, cmdPath);
+    EXPECT_TRUE(cmdIcon.starts_with("data:image/png;base64,"));
+
+    const std::string bmIcon = BrowserBookmarkIndex::instance().getBookmarkIconBase64(
+        "https://zhuanlan.zhihu.com/p/648167641", "Chrome");
+    EXPECT_TRUE(bmIcon.starts_with("data:image/"));
+
+    const std::wstring chromeLnk = L"C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk";
+    if (GetFileAttributesW(chromeLnk.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        const std::string chromeIcon = WinUtils::getFileTypeIconBase64(L".lnk", false, chromeLnk);
+        EXPECT_TRUE(chromeIcon.starts_with("data:image/png;base64,"));
+        // 确认 Chrome.lnk 抽到的是独立内嵌图标，而不是通用空快捷方式占位图
+        const std::string genericExeIcon = WinUtils::getFileTypeIconBase64(L".exe", false, L"");
+        EXPECT_NE(chromeIcon, genericExeIcon);
+    }
+}

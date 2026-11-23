@@ -4794,7 +4794,7 @@ TEST(GestureInputPolicyTest, PauseToCancelPolicyMatrixAndJitterReset) {
     EXPECT_FALSE(shouldTriggerPauseCancel(true, true, false, false, false, 2000 - anchorTs, 700));
     EXPECT_TRUE(shouldTriggerPauseCancel(true, true, false, false, false, 2350 - anchorTs, 700));
 
-    // 8. GestureEngine 配置夹紧与 ConfigManager 持久化往返
+    // 8. GestureEngine 配置默认值（pauseCancelEnabled 默认开启 true）与 ConfigManager 持久化往返
     auto& engine = GestureEngine::instance();
     const bool oldEnabled = engine.pauseCancelEnabled();
     const int oldMs = engine.pauseCancelMs();
@@ -4807,6 +4807,12 @@ TEST(GestureInputPolicyTest, PauseToCancelPolicyMatrixAndJitterReset) {
 
     auto& cfg = tools3000::core::ConfigManager::instance();
     ASSERT_TRUE(cfg.initialize(tempRoot));
+    // 未显式配置时默认开启划动中途停顿自动取消
+    engine.loadFromConfig();
+    EXPECT_TRUE(engine.pauseCancelEnabled());
+    cfg.set<bool>("/gesture/pauseCancelEnabled", false);
+    engine.loadFromConfig();
+    EXPECT_FALSE(engine.pauseCancelEnabled());
     cfg.set<bool>("/gesture/pauseCancelEnabled", true);
     cfg.set<int>("/gesture/pauseCancelMs", 950);
     engine.loadFromConfig();

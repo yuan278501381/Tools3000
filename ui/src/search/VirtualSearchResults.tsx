@@ -28,7 +28,12 @@ export interface VirtualSearchResultsProps {
   density: SearchDensity;
   iconStyle?: SearchIconStyle;
   iconCache?: Record<string, string>;
-  onRequestIcon?: (ext: string, isDirectory: boolean, filePath?: string) => void;
+  onRequestIcon?: (
+    ext: string,
+    isDirectory: boolean,
+    filePath?: string,
+    meta?: { cacheKey?: string; resultType?: SearchResult['resultType']; browserSource?: string },
+  ) => void;
   columns: ColumnLayout;
   propertyCache?: PropertyCacheMap;
   queryKeywords: string[];
@@ -271,15 +276,20 @@ export const VirtualSearchResults = memo(function VirtualSearchResults({
     if (hidden || iconStyle !== 'native' || !onRequestIcon) return;
     const requestedInPass = new Set<string>();
     const requestIfMissing = (item: SearchResult | undefined) => {
-      if (!item || item.resultType === 'bookmark') return;
+      if (!item) return;
       const spec = resolveNativeIconRequest(item);
       if (requestedInPass.has(spec.cacheKey)) return;
       if (Object.prototype.hasOwnProperty.call(iconCache, spec.cacheKey)) return;
       requestedInPass.add(spec.cacheKey);
+      const meta = {
+        cacheKey: spec.cacheKey,
+        resultType: spec.resultType,
+        browserSource: spec.browserSource,
+      };
       if (spec.filePath) {
-        onRequestIcon(spec.extension, item.isDirectory, spec.filePath);
+        onRequestIcon(spec.extension, item.isDirectory, spec.filePath, meta);
       } else {
-        onRequestIcon(spec.extension, item.isDirectory);
+        onRequestIcon(spec.extension, item.isDirectory, undefined, meta);
       }
     };
 

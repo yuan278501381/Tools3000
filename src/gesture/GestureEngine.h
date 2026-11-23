@@ -243,7 +243,7 @@ private:
     std::atomic<bool> m_autoBypassFullscreen{true};
     std::atomic<GestureTargetMode> m_targetMode{GestureTargetMode::UnderPointer};
     std::atomic<int> m_initialTimeoutMs{0};
-    std::atomic<bool> m_pauseCancelEnabled{false};
+    std::atomic<bool> m_pauseCancelEnabled{true};
     std::atomic<int> m_pauseCancelMs{kDefaultPauseCancelMs};
     std::atomic<int> m_minSegmentDistance{24};
     std::atomic<int> m_shapeMatchThreshold{75};

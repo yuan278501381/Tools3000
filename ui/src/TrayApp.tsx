@@ -204,6 +204,9 @@ export default function TrayApp() {
               if (plugin.id === 'dialogenhancer' || plugin.id === 'dialog_enhancer') {
                 return ['dialogenhancer', 'dialog_enhancer'];
               }
+              if (plugin.id === 'file_locksmith' || plugin.id === 'filelocksmith') {
+                return ['file_locksmith', 'filelocksmith'];
+              }
               if (plugin.id === 'remote_boost' || plugin.id === 'remote') {
                 return ['remote_boost', 'remote'];
               }
@@ -280,9 +283,11 @@ export default function TrayApp() {
     const { id, enabled } = payload;
     const aliases = (id === 'dialogenhancer' || id === 'dialog_enhancer')
       ? ['dialogenhancer', 'dialog_enhancer']
-      : (id === 'remote_boost' || id === 'remote')
-        ? ['remote_boost', 'remote']
-        : [id];
+      : (id === 'file_locksmith' || id === 'filelocksmith')
+        ? ['file_locksmith', 'filelocksmith']
+        : (id === 'remote_boost' || id === 'remote')
+          ? ['remote_boost', 'remote']
+          : [id];
     setActivePlugins((prev) => {
       const next = new Set(prev);
       if (enabled) {
@@ -345,6 +350,23 @@ export default function TrayApp() {
         const next = new Set(prev);
         if (payload.enabled) next.add('clipboard');
         else next.delete('clipboard');
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('fileLocksmith:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('file_locksmith');
+          next.add('filelocksmith');
+        } else {
+          next.delete('file_locksmith');
+          next.delete('filelocksmith');
+        }
         return next;
       });
     }

@@ -57,6 +57,7 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   keycast: 'sidebar.kw_keycast',
   spotlight: 'sidebar.kw_spotlight',
   dialog_enhancer: 'sidebar.kw_dialog_enhancer',
+  file_locksmith: 'sidebar.kw_file_locksmith',
   remote_boost: 'sidebar.kw_remote_boost',
   picasa_viewer: 'sidebar.kw_picasa_viewer',
   stats: 'sidebar.kw_stats',

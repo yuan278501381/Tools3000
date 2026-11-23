@@ -2729,3 +2729,24 @@
 4. **全局搜索零冲突浏览器书签直达 (`src/search/BrowserBookmarkIndex.{h,cpp}`, `SearchPlugin.cpp`, `SearchInteractionHandlers.cpp`, `ui/src/search/*`, `SearchPage.tsx`)**:
    - **零语法冲突三重直达**：绝不占用单字母 `b ` 前缀，采用与 `ext:`/`content:` 统一的独立 `bm:` 前缀 + 分类栏「书签」胶囊 + 可控常规搜索混排（`/search/includeBookmarks` 默认开启，自动避让显式文件操作符与盘符路径）；
    - **零常驻线程与超低内存**：纯离线只读解析本地 Edge / Chrome / Brave / Vivaldi / Chromium 多 Profile `Bookmarks` JSON，按文件 `mtime` + 10s stat 节流惰性刷新（单文件上限 8 MB、全局 8000 条 URL 去重封顶，常规内存 `< 300 KB`），纯 `bm:` 查询 `< 0.5ms` 瞬出且绝不违背搜索服务 `DEMAND_START` 契约；安全校验仅放行 `http://` / `https://` 网址直开默认浏览器。
+
+
+---
+
+## 2026-11-23 实机体验深度打磨：剪贴板白屏根治、提权启动降权、离线原站 Favicon、自身对话框增强与文件解锁一等模块化
+1. **根治 `Alt+V` 剪贴板白屏无内容 (`src/ui/ClipboardWindow.cpp`, `ui/src/ClipboardApp.tsx`, `ui/src/hooks/useAppearance.ts`)**:
+   - **架构铁律**：严禁对 WebView2 宿主顶层 HWND 动态施加/移除 `WS_EX_LAYERED` + `SetLayeredWindowAttributes(LWA_ALPHA=0)`。该操作会直接破坏 Chromium DirectComposition 子窗口合成管线，导致整个剪贴板窗口只剩 `WM_PAINT` 底色 `RGB(248,250,252)` 完全不显示 Web 内容。
+   - **终局方案**：彻底移除全部 `WS_EX_LAYERED` 逻辑，并与 `SettingsWindow::smoothPresent()` 1:1 对齐——冷启动宿主窗处于 `SW_HIDE` 时先令 `controller->put_IsVisible(FALSE)`，待 `NavigationCompleted` 完成后立即执行 `ShowWindow(SW_SHOW)` + `SetActiveWindow/SetFocus` 再做真正的 `put_IsVisible(FALSE -> TRUE)` 切换并投递 `clipboard:shown`；前端 `ClipboardApp` 接入 `useAppearance()`（同时对无 `window.matchMedia` 环境做防御性保护）。
+2. **根治管理员态打开 Chrome 等浏览器/桌面应用卡死 (`src/core/utils/WinUtils.{h,cpp}`, `SearchInteractionHandlers.cpp`, `GestureAction.cpp`)**:
+   - **根因**：`Tools3000.exe` 以管理员高权限运行且已有普通权限（Medium IL）Chrome 存活时，在无 COM 的后台线程直接 `ShellExecuteW` 拉起 `Google Chrome.lnk` 会令子进程继承高权限与嵌套 Job Object，引发 ProcessSingleton / UIPI / 沙箱死锁。
+   - **终局方案**：新增 `WinUtils::openProgram(filePath, args, workingDir)` 与统一底层 `launchShellTargetBoundedSta`：独立 STA COM 线程 + 超时脱离保护（UI 线程 180ms / Worker 1500ms）；管理员态非 `runas` 普通启动优先通过微软官方桌面 Explorer 降权协议（`IShellWindows(SWC_DESKTOP)` -> `IShellBrowser` -> `IShellView` -> `IShellFolderViewDual` -> `IShellDispatch2::ShellExecute`）以 Medium IL 启动，失败回退 `ShellExecuteExW(SEE_MASK_ASYNCOK | SEE_MASK_FLAG_NO_UI)`。
+3. **Windows 原生图标模式全面覆盖应用、离线书签 Favicon 与系统命令 (`WinUtils.cpp`, `BrowserBookmarkIndex.{h,cpp}`, `SystemCommandCatalog.{h,cpp}`, `SearchPlugin.cpp`, `ui/src/search/*`)**:
+   - **应用图标**：前端 `resolveNativeIconRequest` 从 `item.path` 兜底识别 `.lnk`/`.exe`（规避 `shell:AppsFolder\...` AUMID 点号误切扩展名）；后端新增 `IShellItemImageFactory::GetImage(32x32)` 支持 UWP/MSIX 应用原生图标。
+   - **书签真实原站 Favicon（0 网络请求、0 第三方依赖、原生 x64/ARM64）**：动态加载系统内置 `winsqlite3.dll`，以 `mode=ro&nolock=1` / `immutable=1` 纯只读查询本机 Chrome/Edge/Brave/Vivaldi/Chromium 的 `Favicons` SQLite 库（精确 URL -> Origin B-Tree 范围 -> 子域回退 -> 浏览器 `.exe` 原图标，512 条内存缓存上限）。
+   - **系统命令**：`SystemCommandCatalog::resolveNativeIconPath` 通过 `SearchPathW` 映射 `cmd.exe`/`taskmgr.exe`/`sysdm.cpl` 等原生二进制图标；前端 `iconStyle === 'native'` 时优先渲染真实原图标。
+4. **Tools3000 自身 `#32770` 文件对话框支持 `DialogEnhancer` (`src/dialog/DialogEngine.cpp`, `src/dialog/DialogRibbonOverlay.cpp`)**:
+   - 移除 `DialogEngine` 对 `GetCurrentProcessId()` 的无条件拦截并传入 `inspectDialog(hwnd, true)`，配合 `DialogRibbonOverlay` 的 `owner=nullptr` 与严格 `#32770` 宿主过滤，确保如「问题反馈 -> 附带截图」等自身文件选择器也能享受一键目录跳转与内置搜索条，且不误挂普通窗口。
+5. **「文件占用解锁 (`file_locksmith`)」晋升一等模块 + 托盘补全开关 + 手势停顿取消默认开启**:
+   - `file_locksmith` 正式纳入 `plugins.getAll`/`plugins.setEnabled` 核心模块契约、左侧「效率工具」独立菜单与专属配置页 `FileLocksmithPage.tsx`（含页内直接选文件/文件夹即时检测占用），并从 `GeneralPage` 迁出保持 SSOT；
+   - 托盘控制中心（`trayRegistry.ts`）补齐「剪贴板 (`clipboard`)」与「文件解锁 (`file_locksmith`)」，形成对称 `2×4`（8 格）+ 宽卡 `remote_boost`（9 模块）；
+   - 鼠标手势「划动中途停顿自动取消 (`pauseCancelEnabled`)」前后端默认值统一调整为 `true`。

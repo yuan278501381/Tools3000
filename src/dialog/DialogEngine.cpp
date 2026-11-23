@@ -456,7 +456,9 @@ void DialogEngine::handleDialogShown(HWND hwnd) {
 
     DWORD processId = 0;
     GetWindowThreadProcessId(hwnd, &processId);
-    if (processId == 0 || processId == GetCurrentProcessId()) return;
+    // 允许捕获 Tools3000 自身进程及 WebView2 子进程弹出的标准 #32770 文件对话框；
+    // 非文件对话框由后续 DialogNavigator::inspectDialog 精准剔除。
+    if (processId == 0) return;
 
     bool added = false;
     {
@@ -784,9 +786,9 @@ void DialogEngine::monitorThreadMain() {
                 if (!snapshot.initialized) {
                     if (now - snapshot.discoveredAt < 40ms) continue;
 
-                    // 单次 EnumChildWindows 完整快照采集：零重复扫描 + 明确非文件框 1 次淘汰
+                    // 单次 EnumChildWindows 完整快照采集：零重复扫描 + 明确非文件框 1 次淘汰（含本进程 #32770 文件对话框）
                     stage = "inspect-file-dialog";
-                    const DialogControlSnapshot ctrlSnap = DialogNavigator::inspectDialog(hwnd, false);
+                    const DialogControlSnapshot ctrlSnap = DialogNavigator::inspectDialog(hwnd, true);
                     const bool isValidFileDialog =
                         !ctrlSnap.isProgressOrTransfer &&
                         !ctrlSnap.isPropertySheet &&

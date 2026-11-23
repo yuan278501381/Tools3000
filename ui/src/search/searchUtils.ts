@@ -448,16 +448,72 @@ export interface NativeIconRequestSpec {
   extension: string;
   isDirectory: boolean;
   filePath?: string;
+  resultType?: SearchResult['resultType'];
+  browserSource?: string;
+}
+
+function extractExtensionLower(value: string): string {
+  if (!value) return '';
+  const clean = value.replace(/\//g, '\\');
+  const slashIdx = clean.lastIndexOf('\\');
+  const baseName = slashIdx >= 0 ? clean.slice(slashIdx + 1) : clean;
+  const dotIdx = baseName.lastIndexOf('.');
+  return dotIdx > 0 ? baseName.slice(dotIdx).toLowerCase() : '';
 }
 
 export function resolveNativeIconRequest(item: SearchResult): NativeIconRequestSpec {
-  const dotIndex = item.name.lastIndexOf('.');
-  const extension = !item.isDirectory && dotIndex >= 0 ? item.name.slice(dotIndex).toLowerCase() : '';
   if (item.isDirectory) {
     return {
       cacheKey: '::dir::',
       extension: '',
       isDirectory: true,
+    };
+  }
+  if (item.resultType === 'bookmark' && item.path) {
+    let originKey = item.path.toLowerCase();
+    try {
+      const parsed = new URL(item.path);
+      originKey = `${parsed.protocol}//${parsed.host}/`.toLowerCase();
+    } catch {
+      // 保留完整 URL 作为回退缓存键
+    }
+    const browserTag = (item.browserSource || '').toLowerCase();
+    return {
+      cacheKey: `bm:${browserTag}:${originKey}`,
+      extension: '',
+      isDirectory: false,
+      filePath: item.path,
+      resultType: 'bookmark',
+      browserSource: item.browserSource,
+    };
+  }
+  if (item.resultType === 'command' && item.path) {
+    return {
+      cacheKey: `cmd:${item.path.toLowerCase()}`,
+      extension: '',
+      isDirectory: false,
+      filePath: item.path,
+      resultType: 'command',
+    };
+  }
+
+  const nameExt = extractExtensionLower(item.name);
+  const pathExt = extractExtensionLower(item.path);
+  const extension = nameExt || pathExt;
+
+  if (item.resultType === 'app' && item.path) {
+    const normalizedPath = item.path.replace(/\//g, '\\').toLowerCase();
+    const isShellAppsUri = normalizedPath.startsWith('shell:appsfolder\\');
+    const resolvedAppExt =
+      !isShellAppsUri && extension && !extension.includes('!') && extension.length <= 12
+        ? extension
+        : '.exe';
+    return {
+      cacheKey: `path:${normalizedPath}`,
+      extension: resolvedAppExt,
+      isDirectory: false,
+      filePath: item.path,
+      resultType: 'app',
     };
   }
   if (item.path && PER_INSTANCE_ICON_EXTENSIONS.has(extension)) {

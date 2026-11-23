@@ -51,7 +51,8 @@
     "dialog_enhancer": "파일 대화상자 도우미",
     "remote_boost": "원격 제어 부스트",
     "picasa_viewer": "Picasa 이미지 뷰어",
-    "clipboard": "클립보드 기록"
+    "clipboard": "클립보드 기록",
+    "file_locksmith": "파일 잠금 해제"
   },
   "navSubtitle": {
     "stats": "키보드 및 마우스 사용 활동 통계",
@@ -73,7 +74,8 @@
     "markdown_preview": "Space 키 한 번으로 Markdown과 코드 파일 빠른 미리보기",
     "remote_boost": "몰입형 시스템 단축키 직통, 보조키 응급 해제 및 스마트 IME 정리",
     "picasa_viewer": "Rust로 재구현한 경량 Picasa 뷰어(원본 전체 기능 아님), 활성화 시 모든 지원 이미지 형식 자동 연결",
-    "clipboard": "재부팅 후에도 유지되는 클립보드 기록, 초고속 검색 및 이미지 핀/번역"
+    "clipboard": "재부팅 후에도 유지되는 클립보드 기록, 초고속 검색 및 이미지 핀/번역",
+    "file_locksmith": "상주 메모리 0으로 파일 점유 프로세스 확인 및 안전 해제"
   },
   "extension": {
     "statusRunning": "실행 중",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "클립보드 기록",
         "description": "Rust 영구 저장 엔진 기반 경량 클립보드 관리자. 재부팅 후에도 기록을 유지하며 비밀번호 관리자 프라이버시 보호와 이미지 F3 핀/OCR/제자리 번역을 지원합니다."
+      },
+      "file_locksmith": {
+        "name": "파일 잠금 해제",
+        "description": "순수 HKCU 우클릭 메뉴 통합으로 백그라운드 메모리 없이 잠긴 파일의 점유 프로세스를 찾아 안전하게 해제합니다"
       }
     },
     "title": "기능 모듈 및 확장"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "비활성",
     "enableAndOpen": "활성화 후 열기",
     "kw_picasa_viewer": "picasa 사진 이미지 뷰어 슬라이드쇼 파일연결 확장자 rust",
-    "kw_clipboard": "클립보드 기록 복사 붙여넣기 고정 영구 clipboard"
+    "kw_clipboard": "클립보드 기록 복사 붙여넣기 고정 영구 clipboard",
+    "kw_file_locksmith": "파일 잠금 해제 프로세스 우클릭 메뉴 locksmith unlock"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000에 오신 것을 환영합니다",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "모두 표시",
     "pinCloseAll": "모두 닫기",
     "confirmCloseGroup": "이 그룹의 고정 이미지를 모두 닫으시겠습니까?",
-    "confirmCloseAll": "바탕 화면의 모든 고정 이미지를 닫으시겠습니까?"
+    "confirmCloseAll": "바탕 화면의 모든 고정 이미지를 닫으시겠습니까?",
+    "pillClipboard": "클립보드",
+    "pillClipboardFullDesc": "클립보드 기록 (즉시 검색, 그룹 관리 및 일괄 붙여넣기)",
+    "pillFileLocksmith": "잠금 해제",
+    "pillFileLocksmithFullDesc": "파일 잠금 해제 (상주 없이 탐색기 우클릭으로 점유 프로세스 확인)"
   },
   "dialog": {
     "title": "파일 대화상자 도우미",
@@ -3154,5 +3165,19 @@
     "typeOther": "일반 피드백",
     "typePerformance": "성능 및 메모리 문제",
     "viewIssue": "Issue 보기"
+  },
+  "fileLocksmith": {
+    "heroTitle": "파일 잠금 해제 (상주 없음)",
+    "statusRegistered": "우클릭 메뉴 활성",
+    "statusInactive": "우클릭 메뉴 비활성",
+    "heroDesc": "탐색기 DLL 주입 없이 순수 HKCU 레지스트리로 통합되며 유휴 메모리 0 MB로 필요할 때만 네이티브 창을 실행합니다.",
+    "contextMenuGroup": "탐색기 우클릭 메뉴 통합",
+    "instantInspectGroup": "즉시 검사 및 해제",
+    "instantInspectDesc": "잠긴 파일이나 폴더를 직접 선택하여 점유 중인 프로세스를 확인하고 안전하게 잠금을 해제하세요.",
+    "pathPlaceholder": "검사할 파일 또는 폴더 경로 입력/선택...",
+    "pickFile": "파일 선택",
+    "pickFolder": "폴더 선택",
+    "inspectNow": "잠금 검사",
+    "inspectFailed": "파일 잠금 해제 창을 실행하지 못했습니다"
   }
 }

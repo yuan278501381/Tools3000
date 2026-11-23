@@ -101,5 +101,8 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'rmt-ime', navId: 'remote_boost', labelKey: 'remoteBoost.imeSanitizerTitle', descKey: 'remoteBoost.imeSanitizerDesc', keywords: 'ime english input method shurufa' },
   { id: 'pv-assoc', navId: 'picasa_viewer', labelKey: 'picasaViewer.associateAllTitle', descKey: 'picasaViewer.heroDesc', keywords: 'picasa photo image picture viewer rust association jpg png webp kantu tupian' },
   { id: 'pv-custom', navId: 'picasa_viewer', labelKey: 'picasaViewer.customFormatsTitle', descKey: 'picasaViewer.customFormatsDesc', keywords: 'picasa format config default apps extension raw heic avif geshi guanlian' },
+  // File Locksmith
+  { id: 'fl-menu', navId: 'file_locksmith', labelKey: 'general.shellMenuFileLocksmith', descKey: 'general.shellMenuFileLocksmithDesc', keywords: 'file locksmith unlock lock handle process context menu explorer shift wenjian zhanyong jiesuo' },
+  { id: 'fl-inspect', navId: 'file_locksmith', labelKey: 'fileLocksmith.instantInspectGroup', descKey: 'fileLocksmith.instantInspectDesc', keywords: 'inspect locked file folder process kill unlock jiance zhanyong' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
 ];

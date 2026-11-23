@@ -825,4 +825,47 @@ bool SystemCommandCatalog::executeWhitelistedCommand(std::string_view commandId,
     return false;
 }
 
+std::wstring SystemCommandCatalog::resolveNativeIconPath(std::string_view commandId) {
+    const SystemCommandSpec* spec = findById(commandId);
+    if (!spec || !spec->execFile) return {};
+
+    std::wstring candidate(spec->execFile);
+    if (_wcsnicmp(candidate.c_str(), L"ms-settings:", 12) == 0 ||
+        _wcsnicmp(candidate.c_str(), L"shell:", 6) == 0) {
+        return {};
+    }
+    if (spec->isHostsEditor) {
+        candidate = L"notepad.exe";
+    } else if (_wcsicmp(candidate.c_str(), L"rundll32.exe") == 0 && spec->execParams) {
+        // 提取 rundll32 目标模块（如 sysdm.cpl,EditEnvironmentVariables -> sysdm.cpl）以呈现原生图标
+        std::wstring_view paramsView(spec->execParams);
+        const size_t cut = paramsView.find_first_of(L", \t");
+        if (cut != std::wstring_view::npos && cut > 0) {
+            candidate.assign(paramsView.substr(0, cut));
+        }
+    }
+
+    auto tryResolve = [](const std::wstring& fileName) -> std::wstring {
+        if (fileName.empty()) return {};
+        if (GetFileAttributesW(fileName.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return fileName;
+        }
+        wchar_t resolved[MAX_PATH * 2]{};
+        const DWORD len = SearchPathW(nullptr, fileName.c_str(), nullptr,
+                                      static_cast<DWORD>(std::size(resolved)), resolved, nullptr);
+        if (len > 0 && len < std::size(resolved)) {
+            return std::wstring(resolved, len);
+        }
+        return {};
+    };
+
+    if (std::wstring found = tryResolve(candidate); !found.empty()) {
+        return found;
+    }
+    if (spec->fallbackExecFile) {
+        return tryResolve(spec->fallbackExecFile);
+    }
+    return {};
+}
+
 }  // namespace tools3000::search

@@ -74,9 +74,15 @@ json makeFileNotFoundError() {
 }
 
 bool executeShellAppsUri(const std::wstring& uri, const wchar_t* verb) noexcept {
+    if (verb == nullptr || _wcsicmp(verb, L"open") == 0) {
+        return tools3000::core::WinUtils::openProgram(uri);
+    }
+    if (_wcsicmp(verb, L"runas") == 0) {
+        return tools3000::core::WinUtils::openFileAsAdmin(uri);
+    }
     SHELLEXECUTEINFOW sei{};
     sei.cbSize = sizeof(sei);
-    sei.fMask = SEE_MASK_FLAG_NO_UI;
+    sei.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_ASYNCOK;
     sei.lpVerb = verb;
     sei.lpFile = uri.c_str();
     sei.nShow = SW_SHOWNORMAL;

@@ -51,7 +51,8 @@
     "dialog_enhancer": "文件对话框助手",
     "remote_boost": "远程协助增强",
     "picasa_viewer": "Picasa 图片查看器",
-    "clipboard": "剪贴板历史"
+    "clipboard": "剪贴板历史",
+    "file_locksmith": "文件占用解锁"
   },
   "navSubtitle": {
     "stats": "按键和鼠标活动使用统计",
@@ -73,7 +74,8 @@
     "markdown_preview": "单按空格快速预览 .md 与代码文件",
     "remote_boost": "主控端热键直通、修饰键急救与输入法智能脱敏",
     "picasa_viewer": "Rust 复刻经典轻量看图器（非原版全功能），启用自动关联全部支持的图片格式",
-    "clipboard": "持久化剪贴板记录、毫秒级检索与图片一键贴图/翻译"
+    "clipboard": "持久化剪贴板记录、毫秒级检索与图片一键贴图/翻译",
+    "file_locksmith": "零常驻查看文件占用进程与一键安全解锁"
   },
   "extension": {
     "statusRunning": "运行中",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "剪贴板历史",
         "description": "基于 Rust 持久化引擎的轻量剪贴板管理器，关机重启永不丢失，内置密码管理器隐私免录与图片直达贴图/OCR/原位翻译。"
+      },
+      "file_locksmith": {
+        "name": "文件占用解锁",
+        "description": "纯注册表 HKCU 右键菜单集成，0 后台内存占用，快速定位锁定文件或文件夹的进程并安全解锁"
       }
     },
     "title": "功能模块与扩展插件"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "未启用",
     "enableAndOpen": "一键启用并打开",
     "kw_picasa_viewer": "picasa 看图 图片 查看器 相册 幻灯片 关联 格式 rust",
-    "kw_clipboard": "剪贴板 历史 复制 粘贴 置顶 持久化 clipboard"
+    "kw_clipboard": "剪贴板 历史 复制 粘贴 置顶 持久化 clipboard",
+    "kw_file_locksmith": "文件占用 解锁 句柄 进程 右键菜单 locksmith unlock"
   },
   "onboarding": {
     "welcomeTitle": "欢迎使用 Tools3000",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "显示全部",
     "pinCloseAll": "关闭全部",
     "confirmCloseGroup": "确定关闭该分组内的全部贴图？",
-    "confirmCloseAll": "确定关闭桌面上的全部贴图？"
+    "confirmCloseAll": "确定关闭桌面上的全部贴图？",
+    "pillClipboard": "剪贴板",
+    "pillClipboardFullDesc": "剪贴板历史（随时呼出检索、收藏分组与批量合并粘贴）",
+    "pillFileLocksmith": "文件解锁",
+    "pillFileLocksmithFullDesc": "文件占用解锁（零常驻资源管理器右键查看占用进程并解锁）"
   },
   "dialog": {
     "title": "文件对话框智能助手",
@@ -3154,5 +3165,19 @@
     "typeOther": "其他综合建议",
     "typePerformance": "性能与内存问题",
     "viewIssue": "查看已提交的 Issue"
+  },
+  "fileLocksmith": {
+    "heroTitle": "文件占用解锁（零常驻）",
+    "statusRegistered": "右键菜单已注册",
+    "statusInactive": "右键菜单未启用",
+    "heroDesc": "纯当前用户 HKCU 注册表集成，不注入资源管理器、后台零内存驻留，仅在触发检测时瞬时拉起轻量原生窗口。",
+    "contextMenuGroup": "资源管理器右键菜单集成",
+    "instantInspectGroup": "立即检测与解锁",
+    "instantInspectDesc": "无需切换窗口，在此直接选择或输入被占用的文件或文件夹路径，立即查看占用进程并安全释放。",
+    "pathPlaceholder": "输入或浏览要检测占用的文件 / 文件夹路径...",
+    "pickFile": "选择文件",
+    "pickFolder": "选择文件夹",
+    "inspectNow": "立即检测占用",
+    "inspectFailed": "启动文件占用解锁窗口失败"
   }
 }

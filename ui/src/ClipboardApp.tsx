@@ -61,6 +61,7 @@ import {
   type ClipboardSelectionState,
 } from './clipboardSelection';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
+import { useAppearance } from './hooks/useAppearance';
 import './ClipboardApp.css';
 
 export interface ClipboardItemSummary {
@@ -125,6 +126,7 @@ function formatRelativeTime(epochMs: number): string {
 
 export const ClipboardApp: FC = () => {
   const { t } = useTranslation();
+  useAppearance();
   const [query, setQuery] = useState('');
   const [filterKind, setFilterKind] = useState<FilterKind>('all');
   const [activeGroupId, setActiveGroupId] = useState('');
@@ -234,9 +236,17 @@ export const ClipboardApp: FC = () => {
   }, []);
 
   const signalFrameReady = useCallback(() => {
+    let sent = false;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      void bridgeRequest('clipboard.frameReady', undefined, { silent: true }).catch(() => {});
+    };
+    const fallbackTimer = window.setTimeout(send, 48);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        void bridgeRequest('clipboard.frameReady', undefined, { silent: true }).catch(() => {});
+        window.clearTimeout(fallbackTimer);
+        send();
       });
     });
   }, []);

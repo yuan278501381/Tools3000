@@ -345,8 +345,13 @@ public:
     /// 采用独立 STA 线程异步解耦与三级降级容灾链 (Tier 1: SHOpenFolderAndSelectItems -> Tier 2: explorer /select -> Tier 3: 打开父目录)
     static bool openFolderAndSelectItem(const std::wstring& filePath);
 
-    /// 非阻塞启动/打开指定文件或应用程序
+    /// 非阻塞启动/打开指定文件、快捷方式或 shell:AppsFolder 应用程序（高权限下自动通过桌面 Explorer 降权拉起，防 Chrome 等单实例卡死）
     static bool openFile(const std::wstring& filePath);
+
+    /// 非阻塞启动指定可执行程序或快捷方式（可选参数与工作目录；高权限下优先通过桌面 Explorer 降权拉起）
+    static bool openProgram(const std::wstring& filePath,
+                            const std::wstring& args = L"",
+                            const std::wstring& workingDir = L"");
 
     /// 非阻塞在系统默认浏览器中打开指定 HTTP/HTTPS 网址
     static bool openUrl(const std::wstring& url);

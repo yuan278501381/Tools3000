@@ -51,7 +51,8 @@
     "dialog_enhancer": "檔案對話方塊助手",
     "remote_boost": "遠端協助增強",
     "picasa_viewer": "Picasa 圖片檢視器",
-    "clipboard": "剪貼簿歷史"
+    "clipboard": "剪貼簿歷史",
+    "file_locksmith": "檔案佔用解鎖"
   },
   "navSubtitle": {
     "stats": "按鍵與滑鼠活動使用統計",
@@ -73,7 +74,8 @@
     "markdown_preview": "單按空白鍵快速預覽 .md 與程式碼檔案",
     "remote_boost": "主控端快速鍵直通、輔助鍵急救與輸入法智慧清理",
     "picasa_viewer": "Rust 復刻經典輕量看圖器（非原版全功能），啟用自動關聯全部支援的圖片格式",
-    "clipboard": "持久化剪貼簿記錄、毫秒級檢索與圖片一鍵貼圖／翻譯"
+    "clipboard": "持久化剪貼簿記錄、毫秒級檢索與圖片一鍵貼圖／翻譯",
+    "file_locksmith": "零常駐檢視檔案佔用程序與一鍵安全解鎖"
   },
   "extension": {
     "statusRunning": "執行中",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "剪貼簿歷史",
         "description": "基於 Rust 持久化引擎的輕量剪貼簿管理器，關機重啟永不遺失，內建密碼管理器隱私免錄與圖片直達貼圖／OCR／原位翻譯。"
+      },
+      "file_locksmith": {
+        "name": "檔案佔用解鎖",
+        "description": "純 HKCU 登錄檔右鍵選單整合，零背景記憶體佔用，快速定位鎖定檔案或資料夾的程序並安全解鎖"
       }
     },
     "title": "功能模組與擴充外掛"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "未啟用",
     "enableAndOpen": "一鍵啟用並開啟",
     "kw_picasa_viewer": "picasa 看圖 圖片 檢視器 幻燈片 關聯 格式 rust",
-    "kw_clipboard": "剪貼簿 歷史 複製 貼上 釘選 持久化 clipboard"
+    "kw_clipboard": "剪貼簿 歷史 複製 貼上 釘選 持久化 clipboard",
+    "kw_file_locksmith": "檔案佔用 解鎖 控制代碼 程序 右鍵選單 locksmith unlock"
   },
   "onboarding": {
     "welcomeTitle": "歡迎使用 Tools3000",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "顯示全部",
     "pinCloseAll": "關閉全部",
     "confirmCloseGroup": "確定關閉該群組內的全部貼圖？",
-    "confirmCloseAll": "確定關閉桌面上的全部貼圖？"
+    "confirmCloseAll": "確定關閉桌面上的全部貼圖？",
+    "pillClipboard": "剪貼簿",
+    "pillClipboardFullDesc": "剪貼簿歷史（即時呼叫搜尋、自訂分組與批次合併貼上）",
+    "pillFileLocksmith": "檔案解鎖",
+    "pillFileLocksmithFullDesc": "檔案佔用解鎖（零常駐檔案總管右鍵檢視佔用程序並解鎖）"
   },
   "dialog": {
     "title": "檔案對話方塊智慧助手",
@@ -3154,5 +3165,19 @@
     "typeOther": "其他綜合建議",
     "typePerformance": "效能與記憶體問題",
     "viewIssue": "檢視已提交的 Issue"
+  },
+  "fileLocksmith": {
+    "heroTitle": "檔案佔用解鎖（零常駐）",
+    "statusRegistered": "右鍵選單已註冊",
+    "statusInactive": "右鍵選單未啟用",
+    "heroDesc": "純目前使用者 HKCU 登錄檔整合，不注入檔案總管、背景零記憶體駐留，僅在需要時瞬時開啟輕量原生視窗。",
+    "contextMenuGroup": "檔案總管右鍵選單整合",
+    "instantInspectGroup": "立即檢測與解鎖",
+    "instantInspectDesc": "直接於此選取或輸入被鎖定的檔案或資料夾路徑，立即檢視佔用程序並安全釋放。",
+    "pathPlaceholder": "輸入或瀏覽要檢測佔用的檔案 / 資料夾路徑...",
+    "pickFile": "選擇檔案",
+    "pickFolder": "選擇資料夾",
+    "inspectNow": "立即檢測佔用",
+    "inspectFailed": "啟動檔案佔用解鎖視窗失敗"
   }
 }

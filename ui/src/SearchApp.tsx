@@ -948,9 +948,14 @@ export default function SearchApp() {
     };
   }, [refreshQuery, persistUiPreferencesPatch, i18n.resolvedLanguage, i18n.language]);
 
-  const fetchNativeIcon = useCallback(async (ext: string, isDirectory: boolean, filePath?: string) => {
+  const fetchNativeIcon = useCallback(async (
+    ext: string,
+    isDirectory: boolean,
+    filePath?: string,
+    meta?: { cacheKey?: string; resultType?: SearchResult['resultType']; browserSource?: string },
+  ) => {
     const normalizedPath = filePath ? filePath.replace(/\//g, '\\').toLowerCase() : '';
-    const key = isDirectory ? '::dir::' : (normalizedPath ? `path:${normalizedPath}` : ext.toLowerCase());
+    const key = meta?.cacheKey || (isDirectory ? '::dir::' : (normalizedPath ? `path:${normalizedPath}` : ext.toLowerCase()));
     if (nativeIconCacheRef.current.has(key)) {
       const cached = nativeIconCacheRef.current.get(key) || '';
       nativeIconCacheRef.current.delete(key);
@@ -964,6 +969,8 @@ export default function SearchApp() {
         ext: isDirectory ? '' : ext,
         isDirectory,
         ...(filePath ? { path: filePath } : {}),
+        ...(meta?.resultType ? { resultType: meta.resultType } : {}),
+        ...(meta?.browserSource ? { browserSource: meta.browserSource } : {}),
       });
       if (!resp?.success) {
         return undefined;
@@ -985,11 +992,15 @@ export default function SearchApp() {
   const prefetchIcons = useCallback(async (list: SearchResult[]) => {
     if (iconStyle !== 'native' || list.length === 0) return;
     const missing = new Set<string>();
-    const items: Array<{ key: string; ext: string; isDirectory: boolean; path?: string }> = [];
+    const items: Array<{
+      key: string;
+      ext: string;
+      isDirectory: boolean;
+      path?: string;
+      resultType?: SearchResult['resultType'];
+      browserSource?: string;
+    }> = [];
     for (const item of list.slice(0, 100)) {
-      if (item.resultType === 'bookmark' || item.resultType === 'command') {
-        continue;
-      }
       const spec = resolveNativeIconRequest(item);
       const key = spec.cacheKey;
       if (
@@ -1003,6 +1014,8 @@ export default function SearchApp() {
           ext: spec.extension,
           isDirectory: spec.isDirectory,
           ...(spec.filePath ? { path: spec.filePath } : {}),
+          ...(spec.resultType ? { resultType: spec.resultType } : {}),
+          ...(spec.browserSource ? { browserSource: spec.browserSource } : {}),
         });
       }
     }

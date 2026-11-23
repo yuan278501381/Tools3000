@@ -868,6 +868,48 @@ TEST(PathMemoryManagerTest, InlineSearchAndBottomPositionPersistence) {
     mgr.setRibbonPosition(prevPos);
 }
 
+TEST(DialogNavigatorTest, AllowsSelfProcessFileDialogWhenEnabled) {
+    auto ensureClassRegistered = [](const wchar_t* className) {
+        WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+        if (!GetClassInfoExW(GetModuleHandle(nullptr), className, &wc)) {
+            wc.lpfnWndProc = DefWindowProcW;
+            wc.hInstance = GetModuleHandle(nullptr);
+            wc.lpszClassName = className;
+            RegisterClassExW(&wc);
+        }
+    };
+    ensureClassRegistered(L"SHELLDLL_DefView");
+    ensureClassRegistered(L"Address Band Root");
+
+    HWND selfFileDlg = CreateWindowExW(
+        0, L"#32770", L"打开", WS_POPUP, 0, 0, 640, 460,
+        nullptr, nullptr, GetModuleHandle(nullptr), nullptr);
+    ASSERT_NE(selfFileDlg, nullptr);
+    HWND defView = CreateWindowExW(
+        0, L"SHELLDLL_DefView", L"", WS_CHILD, 0, 40, 620, 340,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(100)), GetModuleHandle(nullptr), nullptr);
+    HWND addrBand = CreateWindowExW(
+        0, L"Address Band Root", L"", WS_CHILD, 0, 0, 620, 32,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(41477)), GetModuleHandle(nullptr), nullptr);
+    HWND okBtn = CreateWindowExW(
+        0, L"BUTTON", L"打开(&O)", WS_CHILD, 460, 400, 80, 28,
+        selfFileDlg, reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDOK)), GetModuleHandle(nullptr), nullptr);
+    ASSERT_NE(defView, nullptr);
+    ASSERT_NE(addrBand, nullptr);
+    ASSERT_NE(okBtn, nullptr);
+
+    // 默认 allowSelfProcess=false 时过滤当前进程；允许同进程时必须精确识别 Tools3000 自身弹出的 #32770 文件对话框
+    EXPECT_FALSE(tools3000::dialog::DialogNavigator::isFileDialog(selfFileDlg, false));
+    const auto rejected = tools3000::dialog::DialogNavigator::inspectDialog(selfFileDlg, false);
+    EXPECT_EQ(rejected.architecture, tools3000::dialog::DialogArchitecture::Unknown);
+
+    EXPECT_TRUE(tools3000::dialog::DialogNavigator::isFileDialog(selfFileDlg, true));
+    const auto accepted = tools3000::dialog::DialogNavigator::inspectDialog(selfFileDlg, true);
+    EXPECT_EQ(accepted.architecture, tools3000::dialog::DialogArchitecture::ModernIFileDialog);
+
+    DestroyWindow(selfFileDlg);
+}
+
 // -----------------------------------------------------------------------------
 // 56. 选区圆角手柄交互与实时调节测试套件
 // -----------------------------------------------------------------------------

@@ -51,7 +51,8 @@
     "dialog_enhancer": "Dialog Enhancer",
     "remote_boost": "Remote Boost",
     "picasa_viewer": "Picasa Photo Viewer",
-    "clipboard": "Clipboard History"
+    "clipboard": "Clipboard History",
+    "file_locksmith": "File Locksmith"
   },
   "navSubtitle": {
     "stats": "Keystrokes and mouse usage activity",
@@ -73,7 +74,8 @@
     "markdown_preview": "Spacebar quick look for markdown and code files",
     "remote_boost": "Immersive hotkey tunnel, emergency flush & smart IME sanitizing",
     "picasa_viewer": "Rust recreation of the lightweight Picasa viewer (not the full suite); auto-associates all supported image formats when enabled",
-    "clipboard": "Reboot-persistent clipboard history, instant search & 1-click image Pin/Translate"
+    "clipboard": "Reboot-persistent clipboard history, instant search & 1-click image Pin/Translate",
+    "file_locksmith": "Zero-resident file lock inspector and safe unlocker"
   },
   "extension": {
     "statusRunning": "Running",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "Clipboard History",
         "description": "Lightweight Rust-backed persistent clipboard manager that survives reboots, honors password-manager privacy flags, and bridges images directly to F3 Pin / OCR / Translate."
+      },
+      "file_locksmith": {
+        "name": "File Locksmith",
+        "description": "Pure HKCU right-click menu integration with zero background RAM usage to inspect and safely unlock busy files or folders"
       }
     },
     "title": "Plugins & Extensions"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "Disabled",
     "enableAndOpen": "Enable & Open",
     "kw_picasa_viewer": "picasa photo image picture viewer slideshow association format rust",
-    "kw_clipboard": "clipboard history copy paste pin persistent"
+    "kw_clipboard": "clipboard history copy paste pin persistent",
+    "kw_file_locksmith": "file lock unlock handle process context menu locksmith"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "Show All",
     "pinCloseAll": "Close All",
     "confirmCloseGroup": "Close all pins in this group?",
-    "confirmCloseAll": "Close all desktop pins?"
+    "confirmCloseAll": "Close all desktop pins?",
+    "pillClipboard": "Clipboard",
+    "pillClipboardFullDesc": "Clipboard History (Instant recall, search & multi-paste)",
+    "pillFileLocksmith": "Unlock",
+    "pillFileLocksmithFullDesc": "File Locksmith (Zero-resident Explorer right-click file lock inspector)"
   },
   "dialog": {
     "title": "File Dialog Enhancer",
@@ -3154,5 +3165,19 @@
     "typeOther": "General Feedback",
     "typePerformance": "Performance & Memory Issue",
     "viewIssue": "View Issue"
+  },
+  "fileLocksmith": {
+    "heroTitle": "File Locksmith (Zero-Resident)",
+    "statusRegistered": "Context Menu Active",
+    "statusInactive": "Context Menu Disabled",
+    "heroDesc": "Pure HKCU registry integration with zero Explorer DLL injection and zero idle memory usage. Launches a lightweight native window only on demand.",
+    "contextMenuGroup": "Explorer Context Menu Integration",
+    "instantInspectGroup": "Quick Inspect & Unlock",
+    "instantInspectDesc": "Pick any locked file or folder directly here to inspect holding processes and safely release locks.",
+    "pathPlaceholder": "Enter or browse a file or folder path...",
+    "pickFile": "Pick File",
+    "pickFolder": "Pick Folder",
+    "inspectNow": "Inspect Locks",
+    "inspectFailed": "Failed to launch File Locksmith window"
   }
 }

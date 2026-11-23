@@ -80,6 +80,9 @@ public:
 
     /// 按静态白名单安全执行系统命令（未在白名单登记的 commandId 一律拒绝返回 false）
     static bool executeWhitelistedCommand(std::string_view commandId, bool asAdmin = false) noexcept;
+
+    /// 解析系统命令对应的本地 Windows 二进制/控制面板/管理单元完整路径，供原生图标模式提取真实 Windows 图标
+    static std::wstring resolveNativeIconPath(std::string_view commandId);
 };
 
 }  // namespace tools3000::search

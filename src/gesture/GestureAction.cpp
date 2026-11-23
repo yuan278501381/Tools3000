@@ -879,9 +879,7 @@ void GestureAction::execute(void* targetWindowPtr) const {
                 }
             }
 
-            ShellExecuteW(nullptr, L"open", wPath.c_str(),
-                          wArgs.empty() ? nullptr : wArgs.c_str(),
-                          nullptr, SW_SHOWNORMAL);
+            tools3000::core::WinUtils::openProgram(wPath, wArgs);
             break;
         }
     }

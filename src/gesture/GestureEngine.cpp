@@ -2417,7 +2417,7 @@ void GestureEngine::loadFromConfig() {
         config.set<bool>("/gesture/initialTimeoutV2Migrated", true);
     }
     setInitialTimeoutMs(rawTimeoutMs);
-    setPauseCancelEnabled(config.get<bool>("/gesture/pauseCancelEnabled", false));
+    setPauseCancelEnabled(config.get<bool>("/gesture/pauseCancelEnabled", true));
     setPauseCancelMs(config.get<int>("/gesture/pauseCancelMs", kDefaultPauseCancelMs));
     const int legacyMinSeg = config.get<int>("/gesture/recognizer/minSegmentDistance", 24);
     const auto minSegJson = config.get<nlohmann::json>("/gesture/minSegmentDistance");

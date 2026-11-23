@@ -105,8 +105,12 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
     m_showTimeTick = GetTickCount64();
     m_visible.store(true, std::memory_order_release);
 
-    const bool canShowImmediately = !m_suspendedOrCold && m_webViewReady && m_controller != nullptr;
-    if (canShowImmediately) {
+    const bool readyToRevealNow = m_webViewReady && m_controller != nullptr;
+    if (readyToRevealNow) {
+        const bool wasSuspended = m_suspendedOrCold;
+        if (wasSuspended) {
+            m_suspendController.resume(m_webView.Get(), "clipboard");
+        }
         RECT rc{};
         GetClientRect(m_hwnd, &rc);
         m_controller->put_Bounds(rc);
@@ -115,39 +119,19 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
         syncClipboardBackdropColor(m_controller.Get());
         revealWindowNow();
         notifyShownToWeb();
+        LOG_INFO("ClipboardWindow: shown immediately (wasSuspended={})", wasSuspended);
         return;
     }
 
-    // 冷启动或长时挂起唤醒路径：先以 alpha=0 隐身展示宿主窗让 Chromium 全速提交首帧
-    // (避免 SW_HIDE 下 rAF 节流)，待前端 clipboard.frameReady 回告或兜底超时后再瞬间显窗，
-    // 彻底根除 1~2 秒黑屏闪烁。
+    // 冷启动路径（严禁对 WebView2 宿主窗口动态叠加/移除 WS_EX_LAYERED，否则会破坏 DirectComposition
+    // 子窗口合成树并导致整窗纯白无内容）：保持宿主窗 SW_HIDE 直到导航完成且前端首帧就绪（或兜底超时）。
     m_pendingReveal = true;
-    const LONG_PTR ex = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
-    if ((ex & WS_EX_LAYERED) == 0) {
-        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED);
-    }
-    SetLayeredWindowAttributes(m_hwnd, 0, 0, LWA_ALPHA);
-    ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
-
-    if (m_controller) {
-        m_suspendController.resume(m_webView.Get(), "clipboard");
-        RECT rc{};
-        GetClientRect(m_hwnd, &rc);
-        m_controller->put_Bounds(rc);
-        m_controller->put_IsVisible(TRUE);
-        syncWebViewDpi(m_controller.Get(), m_hwnd);
-        syncClipboardBackdropColor(m_controller.Get());
-    }
-
     SetTimer(
         m_hwnd,
         IDT_REVEAL_FALLBACK,
-        m_webViewReady ? REVEAL_FALLBACK_WARM_MS : REVEAL_FALLBACK_COLD_MS,
+        REVEAL_FALLBACK_COLD_MS,
         nullptr);
-
-    if (m_webViewReady) {
-        notifyShownToWeb();
-    }
+    LOG_INFO("ClipboardWindow: cold-start pending reveal (waiting for WebView2 navigation + first frame)");
 }
 
 void ClipboardWindow::revealWindowNow() {
@@ -157,17 +141,26 @@ void ClipboardWindow::revealWindowNow() {
     m_suspendedOrCold = false;
     m_showTimeTick = GetTickCount64();
 
-    const LONG_PTR ex = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
-    if ((ex & WS_EX_LAYERED) != 0) {
-        SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
-        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
-    }
-
     ShowWindow(m_hwnd, SW_SHOW);
+    SetWindowPos(
+        m_hwnd,
+        m_pinned ? HWND_TOPMOST : HWND_TOP,
+        0, 0, 0, 0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(m_hwnd);
     SetForegroundWindow(m_hwnd);
+    SetActiveWindow(m_hwnd);
+    SetFocus(m_hwnd);
     if (m_controller) {
+        RECT rc{};
+        GetClientRect(m_hwnd, &rc);
+        m_controller->put_Bounds(rc);
+        m_controller->put_IsVisible(TRUE);
+        syncWebViewDpi(m_controller.Get(), m_hwnd);
+        syncClipboardBackdropColor(m_controller.Get());
         m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
+    LOG_INFO("ClipboardWindow: revealed window (ready={}, pinned={})", m_webViewReady, m_pinned);
 }
 
 void ClipboardWindow::enterDeferredSuspend() {
@@ -186,10 +179,6 @@ void ClipboardWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
     m_pendingReveal = false;
-    const LONG_PTR ex = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
-    if ((ex & WS_EX_LAYERED) != 0) {
-        SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
-    }
     ShowWindow(m_hwnd, SW_HIDE);
     m_visible.store(false, std::memory_order_release);
     // 延迟 25 秒再软挂起 WebView2：高频连续复制粘贴期间保持 GPU 帧热存活，秒开零黑屏。
@@ -424,7 +413,12 @@ void ClipboardWindow::initializeWebView2() {
 
                         m_controller = controller;
                         controller->get_CoreWebView2(&m_webView);
-                        m_controller->put_IsVisible(m_visible.load() ? TRUE : FALSE);
+                        // 与 SettingsWindow 对齐：宿主窗尚处于 SW_HIDE 阶段时先将 controller 置为 FALSE，
+                        // 待 revealWindowNow() 执行 ShowWindow(SW_SHOW) 后再触发真正的 FALSE -> TRUE 切换，
+                        // 确保 DirectComposition 表面必然挂载并提交首帧。
+                        const bool visibleNow =
+                            m_visible.load(std::memory_order_acquire) && !m_pendingReveal && IsWindowVisible(m_hwnd);
+                        m_controller->put_IsVisible(visibleNow ? TRUE : FALSE);
 
                         RECT bounds{};
                         GetClientRect(m_hwnd, &bounds);
@@ -584,17 +578,32 @@ void ClipboardWindow::initializeWebView2() {
                                     if (args) args->get_IsSuccess(&ok);
                                     if (ok) {
                                         m_webViewReady = true;
-                                        if (m_visible.load()) {
-                                            notifyShownToWeb();
-                                            if (m_controller) {
+                                        LOG_INFO("ClipboardWindow: WebView2 navigation succeeded (visible={}, pendingReveal={})",
+                                                 m_visible.load(std::memory_order_acquire), m_pendingReveal);
+                                        if (m_visible.load(std::memory_order_acquire)) {
+                                            if (m_pendingReveal && m_hwnd && IsWindow(m_hwnd)) {
+                                                // 与 SettingsWindow::smoothPresent 对齐：导航完成即显窗并做 FALSE->TRUE
+                                                // controller 切换，避免在 SW_HIDE 态下等待被 Chromium 节流的 JS 回调。
+                                                revealWindowNow();
+                                            } else if (m_controller) {
                                                 m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
                                             }
+                                            notifyShownToWeb();
+                                        }
+                                    } else {
+                                        COREWEBVIEW2_WEB_ERROR_STATUS status{};
+                                        if (args) args->get_WebErrorStatus(&status);
+                                        LOG_ERROR("ClipboardWindow: WebView2 navigation failed, status={}", static_cast<int>(status));
+                                        m_webViewReady = true;
+                                        if (m_visible.load(std::memory_order_acquire) && m_pendingReveal) {
+                                            revealWindowNow();
                                         }
                                     }
                                     return S_OK;
                                 }).Get(),
                             nullptr);
 
+                        LOG_INFO("ClipboardWindow: WebView2 controller ready, navigating to clipboard UI");
                         m_webView->Navigate(L"https://tools3000.local/index.html?clipboard=1");
                         tools3000::core::MessageBridge::instance().registerEventPusher(
                             "clipboard_window",

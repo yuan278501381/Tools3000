@@ -51,7 +51,8 @@
     "dialog_enhancer": "ダイアログ拡張",
     "remote_boost": "リモート操作強化",
     "picasa_viewer": "Picasa フォトビューアー",
-    "clipboard": "クリップボード履歴"
+    "clipboard": "クリップボード履歴",
+    "file_locksmith": "ファイルロック解除"
   },
   "navSubtitle": {
     "stats": "キーボード入力とマウス操作の利用アクティビティ",
@@ -73,7 +74,8 @@
     "markdown_preview": "Space キーひとつで .md やソースコードを瞬時にプレビュー",
     "remote_boost": "リモートデスクトップ向けホットキー透過・修飾キー緊急解放・IME 自動切替",
     "picasa_viewer": "Rust 再現の軽量 Picasa 画像ビューアー（全機能版ではありません）。有効化で対応形式を自動関連付け",
-    "clipboard": "再起動後も消えない永続クリップボード履歴・高速検索・画像ピン留め／翻訳"
+    "clipboard": "再起動後も消えない永続クリップボード履歴・高速検索・画像ピン留め／翻訳",
+    "file_locksmith": "常駐ゼロでファイル占有プロセスを確認・安全に解除"
   },
   "extension": {
     "statusRunning": "稼働中",
@@ -370,6 +372,10 @@
       "clipboard": {
         "name": "クリップボード履歴",
         "description": "Rust 永続化エンジン採用の軽量クリップボード管理。再起動後も履歴を保持し、パスワード管理ツールのプライバシー保護や画像の F3 ピン留め・OCR・翻訳に対応。"
+      },
+      "file_locksmith": {
+        "name": "ファイルロック解除",
+        "description": "HKCU 右クリックメニュー統合、バックグラウンド常駐ゼロでロック中のプロセスを特定し安全に解除します"
       }
     },
     "title": "モジュール＆拡張プラグイン"
@@ -1482,7 +1488,8 @@
     "inactiveBadge": "無効",
     "enableAndOpen": "有効にして開く",
     "kw_picasa_viewer": "picasa 画像 写真 ビューアー スライドショー 関連付け 形式 rust",
-    "kw_clipboard": "クリップボード 履歴 コピー 貼り付け ピン留め clipboard"
+    "kw_clipboard": "クリップボード 履歴 コピー 貼り付け ピン留め clipboard",
+    "kw_file_locksmith": "ファイルロック 解除 プロセス 右クリック locksmith unlock"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000 へようこそ",
@@ -2252,7 +2259,11 @@
     "pinShowAll": "すべて表示",
     "pinCloseAll": "すべて閉じる",
     "confirmCloseGroup": "このグループ内のピンをすべて閉じてもよろしいですか？",
-    "confirmCloseAll": "デスクトップ上のピンをすべて閉じてもよろしいですか？"
+    "confirmCloseAll": "デスクトップ上のピンをすべて閉じてもよろしいですか？",
+    "pillClipboard": "クリップボード",
+    "pillClipboardFullDesc": "クリップボード履歴（即座に検索・グループ整理・一括貼り付け）",
+    "pillFileLocksmith": "ロック解除",
+    "pillFileLocksmithFullDesc": "ファイルロック解除（常駐ゼロで右クリックから占有プロセスを確認）"
   },
   "dialog": {
     "title": "ファイルダイアログ拡張",
@@ -3154,5 +3165,19 @@
     "typeOther": "その他",
     "typePerformance": "パフォーマンス・メモリ問題",
     "viewIssue": "Issue を表示"
+  },
+  "fileLocksmith": {
+    "heroTitle": "ファイルロック解除（常駐ゼロ）",
+    "statusRegistered": "右クリックメニュー有効",
+    "statusInactive": "右クリックメニュー無効",
+    "heroDesc": "Explorer への DLL 注入なしの純粋な HKCU 統合。待機メモリ 0 MB で必要時のみ軽量ネイティブ画面を起動します。",
+    "contextMenuGroup": "エクスプローラー右クリックメニュー統合",
+    "instantInspectGroup": "今すぐ確認・解除",
+    "instantInspectDesc": "ここから直接ロックされたファイルやフォルダを指定し、占有プロセスを確認して安全に解除できます。",
+    "pathPlaceholder": "確認するファイルまたはフォルダのパスを入力・選択...",
+    "pickFile": "ファイルを選択",
+    "pickFolder": "フォルダを選択",
+    "inspectNow": "ロックを確認",
+    "inspectFailed": "ファイルロック解除ウィンドウの起動に失敗しました"
   }
 }
