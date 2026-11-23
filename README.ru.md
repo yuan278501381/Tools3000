@@ -221,7 +221,7 @@ scoop install tools3000/tools3000
 
 ## Обратная связь и совместная разработка
 
-- **Сообщить об ошибке**: воспользуйтесь **[шаблоном Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
+- **Сообщить об ошибке**: удобнее всего прямо в приложении — нажмите **`Обратная связь`** в левом нижнем углу окна настроек (или **`Настройки -> О программе -> Обратная связь`**). Можно вставить скриншот через `Ctrl + V`: Tools3000 локально очистит пути с именем пользователя, почту, IP и токены, после чего выгрузит диагностический архив (с последними 1000 строками журнала) или предзаполнит GitHub Issue. Также можно отправить отчёт вручную через **[шаблон Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Предложить идею**: создайте **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** или обсудите в **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
 - **Участвовать в разработке**: Pull Request всегда приветствуются — см. **[Руководство разработчика](docs/DEVELOPER.md)** и **[руководство по пакетам](packaging/README.md)**.
 

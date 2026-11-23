@@ -221,7 +221,7 @@ scoop install tools3000/tools3000
 
 ## 共創とフィードバック
 
-- **不具合報告**：**[Bug Report テンプレート](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** から環境と再現手順をお知らせください。
+- **不具合報告**：アプリ内の **設定画面左下「フィードバック」**（または **`設定 -> バージョン情報 -> フィードバック`**）からの送信が最も簡単です。`Ctrl + V` でスクリーンショットを直接貼り付けられ、ユーザー名パス・メール・IP・トークン等をローカルで自動マスキングした上で診断バンドル（直近 1000 行のログ含む）の書き出しや GitHub Issue の自動入力ができます。**[Bug Report テンプレート](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** から直接ご報告いただくことも可能です。
 - **機能提案**：**[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** や **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** で気軽にアイデアを共有いただけます。
 - **Pull Request 共創**：コントリビューションを大歓迎しています。詳細は **[開発者ガイド](docs/DEVELOPER.md)**・**[パッケージ管理ガイド](packaging/README.md)** を参照してください。
 
