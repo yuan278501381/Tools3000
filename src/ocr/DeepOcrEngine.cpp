@@ -182,6 +182,18 @@ struct DeepOcrEngine::WinMlContext {
     waml::LearningModelSession* ensureDetSession(size_t idx) {
         if (idx >= kDetSpecs.size()) return nullptr;
         if (!detBucketSessions[idx]) {
+            // DirectML 大尺寸检测桶（[1]=1280x1024 横屏大图 与 [2]=960x1280 竖屏长图）实施互斥单活：
+            // 桌面连拍 99% 同方向 0 重编开销，跨横/竖切换时释放旧大桶并触发 DXGI Trim，削减 ~400-500MB 峰值提交内存
+            if (usingDirectMLGpu && (idx == 1 || idx == 2)) {
+                const size_t otherLargeIdx = (idx == 1) ? 2 : 1;
+                if (detBucketSessions[otherLargeIdx]) {
+                    try { detBucketSessions[otherLargeIdx].Close(); } catch (...) {}
+                    detBucketSessions[otherLargeIdx] = nullptr;
+                    if (ownedDxgiDevice) {
+                        ownedDxgiDevice->Trim();
+                    }
+                }
+            }
             waml::LearningModelSessionOptions opts;
             opts.CloseModelOnSessionCreation(false);
             detBucketSessions[idx] = waml::LearningModelSession(detModel, device, opts);

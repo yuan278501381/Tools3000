@@ -6,6 +6,19 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 18 图双维全量实测基准 + 8 张 2K/1080p 原生高清样本升级 + DirectML 互斥大桶省 495 MB + 高分屏原位翻译通用精修 (`DeepOcrEngine.cpp`, `InPlaceTranslateEngine.cpp`, `tests/fixtures/translate/`, `tests/unit/test_live_ocr.inc`, `tests/unit/test_capture.inc`)
+- **测试样本高清化溯源与实测验证**：
+  1. **样本模糊成因与真实用户体验定性**：此前聊天窗口上传的大屏截图被压缩为最长边 `1024px`，将 12px 桌面汉字压成 `6~8px` 糊点；Tools3000 真实截图/贴图/剪贴板直读 1:1 物理像素，不受影响。已从本机 `%LOCALAPPDATA%\Tools3000` 找回并视觉终审确认 **8 张原生 2K/1080p 无损原图**（`522x1683` ~ `2572x1896`，含 `2512x1560` 全区域零泄密无痕脱敏版 `postman_api_dark_sanitized.png`）替换入库 `tests/fixtures/translate/`；升级后该 8 图核心锚点命中率达 **48/48 (100%)**，`hackernews` 均置信度 `0.847 -> 0.985`、`sap_b1_form_designer` `0.736 -> 0.885`、`postman` `0.872 -> 0.949`。
+  2. **离线 OCR DirectML 峰值内存削减 ~495 MB (`src/ocr/DeepOcrEngine.cpp`)**：`WinMlContext::ensureDetSession` 对横屏大图 (`1280x1024`) 与竖屏长图 (`960x1280`) 两个重型 DirectML 检测桶实施互斥单活 + `IDXGIDevice3::Trim()`（小桶 `960x640` 永久常驻），将全 18 图进程内峰值私有提交由 **`1915.7 MB` 直降至 `1420.5 MB`（-25.8%）**，卸载后回落至 `Private=92.6 MB`（回收 94.5%）/`WS=3.0 MB`（回收 99.5%）；线上主进程经短命 `OcrWorker` 进程隔离继续维持 `0` DirectML 会话。
+  3. **高分屏 2K 原位翻译 5 项通用底层精修 (`src/capture/InPlaceTranslateEngine.cpp`, `tests/unit/test_capture.inc`)**：
+     - 4 向墨水封顶擦除上限升级为行高自适应（`maxExpandX = clamp(0.45*h, 8, 22)`，`maxExpandY = clamp(0.25*h, 4, 12)`），根治 2K 高分屏首尾汉字残影；
+     - 截断省略号（`...`/`…`）结尾行紧邻单空格时间戳无条件剥离右列时间戳（根治 `... 8d` 粘连）；
+     - 段落聚类中短 UI/独立动作词宽限度全部改为行高比例（DPI 无关）并拦截列表符与带 `>`/`v` 树形折叠箭头的 API 节点（如 `> POST ProductionOrders Copy`）；
+     - 新增 3D 垂直渐变按钮/光照渐变逐行左右扫描线保真擦除（`tryFillRectWithScanlineGradient`）与平缓渐变步进差分探边防误刹；
+     - `fitParagraphTextLayout` 新增单无空格拉丁词防腰斩铁律（`isSingleUnbreakableLatinWord`），根治窄框 `question` 被拦腰劈断成 `quest / ion`。
+  4. **已识别的多语种 OCR 模型包演进缺口（待产品决策）**：当前 3 个按需下载模型包为 ① PP-OCRv4 基础识别包（`mobile`, 15.5MB）、② PP-OCRv4 高精度增强包（`server`, 86.3MB）、③ MI-GAN 512 AI 改字背景修复包（26.8MB）；`ppocr_keys_v1.txt`（6,623 字符）100% 覆盖简中/繁中/英语，西/葡缺 6 个变音字母（`ñ/ç/ã/õ/Á/Ñ`），日文假名/韩文谚文/俄文西里尔字母几乎未覆盖，且 `OcrPage.tsx` 语种下拉未含 `ru-RU/pt-BR/es-ES`。
+  5. **全量验证**：`InPlaceTranslateEngineTest` + `*Capture*` + `*Pin*` + `LiveTextOcrTest` + `WorkerIsolationTest` **214/214 PASSED**，18 图高清 OCR 基准 **100% PASS**，6 重并发静态门禁 **604ms 全绿**。
+
 ### [2026-11-23] 截图原位翻译人因排版 6 维世界级架构重构 + 9 场景合规回归样本集入库 (`InPlaceTranslateEngine.{h,cpp}`, `tests/unit/test_capture.inc`, `tests/fixtures/translate/`)
 - **实机四场景对比图暴露的 6 大底层通用根因与第一性原理根治（零硬编码、零过拟合）**：
   1. **对齐失控与满宽行误居中（侧边栏红框行 / NYTimes / Yahoo 卡片飘移）**：

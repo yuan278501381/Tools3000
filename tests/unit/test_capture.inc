@@ -15275,6 +15275,75 @@ TEST(InPlaceTranslateEngineTest, ParagraphClusteringNoiseFilterAndNonDestructive
         EXPECT_EQ(paras[4].originalText, "Set Up a Password Manager");
     }
 
+    // 2.13. 2K 高分屏适配与图形保真回归：截断省略号时间戳剥离 + 2K 孤立短动作防吞并 + 树箭头 API 防火墙 + 3D 渐变按钮保真 + 单拉丁词禁腰斩
+    {
+        // (a) 树形折叠箭头 API 节点拦截
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("> POST ProductionOrders Copy"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("v GET UserObjectsMD"));
+        EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("> POST postUDFs"));
+
+        // (b) 2K 高分屏省略号截断行（单空格紧邻 8d）精准剥离右列时间戳
+        PinOcrBlock ellipRow{"Bilibili Video Prompt Extraction And Artwork C... 8d", cv::Rect(20, 40, 460, 26), {}, 0, 0};
+        const auto ellipParas = InPlaceTranslateEngine::buildTranslationParagraphs({ellipRow}, cv::Size(522, 120));
+        ASSERT_EQ(ellipParas.size(), 1u);
+        EXPECT_EQ(ellipParas[0].originalText, "Bilibili Video Prompt Extraction And Artwork C...");
+        EXPECT_FALSE(ellipParas[0].detachedObstacleRects.empty());
+
+        // (c) 2K 高分屏下宽度 82px 且因下划线被识别为 "reply." 的独立动作按钮绝不被上一行句号正文吞并
+        std::vector<PinOcrBlock> hn2k;
+        hn2k.push_back(PinOcrBlock{"Too bad, I'd have given it a try on my homelab server.", cv::Rect(120, 40, 920, 26), {}, 0, 0});
+        hn2k.push_back(PinOcrBlock{"reply.", cv::Rect(120, 74, 82, 22), {}, 0, 1});
+        const auto hnParas = InPlaceTranslateEngine::buildTranslationParagraphs(hn2k, cv::Size(1400, 160));
+        ASSERT_EQ(hnParas.size(), 2u);
+        EXPECT_EQ(hnParas[1].originalText, "reply.");
+
+        // (d) 经典 3D 黄色垂直渐变按钮（顶部浅米黄高光 -> 底部深金黄）：擦除后必须忠实保留金黄渐变，严禁惨白化
+        cv::Mat gradBtn(64, 240, CV_8UC3, cv::Scalar(240, 240, 240));
+        for (int y = 16; y < 48; ++y) {
+            const float t = static_cast<float>(y - 16) / 31.0f;
+            const uint8_t b = static_cast<uint8_t>(std::lround(235.0f - t * 145.0f));
+            const uint8_t g = static_cast<uint8_t>(std::lround(248.0f - t * 48.0f));
+            const uint8_t r = static_cast<uint8_t>(std::lround(252.0f - t * 4.0f));
+            cv::line(gradBtn, cv::Point(20, y), cv::Point(220, y), cv::Scalar(b, g, r), 1);
+        }
+        cv::rectangle(gradBtn, cv::Rect(20, 16, 201, 32), cv::Scalar(120, 150, 175), 1);
+        cv::putText(gradBtn, "OK", cv::Point(104, 38), cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(20, 20, 20), 2);
+        TranslationParagraph btnPara{};
+        btnPara.unionRect = cv::Rect(96, 21, 44, 22);
+        btnPara.lineRects = {btnPara.unionRect};
+        btnPara.lineTexts = {"OK"};
+        btnPara.lineCharBoxes = {{}};
+        btnPara.isSingleLine = true;
+        btnPara.originalText = "OK";
+        btnPara.translatedText = "Go";
+        const auto btnRes = InPlaceTranslateEngine::renderTranslatedCanvas(gradBtn, {btnPara}, "en");
+        ASSERT_TRUE(btnRes.success);
+        // 在擦除后的按钮下半纯背景行 (y=42, x=98..140 统计最暖背景像素) 校验 3D 暖黄渐变被忠实保留 (R - B > 70)，绝非惨白块
+        int maxWarmDelta = 0;
+        for (int x = 98; x <= 138; ++x) {
+            const cv::Vec3b px = btnRes.translatedCanvas.at<cv::Vec3b>(42, x);
+            maxWarmDelta = (std::max)(maxWarmDelta, static_cast<int>(px[2]) - static_cast<int>(px[0]));
+        }
+        EXPECT_GT(maxWarmDelta, 70);
+
+        // (e) 窄框单英文词 "question" 严禁腰斩折成两行 "quest / ion"
+        cv::Mat narrowCard(120, 240, CV_8UC3, cv::Scalar(245, 245, 245));
+        cv::rectangle(narrowCard, cv::Rect(10, 10, 56, 95), cv::Scalar(180, 180, 180), 1);
+        cv::putText(narrowCard, "Q", cv::Point(22, 34), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(20, 20, 20), 2);
+        TranslationParagraph singleWordPara{};
+        singleWordPara.unionRect = cv::Rect(16, 16, 44, 22);
+        singleWordPara.lineRects = {singleWordPara.unionRect};
+        singleWordPara.lineTexts = {"问题"};
+        singleWordPara.lineCharBoxes = {{}};
+        singleWordPara.isSingleLine = true;
+        singleWordPara.originalText = "问题";
+        singleWordPara.translatedText = "question";
+        const auto wordRes = InPlaceTranslateEngine::renderTranslatedCanvas(narrowCard, {singleWordPara}, "en");
+        ASSERT_TRUE(wordRes.success);
+        // 渲染高度不得变成双行腰斩高度（> 30px）
+        EXPECT_LE(wordRes.paragraphs[0].renderedRect.height, 26);
+    }
+
     // 3. 贴图快捷键与右键菜单直达动作回归
     const auto trKey = PinInputController::resolveKeyDown('T', true, true, false, false);
     EXPECT_EQ(trKey.action, PinShortcutAction::TranslateInPlace);

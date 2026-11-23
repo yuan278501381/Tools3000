@@ -2,7 +2,7 @@
 
 本目录存放用于端到端自动化回归测试的真实场景截图与实拍图（均经项目负责人确认无泄密风险，直接由 Git 版本管理）。
 
-`tests/unit/test_live_ocr.inc` 中的实景回归测试用例直接加载本目录样本，用于在本地及已安装 PP-OCRv4 离线模型包的测试环境中持续守护 OCR 识别准确率、版面分栏、UI 下拉箭头剥离、结构化 JSON 标点规整、二维码解码与原位改字边界保护不发生回退。
+`tests/unit/test_live_ocr.inc` 中的实景回归测试用例直接加载本目录样本，用于在本地及已安装 PP-OCRv4 离线模型包的测试环境中持续守护 OCR 识别准确率、版面分栏、UI 下拉箭头剥离、结构化 JSON 标点规整、二维码解码与原位改字边界保护不发生回退。同时，设置环境变量 `TOOLS3000_RUN_OCR_18_BENCHMARK=1` 运行 `LiveTextOcrTest.Full18FixturesOcrAccuracyLatencyMemoryBenchmark`，可一次性对 `ocr/`（8 张）与 `translate/`（10 张）全部 18 张样本执行端到端离线 OCR 精度、墙钟/CPU 耗时、内存峰值与卸载回收率全维基准评测。
 
 ## 样本清单
 

@@ -340,12 +340,17 @@ bool looksLikeCodeOrTechToken(std::string_view sv) noexcept {
         return false;
     }
 
-    // 4. API 树节点条目（如 `GET UserObjectsMD`、`POST postUDFs`、`DEL deleteUDF`、`PATCH DocumentAdditionalExpenses Copy`）
-    const size_t firstSp = t.find(' ');
+    // 4. API 树节点条目（支持可选树形折叠箭头前缀 `>` / `v`，如 `> POST ProductionOrders Copy`、`GET UserObjectsMD`）
+    std::string_view apiView = t;
+    if (apiView.size() >= 3 && (apiView[0] == '>' || apiView[0] == 'v' || apiView[0] == 'V') && apiView[1] == ' ') {
+        apiView.remove_prefix(2);
+        while (!apiView.empty() && apiView.front() == ' ') apiView.remove_prefix(1);
+    }
+    const size_t firstSp = apiView.find(' ');
     if (firstSp >= 3 && firstSp <= 6) {
-        const std::string_view verb = std::string_view(t).substr(0, firstSp);
+        const std::string_view verb = apiView.substr(0, firstSp);
         if (verb == "GET" || verb == "POST" || verb == "PUT" || verb == "PATCH" || verb == "DEL" || verb == "DELETE") {
-            std::string_view rest = std::string_view(t).substr(firstSp + 1);
+            std::string_view rest = apiView.substr(firstSp + 1);
             while (!rest.empty() && rest.front() == ' ') rest.remove_prefix(1);
             const size_t nextSp = rest.find(' ');
             const std::string_view firstArg = (nextSp == std::string_view::npos) ? rest : rest.substr(0, nextSp);
@@ -684,21 +689,28 @@ bool canMergeIntoParagraph(
         return false;
     }
 
-    // 5. 短 UI 菜单/表格单元格标签（如“安全配置”、“在线监控”、“reply”、“是”）上下排列保持独立，绝不误合并
+    // 5. 列表新条目与独立短 UI 标签/动作按钮（DPI 无关行高比例约束，杜绝 2K 高分屏误合并）
+    if (startsWithListBulletOrNumber(next.text)) {
+        return false;
+    }
     const size_t avgLineVisualLen = countVisualChars(para.originalText) / (std::max<size_t>)(1u, para.lineRects.size());
     const size_t nextVisualLen = countVisualChars(next.text);
+    const int shortUiMaxW = (std::max)(165, static_cast<int>(std::lround(avgH * 10.0f)));
     const bool bothShortUiItems =
         (avgLineVisualLen <= 8 && nextVisualLen <= 8) &&
-        (lastRect.width <= 165 && next.origBox.width <= 165);
+        (lastRect.width <= shortUiMaxW && next.origBox.width <= shortUiMaxW);
     if (bothShortUiItems) {
         return false;
     }
 
-    // 较宽松行距的短菜单项或独立短按钮（如 HN "reply"）保持独立
+    // 较宽松行距的短菜单项或独立短动作按钮（如 HN "reply" / "share"，严格按行高自适应宽容度，兼容 100%~250% DPI）
     if (avgLineVisualLen <= 10 && nextVisualLen <= 10 && gapY > static_cast<int>(avgH * 0.38f)) {
         return false;
     }
-    if (nextVisualLen <= 6 && next.origBox.width <= 72 && gapY > static_cast<int>(avgH * 0.28f)) {
+    const int compactActionMaxW = (std::max)(72, static_cast<int>(std::lround(avgH * 4.5f)));
+    const bool nextIsSingleShortWord = (nextVisualLen <= 6 && trimWhitespace(next.text).find(' ') == std::string::npos);
+    if (nextIsSingleShortWord && next.origBox.width <= compactActionMaxW &&
+        (gapY > static_cast<int>(avgH * 0.26f) || endsWithSentenceStop(para.originalText))) {
         return false;
     }
 
@@ -840,17 +852,28 @@ CleanBoundProbe probeCleanRightBound(
         int strongDiff = 0;
         int mildDiff = 0;
         int subtleShift = 0;
+        int stepJump = 0;
         for (int y = y0; y < y1; ++y) {
-            const int d = pixelDiffFromPlane(originalBgr.at<cv::Vec3b>(y, x), style.bgPlane, x, y);
+            const cv::Vec3b curPx = originalBgr.at<cv::Vec3b>(y, x);
+            const int d = pixelDiffFromPlane(curPx, style.bgPlane, x, y);
             if (d > 66) ++strongDiff;
             if (d >= 26) ++mildDiff;
             if (d >= 14) ++subtleShift;
+            if (x > startX) {
+                const cv::Vec3b prevPx = originalBgr.at<cv::Vec3b>(y, x - 1);
+                const int sd = std::abs(static_cast<int>(curPx[0]) - static_cast<int>(prevPx[0])) +
+                               std::abs(static_cast<int>(curPx[1]) - static_cast<int>(prevPx[1])) +
+                               std::abs(static_cast<int>(curPx[2]) - static_cast<int>(prevPx[2]));
+                if (sd >= 12) ++stepJump;
+            }
         }
-        // 1) 强异色边界/图标/文字；2) 纯色背景上的低对比度 1px UI 边框；3) 极纯净纯色卡片/广告灰框与页面底色间的低反差整列跃变
+        // 平缓光照渐变豁免：仅当本列相较前一列也存在真实边沿跃变（stepJump）或总体已显著偏离底色（strongDiff）时，
+        // 才按低对比度边框刹车；防止实拍屏幕/渐变背景因拟合平面微斜率外推误差在无边界空白处提前误刹
+        const bool hasLocalEdge = (x == startX) || (stepJump * 100 >= bandH * 28);
         const bool colDirty = (strongDiff * 6 >= bandH) ||
                               (strongDiff >= 3 && bandH <= 18) ||
-                              (cleanBg && bandH >= 6 && mildDiff * 100 >= bandH * 70) ||
-                              (ultraFlatBg && bandH >= 6 && subtleShift * 100 >= bandH * 88);
+                              (cleanBg && hasLocalEdge && bandH >= 6 && mildDiff * 100 >= bandH * 70) ||
+                              (ultraFlatBg && hasLocalEdge && bandH >= 6 && subtleShift * 100 >= bandH * 88);
         if (colDirty) {
             return {(std::max)(baseRect.x + baseRect.width, x - kMinObstacleMarginPx), true};
         }
@@ -1186,11 +1209,17 @@ cv::Rect computeInkSealedEraseRect(
     const cv::Rect base = rawLine & imgBounds;
     if (base.width <= 0 || base.height <= 0) return {};
 
-    // 1. 计算受未翻译障碍物约束的四向硬边界
-    int hardLeft = (std::max)(0, base.x - kMaxEraseInkExpandXPx);
-    int hardRight = (std::min)(originalBgr.cols, base.x + base.width + kMaxEraseInkExpandXPx);
-    int hardTop = (std::max)(0, base.y - kMaxEraseInkExpandYPx);
-    int hardBottom = (std::min)(originalBgr.rows, base.y + base.height + kMaxEraseInkExpandYPx);
+    // 1. 计算受未翻译障碍物约束的四向硬边界（按行高自适应扩张上限，兼容 100%~250% DPI 高分屏彻底封净首尾毛边）
+    const int maxExpandX = std::clamp(
+        static_cast<int>(std::lround(static_cast<float>(base.height) * 0.45f)),
+        kMaxEraseInkExpandXPx, 22);
+    const int maxExpandY = std::clamp(
+        static_cast<int>(std::lround(static_cast<float>(base.height) * 0.25f)),
+        kMaxEraseInkExpandYPx, 12);
+    int hardLeft = (std::max)(0, base.x - maxExpandX);
+    int hardRight = (std::min)(originalBgr.cols, base.x + base.width + maxExpandX);
+    int hardTop = (std::max)(0, base.y - maxExpandY);
+    int hardBottom = (std::min)(originalBgr.rows, base.y + base.height + maxExpandY);
 
     for (const cv::Rect& obs : protectedObstacles) {
         if (obs.width <= 0 || obs.height <= 0) continue;
@@ -1393,6 +1422,105 @@ void eraseParagraphBackground(
         }
     };
 
+    // 3D 渐变按钮 / 垂直光照渐变逐行保真擦除：
+    // 当文字框左右紧邻背景在逐行扫描线上高度一致（L1 <= 42 占比 >= 75%），且存在显著垂直渐变或与全局拟合平面偏离时
+    // （如经典 Win32/SAP 3D 黄色渐变按钮因上下高光/窗体底色污染全局平面），直接逐行左右线性插值并做 3-tap 垂直中值滤波，
+    // 100% 丝滑保留原有按钮高光与梯度质感；普通纯色背景或一侧紧贴障碍物时零损耗回退 bgPlane。
+    auto tryFillRectWithScanlineGradient = [&](const cv::Rect& roi) -> bool {
+        const cv::Rect clamped = roi & imgBounds;
+        if (clamped.width <= 2 || clamped.height < 10) return false;
+        if (clamped.x < 3 || clamped.x + clamped.width + 3 > originalBgrSnapshot.cols) return false;
+
+        const int lx0 = clamped.x - 3;
+        const int lx1 = clamped.x - 2;
+        const int rx0 = clamped.x + clamped.width + 1;
+        const int rx1 = clamped.x + clamped.width + 2;
+        const int h = clamped.height;
+
+        std::vector<cv::Vec3b> leftRow(static_cast<size_t>(h));
+        std::vector<cv::Vec3b> rightRow(static_cast<size_t>(h));
+        int coherentRows = 0;
+        int planeDevSum = 0;
+
+        for (int i = 0; i < h; ++i) {
+            const int y = clamped.y + i;
+            const auto* srcRow = originalBgrSnapshot.ptr<cv::Vec3b>(y);
+            const cv::Vec3b lPx(
+                static_cast<uint8_t>((static_cast<int>(srcRow[lx0][0]) + srcRow[lx1][0]) / 2),
+                static_cast<uint8_t>((static_cast<int>(srcRow[lx0][1]) + srcRow[lx1][1]) / 2),
+                static_cast<uint8_t>((static_cast<int>(srcRow[lx0][2]) + srcRow[lx1][2]) / 2));
+            const cv::Vec3b rPx(
+                static_cast<uint8_t>((static_cast<int>(srcRow[rx0][0]) + srcRow[rx1][0]) / 2),
+                static_cast<uint8_t>((static_cast<int>(srcRow[rx0][1]) + srcRow[rx1][1]) / 2),
+                static_cast<uint8_t>((static_cast<int>(srcRow[rx0][2]) + srcRow[rx1][2]) / 2));
+            leftRow[static_cast<size_t>(i)] = lPx;
+            rightRow[static_cast<size_t>(i)] = rPx;
+
+            const int lrDiff = std::abs(static_cast<int>(lPx[0]) - static_cast<int>(rPx[0])) +
+                               std::abs(static_cast<int>(lPx[1]) - static_cast<int>(rPx[1])) +
+                               std::abs(static_cast<int>(lPx[2]) - static_cast<int>(rPx[2]));
+            if (lrDiff <= 42) {
+                ++coherentRows;
+            }
+            const cv::Vec3b planePx = style.bgPlane.evalAt(
+                static_cast<float>(clamped.x + clamped.width * 0.5f), static_cast<float>(y));
+            const int midB = (static_cast<int>(lPx[0]) + rPx[0]) / 2;
+            const int midG = (static_cast<int>(lPx[1]) + rPx[1]) / 2;
+            const int midR = (static_cast<int>(lPx[2]) + rPx[2]) / 2;
+            planeDevSum += std::abs(midB - static_cast<int>(planePx[0])) +
+                           std::abs(midG - static_cast<int>(planePx[1])) +
+                           std::abs(midR - static_cast<int>(planePx[2]));
+        }
+
+        if (coherentRows * 100 < h * 78) return false;
+
+        // 计算顶部 25% 与底部 25% 颜色差异，判断是否真为垂直渐变（或左右真实背景与偏色平面显著偏离）
+        const int band = (std::max)(2, h / 4);
+        int topSum[3] = {0, 0, 0};
+        int botSum[3] = {0, 0, 0};
+        for (int i = 0; i < band; ++i) {
+            for (int c = 0; c < 3; ++c) {
+                topSum[c] += (static_cast<int>(leftRow[static_cast<size_t>(i)][c]) + rightRow[static_cast<size_t>(i)][c]) / 2;
+                botSum[c] += (static_cast<int>(leftRow[static_cast<size_t>(h - 1 - i)][c]) + rightRow[static_cast<size_t>(h - 1 - i)][c]) / 2;
+            }
+        }
+        const int vertGrad = std::abs(topSum[0] - botSum[0]) / band +
+                             std::abs(topSum[1] - botSum[1]) / band +
+                             std::abs(topSum[2] - botSum[2]) / band;
+        const int avgPlaneDev = planeDevSum / h;
+        if (vertGrad < 20 && avgPlaneDev < 26) {
+            return false;
+        }
+
+        auto median3 = [](uint8_t a, uint8_t b, uint8_t c) noexcept -> uint8_t {
+            if (a > b) std::swap(a, b);
+            if (b > c) std::swap(b, c);
+            if (a > b) std::swap(a, b);
+            return b;
+        };
+
+        const float denom = static_cast<float>((std::max)(1, clamped.width - 1));
+        for (int i = 0; i < h; ++i) {
+            const size_t iPrev = static_cast<size_t>((std::max)(0, i - 1));
+            const size_t iCur = static_cast<size_t>(i);
+            const size_t iNext = static_cast<size_t>((std::min)(h - 1, i + 1));
+            cv::Vec3b lFilt, rFilt;
+            for (int c = 0; c < 3; ++c) {
+                lFilt[c] = median3(leftRow[iPrev][c], leftRow[iCur][c], leftRow[iNext][c]);
+                rFilt[c] = median3(rightRow[iPrev][c], rightRow[iCur][c], rightRow[iNext][c]);
+            }
+            auto* dstRow = bgrCanvas.ptr<cv::Vec3b>(clamped.y + i);
+            for (int dx = 0; dx < clamped.width; ++dx) {
+                const float t = static_cast<float>(dx) / denom;
+                dstRow[clamped.x + dx] = cv::Vec3b(
+                    static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(lFilt[0] + (rFilt[0] - lFilt[0]) * t)), 0, 255)),
+                    static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(lFilt[1] + (rFilt[1] - lFilt[1]) * t)), 0, 255)),
+                    static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(lFilt[2] + (rFilt[2] - lFilt[2]) * t)), 0, 255)));
+            }
+        }
+        return true;
+    };
+
     if (!style.complexBackground) {
         std::vector<cv::Rect> sealedLines;
         sealedLines.reserve(para.lineRects.size());
@@ -1400,7 +1528,9 @@ void eraseParagraphBackground(
             const cv::Rect sealed = computeInkSealedEraseRect(
                 originalBgrSnapshot, rawLine, style, protectedObstacles);
             sealedLines.push_back(sealed);
-            fillRectWithPlane(sealed);
+            if (!tryFillRectWithScanlineGradient(sealed)) {
+                fillRectWithPlane(sealed);
+            }
         }
         // 多行正文段：顺带清理相邻两行重叠水平宽度之间的窄行距缝隙（防行内徽章圆角残影），
         // 绝不盲目平推整个 unionRect 凹角以保护嵌在凹角中的小徽章/图标（如右侧 New 徽章）
@@ -1460,6 +1590,22 @@ bool isCjkTargetLanguage(std::string_view targetLangCode) noexcept {
            targetLangCode == "ja" || targetLangCode == "ko";
 }
 
+/// 判断是否为不可拦腰劈断的单个无空格拉丁单词（如 "question"、"Cancel"、"Update"），
+/// 防止 DirectWrite 在极窄容器内将其强行拆词折行成 "quest / ion"
+bool isSingleUnbreakableLatinWord(const std::wstring& s) noexcept {
+    if (s.size() < 2) return false;
+    bool hasLatin = false;
+    for (wchar_t ch : s) {
+        if (std::iswspace(ch) || ch == L'-' || ch == L'/' || ch == L'\\') return false;
+        if (isCjkWideChar(ch)) return false;
+        const uint32_t cp = static_cast<uint32_t>(ch);
+        if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0x00C0 && cp <= 0x024F)) {
+            hasLatin = true;
+        }
+    }
+    return hasLatin;
+}
+
 /// 零字体变形排版内核（Typography Purity Law）：
 /// 严禁任何非等比水平拉伸/压缩，恒定 1:1 原生字形比例 (DWRITE_FONT_STRETCH_NORMAL)；
 /// 单行模式按真实可见字形墨水高度（不含 DirectWrite 35% 透明 leading）做溢出判定，彻底消除英文译中文缩水 25% 顽疾！
@@ -1476,6 +1622,7 @@ FittedLayoutResult fitParagraphTextLayout(
     bool centerHorizontally) {
     const float safeMaxW = (std::max)(18.0f, maxWidth);
     const float safeMaxH = (std::max)(10.0f, maxHeight);
+    const bool forbidWordSplit = isSingleUnbreakableLatinWord(text);
     const float heightCapFactor = singleLine ? 1.06f : 0.94f;
     const float hiInit = (std::max)(kMinReadableFontPx, (std::min)(preferredFontPx * kMaxFontScaleFactor, safeMaxH * heightCapFactor));
     const float loInit = (std::max)(kMinReadableFontPx, (std::min)(preferredFontPx * kMinFontScaleFactor, hiInit));
@@ -1536,7 +1683,8 @@ FittedLayoutResult fitParagraphTextLayout(
         const float effectiveHeight = isEffectiveSingleLine
             ? (std::min)(m.height, fontPx * 1.02f)
             : m.height;
-        r.overflowed = (effectiveHeight > safeMaxH + 1.5f) || (m.widthIncludingTrailingWhitespace > safeMaxW + 1.0f);
+        const bool brokenSingleWord = forbidWordSplit && allowWrap && (m.lineCount > 1);
+        r.overflowed = brokenSingleWord || (effectiveHeight > safeMaxH + 1.5f) || (m.widthIncludingTrailingWhitespace > safeMaxW + 1.0f);
         return r;
     };
 
@@ -1571,7 +1719,7 @@ FittedLayoutResult fitParagraphTextLayout(
     // 单行 UI 标签/表格单元格：在 1:1 零变形前提下，对比“自然单行等比缩放”与“不溢出多行折行”，择字号更舒展者
     FittedLayoutResult bestSingle = searchBestFont(/*allowWrap=*/false);
     if (bestWrap.layout && bestSingle.layout) {
-        if (bestSingle.fontPx >= bestWrap.fontPx * 0.88f) {
+        if (forbidWordSplit || bestSingle.fontPx >= bestWrap.fontPx * 0.88f) {
             return bestSingle;
         }
         return bestWrap;
@@ -1579,8 +1727,8 @@ FittedLayoutResult fitParagraphTextLayout(
     if (bestSingle.layout) return bestSingle;
     if (bestWrap.layout) return bestWrap;
 
-    // 极端超长兜底：保持 1:1 原生字形不变形，采用最小可读等比字号 + 省略号优雅裁切，绝不压盖邻行
-    const bool fallbackWrap = !singleLine || (safeMaxH >= kMinReadableFontPx * 2.35f);
+    // 极端超长兜底：保持 1:1 原生字形不变形，采用最小可读等比字号 + 省略号优雅裁切，绝不压盖邻行且绝不拦腰劈断单英文词
+    const bool fallbackWrap = !forbidWordSplit && (!singleLine || (safeMaxH >= kMinReadableFontPx * 2.35f));
     FittedLayoutResult fallback = createLayout(loInit, fallbackWrap, true);
     fallback.overflowed = true;
     return fallback;
@@ -1895,6 +2043,14 @@ bool detachTrailingMetaFromBlock(PinOcrBlock& blk, cv::Rect& outDetachedRect) {
     }
     if (leftEndCp < 3) return false;
 
+    const size_t leftByteEnd = spans[leftEndCp - 1].byteStart + spans[leftEndCp - 1].byteLen;
+    const std::string leftText = trimWhitespace(std::string_view(txt).substr(0, leftByteEnd));
+    if (leftText.empty()) return false;
+
+    const bool leftTruncatedByEllipsis =
+        (leftText.size() >= 2 && leftText.substr(leftText.size() - 2) == "..") ||
+        (leftText.size() >= 3 && leftText.substr(leftText.size() - 3) == "\xE2\x80\xA6");
+
     const bool hasExactCharBoxes = (blk.charBoxes.size() == spans.size());
     int pixelGap = 0;
     if (hasExactCharBoxes) {
@@ -1902,13 +2058,11 @@ bool detachTrailingMetaFromBlock(PinOcrBlock& blk, cv::Rect& outDetachedRect) {
         const auto& tailBox = blk.charBoxes[tailStartCp];
         pixelGap = tailBox.x - (prevBox.x + prevBox.width);
     }
-    const bool wideVisualGap = (spaceCount >= 2) ||
-                               (hasExactCharBoxes && pixelGap >= (std::max)(8, static_cast<int>(blk.origBox.height * 0.65f)));
+    const bool wideVisualGap =
+        (spaceCount >= 2) ||
+        (leftTruncatedByEllipsis && spaceCount >= 1) ||
+        (hasExactCharBoxes && pixelGap >= (std::max)(8, static_cast<int>(blk.origBox.height * 0.65f)));
     if (!wideVisualGap) return false;
-
-    const size_t leftByteEnd = spans[leftEndCp - 1].byteStart + spans[leftEndCp - 1].byteLen;
-    const std::string leftText = trimWhitespace(std::string_view(txt).substr(0, leftByteEnd));
-    if (leftText.empty()) return false;
 
     if (hasExactCharBoxes) {
         const cv::Rect leftRect = unionRectOfCharBoxes(blk.charBoxes, 0, leftEndCp);
