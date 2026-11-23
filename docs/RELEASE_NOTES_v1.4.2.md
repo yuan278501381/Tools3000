@@ -57,3 +57,20 @@
 | **多语种离线识字包** | 设置：`效率工具 -> 文本识别与翻译` / 贴图右键「识字语种」<br>安装版目录：`%LOCALAPPDATA%\Tools3000\models\ocr\`<br>便携版目录：`<软件目录>\data\models\ocr\` | 日/韩/俄/西葡离线语言包按需下载，可随时在设置页清理释放空间 |
 | **手势停顿取消与切窗模式** | `效率工具 -> 鼠标手势`（「划动中途停顿自动取消」默认已开启）<br>`编辑手势 -> 运行程序 -> 高级执行特性 -> 运行模式` | 新建手势默认「激活已有窗口或启动」，历史旧条目可按需编辑切换 |
 | **问题反馈与诊断日志** | 入口：设置窗左下角「问题反馈」 / 「关于 -> 问题反馈」<br>安装版日志：`%LOCALAPPDATA%\Tools3000\logs\tools3000.log`<br>便携版日志：`<软件目录>\data\logs\tools3000.log` | 导出诊断包前会自动在本地对路径用户名、IP、邮箱等敏感信息打码 |
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.4.2-Setup.exe` | `5cd29175ce9e2e175f26fe7dff6f87ca7b4cafe47ca69426f7b2a6656b13d237` | [VirusTotal 查验](https://www.virustotal.com/gui/file/5cd29175ce9e2e175f26fe7dff6f87ca7b4cafe47ca69426f7b2a6656b13d237) |
+| `Tools3000-v1.4.2-win-x64-portable.zip` | `b751e99c7ad62f6c7e6c417350daf1448be4af3c2c872ea81236ec61915d0c09` | [VirusTotal 查验](https://www.virustotal.com/gui/file/b751e99c7ad62f6c7e6c417350daf1448be4af3c2c872ea81236ec61915d0c09) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.4.2-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
