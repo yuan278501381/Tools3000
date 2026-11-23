@@ -435,6 +435,9 @@ Filename: "{sys}\sc.exe"; Parameters: "sdset Tools3000_SearchService ""D:(A;;CCL
 Filename: "{app}\Tools3000_Picasa_Viewer.exe"; Parameters: "--register-silent"; Flags: runhidden waituntilterminated runasoriginaluser; StatusMsg: "{cm:RegisteringPicasaViewer}"; Check: IsPicasaViewerRegisterNeeded
 ; 使用 runasoriginaluser 兼容多账户 UAC 提权场景，确保客户端运行在发起安装的交互桌面用户上下文中
 Filename: "{app}\Tools3000.exe"; Description: "{cm:LaunchProgram,Tools3000}"; Flags: nowait postinstall skipifsilent runasoriginaluser
+; 应用内一键静默更新 (/SILENT /RESTARTAPPLICATIONS 或 /AUTOUPDATE) 完成后自动无缝拉起新版 Tools3000；
+; 普通运维静默部署 (/SILENT /VERYSILENT 不带上述参数) 仍保持静默不自动启动，确保严格 MECE 互斥。
+Filename: "{app}\Tools3000.exe"; Flags: nowait postinstall runasoriginaluser; Check: ShouldAutoLaunchAfterSilentUpgrade
 
 
 [Code]
@@ -954,6 +957,7 @@ var
   FilesLocked: Boolean;
   ExistingInstallPresent: Boolean;
   NormDir: String;
+  GraceStart: DWORD;
 begin
   NormDir := RemoveBackslashUnlessRoot(Trim(TargetAppDir));
   ExistingInstallPresent := (NormDir <> '') and
@@ -976,12 +980,24 @@ begin
   if MsgHwnd <> 0 then
   begin
     PostMessage(MsgHwnd, WM_CLOSE_MSG, 0, 0);
-    Sleep(30);
+    // 先给予主程序最多 2500ms 优雅退场窗口（实测仅 ~250ms），干净卸载钩子、保存配置并释放 WebView2 与 DLL 锁
+    GraceStart := GetTickCount();
+    while IsTools3000Running() and ((GetTickCount() - GraceStart) < 2500) do
+    begin
+      Sleep(40);
+    end;
+    Log(Format('StopAndKillAllTools3000ProcessesForDir: Graceful exit wait finished in %d ms (stillRunning=%d).', [GetTickCount() - GraceStart, Ord(IsTools3000Running())]));
   end;
 
-  // 无条件强杀主程序进程树（包含子 WebView2 进程）、看图器与后台服务进程，杜绝跨桌面残留锁
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // 关键防自杀铁律：针对 Tools3000.exe 绝严禁加 /t（终止进程树）！
+  // 应用内一键更新时，Setup.exe / Setup.tmp 可能是旧版 Tools3000.exe 的子进程；加 /t 会沿 PPID 进程树把安装器自己当场强杀自爆！
+  // WebView2 等受管子进程已绑定至 Tools3000.exe 的 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE Job，主进程退出后由内核自动清零。
+  if IsTools3000Running() or AreAppFilesLockedInDir(NormDir) then
+  begin
+    Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   StopSearchServiceNativeForDir(NormDir);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
@@ -1018,12 +1034,13 @@ begin
 
     Sleep(30);
 
-    // 超过 500ms 仍未释放时周期性补发 taskkill 确保彻底干掉残留进程
+    // 超过 500ms 仍未释放时周期性补发 taskkill 确保彻底干掉残留进程（针对 Tools3000.exe 严禁带 /t 防自杀）
     if (Elapsed > 500) and ((Elapsed mod 500) < 40) then
     begin
-      Log('WaitForProcessesAndFilesReleasedInDir: Locks or processes still active, re-issuing taskkill /f /t...');
-      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+      Log('WaitForProcessesAndFilesReleasedInDir: Locks or processes still active, re-issuing taskkill...');
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
     end;
   end;
@@ -2448,6 +2465,12 @@ begin
   end;
 end;
 
+function ShouldAutoLaunchAfterSilentUpgrade(): Boolean;
+begin
+  Result := WizardSilent and
+    (HasCommandLineParameter('/RESTARTAPPLICATIONS') or HasCommandLineParameter('/AUTOUPDATE'));
+end;
+
 procedure DeleteSelectedPersonalData();
 var
   LocalRoot, RoamingRoot, CommonRoot, InteractiveUser, UsersRoot, OrigLocalRoot, OrigRoamingRoot: String;
@@ -2564,11 +2587,11 @@ begin
     Log(Format('PrepareToInstall: Critical DLL files still locked, waiting 200ms (attempt %d/15)...', [RetryCount]));
     Sleep(200);
 
-    // 第 3 次与第 8 次探测若仍有锁定，补发一次 taskkill /f /t 确保彻底杀绝
+    // 第 3 次与第 8 次探测若仍有锁定，补发一次 taskkill 确保彻底清场（针对 Tools3000.exe 严禁带 /t 防自杀）
     if ((RetryCount = 3) or (RetryCount = 8)) and DllsLocked then
     begin
       Log(Format('PrepareToInstall: Locks still detected at attempt %d, re-issuing taskkill...', [RetryCount]));
-      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);

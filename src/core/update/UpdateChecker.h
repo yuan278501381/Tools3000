@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -26,6 +27,10 @@ public:
     /// Launches the verified downloaded installer (or highlights the portable ZIP in Explorer).
     bool installDownloadedUpdate(std::string& outError);
 
+    /// Registers a host callback invoked after a verified Setup.exe installer has started,
+    /// allowing the current process to exit gracefully before file replacement begins.
+    void setExitForUpdateCallback(std::function<void()> callback);
+
     /// Returns a JSON snapshot string of the latest update & download state.
     std::string getStateJsonString() const;
 
@@ -35,6 +40,7 @@ public:
     static bool isNewerVersion(std::string_view candidate, std::string_view current);
     static bool isTrustedReleaseDownloadUrl(std::string_view url) noexcept;
     static std::string extractExpectedSha256ForAsset(std::string_view sha256SumsBody, std::string_view assetName);
+    static std::wstring buildInstallerParameters();
 
 private:
     struct UpdateStateSnapshot {
@@ -72,8 +78,10 @@ private:
     void* m_activeRequest = nullptr;
     void* m_activeDownloadRequest = nullptr;
     UpdateStateSnapshot m_state;
+    std::function<void()> m_exitForUpdateCallback;
     std::atomic<bool> m_busy{false};
     std::atomic<bool> m_downloading{false};
+    std::atomic<bool> m_launchingInstaller{false};
     std::atomic<bool> m_stopping{false};
 };
 

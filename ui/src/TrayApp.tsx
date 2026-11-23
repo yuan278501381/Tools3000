@@ -693,11 +693,14 @@ export default function TrayApp() {
         <button
           type="button"
           className={`tray-update-banner${updateBanner.readyToInstall ? ' tray-update-banner--ready' : ''}`}
-          disabled={updateBanner.status === 'downloading'}
+          disabled={busy || updateBanner.status === 'downloading'}
           onClick={() => {
             if (updateBanner.readyToInstall) {
+              setBusy(true);
               void bridgeRequest('tray.hide').catch(() => {});
-              void bridgeRequest('app.installUpdate').catch(() => {});
+              void bridgeRequest('app.installUpdate')
+                .catch(() => {})
+                .finally(() => setBusy(false));
             } else {
               void bridgeRequest('app.downloadUpdate').catch(() => {});
             }

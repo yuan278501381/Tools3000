@@ -843,6 +843,35 @@ TEST(UpdateCheckerTest, SemVerComparison) {
     EXPECT_FALSE(UpdateChecker::isNewerVersion("发行", "1.0.0"));
 }
 
+TEST(UpdateCheckerTest, InstallerSilentAutoRestartParametersAndNoSelfKillContract) {
+    using tools3000::core::UpdateChecker;
+    const std::wstring params = UpdateChecker::buildInstallerParameters();
+    EXPECT_NE(params.find(L"/SILENT"), std::wstring::npos);
+    EXPECT_NE(params.find(L"/CLOSEAPPLICATIONS"), std::wstring::npos);
+    EXPECT_NE(params.find(L"/RESTARTAPPLICATIONS"), std::wstring::npos);
+    EXPECT_NE(params.find(L"/AUTOUPDATE"), std::wstring::npos);
+
+    // 防回退门禁：当存在源码树 installer.iss 时，断言绝不对 Tools3000.exe 使用 taskkill /t（否则应用内升级时安装程序会杀死自己）
+    // 且静默自动更新必须配置 ShouldAutoLaunchAfterSilentUpgrade 自动拉起新版。
+    std::filesystem::path issPath;
+    auto probe = tools3000::core::WinUtils::getExeDirectory();
+    for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
+        if (std::filesystem::exists(probe / L"installer.iss")) {
+            issPath = probe / L"installer.iss";
+            break;
+        }
+        probe = probe.parent_path();
+    }
+    if (!issPath.empty()) {
+        std::ifstream ifs(issPath, std::ios::binary);
+        const std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(content.find("/f /t /im Tools3000.exe"), std::string::npos)
+            << "installer.iss must never pass /t when killing Tools3000.exe (would self-terminate in-app updater)";
+        EXPECT_NE(content.find("ShouldAutoLaunchAfterSilentUpgrade"), std::string::npos)
+            << "installer.iss must auto-relaunch Tools3000.exe after in-app silent upgrade";
+    }
+}
+
 // -----------------------------------------------------------------------------
 // 14. 拼音索引引擎测试套件
 // -----------------------------------------------------------------------------

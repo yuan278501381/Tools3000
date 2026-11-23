@@ -7,6 +7,7 @@
 #include "core/utils/WinUtils.h"
 
 #include <windows.h>
+#include <objbase.h>
 #include <shellapi.h>
 #include <wincrypt.h>
 #include <winhttp.h>
@@ -570,9 +571,35 @@ bool UpdateChecker::downloadUpdateAsync() {
     return true;
 }
 
+std::wstring UpdateChecker::buildInstallerParameters() {
+    return L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /AUTOUPDATE";
+}
+
+void UpdateChecker::setExitForUpdateCallback(std::function<void()> callback) {
+    std::lock_guard stLock(m_stateMutex);
+    m_exitForUpdateCallback = std::move(callback);
+}
+
 bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
+    if (m_stopping.load()) {
+        outError = "stopping";
+        return false;
+    }
+    if (m_launchingInstaller.exchange(true)) {
+        outError = "already_launching";
+        return false;
+    }
+    struct LaunchGuard {
+        std::atomic<bool>& flag;
+        bool release = true;
+        ~LaunchGuard() {
+            if (release) flag.store(false);
+        }
+    } guard{m_launchingInstaller, true};
+
     std::string filePathUtf8;
     bool portableMode = false;
+    std::function<void()> exitCallback;
     {
         std::lock_guard stLock(m_stateMutex);
         if (m_state.status != "readyToInstall" || m_state.downloadedFilePath.empty()) {
@@ -581,6 +608,7 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
         }
         filePathUtf8 = m_state.downloadedFilePath;
         portableMode = m_state.isPortable;
+        exitCallback = m_exitForUpdateCallback;
     }
 
     const std::filesystem::path targetPath(WinUtils::utf8ToWstring(filePathUtf8));
@@ -617,18 +645,72 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
         return false;
     }
 
-    SHELLEXECUTEINFOW sei{};
-    sei.cbSize = sizeof(sei);
-    sei.lpVerb = L"open";
-    sei.lpFile = targetW.c_str();
-    sei.lpParameters = L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
-    sei.nShow = SW_SHOWNORMAL;
-    if (!ShellExecuteExW(&sei)) {
-        LOG_WARN("UpdateChecker: failed to launch installer, err={}", GetLastError());
-        outError = "launch_failed";
+    const std::wstring installerParams = buildInstallerParameters();
+    const std::wstring workDir = canonTarget.parent_path().wstring();
+    bool launched = false;
+    DWORD launchErr = ERROR_SUCCESS;
+
+    // 当当前进程已提权时，优先使用 CreateProcessW + CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP
+    // 直接启动安装包（零额外 UAC 弹窗且彻底脱离当前进程 Job Object）；否则经 ShellExecuteExW("runas")
+    // 交由系统 Appinfo 服务跨进程提权启动（天然脱离父进程树与 Job Object）。
+    if (WinUtils::isCurrentProcessElevated()) {
+        std::wstring cmdLine = L"\"" + targetW + L"\" " + installerParams;
+        STARTUPINFOW si{};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOWNORMAL;
+        PROCESS_INFORMATION pi{};
+        const DWORD flags = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP;
+        if (CreateProcessW(targetW.c_str(), cmdLine.data(), nullptr, nullptr, FALSE, flags,
+                           nullptr, workDir.c_str(), &si, &pi)) {
+            if (pi.hThread) CloseHandle(pi.hThread);
+            if (pi.hProcess) CloseHandle(pi.hProcess);
+            launched = true;
+        } else {
+            launchErr = GetLastError();
+            LOG_WARN("UpdateChecker: CreateProcessW breakaway launch failed (err={}), falling back to ShellExecuteExW",
+                     launchErr);
+        }
+    }
+
+    if (!launched) {
+        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+        const bool needUninit = SUCCEEDED(comHr);
+        SHELLEXECUTEINFOW sei{};
+        sei.cbSize = sizeof(sei);
+        sei.fMask = SEE_MASK_NOCLOSEPROCESS;
+        sei.lpVerb = WinUtils::isCurrentProcessElevated() ? L"open" : L"runas";
+        sei.lpFile = targetW.c_str();
+        sei.lpParameters = installerParams.c_str();
+        sei.lpDirectory = workDir.c_str();
+        sei.nShow = SW_SHOWNORMAL;
+        if (ShellExecuteExW(&sei)) {
+            if (sei.hProcess) CloseHandle(sei.hProcess);
+            launched = true;
+        } else {
+            launchErr = GetLastError();
+        }
+        if (needUninit) CoUninitialize();
+    }
+
+    if (!launched) {
+        if (launchErr == ERROR_CANCELLED) {
+            LOG_INFO("UpdateChecker: update installation cancelled by user at UAC prompt");
+            outError = "cancelled";
+        } else {
+            LOG_WARN("UpdateChecker: failed to launch installer, err={}", launchErr);
+            outError = "launch_failed";
+        }
         return false;
     }
+
+    // 安装器已成功启动：保持 m_launchingInstaller 锁死防重复点击，并触发当前旧实例延迟优雅退场，
+    // 让安装器 0 锁无阻完成升级并自动拉起新版。
+    guard.release = false;
     LOG_INFO("UpdateChecker: launched verified update installer");
+    if (exitCallback) {
+        exitCallback();
+    }
     return true;
 }
 
@@ -1041,8 +1123,13 @@ void UpdateChecker::shutdown() {
     }
     if (worker.joinable()) worker.join();
     if (dlWorker.joinable()) dlWorker.join();
+    {
+        std::lock_guard stLock(m_stateMutex);
+        m_exitForUpdateCallback = nullptr;
+    }
     m_busy = false;
     m_downloading = false;
+    m_launchingInstaller = false;
 }
 
 UpdateChecker::~UpdateChecker() {

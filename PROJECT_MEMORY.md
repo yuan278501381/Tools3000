@@ -6,6 +6,16 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 应用内一键更新「点安装闪退且版本未升」根治（`taskkill /t` 进程树自爆 + `skipifsilent` 不重启）
+- **实机黑匣子根因（100% 日志实锤）**：
+  1. **安装器递归强杀自己 (`installer.iss` `StopAndKillAllTools3000ProcessesForDir`)**：当旧版 `Tools3000.exe` 以管理员身份运行时，点击「立即安装」直接派生子进程 `Setup.exe -> Setup.tmp`（父进程树 `Tools3000.exe -> Setup.exe -> Setup.tmp`）；1 秒后安装器在 `PrepareToInstall` 向主程序发 `WM_CLOSE` 后仅 `Sleep(30)`（主程序优雅退出约需 258ms），随即执行 **`taskkill /f /t /im Tools3000.exe`**，`/t` 沿父子进程树递归把安装程序自身连同旧版进程一起当场强杀自爆，文件一字节未覆盖，用户体感为“点安装直接闪退”；
+  2. **静默升级完成后不自动重开 (`installer.iss` `[Run]`)**：`CloseApplications=no / RestartApplications=no` 且 `[Run]` 启动 `Tools3000.exe` 带了 `skipifsilent`，导致即使安装成功也不会自动拉起新版 `Tools3000.exe`。
+- **双端四重永久根治 (`installer.iss`, `UpdateChecker.{h,cpp}`, `MessageBridge.cpp`, `main.cpp`, `AboutPage.tsx`, `TrayApp.tsx`, `tests/unit/test_core.inc`)**：
+  - `installer.iss` 发 `WM_CLOSE` 后先轮询最多 `2500ms` 等主程序体面退场，兜底强杀针对 `Tools3000.exe` **绝对严禁带 `/t`**（WebView2 子进程受主进程 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 内核级自动清零，绝无孤儿残留）；
+  - `installer.iss` `[Run]` 新增严格 MECE 互斥的 `Check: ShouldAutoLaunchAfterSilentUpgrade`（仅在 `WizardSilent` 且带 `/RESTARTAPPLICATIONS` 或 `/AUTOUPDATE` 时安装完自动拉起新版，普通运维静默部署仍不自动弹窗）；
+  - `UpdateChecker::installDownloadedUpdate` 增加防重入锁、已提权用 `CreateProcessW(CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP)` / 未提权用 `ShellExecuteExW("runas")`（UAC 取消返回 `cancelled`），启动成功触发宿主 `TIMER_ID_EXIT_FOR_UPDATE` (180ms) 主动优雅退场；`app.installUpdate` 标记为异步 IPC 不阻塞 UI 线程；
+  - `UpdateCheckerTest.InstallerSilentAutoRestartParametersAndNoSelfKillContract` 永久静态守护 `installer.iss` 不再出现 `/f /t /im Tools3000.exe`。
+
 ### [2026-11-23] v1.4.0 正式发版收尾：托盘右键菜单双通道接入历史剪贴板 + 全 8 语种 10 核视觉资产与 README 升级 + 贴图 120Hz 缩放回归适配
 - **核心改动与验证控制点**：
   1. **系统托盘右键菜单双通道加入「历史剪贴板 (`Alt + V`)」 (`src/tray/TrayIcon.{h,cpp}`, `src/main.cpp`, `ui/src/TrayApp.tsx`, `ui/src/TrayApp.test.tsx`, 8 套 `ui/src/i18n/locales/*.json`)**：

@@ -91,6 +91,7 @@ static constexpr UINT WM_TOOLS3000_TEST_INJECT_KEY  = WM_APP + 190;
 static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
 static constexpr UINT_PTR TIMER_ID_PERFORMANCE_BASELINE = 0x4552;
 static constexpr UINT_PTR TIMER_ID_FULLSCREEN_GUARD = 0x4553;
+static constexpr UINT_PTR TIMER_ID_EXIT_FOR_UPDATE = 0x4554;
 
 // ── 前向声明 ─────────────────────────────────────────────────────────────────
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -2241,6 +2242,13 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     }
 
     // 9. 更新检查严格在后台执行，并由内部频率限制保护启动性能。
+    tools3000::core::UpdateChecker::instance().setExitForUpdateCallback([hwnd]() {
+        tools3000::core::MainThreadDispatcher::instance().post([hwnd]() {
+            if (hwnd && IsWindow(hwnd)) {
+                SetTimer(hwnd, TIMER_ID_EXIT_FOR_UPDATE, 180, nullptr);
+            }
+        });
+    });
     tools3000::core::UpdateChecker::instance().checkAsync(false);
 
     // 重新锚定宿主崩溃处理器，防止 WebView2 Crashpad 在预热期间覆盖全局异常过滤器
@@ -2367,6 +2375,11 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == TIMER_ID_FULLSCREEN_GUARD) {
             syncForegroundFullscreenState();
+            return 0;
+        }
+        if (wParam == TIMER_ID_EXIT_FOR_UPDATE) {
+            KillTimer(hwnd, TIMER_ID_EXIT_FOR_UPDATE);
+            PostMessageW(hwnd, WM_CLOSE, 0, 0);
             return 0;
         }
         if (wParam == tools3000::tray::TrayIcon::TIMER_ID_TRAY_RETRY) {
