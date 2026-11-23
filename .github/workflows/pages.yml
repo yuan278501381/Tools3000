@@ -1,0 +1,56 @@
+name: Deploy Official Website to GitHub Pages
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/site/**'
+      - 'docs/images/**'
+      - 'resources/Tools3000-T-signature-assets/**'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build & Deploy GitHub Pages
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Assemble static website bundle
+        run: |
+          mkdir -p _site/images/en-US _site/images/zh-CN
+          cp docs/site/index.html _site/index.html
+          cp resources/Tools3000-T-signature-assets/t-ribbon-color.svg _site/logo.svg
+          if [ -f docs/images/social-preview-1280x640.png ]; then
+            cp docs/images/social-preview-1280x640.png _site/images/social-preview-1280x640.png
+          fi
+          cp docs/images/en-US/*.webp _site/images/en-US/
+          cp docs/images/zh-CN/*.webp _site/images/zh-CN/
+          touch _site/.nojekyll
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

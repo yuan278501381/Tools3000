@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
-  - name: 使用交流与经验分享 (GitHub Discussions)
+  - name: Community Q&A & Presets / 使用交流与预设分享 (GitHub Discussions)
     url: https://github.com/yuan278501381/Tools3000/discussions
-    about: 提问、分享手势/Lua 脚本配置、讨论路线图与日常使用技巧
-  - name: 安全漏洞私密报告 (Security Advisory)
+    about: Ask questions, share Lua gesture scripts & Text Expander snippets, or discuss ideas / 提问、分享手势脚本与文本扩展短语、交流技巧
+  - name: Security Vulnerability Report / 安全漏洞私密报告 (Security Advisory)
     url: https://github.com/yuan278501381/Tools3000/security/advisories/new
-    about: 私密报告安全隐患，避免提前公开敏感细节
+    about: Privately report security issues before public disclosure / 私密报告安全隐患，避免提前公开敏感细节
