@@ -8,15 +8,23 @@ pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
 // Windows 搜索服务与命名管道端点契约（与 src/service/PipeEndpoint.h 1:1 对齐）
+#[cfg(windows)]
 pub const SEARCH_SERVICE_NAME: &str = "Tools3000_SearchService";
+#[cfg(windows)]
 pub const KERNEL_AUTH_PIPE_NAME: &str = r"\\.\pipe\Tools3000SearchPipe_KernelAuth";
+#[cfg(windows)]
 pub const USER_SID_PIPE_PREFIX: &str = r"\\.\pipe\Tools3000SearchPipe_Sid_";
+#[cfg(windows)]
 pub const TOKEN_PIPE_PREFIX: &str = r"\\.\pipe\Tools3000SearchPipe-";
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const TOKEN_HEX_LEN: usize = 32;
 
 // 4 字节小端分帧协议限制（与 src/service/PipeProtocol.h 1:1 对齐）
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(windows)]
 pub const PIPE_IO_CHUNK_BYTES: usize = 64 * 1024;
 
 // 查询与上下文 Token 预算限制
@@ -31,8 +39,11 @@ pub const MAX_SNIPPETS_PER_FILE: usize = 3;
 pub const MAX_QUERY_BYTES: usize = 1024;
 
 // 服务唤醒等待上限
+#[cfg(windows)]
 pub const SERVICE_START_HARD_DEADLINE_MS: u64 = 30_000;
+#[cfg(windows)]
 pub const SERVICE_POLL_INTERVAL_MS: u64 = 120;
+#[cfg(windows)]
 pub const SERVICE_INIT_WAIT_DEADLINE_MS: u64 = 12_000;
 
 // 退出码规范
