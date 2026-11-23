@@ -34,6 +34,8 @@
 namespace tools3000::capture {
 
 struct CaptureRegion;
+class PinZoomStage;
+class ScopedHighResTimerPeriod;
 
 class PinWindow : public std::enable_shared_from_this<PinWindow> {
 public:
@@ -333,7 +335,7 @@ public:
     static uint32_t globalActiveOcrWorkerCount() noexcept;
 
 private:
-    PinWindow() = default;
+    PinWindow();
     PinWindow(const PinWindow&) = delete;
     PinWindow& operator=(const PinWindow&) = delete;
 
@@ -346,11 +348,20 @@ private:
     void updateWindowCornerRegion();
     void render();
     void applyLayeredOpacity();  // 按 opacity × 穿透提示系数 应用分层透明度
-    void stopZoomAnimation(bool renderFinalSharpness = false);
+    void handleMouseWheel(WPARAM wParam, LPARAM lParam);
+    void handleZoomWheel(int delta, POINT cursorScreenPt, bool hasCursorPt);
+    void handleZoomStageMouseInterrupt(UINT msg, WPARAM wParam, POINT screenPt);
+    void stopZoomAnimation(bool renderFinalSharpness = false, bool snapToTarget = false);
+    void finishZoomAnimationAtScale(double finalScale, bool updateHudBadge);
     void applyScaleAtAnchor(float newScale, POINT anchorScreenPt, float relX, float relY, bool finalFrame);
     void stepZoomAnimation();
+    bool startOrUpdateZoomStage(const RECT& currentPinRect, double initialDt);
+    void renderCurrentZoomStageFrame();
+    void releaseZoomStage() noexcept;
+    void invalidateZoomStageTexture() noexcept;
 
     static constexpr UINT_PTR kTimerIdZoomAnim = 4;
+    static constexpr UINT_PTR kTimerIdZoomStageIdleRelease = 5;
 
     static LRESULT CALLBACK pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -359,11 +370,19 @@ private:
     float m_opacity = 1.0f;
     float m_scale = 1.0f;
     bool m_zoomAnimating = false;
-    float m_zoomTargetScale = 1.0f;
-    POINT m_zoomAnchorScreenPt{};
-    float m_zoomAnchorRelX = 0.5f;
-    float m_zoomAnchorRelY = 0.5f;
+    bool m_zoomStageActive = false;
+    double m_zoomCurScale = 1.0;
+    double m_zoomTargetScale = 1.0;
+    double m_zoomCurLeft = 0.0;
+    double m_zoomCurTop = 0.0;
+    double m_zoomAnchorX = 0.0;
+    double m_zoomAnchorY = 0.0;
+    double m_zoomAnchorRelX = 0.5;
+    double m_zoomAnchorRelY = 0.5;
     int64_t m_zoomLastQpc = 0;
+    uint64_t m_displayImageGeneration = 0;
+    std::unique_ptr<PinZoomStage> m_zoomStage;
+    std::unique_ptr<ScopedHighResTimerPeriod> m_zoomTimerPeriod;
     int m_origWidth = 0;
     int m_origHeight = 0;
     bool m_isDragging = false;
@@ -497,7 +516,7 @@ private:
     std::deque<std::vector<MarkupElement>> m_pinUndoStack;
     std::deque<std::vector<MarkupElement>> m_pinRedoStack;
 
-    void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800);
+    void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800, bool triggerInvalidate = true);
     void updateHoverAnimation();
     void drawHoverToolbar();
     void clearHoverToolbarRects() noexcept;

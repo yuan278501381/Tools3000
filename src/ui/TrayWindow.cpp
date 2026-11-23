@@ -14,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <cmath>
 #include <utility>
 #include "core/utils/WinUtils.h"
 
@@ -33,10 +34,16 @@ SIZE getTrayWindowSize(POINT anchor, int customW = 0, int customH = 0) {
     const float scale = tools3000::core::dpi::scaleForMonitor(monitor);
     const LONG margin = tools3000::core::dpi::scaleMetric(TrayWindowStyle::BaseScreenMargin, scale);
     const int maxPhysicalH = std::max<int>(200, static_cast<int>(workArea.bottom - workArea.top - 2 * margin));
-    const int effectiveW = customW > 0 ? std::clamp(customW, 200, 340) : TrayWindowStyle::BaseWidth;
-    const int effectiveH = customH > 0 ? std::clamp(customH, 100, 760) : TrayWindowStyle::BaseHeight;
-    const int physicalW = static_cast<int>(effectiveW * scale);
-    const int physicalH = std::min<int>(static_cast<int>(effectiveH * scale), maxPhysicalH);
+    const int effectiveW = customW > 0
+        ? std::clamp(customW, TrayWindowStyle::BaseMinWidth, TrayWindowStyle::BaseMaxWidth)
+        : TrayWindowStyle::BaseWidth;
+    const int effectiveH = customH > 0
+        ? std::clamp(customH, TrayWindowStyle::BaseMinHeight, TrayWindowStyle::BaseMaxHeight)
+        : TrayWindowStyle::BaseHeight;
+    const int physicalW = static_cast<int>(std::ceil(static_cast<double>(effectiveW) * scale));
+    const int physicalH = std::min<int>(
+        static_cast<int>(std::ceil(static_cast<double>(effectiveH) * scale)),
+        maxPhysicalH);
     return {
         static_cast<LONG>(physicalW),
         static_cast<LONG>(physicalH)
@@ -223,18 +230,27 @@ void TrayWindow::updatePlacement() {
 
 void TrayWindow::setContentSize(int width, int height) {
     if (!m_hwnd || !IsWindow(m_hwnd) || width <= 0 || height <= 0) return;
-    const int clampedW = std::clamp(width, 200, 340);
-    const int clampedH = std::clamp(height, 100, 760);
-    if (m_contentWidth == clampedW && m_contentHeight == clampedH) return;
-    m_contentWidth = clampedW;
-    m_contentHeight = clampedH;
+    const int clampedW = std::clamp(width, TrayWindowStyle::BaseMinWidth, TrayWindowStyle::BaseMaxWidth);
+    const int clampedH = std::clamp(height, TrayWindowStyle::BaseMinHeight, TrayWindowStyle::BaseMaxHeight);
     const HMONITOR monitor = MonitorFromPoint(m_anchor, MONITOR_DEFAULTTONEAREST);
     const RECT workArea = tools3000::core::dpi::workArea(monitor);
     const float scale = tools3000::core::dpi::scaleForMonitor(monitor);
     const LONG margin = tools3000::core::dpi::scaleMetric(TrayWindowStyle::BaseScreenMargin, scale);
     const int maxPhysicalH = std::max<int>(200, static_cast<int>(workArea.bottom - workArea.top - 2 * margin));
-    const int scaledW = static_cast<int>(clampedW * scale);
-    const int scaledH = std::min<int>(static_cast<int>(clampedH * scale), maxPhysicalH);
+    const int scaledW = static_cast<int>(std::ceil(static_cast<double>(clampedW) * scale));
+    const int scaledH = std::min<int>(
+        static_cast<int>(std::ceil(static_cast<double>(clampedH) * scale)),
+        maxPhysicalH);
+
+    RECT currentRect{};
+    const bool hasCurrentRect = GetWindowRect(m_hwnd, &currentRect) != FALSE;
+    const int curW = hasCurrentRect ? static_cast<int>(currentRect.right - currentRect.left) : 0;
+    const int curH = hasCurrentRect ? static_cast<int>(currentRect.bottom - currentRect.top) : 0;
+    if (m_contentWidth == clampedW && m_contentHeight == clampedH && curW == scaledW && curH == scaledH) {
+        return;
+    }
+    m_contentWidth = clampedW;
+    m_contentHeight = clampedH;
 
     m_updatingPlacement = true;
     const POINT origin = trayWindowOrigin(m_anchor.x, m_anchor.y, scaledW, scaledH);

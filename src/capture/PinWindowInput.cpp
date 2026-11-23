@@ -697,6 +697,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_LBUTTONDOWN: {
             if (!self) break;
+            if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                self->stopZoomAnimation(true);
+            }
             self->focusWindow();
             const int clickX = GET_X_LPARAM(lParam);
             const int clickY = GET_Y_LPARAM(lParam);
@@ -879,7 +882,14 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_KILLFOCUS: {
-            if (self) { self->m_focused = false; InvalidateRect(hwnd, nullptr, FALSE); }
+            if (self) {
+                self->m_focused = false;
+                if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                    self->stopZoomAnimation(true);
+                } else {
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+            }
             return 0;
         }
 
@@ -902,6 +912,14 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!self) break;
+            const bool isPureModifier =
+                wParam == VK_SHIFT || wParam == VK_CONTROL || wParam == VK_MENU ||
+                wParam == VK_LSHIFT || wParam == VK_RSHIFT ||
+                wParam == VK_LCONTROL || wParam == VK_RCONTROL ||
+                wParam == VK_LMENU || wParam == VK_RMENU;
+            if (!isPureModifier && (self->m_zoomAnimating || self->m_zoomStageActive)) {
+                self->stopZoomAnimation(true);
+            }
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt = (msg == WM_SYSKEYDOWN) || ((GetKeyState(VK_MENU) & 0x8000) != 0);
@@ -1801,6 +1819,11 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 }
             } else if (self && wParam == PinWindow::kTimerIdZoomAnim) {
                 self->stepZoomAnimation();
+            } else if (self && wParam == PinWindow::kTimerIdZoomStageIdleRelease) {
+                KillTimer(hwnd, PinWindow::kTimerIdZoomStageIdleRelease);
+                if (!self->m_zoomAnimating && !self->m_zoomStageActive) {
+                    self->releaseZoomStage();
+                }
             }
             return 0;
         }
@@ -1865,6 +1888,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_LBUTTONDBLCLK: {
             // 双击：若折叠则展开；若点在按钮上走连击；若点在文字热区上自动双击选词；空白处进入标注编辑模式
             if (self) {
+                if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                    self->stopZoomAnimation(true);
+                }
                 if (self->m_folded) {
                     self->toggleFold();
                 } else {
@@ -1911,6 +1937,9 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_MBUTTONUP: {
             // 鼠标中键单击：快速恢复 1:1 原始物理像素尺寸
             if (self) {
+                if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                    self->stopZoomAnimation(false);
+                }
                 self->focusWindow();
                 self->resetScale();
             }
@@ -1919,75 +1948,16 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_MOUSEWHEEL: {
             if (!self) break;
-            self->focusWindow();
-            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-            const bool ctrl = (LOWORD(wParam) & MK_CONTROL) != 0 ||
-                              ((GetKeyState(VK_CONTROL) & 0x8000) != 0);
-            const bool shift = (LOWORD(wParam) & MK_SHIFT) != 0 ||
-                               ((GetKeyState(VK_SHIFT) & 0x8000) != 0);
-
-            if (ctrl || shift) {
-                // Ctrl/Shift + 滚轮：平滑微调透明度 (10% ~ 100%, 步进 5%)
-                float newOpacity = self->m_opacity + (delta > 0 ? 0.05f : -0.05f);
-                self->setOpacity(newOpacity);
-            } else {
-                // 无级丝滑阻尼滚轮缩放：按真实 delta 连续指数缩放 + 光标锚定 Zoom-to-Cursor + 120Hz 物理阻尼过渡 (0.1x ~ 5.0x)
-                if (self->m_folded || delta == 0) {
-                    return 0;
-                }
-                RECT rc{};
-                GetWindowRect(hwnd, &rc);
-
-                const float notches = static_cast<float>(delta) / static_cast<float>(WHEEL_DELTA);
-                const float zoomFactor = std::pow(1.12f, notches);
-                const float baseScale = self->m_zoomAnimating ? self->m_zoomTargetScale : self->m_scale;
-                const float newTarget = std::clamp(baseScale * zoomFactor, 0.1f, 5.0f);
-
-                if (std::abs(newTarget - self->m_scale) > 0.0005f || std::abs(newTarget - baseScale) > 0.0005f) {
-                    POINT anchor{
-                        (rc.left + rc.right) / 2,
-                        (rc.top + rc.bottom) / 2
-                    };
-                    float relX = 0.5f;
-                    float relY = 0.5f;
-                    POINT candidatePt{};
-                    bool hasCandidate = false;
-                    if (lParam != 0) {
-                        candidatePt.x = static_cast<int>(static_cast<short>(LOWORD(lParam)));
-                        candidatePt.y = static_cast<int>(static_cast<short>(HIWORD(lParam)));
-                        hasCandidate = true;
-                    } else if (GetCursorPos(&candidatePt)) {
-                        hasCandidate = true;
-                    }
-                    if (hasCandidate &&
-                        candidatePt.x >= rc.left && candidatePt.x <= rc.right &&
-                        candidatePt.y >= rc.top && candidatePt.y <= rc.bottom) {
-                        anchor = candidatePt;
-                        relX = (anchor.x - rc.left) / static_cast<float>((std::max)(1L, rc.right - rc.left));
-                        relY = (anchor.y - rc.top) / static_cast<float>((std::max)(1L, rc.bottom - rc.top));
-                    }
-
-                    self->m_zoomTargetScale = newTarget;
-                    self->m_zoomAnchorScreenPt = anchor;
-                    self->m_zoomAnchorRelX = relX;
-                    self->m_zoomAnchorRelY = relY;
-
-                    const bool startingAnim = !self->m_zoomAnimating;
-                    self->m_zoomAnimating = true;
-                    if (startingAnim) {
-                        self->m_zoomLastQpc = 0;
-                        SetTimer(hwnd, PinWindow::kTimerIdZoomAnim, 8, nullptr);
-                        // 零起手延迟：立刻按 8ms 首帧步进响应，手指刚动即见无级丝滑
-                        self->stepZoomAnimation();
-                    }
-                }
-            }
+            self->handleMouseWheel(wParam, lParam);
             return 0;
         }
 
         case WM_RBUTTONUP: {
             // Direct2D 微晶自绘右键复合菜单（顶栏 6 枚快捷图标 + 实时不透明度滑块 + 精简列表）
             if (!self) break;
+            if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                self->stopZoomAnimation(true);
+            }
             self->focusWindow();
 
             POINT pt{};
@@ -2017,6 +1987,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
 
         case WM_DPICHANGED: {
             if (!self) break;
+            if (self->m_zoomAnimating || self->m_zoomStageActive) {
+                self->stopZoomAnimation(true);
+            }
+            self->releaseZoomStage();
             const UINT newDpi = HIWORD(wParam);
             self->m_dpiScale = tools3000::core::dpi::scaleForDpi(newDpi);
             self->m_cachedTextScale = 0.0f;
@@ -2057,6 +2031,7 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_NCDESTROY: {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             if (self) {
+                self->stopZoomAnimation(false);
                 if (self->m_hwnd == hwnd) {
                     self->m_hwnd = nullptr;
                 }

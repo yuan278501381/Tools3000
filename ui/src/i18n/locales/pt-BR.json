@@ -52,7 +52,8 @@
     "remote_boost": "Assistência Remota",
     "picasa_viewer": "Visualizador Picasa",
     "clipboard": "Área de Transferência",
-    "file_locksmith": "Desbloqueio de Arquivos"
+    "file_locksmith": "Desbloqueio de Arquivos",
+    "text_expander": "Expansor de Texto"
   },
   "navSubtitle": {
     "stats": "Estatísticas de uso do teclado e do mouse",
@@ -75,7 +76,8 @@
     "remote_boost": "Túnel de atalhos do sistema, liberação de teclas travadas e sanitização inteligente de IME",
     "picasa_viewer": "Recriação leve em Rust do visualizador Picasa (não é o pacote completo); associa todos os formatos ao ativar",
     "clipboard": "Histórico persistente após reiniciar, busca instantânea e Pin/Tradução de imagens em 1 clique",
-    "file_locksmith": "Inspecione processos bloqueadores e desbloqueie sem uso em segundo plano"
+    "file_locksmith": "Inspecione processos bloqueadores e desbloqueie sem uso em segundo plano",
+    "text_expander": "Expanda abreviações curtas em trechos completos, datas dinâmicas e modelos em qualquer app"
   },
   "extension": {
     "statusRunning": "Em execução",
@@ -376,6 +378,10 @@
       "file_locksmith": {
         "name": "Desbloqueio de Arquivos",
         "description": "Integração HKCU no menu de contexto com zero RAM em segundo plano para inspecionar e desbloquear arquivos em uso"
+      },
+      "text_expander": {
+        "name": "Expansor de Texto",
+        "description": "Expansão nativa de abreviações em todo o sistema com macros de data, área de transferência e cursor, proteção para gerenciadores de senha e zero poluição do histórico. Pronto para uso e sem ganchos ou RAM quando desativado."
       }
     },
     "title": "Módulos e Extensões"
@@ -527,7 +533,40 @@
     "saveFailed": "Não foi possível salvar esta configuração",
     "browseFailed": "Não foi possível abrir o seletor de pastas",
     "openFolder": "Abrir pasta",
-    "openFolderFailed": "Não foi possível abrir a pasta"
+    "openFolderFailed": "Não foi possível abrir a pasta",
+    "regionManagerTitle": "Regiões Recentes e Fixadas",
+    "repeatLastCaptureShortcut": "Repetir Última Região",
+    "repeatLastCaptureShortcutDesc": "Abrir a captura já enquadrada na região usada mais recentemente",
+    "regionCycleKeyLabel": "Tecla de Alternância na Captura",
+    "regionCycleKeyDesc": "Ao selecionar área de captura ou gravação, pressione para voltar no histórico ou Shift + tecla para avançar",
+    "regionKeyR": "R / Shift+R (estilo PixPin, recomendado)",
+    "regionKeyBackquote": "` / Shift+` (sem conflito com Retângulo R)",
+    "regionKeyF2": "F2 / Shift+F2 (tecla de função)",
+    "regionKeyF4": "F4 / Shift+F4 (tecla de função)",
+    "regionKeyOff": "Desativar tecla na captura",
+    "regionHistoryLimitLabel": "Limite do Histórico de Regiões",
+    "regionHistoryLimitDesc": "Salvar automaticamente áreas recentes entre reinicializações; regiões fixadas nunca são removidas",
+    "regionLimitOff": "Desativado (0 regiões)",
+    "regionLimitCount": "Últimas {{count}} regiões",
+    "regionSummary": "{{total}} salvas · {{pinned}} fixadas",
+    "regionAddFixed": "Adicionar Região Fixa",
+    "regionClearUnpinned": "Limpar Não Fixadas",
+    "regionQuickPresets": "Predefinições rápidas (centralizadas no monitor principal):",
+    "regionFieldName": "Nome da Região",
+    "regionNamePlaceholder": "Ex.: Moldura Tutorial / Capa",
+    "regionFieldWidth": "Largura",
+    "regionFieldHeight": "Altura",
+    "regionInvalidSize": "Informe coordenadas e tamanho válidos (largura e altura mínimas de 4 px)",
+    "regionClearedToast": "Histórico de regiões não fixadas limpo",
+    "regionEmptyHint": "Regiões capturadas aparecem aqui automaticamente, ou clique em Adicionar Região Fixa para definir pixels exatos.",
+    "regionUnnamedLabel": "Região Recente #{{index}}",
+    "regionPinnedBadge": "Fixada",
+    "regionCaptureNow": "Capturar com esta região agora",
+    "regionCaptureNowShort": "Capturar",
+    "regionPin": "Fixar região (nunca removida)",
+    "regionUnpin": "Desafixar região",
+    "regionEdit": "Editar nome e dimensões",
+    "regionDelete": "Excluir região"
   },
   "history": {
     "title": "Histórico de Capturas",
@@ -1450,7 +1489,16 @@
     "openDownloadedPortable": "Abrir pacote portátil",
     "installUpdateNow": "Instalar {{version}}",
     "downloadUpdateNow": "Baixar {{version}}",
-    "installUpdateFailed": "Falha ao iniciar o instalador de atualização"
+    "installUpdateFailed": "Falha ao iniciar o instalador de atualização",
+    "dismissVersion": "Ignorar esta versão",
+    "downloadNowBtn": "Baixar agora",
+    "installNowBtn": "Instalar agora",
+    "stripAvailableMessage": "Nova versão {{version}} disponível",
+    "stripReadyMessage": "{{version}} pronta para instalar — reinicie para concluir a atualização",
+    "versionDismissedHint": "Alerta visual dispensado para esta versão. Verifique atualizações ou baixe a qualquer momento para retomar.",
+    "versionDismissedToast": "Alerta de atualização ocultado para {{version}}",
+    "viewChangelogShort": "Ver notas da versão",
+    "viewUpdate": "Ver atualização"
   },
   "sidebar": {
     "groupSystem": "Sistema",
@@ -1489,7 +1537,8 @@
     "enableAndOpen": "Ativar e abrir",
     "kw_picasa_viewer": "picasa foto imagem visualizador apresentacao associacao formato rust",
     "kw_clipboard": "area de transferencia historico copiar colar fixar persistente clipboard",
-    "kw_file_locksmith": "desbloquear arquivo bloqueio processo menu locksmith unlock"
+    "kw_file_locksmith": "desbloquear arquivo bloqueio processo menu locksmith unlock",
+    "kw_text_expander": "expansor texto snippet atalho frase macro modelo abreviacao text expander"
   },
   "onboarding": {
     "welcomeTitle": "Bem-vindo ao Tools3000",
@@ -1544,7 +1593,23 @@
     "next": "Próximo",
     "prev": "Anterior",
     "skip": "Pular guia",
-    "stepLabel": "Passo {{current}} de {{total}}"
+    "stepLabel": "Passo {{current}} de {{total}}",
+    "completeTipModules": "Cada módulo pode ser ativado ou desativado individualmente em \"Módulos\" ou na bandeja do sistema",
+    "completeTipPicasa": "Defina como visualizador padrão em 1 clique dentro de \"Visualizador Picasa\"",
+    "completeTipTextExpander": "Experimente digitar ;date ou ;now em qualquer app com o \"Expansor de Texto\" já ativo (personalize ou desative quando quiser)",
+    "edgeWheelTip": "Rolagem nas bordas esquerda/direita da tela: ajuste o volume ou o brilho por hardware do monitor externo",
+    "featureClipboard": "Área de Transferência Persistente",
+    "featureClipboardDesc": "Histórico Alt+V mantido após reiniciar, colagem mesclada, fixados separados e arrastar nativo",
+    "featurePicasa": "Visualizador Rust Picasa (< 2 MB)",
+    "featurePicasaDesc": "41 formatos, 4K High-DPI e abertura instantânea em binário independente",
+    "featurePresentRemote": "Apresentação e Proteção Remota",
+    "featurePresentRemoteDesc": "Exibição de teclas, holofote no cursor e destravamento de teclas em RDP/RustDesk",
+    "featureStudio": "Estúdio de Gravação com Auto-Zoom",
+    "featureStudioDesc": "Edição por forma de onda, zoom automático no clique e exportação GIF/MP4 em 1 clique",
+    "searchSyntaxLabel": "Prefixos de Busca Avançada",
+    "searchSyntaxQuickLook": "Prévia QuickLook",
+    "shortcutClipboard": "Histórico da Área de Transf.",
+    "shortcutPin": "Fixar imagem na tela"
   },
   "hotkey": {
     "pressKeys": "Pressione uma tecla ou combinação...",
@@ -2263,7 +2328,9 @@
     "pillClipboard": "Clipboard",
     "pillClipboardFullDesc": "Histórico da Área de Transferência (busca rápida, grupos e colagem múltipla)",
     "pillFileLocksmith": "Desbloquear",
-    "pillFileLocksmithFullDesc": "Desbloqueio de Arquivos (menu de contexto do Explorador sem processo residente)"
+    "pillFileLocksmithFullDesc": "Desbloqueio de Arquivos (menu de contexto do Explorador sem processo residente)",
+    "pillTextExpander": "Snippets",
+    "pillTextExpanderFullDesc": "Expansor de Texto (Expansão global de frases e macros)"
   },
   "dialog": {
     "title": "Assistente de Diálogos de Arquivo",
@@ -3081,7 +3148,14 @@
     "actionPastePlain": "Texto simples",
     "actionEdit": "Editar",
     "hintQuickPaste": "Colar rápido 1-9",
-    "hintMultiSelect": "Seleção múltipla"
+    "hintMultiSelect": "Seleção múltipla",
+    "dragItemTip": "Arraste para qualquer campo de texto ou app para colar diretamente",
+    "hidePinnedBtn": "Ocultar fixos",
+    "hidePinnedTip": "Ocultar itens fixados das outras categorias (exibir apenas na aba Fixados)",
+    "hintDragKey": "Arrastar",
+    "hintDragPaste": "Soltar para colar",
+    "showPinnedBtn": "Mostrar fixos",
+    "showPinnedTip": "Voltar a exibir itens fixados nesta categoria"
   },
   "clipboardPage": {
     "overviewGroup": "Histórico Persistente da Área de Transferência",
@@ -3128,7 +3202,9 @@
     "saveBtn": "Salvar",
     "excludedSavedToast": "Lista de aplicativos excluídos salva",
     "saveFailedToast": "Falha ao salvar configurações",
-    "clearedToast": "{{count}} itens removidos do histórico"
+    "clearedToast": "{{count}} itens removidos do histórico",
+    "hidePinnedInOtherTitle": "Ocultar itens fixados nas outras categorias",
+    "hidePinnedInOtherDesc": "Mantém itens fixados apenas na aba Fixados para liberar espaço em Todos, Texto, Imagens, Arquivos e Cores."
   },
   "feedback": {
     "attachLogs": "Anexar informações de ambiente e últimas 1000 linhas de log redigidas localmente",
@@ -3183,5 +3259,81 @@
     "pickFolder": "Escolher Pasta",
     "inspectNow": "Inspecionar Bloqueios",
     "inspectFailed": "Falha ao abrir a janela de Desbloqueio de Arquivos"
+  },
+  "textExpander": {
+    "addRuleBtn": "Novo Snippet",
+    "autoExcludeDesc": "Pausa automaticamente a detecção quando gerenciadores de senha, área de trabalho remota ou telas de credenciais estiverem em foco.",
+    "autoExcludeTitle": "Ignorar Gerenciadores de Senha e Terminais Seguros",
+    "badgeMacros": "Macros Dinâmicas",
+    "badgeOptIn": "Zero Ganchos Desligado",
+    "badgePrivacy": "Sem Poluir Histórico",
+    "caseSensitiveDesc": "Exige correspondência exata entre maiúsculas e minúsculas.",
+    "caseSensitiveTitle": "Diferenciar Maiúsculas/Minúsculas",
+    "clearSandboxBtn": "Limpar",
+    "clearSearch": "Limpar busca",
+    "deleteRule": "Excluir snippet",
+    "editRule": "Editar snippet",
+    "emptyRules": "Nenhum snippet cadastrado. Crie seu primeiro atalho de texto.",
+    "emptySearch": "Nenhum snippet corresponde à sua busca.",
+    "enableNowBtn": "Ativar Agora",
+    "errDuplicateTrigger": "Já existe um snippet com esse gatilho e modo",
+    "errEmptyTrigger": "O gatilho não pode ficar vazio",
+    "errTriggerNewline": "O gatilho não pode conter quebras de linha",
+    "errTriggerTooLong": "O gatilho não pode ultrapassar 64 caracteres",
+    "excludedProcessesDesc": "Nomes de executáveis separados por vírgula (ex.: jogos ou terminais) onde a expansão fica sempre desativada.",
+    "excludedProcessesTitle": "Processos Excluídos Personalizados",
+    "exportBtn": "Exportar JSON",
+    "exportFailedToast": "Falha ao exportar snippets",
+    "exportSuccessToast": "Snippets exportados com sucesso",
+    "fieldLabel": "Rótulo (Opcional)",
+    "fieldLabelHint": "Nome amigável exibido na lista de regras",
+    "fieldLabelPlaceholder": "Assinatura de E-mail",
+    "fieldMode": "Modo de Disparo",
+    "fieldReplacement": "Conteúdo Expandido",
+    "fieldReplacementPlaceholder": "Digite o texto completo ou modelo...",
+    "fieldTrigger": "Palavra-Gatilho",
+    "fieldTriggerHint": "Use prefixos como ; ou / para evitar disparos acidentais",
+    "heroDesc": "Expanda abreviações curtas em textos completos, datas dinâmicas, modelos com a área de transferência e blocos de código com posicionamento de cursor em qualquer app do Windows. Desative quando quiser sem ganchos residuais.",
+    "heroTitle": "Expansor de Texto Global",
+    "hitCount": "{{count}} usos",
+    "importBtn": "Importar JSON",
+    "importFailedToast": "Falha ao importar snippets",
+    "importInvalidToast": "JSON inválido: matriz rules ausente",
+    "importSuccessToast": "{{count}} snippets importados",
+    "insertMacroTitle": "Inserir Variável Dinâmica",
+    "macroClipboard": "Área de Transf.",
+    "macroCursor": "Cursor",
+    "macroDate": "Data",
+    "macroDateTime": "Data e Hora",
+    "macroTime": "Hora",
+    "modalAddTitle": "Adicionar Regra de Snippet",
+    "modalEditTitle": "Editar Regra de Snippet",
+    "modeDelimiterDesc": "Aguarda Espaço, Tab ou Enter antes de expandir para evitar acionamentos no meio de palavras.",
+    "modeDelimiterShort": "Delimitador",
+    "modeDelimiterTitle": "Após Tecla Delimitadora",
+    "modeImmediateDesc": "Expande imediatamente após digitar o último caractere do gatilho.",
+    "modeImmediateShort": "Imediato",
+    "modeImmediateTitle": "Expansão Imediata",
+    "privacyBanner": "Trechos ASCII curtos usam digitação Unicode sem tocar na área de transferência. Textos multilinha usam marcadores de privacidade do Windows para nunca poluir o histórico do Tools3000 ou Win+V.",
+    "privacyGroup": "Privacidade e Proteção contra Erros",
+    "protectedAppsAria": "Apps protegidos nativamente",
+    "restoreClipboardDesc": "Restaura silenciosamente sua área de transferência anterior 140ms após colar expansões multilinha ou não-ASCII.",
+    "restoreClipboardTitle": "Restaurar Área de Transferência Após Colar",
+    "ruleDeletedToast": "Regra de snippet excluída",
+    "ruleDeleteFailed": "Falha ao excluir regra de snippet",
+    "ruleSavedToast": "Regra de snippet salva",
+    "ruleSaveFailed": "Falha ao salvar regra de snippet",
+    "rulesGroup": "Regras de Snippets",
+    "sandboxAria": "Caixa de teste ao vivo do expansor de texto",
+    "sandboxDisabledHint": "Ative o interruptor principal acima para testar seus gatilhos ao vivo aqui.",
+    "sandboxGroup": "Área de Teste ao Vivo",
+    "sandboxPlaceholder": "Clique aqui e digite ;date, ;now ou ;thx para ver a expansão instantânea...",
+    "saveExcludedBtn": "Salvar",
+    "saveFailed": "Falha ao salvar configurações",
+    "saveRuleBtn": "Salvar Snippet",
+    "searchPlaceholder": "Buscar gatilhos, rótulos ou conteúdo...",
+    "statusActive": "Ativo",
+    "statusDisabled": "Desativado (Zero Ganchos)",
+    "tryTriggersLabel": "Experimente digitar:"
   }
 }

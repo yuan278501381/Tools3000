@@ -52,7 +52,8 @@
     "remote_boost": "远程协助增强",
     "picasa_viewer": "Picasa 图片查看器",
     "clipboard": "剪贴板历史",
-    "file_locksmith": "文件占用解锁"
+    "file_locksmith": "文件占用解锁",
+    "text_expander": "文本扩展器"
   },
   "navSubtitle": {
     "stats": "按键和鼠标活动使用统计",
@@ -75,7 +76,8 @@
     "remote_boost": "主控端热键直通、修饰键急救与输入法智能脱敏",
     "picasa_viewer": "Rust 复刻经典轻量看图器（非原版全功能），启用自动关联全部支持的图片格式",
     "clipboard": "持久化剪贴板记录、毫秒级检索与图片一键贴图/翻译",
-    "file_locksmith": "零常驻查看文件占用进程与一键安全解锁"
+    "file_locksmith": "零常驻查看文件占用进程与一键安全解锁",
+    "text_expander": "在任意窗口输入短触发词，自动展开完整短语、动态日期与代码模板"
   },
   "extension": {
     "statusRunning": "运行中",
@@ -376,6 +378,10 @@
       "file_locksmith": {
         "name": "文件占用解锁",
         "description": "纯注册表 HKCU 右键菜单集成，0 后台内存占用，快速定位锁定文件或文件夹的进程并安全解锁"
+      },
+      "text_expander": {
+        "name": "文本扩展器",
+        "description": "原生全局文本缩写与动态宏展开引擎，支持日期/剪贴板/光标定位，内置密码管理器避让与零剪贴板历史污染；默认开箱即用，关闭即刻卸载钩子零内存占用。"
       }
     },
     "title": "功能模块与扩展插件"
@@ -527,7 +533,40 @@
     "saveFailed": "无法保存此设置",
     "browseFailed": "无法打开文件夹选择器",
     "openFolder": "打开文件夹",
-    "openFolderFailed": "无法打开保存文件夹"
+    "openFolderFailed": "无法打开保存文件夹",
+    "regionManagerTitle": "历史与固定选区管理",
+    "repeatLastCaptureShortcut": "复用上次区域截图",
+    "repeatLastCaptureShortcutDesc": "一键呼出截图并自动套用最近一次历史选区（省去先按截图键再按切换键）",
+    "regionCycleKeyLabel": "截图内切换历史选区快捷键",
+    "regionCycleKeyDesc": "进入截图或录屏框选后，单按往前翻历史选区，按 Shift + 该键往回翻",
+    "regionKeyR": "R / Shift+R（PixPin 习惯，推荐）",
+    "regionKeyBackquote": "` / Shift+`（波浪号键，与矩形 R 零冲突）",
+    "regionKeyF2": "F2 / Shift+F2（功能键）",
+    "regionKeyF4": "F4 / Shift+F4（功能键）",
+    "regionKeyOff": "关闭截图内单键切换",
+    "regionHistoryLimitLabel": "历史选区自动记忆数量",
+    "regionHistoryLimitDesc": "自动保留最近框选过的区域（跨重启持久保存；已置顶的固定选区永不自动淘汰）",
+    "regionLimitOff": "关闭自动记忆 (0 条)",
+    "regionLimitCount": "最近 {{count}} 条",
+    "regionSummary": "共 {{total}} 个选区 · 已置顶 {{pinned}} 个固定选区",
+    "regionAddFixed": "新增固定选区",
+    "regionClearUnpinned": "清空未置顶",
+    "regionQuickPresets": "快捷尺寸（自动主屏居中）：",
+    "regionFieldName": "选区名称",
+    "regionNamePlaceholder": "例如：教程对比框 / 公众号封面",
+    "regionFieldWidth": "宽 (W)",
+    "regionFieldHeight": "高 (H)",
+    "regionInvalidSize": "请输入有效的坐标与尺寸（宽、高需不小于 4 像素）",
+    "regionClearedToast": "已清空未置顶的历史选区",
+    "regionEmptyHint": "完成任意一次框选截图后会自动记录在此；也可以点击「新增固定选区」手动创建固定像素区域。",
+    "regionUnnamedLabel": "历史选区 #{{index}}",
+    "regionPinnedBadge": "固定",
+    "regionCaptureNow": "立即按此选区截图",
+    "regionCaptureNowShort": "截图",
+    "regionPin": "置顶为固定选区（永不淘汰）",
+    "regionUnpin": "取消置顶",
+    "regionEdit": "编辑名称与坐标尺寸",
+    "regionDelete": "删除此选区"
   },
   "history": {
     "title": "截图历史",
@@ -1450,7 +1489,16 @@
     "openDownloadedPortable": "打开已下载便携包",
     "installUpdateNow": "立即安装 {{version}}",
     "downloadUpdateNow": "下载更新 {{version}}",
-    "installUpdateFailed": "启动更新安装程序失败"
+    "installUpdateFailed": "启动更新安装程序失败",
+    "dismissVersion": "忽略此版本提醒",
+    "downloadNowBtn": "立即下载",
+    "installNowBtn": "立即安装",
+    "stripAvailableMessage": "发现新版本 {{version}}",
+    "stripReadyMessage": "新版本 {{version}} 已就绪，重启即可完成更新",
+    "versionDismissedHint": "已忽略当前版本的红点提示；随时可点击检查更新或下载恢复升级。",
+    "versionDismissedToast": "已忽略 {{version}} 版本更新提醒",
+    "viewChangelogShort": "查看更新内容",
+    "viewUpdate": "查看更新"
   },
   "sidebar": {
     "groupSystem": "系统总控",
@@ -1489,7 +1537,8 @@
     "enableAndOpen": "一键启用并打开",
     "kw_picasa_viewer": "picasa 看图 图片 查看器 相册 幻灯片 关联 格式 rust",
     "kw_clipboard": "剪贴板 历史 复制 粘贴 置顶 持久化 clipboard",
-    "kw_file_locksmith": "文件占用 解锁 句柄 进程 右键菜单 locksmith unlock"
+    "kw_file_locksmith": "文件占用 解锁 句柄 进程 右键菜单 locksmith unlock",
+    "kw_text_expander": "文本扩展器 短语 缩写 模板 宏 自动补全 输入替换 text expander snippet"
   },
   "onboarding": {
     "welcomeTitle": "欢迎使用 Tools3000",
@@ -1544,7 +1593,23 @@
     "next": "下一步",
     "prev": "上一步",
     "skip": "跳过引导",
-    "stepLabel": "第 {{current}} 步，共 {{total}} 步"
+    "stepLabel": "第 {{current}} 步，共 {{total}} 步",
+    "completeTipModules": "所有模块均可在「功能模块」或托盘快捷面板中随时按需启停",
+    "completeTipPicasa": "在「Picasa 图片查看器」中可一键设为系统默认看图工具",
+    "completeTipTextExpander": "内置「文本扩展器」开箱即用，在任意应用输入 ;date 或 ;now 即可展开（随时可自定义或关闭）",
+    "edgeWheelTip": "屏幕左右边缘滚动滚轮：直接调节系统音量或外接显示器硬件亮度",
+    "featureClipboard": "持久化剪贴板",
+    "featureClipboardDesc": "Alt+V 跨重启保留历史、多选合并粘贴、置顶分离与原生拖放直贴",
+    "featurePicasa": "轻量 Rust Picasa 看图",
+    "featurePicasaDesc": "小于 2 MB 单体架构，支持 41 种格式与 4K 高分屏毫秒秒开",
+    "featurePresentRemote": "演示特效与远控增强",
+    "featurePresentRemoteDesc": "按键回显、聚光灯高亮与 RDP/RustDesk 修饰键卡死一键急救",
+    "featureStudio": "自动缩放录屏工作室",
+    "featureStudioDesc": "音轨波形剪辑、点击自动放大与一键导出高清 GIF/MP4",
+    "searchSyntaxLabel": "全能搜索前缀语法",
+    "searchSyntaxQuickLook": "空格快捷预览",
+    "shortcutClipboard": "剪贴板历史",
+    "shortcutPin": "剪贴板快速贴图"
   },
   "hotkey": {
     "pressKeys": "请按下按键或组合键...",
@@ -2263,7 +2328,9 @@
     "pillClipboard": "剪贴板",
     "pillClipboardFullDesc": "剪贴板历史（随时呼出检索、收藏分组与批量合并粘贴）",
     "pillFileLocksmith": "文件解锁",
-    "pillFileLocksmithFullDesc": "文件占用解锁（零常驻资源管理器右键查看占用进程并解锁）"
+    "pillFileLocksmithFullDesc": "文件占用解锁（零常驻资源管理器右键查看占用进程并解锁）",
+    "pillTextExpander": "文本扩展",
+    "pillTextExpanderFullDesc": "文本扩展器（全局短语缩写与动态宏自动展开）"
   },
   "dialog": {
     "title": "文件对话框智能助手",
@@ -3081,7 +3148,14 @@
     "actionPastePlain": "纯文本粘贴",
     "actionEdit": "编辑",
     "hintQuickPaste": "直贴前 9 条",
-    "hintMultiSelect": "多选合并/删除"
+    "hintMultiSelect": "多选合并/删除",
+    "dragItemTip": "按住拖放到任意输入框或应用即可直接粘贴",
+    "hidePinnedBtn": "隐置顶",
+    "hidePinnedTip": "在其他分类中隐藏已置顶条目（仅在「置顶」分组查看）",
+    "hintDragKey": "拖拽",
+    "hintDragPaste": "拖放直贴",
+    "showPinnedBtn": "显置顶",
+    "showPinnedTip": "恢复在当前分类中显示已置顶条目"
   },
   "clipboardPage": {
     "overviewGroup": "持久化剪贴板历史",
@@ -3128,7 +3202,9 @@
     "saveBtn": "保存名单",
     "excludedSavedToast": "隐私排除进程名单已保存",
     "saveFailedToast": "保存剪贴板设置失败",
-    "clearedToast": "已清理 {{count}} 条剪贴板历史"
+    "clearedToast": "已清理 {{count}} 条剪贴板历史",
+    "hidePinnedInOtherTitle": "其他分类中不显示已置顶条目",
+    "hidePinnedInOtherDesc": "开启后，已置顶记录仅在「置顶」分类展示，不再占用全部、文本、图片、文件与颜色列表视野。"
   },
   "feedback": {
     "attachLogs": "附带本地脱敏的运行环境信息与最近 1000 行诊断日志",
@@ -3183,5 +3259,81 @@
     "pickFolder": "选择文件夹",
     "inspectNow": "立即检测占用",
     "inspectFailed": "启动文件占用解锁窗口失败"
+  },
+  "textExpander": {
+    "addRuleBtn": "新增短语",
+    "autoExcludeDesc": "当焦点位于密码管理器、远程桌面或系统凭据窗口时自动暂停监听，防止敏感场景误触发。",
+    "autoExcludeTitle": "密码管理器与安全终端自动避让",
+    "badgeMacros": "动态变量宏",
+    "badgeOptIn": "关闭零驻留",
+    "badgePrivacy": "零历史污染",
+    "caseSensitiveDesc": "开启后严格区分触发词的大小写字母。",
+    "caseSensitiveTitle": "区分大小写",
+    "clearSandboxBtn": "清空",
+    "clearSearch": "清除搜索",
+    "deleteRule": "删除短语",
+    "editRule": "编辑短语",
+    "emptyRules": "还没有文本扩展规则，点击右上角创建你的第一条快捷短语。",
+    "emptySearch": "没有找到匹配的短语规则。",
+    "enableNowBtn": "立即开启",
+    "errDuplicateTrigger": "已存在相同触发词和触发模式的规则",
+    "errEmptyTrigger": "触发词不能为空",
+    "errTriggerNewline": "触发词不能包含换行符",
+    "errTriggerTooLong": "触发词长度不能超过 64 个字符",
+    "excludedProcessesDesc": "用英文逗号分隔进程可执行文件名（如游戏或终端），这些应用中将始终暂停文本扩展。",
+    "excludedProcessesTitle": "自定义排除进程",
+    "exportBtn": "导出 JSON",
+    "exportFailedToast": "导出短语规则失败",
+    "exportSuccessToast": "已导出短语规则",
+    "fieldLabel": "备注名称（可选）",
+    "fieldLabelHint": "用于在规则列表中直观展示的名称",
+    "fieldLabelPlaceholder": "例如：工作邮件签名",
+    "fieldMode": "触发时机",
+    "fieldReplacement": "展开内容",
+    "fieldReplacementPlaceholder": "输入要自动替换的完整文本或动态模板...",
+    "fieldTrigger": "触发关键词",
+    "fieldTriggerHint": "建议以 ; 或 / 开头（如 ;mail），避免日常打字误触发",
+    "heroDesc": "在任意 Windows 应用中输入短缩写即可秒速展开为完整文本、动态日期、剪贴板模板或光标定位代码片段。默认开启开箱即用，关闭后即刻卸载全部钩子零占用。",
+    "heroTitle": "全局文本扩展器",
+    "hitCount": "已触发 {{count}} 次",
+    "importBtn": "导入 JSON",
+    "importFailedToast": "导入短语规则失败",
+    "importInvalidToast": "JSON 格式无效：缺少 rules 数组",
+    "importSuccessToast": "已成功导入 {{count}} 条短语规则",
+    "insertMacroTitle": "插入动态变量",
+    "macroClipboard": "当前剪贴板",
+    "macroCursor": "光标落点",
+    "macroDate": "当前日期",
+    "macroDateTime": "日期时间",
+    "macroTime": "当前时间",
+    "modalAddTitle": "新增短语规则",
+    "modalEditTitle": "编辑短语规则",
+    "modeDelimiterDesc": "输入完触发词后需再按空格、Tab 或回车才展开，适合短字母缩写防误触。",
+    "modeDelimiterShort": "边界触发",
+    "modeDelimiterTitle": "按边界键后触发",
+    "modeImmediateDesc": "敲完触发词的最后一个字符立即展开，适合带 ; 或 / 前缀的专属缩写。",
+    "modeImmediateShort": "即时展开",
+    "modeImmediateTitle": "敲完立即展开",
+    "privacyBanner": "短 ASCII 文本采用零剪贴板 Unicode 直输通道；多行或中文模板粘贴时自动挂载系统隐私排除标记，绝不污染 Tools3000 剪贴板历史或 Win+V。",
+    "privacyGroup": "隐私保护与防误触守卫",
+    "protectedAppsAria": "内置自动保护应用列表",
+    "restoreClipboardDesc": "粘贴多行或非 ASCII 文本后，在 140 毫秒后静默还原你原本的剪贴板内容。",
+    "restoreClipboardTitle": "展开后自动还原原剪贴板",
+    "ruleDeletedToast": "已删除短语规则",
+    "ruleDeleteFailed": "删除短语规则失败",
+    "ruleSavedToast": "短语规则已保存",
+    "ruleSaveFailed": "保存短语规则失败",
+    "rulesGroup": "短语规则列表",
+    "sandboxAria": "文本扩展实时体验沙盒",
+    "sandboxDisabledHint": "请先开启上方总开关，即可在此输入框中实时体验触发词自动展开。",
+    "sandboxGroup": "实时体验沙盒",
+    "sandboxPlaceholder": "点击此处并尝试输入 ;date、;now 或 ;thx，立刻感受零延迟文本展开...",
+    "saveExcludedBtn": "保存",
+    "saveFailed": "保存设置失败",
+    "saveRuleBtn": "保存规则",
+    "searchPlaceholder": "搜索触发词、备注或展开内容...",
+    "statusActive": "运行中",
+    "statusDisabled": "已关闭（零钩子）",
+    "tryTriggersLabel": "试试输入："
   }
 }

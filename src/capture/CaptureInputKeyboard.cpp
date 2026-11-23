@@ -8,6 +8,7 @@
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/ClipboardUtils.h"
 #include "capture/PinWindow.h"
 #include "capture/ScrollCapture.h"
@@ -48,6 +49,216 @@
 namespace tools3000::capture {
 
 using namespace input_detail;
+
+bool CaptureInput::applyExplicitRegionSelection(
+    HWND hwnd,
+    const RECT& rawScreenRect,
+    const std::string& labelUtf8) {
+    if (!m_state || !m_renderer) {
+        return false;
+    }
+
+    int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int surfaceW = m_state->frozenScreen.empty()
+        ? GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        : m_state->frozenScreen.cols;
+    int surfaceH = m_state->frozenScreen.empty()
+        ? GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        : m_state->frozenScreen.rows;
+
+    RECT winRc{};
+    if (hwnd && IsWindow(hwnd) && GetWindowRect(hwnd, &winRc)) {
+        originX = winRc.left;
+        originY = winRc.top;
+        if (m_state->frozenScreen.empty()) {
+            surfaceW = (std::max)(0L, winRc.right - winRc.left);
+            surfaceH = (std::max)(0L, winRc.bottom - winRc.top);
+        }
+    }
+
+    if (surfaceW < CaptureRegionHistory::kMinDimension ||
+        surfaceH < CaptureRegionHistory::kMinDimension) {
+        return false;
+    }
+
+    const RECT virtualBounds{originX, originY, originX + surfaceW, originY + surfaceH};
+    const RECT primaryBounds{0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+    RECT screenRect{};
+    if (!CaptureRegionHistory::sanitizeToBounds(rawScreenRect, virtualBounds, screenRect, &primaryBounds)) {
+        return false;
+    }
+
+    const LONG localLeft = std::clamp<LONG>(screenRect.left - originX, 0, surfaceW);
+    const LONG localTop = std::clamp<LONG>(screenRect.top - originY, 0, surfaceH);
+    const LONG localRight = std::clamp<LONG>(screenRect.right - originX, 0, surfaceW);
+    const LONG localBottom = std::clamp<LONG>(screenRect.bottom - originY, 0, surfaceH);
+    if ((localRight - localLeft) < CaptureRegionHistory::kMinDimension ||
+        (localBottom - localTop) < CaptureRegionHistory::kMinDimension) {
+        return false;
+    }
+
+    if (HMONITOR hMon = MonitorFromRect(&screenRect, MONITOR_DEFAULTTONEAREST)) {
+        const UINT dpiX = tools3000::core::dpi::effectiveDpiForMonitor(hMon);
+        const float newScale = tools3000::core::dpi::scaleForDpi(dpiX);
+        if (std::abs(newScale - m_state->dpiScale) >= 0.01f) {
+            m_state->dpiScale = newScale;
+            if (!m_renderer->updateDpiScale(newScale)) {
+                LOG_WARN("Failed to update capture overlay DPI resources for explicit region: dpi={}", dpiX);
+            }
+        }
+    }
+
+    closeAllCapturePopups(*m_state, false);
+    if (m_state->activeElement) {
+        m_state->activeElement->isActive = false;
+        m_state->activeElement->isEditing = false;
+        if (m_state->activeElement->tool == MarkupTool::Text &&
+            m_state->activeElement->text.empty()) {
+            m_state->markup.removeElement(m_state->activeElement->id);
+        }
+        m_state->activeElement = nullptr;
+        resetCoalescedUndo(*m_state);
+    }
+
+    m_state->dragging = false;
+    m_state->isMarking = false;
+    m_state->isManipulating = false;
+    m_state->isAdjustingSelection = false;
+    m_state->isAdjustingCornerRadius = false;
+    m_state->isDraggingToolbar = false;
+    m_state->isSelectingText = false;
+    m_state->isTextMarkupStreaming = false;
+    m_state->detectedWindow = {};
+    m_state->animDetectedWindowRect = {};
+    m_state->targetDetectedWindowRect = {};
+    m_state->animVelocity = {};
+    m_state->isHierarchyAnimating = false;
+    m_state->hierarchyBadgeFadeOutUntil = 0;
+    m_state->hierarchyBadgeText.clear();
+
+    m_state->dragStart = {localLeft, localTop};
+    m_state->dragEnd = {localRight, localBottom};
+    m_state->hasSavedSelectionBeforeInvert = false;
+    m_state->hasCustomToolbarPos = false;
+    m_state->detectedQrText.clear();
+    m_state->qrChipRect = {0, 0, 0, 0};
+    m_state->isQrChipHovered = false;
+    m_state->state = OverlayState::Selected;
+    m_state->isMarkupToolActive = false;
+    m_state->toolbarLayoutValid = false;
+
+    prepareMarkupBase();
+    rebuildToolbarButtons(currentSelectionRect());
+
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    const int selW = static_cast<int>(localRight - localLeft);
+    const int selH = static_cast<int>(localBottom - localTop);
+    const std::wstring wName = labelUtf8.empty()
+        ? std::wstring{}
+        : tools3000::core::WinUtils::utf8ToWstring(labelUtf8);
+    m_state->loupeToastUntil = GetTickCount() + 1400;
+    m_state->loupeToastMessage =
+        std::wstring(tools3000::core::trWCstrFor(zh, L"历史选区 ", L"Recent Region ")) +
+        (wName.empty() ? L"" : (wName + L" ")) +
+        L"(" + std::to_wstring(selW) + L"x" + std::to_wstring(selH) + L")";
+    if (hwnd && IsWindow(hwnd)) {
+        SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+    }
+
+    m_renderer->markMarkupDirty();
+    m_renderer->invalidate();
+    updateHoverCursor(m_state->currentCursor);
+    syncShortcutHintContext();
+    return true;
+}
+
+bool CaptureInput::applyHistoryRegionSelection(HWND hwnd, bool stepNewer) {
+    if (!m_state || !m_renderer) {
+        return false;
+    }
+
+    int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    int surfaceW = m_state->frozenScreen.empty()
+        ? GetSystemMetrics(SM_CXVIRTUALSCREEN)
+        : m_state->frozenScreen.cols;
+    int surfaceH = m_state->frozenScreen.empty()
+        ? GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        : m_state->frozenScreen.rows;
+
+    RECT winRc{};
+    if (hwnd && IsWindow(hwnd) && GetWindowRect(hwnd, &winRc)) {
+        originX = winRc.left;
+        originY = winRc.top;
+        if (m_state->frozenScreen.empty()) {
+            surfaceW = (std::max)(0L, winRc.right - winRc.left);
+            surfaceH = (std::max)(0L, winRc.bottom - winRc.top);
+        }
+    }
+
+    if (surfaceW < CaptureRegionHistory::kMinDimension ||
+        surfaceH < CaptureRegionHistory::kMinDimension) {
+        return false;
+    }
+
+    const RECT virtualBounds{
+        originX,
+        originY,
+        originX + surfaceW,
+        originY + surfaceH
+    };
+    const RECT primaryBounds{
+        0,
+        0,
+        GetSystemMetrics(SM_CXSCREEN),
+        GetSystemMetrics(SM_CYSCREEN)
+    };
+
+    auto& history = CaptureRegionHistory::instance();
+    RECT screenRect{};
+    std::string regionName;
+    const bool stepped = stepNewer
+        ? history.stepNewer(virtualBounds, screenRect, &primaryBounds, &regionName)
+        : history.stepOlder(virtualBounds, screenRect, &primaryBounds, &regionName);
+    if (!stepped) {
+        return false;
+    }
+
+    if (!applyExplicitRegionSelection(hwnd, screenRect, regionName)) {
+        return false;
+    }
+
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    const int curIdx = history.cursorIndex();
+    const std::size_t total = history.size();
+    const int selW = static_cast<int>(m_state->dragEnd.x - m_state->dragStart.x);
+    const int selH = static_cast<int>(m_state->dragEnd.y - m_state->dragStart.y);
+    const std::wstring wName = regionName.empty()
+        ? std::wstring{}
+        : (L" · " + tools3000::core::WinUtils::utf8ToWstring(regionName));
+    m_state->loupeToastUntil = GetTickCount() + 1400;
+    m_state->loupeToastMessage =
+        std::wstring(tools3000::core::trWCstrFor(zh, L"历史选区 ", L"Recent Region ")) +
+        std::to_wstring((curIdx >= 0) ? (curIdx + 1) : 1) + L"/" +
+        std::to_wstring((std::max<std::size_t>)(1, total)) +
+        wName +
+        L" (" + std::to_wstring(selW) + L"x" + std::to_wstring(selH) + L")";
+    m_renderer->invalidate();
+    return true;
+}
+
+void CaptureInput::showNoHistoryRegionToast(HWND hwnd) {
+    if (!m_state || !m_renderer) return;
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    m_state->loupeToastUntil = GetTickCount() + 1200;
+    m_state->loupeToastMessage = tools3000::core::trWCstrFor(
+        zh, L"暂无历史截图区域", L"No recent capture regions");
+    if (hwnd && IsWindow(hwnd)) {
+        SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+    }
+    m_renderer->invalidate();
+}
 
 LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
@@ -701,6 +912,36 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
             }
             const bool hasSelection = (keyCtx.overlayState == OverlayState::Selected ||
                                        keyCtx.overlayState == OverlayState::Marking);
+            const std::string configuredCycleKey =
+                tools3000::core::ConfigManager::instance().get<std::string>("/capture/regionHistoryKey", "R");
+            const WPARAM regionCycleVk = CaptureRegionHistory::parseCycleKeyVk(configuredCycleKey);
+            if (!ctrl && !alt && regionCycleVk != 0 && wParam == regionCycleVk &&
+                (CaptureRegionHistory::instance().maxEntries() > 0 || CaptureRegionHistory::instance().hasHistory()) &&
+                keyCtx.overlayState != OverlayState::Idle &&
+                !keyCtx.editingText &&
+                !m_state->historyMode &&
+                !m_state->isLongImageMode() &&
+                !CaptureOverlay::instance().isEditingPinned() &&
+                !m_state->dragging &&
+                !m_state->isMarking &&
+                !m_state->isDrawingMultiPointLine &&
+                !m_state->isManipulating &&
+                !m_state->isAdjustingSelection &&
+                !m_state->isAdjustingCornerRadius &&
+                !m_state->isDraggingToolbar &&
+                !m_state->sliderPopup.isDragging &&
+                !m_state->isSelectingText &&
+                !m_state->isTextMarkupStreaming &&
+                !m_state->isMarkupToolActive) {
+                if (CaptureRegionHistory::instance().hasHistory()) {
+                    applyHistoryRegionSelection(hwnd, shift);
+                    return 0;
+                }
+                if (!hasSelection || shift) {
+                    showNoHistoryRegionToast(hwnd);
+                    return 0;
+                }
+            }
             const auto decision = CaptureShortcutPolicy::resolveKeyDown(keyCtx, wParam, ctrl, shift, alt);
 
             switch (decision.action) {

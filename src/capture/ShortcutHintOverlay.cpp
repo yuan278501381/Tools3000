@@ -4,6 +4,7 @@
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "capture/ShortcutHintStyle.h"
 #include "capture/CaptureHudPalette.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/FloatingGlassBar.h"
 
 #include "core/config/ConfigManager.h"
@@ -148,12 +149,34 @@ std::wstring ShortcutHintOverlay::headerTitleFor(ShortcutHintContext context) co
     return tools3000::core::trWCstrFor(zh, L"快捷键指引", L"Shortcuts");
 }
 
+std::wstring configuredRegionHistoryHintPair() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const int limit = cfg.get<int>(
+        "/capture/regionHistoryLimit",
+        static_cast<int>(CaptureRegionHistory::kDefaultMaxEntries));
+    if (limit <= 0 && !CaptureRegionHistory::instance().hasHistory()) {
+        return {};
+    }
+    const std::string keyName = cfg.get<std::string>("/capture/regionHistoryKey", "R");
+    return CaptureRegionHistory::formatCycleHintPair(keyName);
+}
+
 std::vector<ShortcutHintItem>
 ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
     const bool zh = useChineseLabels();
+    const std::wstring regionHintKey = configuredRegionHistoryHintPair();
+    auto insertRegionHintAfter = [&](std::vector<ShortcutHintItem>& items, size_t pos) {
+        if (regionHintKey.empty()) return;
+        const size_t idx = (std::min)(pos, items.size());
+        items.insert(
+            items.begin() + static_cast<std::ptrdiff_t>(idx),
+            ShortcutHintItem{
+                regionHintKey,
+                tools3000::core::trWCstrFor(zh, L"复用历史截图区域", L"Reuse recent capture region")});
+    };
     switch (context) {
-        case ShortcutHintContext::CaptureSelecting:
-            return zh
+        case ShortcutHintContext::CaptureSelecting: {
+            std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
                       {L"拖拽", L"框选区域"},
                       {L"单击", L"智能选窗"},
@@ -172,14 +195,17 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Shift", L"Tap to cycle format"},
                       {L"Space", L"Hold to pan"},
                       {L"Ctrl+A / Esc", L"Full screen / Exit"}};
+            insertRegionHintAfter(items, 3);
+            return items;
+        }
         case ShortcutHintContext::CaptureDragging:
             return zh
                 ? std::vector<ShortcutHintItem>{{L"W/A/S/D", L"移动鼠标光标"}, {L"Shift / Tab", L"切换吸附 / 辅助微调"},
                                                 {L"Space", L"按住平移选区"}, {L"Esc", L"取消"}}
                 : std::vector<ShortcutHintItem>{{L"W/A/S/D", L"Move cursor"}, {L"Shift / Tab", L"Toggle snap / nudge"},
                                                 {L"Space", L"Hold to pan"}, {L"Esc", L"Cancel"}};
-        case ShortcutHintContext::CaptureSelected:
-            return zh
+        case ShortcutHintContext::CaptureSelected: {
+            std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
                       {L"Enter", L"完成并复制"},
                       {L"Ctrl+T", L"贴图置顶"},
@@ -189,7 +215,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Shift+WASD", L"尺寸微调"},
                       {L"[ / ]", L"圆角调节"},
                       {L"C / K", L"吸取像素色"},
-                      {L"R / Q / T / N", L"矩形/箭头/字/号"},
+                      {L"O / Q / T / N", L"椭圆/箭头/字/号"},
                       {L"Esc", L"分级返回"}}
                 : std::vector<ShortcutHintItem>{
                       {L"Enter", L"Copy & finish"},
@@ -200,8 +226,11 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Shift+WASD", L"Resize"},
                       {L"[ / ]", L"Corner radius"},
                       {L"C / K", L"Pick pixel color"},
-                      {L"R / Q / T / N", L"Rect/Arrow/Text/Step"},
+                      {L"O / Q / T / N", L"Oval/Arrow/Text/Step"},
                       {L"Esc", L"Step back"}};
+            insertRegionHintAfter(items, 4);
+            return items;
+        }
         case ShortcutHintContext::CaptureMarking:
             return zh
                 ? std::vector<ShortcutHintItem>{
@@ -248,8 +277,8 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Ctrl+A / Drag", L"Select text"},
                       {L"Ctrl+C / V", L"Copy / Paste"},
                       {L"Esc", L"Exit editing"}};
-        case ShortcutHintContext::RecordSelecting:
-            return zh
+        case ShortcutHintContext::RecordSelecting: {
+            std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
                       {L"拖拽", L"框选录制区域"},
                       {L"Tab / 滚轮", L"切换窗口层级"},
@@ -268,6 +297,9 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Enter", L"Confirm area"},
                       {L"Shift+1~5", L"Aspect ratio"},
                       {L"Esc", L"Cancel"}};
+            insertRegionHintAfter(items, 2);
+            return items;
+        }
         case ShortcutHintContext::ScrollCapture:
             return zh
                 ? std::vector<ShortcutHintItem>{{L"Space", L"暂停自动滚动"}, {L"Ctrl+T", L"完成并贴图"}, {L"Ctrl+S", L"完成并另存为"}, {L"Ctrl+C", L"完成并复制"}, {L"Enter", L"完成长截图"}, {L"Esc", L"取消"}}

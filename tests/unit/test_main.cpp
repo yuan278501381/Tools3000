@@ -54,6 +54,7 @@
 #include "capture/PinSpawnCalculator.h"
 #include "capture/PinPasteCoordinator.h"
 #include "capture/PinInputController.h"
+#include "capture/PinZoomStage.h"
 #include "capture/CaptureHistory.h"
 #include "keycast/KeycastStyle.h"
 #include "keycast/KeycastOverlay.h"
@@ -205,6 +206,7 @@ using namespace tools3000::gesture;
 #include "test_keycast_translator.inc"
 #include "test_industry_preview.inc"
 #include "test_live_ocr.inc"
+#include "test_text_expander.inc"
 
 TEST(UiThreadJoinTest, PumpsCrossThreadSentMessagesDuringShutdown) {
     HWND window = CreateWindowExW(

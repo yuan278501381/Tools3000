@@ -1,7 +1,7 @@
 import { useState, useEffect, type FC } from 'react';
 import { Card, SettingGroup, Toggle, Button, CodeBadge } from '../components/UIKit';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch, MessageSquarePlus } from 'lucide-react';
+import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch, MessageSquarePlus, BellOff } from 'lucide-react';
 import { bridgeRequest, useBridgeEvent, openExternalUrl } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import './AboutPage.css';
@@ -86,10 +86,13 @@ interface PerfMetrics {
 interface UpdateResult {
   status: 'idle' | 'checking' | 'available' | 'downloading' | 'readyToInstall' | 'upToDate' | 'unavailable' | 'error';
   hasUpdate?: boolean;
+  badgeVisible?: boolean;
+  dismissed?: boolean;
   isPortable?: boolean;
   currentVersion?: string;
   latestVersion?: string;
   releaseUrl?: string;
+  releaseNotes?: string;
   assetName?: string;
   assetSize?: number;
   downloadedBytes?: number;
@@ -114,6 +117,7 @@ export const AboutPage: FC = () => {
   const [buildDate, setBuildDate] = useState(__TOOLS3000_BUILD_DATE__);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [dismissingUpdate, setDismissingUpdate] = useState(false);
   const [updateResult, setUpdateResult] = useState<UpdateResult | null>(null);
 
   useBridgeEvent('update.result', (data) => {
@@ -260,6 +264,25 @@ export const AboutPage: FC = () => {
     }
   };
 
+  const handleDismissUpdate = async () => {
+    if (dismissingUpdate) return;
+    setDismissingUpdate(true);
+    try {
+      const res = await bridgeRequest<{ success?: boolean }>('app.dismissUpdate');
+      if (res?.success !== false) {
+        setUpdateResult((prev) => (prev ? { ...prev, dismissed: true, badgeVisible: false } : prev));
+        toast.info(String(t('about.versionDismissedToast' as never, {
+          version: updateResult?.latestVersion ?? '',
+          defaultValue: `Dismissed update badge for ${updateResult?.latestVersion ?? ''}`,
+        } as never)));
+      }
+    } catch {
+      toast.error(t('about.updateFailed'));
+    } finally {
+      setDismissingUpdate(false);
+    }
+  };
+
   const openReleasePage = async () => {
     const url = updateResult?.releaseUrl;
     if (!url || !url.toLowerCase().startsWith('https://github.com/yuan278501381/tools3000/')) return;
@@ -349,7 +372,9 @@ export const AboutPage: FC = () => {
         </div>
 
         {updateResult?.hasUpdate && (
-          <div className={`about-update-panel${updateResult.readyToInstall ? ' about-update-panel--ready' : ''}`}>
+          <div
+            className={`about-update-panel${updateResult.readyToInstall ? ' about-update-panel--ready' : ''}${updateResult.dismissed ? ' about-update-panel--dismissed' : ''}`}
+          >
             <div className="about-update-panel__row">
               <span className="about-update-panel__status">
                 <span className="about-update-panel__dot" aria-hidden="true" />
@@ -377,6 +402,28 @@ export const AboutPage: FC = () => {
                 <div className="about-update-panel__bar-fill" style={{ width: `${Math.min(100, Math.max(2, updateResult.progress ?? 0))}%` }} />
               </div>
             )}
+            {updateResult.dismissed ? (
+              <div className="about-update-panel__footer">
+                <span className="about-update-panel__dismissed-note">
+                  <BellOff size={13} aria-hidden="true" />
+                  <span>
+                    {t('about.versionDismissedHint' as never, 'Badge reminder dismissed for this version. Check for updates or download anytime to resume.')}
+                  </span>
+                </span>
+              </div>
+            ) : updateResult.status !== 'downloading' ? (
+              <div className="about-update-panel__footer">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void handleDismissUpdate()}
+                  disabled={dismissingUpdate}
+                >
+                  <BellOff size={13} aria-hidden="true" />
+                  <span>{t('about.dismissVersion' as never, 'Dismiss this version')}</span>
+                </Button>
+              </div>
+            ) : null}
           </div>
         )}
 

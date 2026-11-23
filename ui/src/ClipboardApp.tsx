@@ -49,6 +49,7 @@ import {
   Pencil,
   Check,
   Sparkles,
+  GripVertical,
 } from 'lucide-react';
 import { CodeBadge } from './components/UIKit';
 import {
@@ -95,7 +96,13 @@ export interface ClipboardGroupInfo {
 interface ClipboardQueryResponse {
   total: number;
   matched: number;
+  pinnedCount?: number;
+  hiddenPinnedCount?: number;
   items: ClipboardItemSummary[];
+}
+
+interface ClipboardSettingsSnippet {
+  hidePinnedInOtherCategories?: boolean;
 }
 
 interface ClipboardGroupsResponse {
@@ -137,6 +144,9 @@ export const ClipboardApp: FC = () => {
   const [loading, setLoading] = useState(false);
   const [windowPinned, setWindowPinned] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [hidePinnedInOtherCategories, setHidePinnedInOtherCategories] = useState(false);
+  const [pinnedCount, setPinnedCount] = useState(0);
+  const [draggingItemId, setDraggingItemId] = useState<number | null>(null);
 
   // 批量多选状态（固定锚点模型 + 严格保序数组，用于按勾选先后顺序合并粘贴）
   const [multiSelectMode, setMultiSelectMode] = useState(false);
@@ -159,6 +169,8 @@ export const ClipboardApp: FC = () => {
   const newGroupInputRef = useRef<HTMLInputElement>(null);
   const itemBtnRefs = useRef<Map<number, HTMLButtonElement>>(new Map());
   const handledInMouseDownRef = useRef<number | null>(null);
+  const suppressClickItemIdRef = useRef<number | null>(null);
+  const hidePinnedRef = useRef(false);
 
   const selectedIndex = selection.focusIndex;
   const selectedIds = selection.selectedIds;
@@ -214,26 +226,36 @@ export const ClipboardApp: FC = () => {
     }
   }, []);
 
-  const fetchItems = useCallback(async (q: string, kind: FilterKind, groupId: string) => {
-    setLoading(true);
-    try {
-      const res = await bridgeRequest<ClipboardQueryResponse>(
-        'clipboard.query',
-        { query: q, kind, groupId, limit: 120, offset: 0 },
-        { silent: true },
-      );
-      if (res && Array.isArray(res.items)) {
-        setItems(res.items);
-        setTotalCount(typeof res.total === 'number' ? res.total : res.items.length);
-        const aliveList = res.items.map((it) => it.id);
-        setSelection((prev) => pruneClipboardSelection(prev, aliveList));
+  const fetchItems = useCallback(
+    async (q: string, kind: FilterKind, groupId: string, hidePinnedOverride?: boolean) => {
+      const effectiveHidePinned = hidePinnedOverride ?? hidePinnedRef.current;
+      const excludePinned = kind !== 'pinned' && effectiveHidePinned;
+      setLoading(true);
+      try {
+        const res = await bridgeRequest<ClipboardQueryResponse>(
+          'clipboard.query',
+          { query: q, kind, groupId, limit: 120, offset: 0, excludePinned },
+          { silent: true },
+        );
+        if (res && Array.isArray(res.items)) {
+          setItems(res.items);
+          setTotalCount(typeof res.total === 'number' ? res.total : res.items.length);
+          if (typeof res.pinnedCount === 'number') {
+            setPinnedCount(res.pinnedCount);
+          } else if (!excludePinned) {
+            setPinnedCount(res.items.filter((it) => it.pinned).length);
+          }
+          const aliveList = res.items.map((it) => it.id);
+          setSelection((prev) => pruneClipboardSelection(prev, aliveList));
+        }
+      } catch {
+        // 静默兜底
+      } finally {
+        setLoading(false);
       }
-    } catch {
-      // 静默兜底
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [],
+  );
 
   const signalFrameReady = useCallback(() => {
     let sent = false;
@@ -255,20 +277,31 @@ export const ClipboardApp: FC = () => {
     let cancelled = false;
     const initTimer = window.setTimeout(() => {
       if (cancelled) return;
-      void Promise.all([
-        bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true })
-          .then((res) => {
-            if (!cancelled && res && Array.isArray(res.groups)) {
-              setGroups(res.groups);
-            }
-          })
-          .catch(() => {}),
-        fetchItems('', 'all', ''),
-      ]).finally(() => {
+      void (async () => {
+        let initialHidePinned = false;
+        try {
+          const [groupsRes, settingsRes] = await Promise.all([
+            bridgeRequest<ClipboardGroupsResponse>('clipboard.listGroups', undefined, { silent: true }).catch(() => null),
+            bridgeRequest<ClipboardSettingsSnippet>('clipboard.getSettings', undefined, { silent: true }).catch(() => null),
+          ]);
+          if (!cancelled && groupsRes && Array.isArray(groupsRes.groups)) {
+            setGroups(groupsRes.groups);
+          }
+          if (!cancelled && typeof settingsRes?.hidePinnedInOtherCategories === 'boolean') {
+            initialHidePinned = settingsRes.hidePinnedInOtherCategories;
+            hidePinnedRef.current = initialHidePinned;
+            setHidePinnedInOtherCategories(initialHidePinned);
+          }
+        } catch {
+          // 静默兜底
+        }
+        if (!cancelled) {
+          await fetchItems('', 'all', '', initialHidePinned);
+        }
         if (!cancelled) {
           signalFrameReady();
         }
-      });
+      })();
     }, 0);
     return () => {
       cancelled = true;
@@ -283,10 +316,10 @@ export const ClipboardApp: FC = () => {
       return;
     }
     const timer = window.setTimeout(() => {
-      void fetchItems(query, filterKind, activeGroupId);
+      void fetchItems(query, filterKind, activeGroupId, hidePinnedInOtherCategories);
     }, query ? 40 : 0);
     return () => window.clearTimeout(timer);
-  }, [query, filterKind, activeGroupId, fetchItems]);
+  }, [query, filterKind, activeGroupId, hidePinnedInOtherCategories, fetchItems]);
 
   useEffect(() => {
     if (!selectedItem || selectedItem.kind === 'image') {
@@ -314,21 +347,44 @@ export const ClipboardApp: FC = () => {
   useBridgeEvent('clipboard:shown', () => {
     setFocusIndexOnly(0);
     setEditingItemId(null);
-    void Promise.all([
-      fetchGroups(),
-      fetchItems(query, filterKind, activeGroupId),
-    ]).finally(() => {
+    clearMultiSelection();
+    suppressClickItemIdRef.current = null;
+    handledInMouseDownRef.current = null;
+    void (async () => {
+      let latestHidePinned = hidePinnedRef.current;
+      try {
+        const settingsRes = await bridgeRequest<ClipboardSettingsSnippet>('clipboard.getSettings', undefined, { silent: true });
+        if (typeof settingsRes?.hidePinnedInOtherCategories === 'boolean') {
+          latestHidePinned = settingsRes.hidePinnedInOtherCategories;
+          hidePinnedRef.current = latestHidePinned;
+          setHidePinnedInOtherCategories(latestHidePinned);
+        }
+      } catch {
+        // 静默兜底
+      }
+      await Promise.all([
+        fetchGroups(),
+        fetchItems(query, filterKind, activeGroupId, latestHidePinned),
+      ]);
       signalFrameReady();
       requestAnimationFrame(() => {
         searchInputRef.current?.focus();
         searchInputRef.current?.select();
       });
-    });
+    })();
   });
 
   useBridgeEvent('clipboard:updated', () => {
     void fetchGroups();
     void fetchItems(query, filterKind, activeGroupId);
+  });
+
+  useBridgeEvent('clipboard:settingsChanged', (rawData) => {
+    const data = rawData as ClipboardSettingsSnippet | undefined;
+    if (typeof data?.hidePinnedInOtherCategories === 'boolean') {
+      hidePinnedRef.current = data.hidePinnedInOtherCategories;
+      setHidePinnedInOtherCategories(data.hidePinnedInOtherCategories);
+    }
   });
 
   useBridgeEvent('clipboard:windowState', (rawState) => {
@@ -358,6 +414,22 @@ export const ClipboardApp: FC = () => {
       setWindowPinned((prev) => !prev);
     }
   }, [windowPinned]);
+
+  const handleToggleHidePinned = useCallback(async () => {
+    const next = !hidePinnedRef.current;
+    hidePinnedRef.current = next;
+    setHidePinnedInOtherCategories(next);
+    setFocusIndexOnly(0);
+    try {
+      await bridgeRequest(
+        'clipboard.updateSettings',
+        { hidePinnedInOtherCategories: next },
+        { silent: true },
+      );
+    } catch {
+      // 静默兜底
+    }
+  }, [setFocusIndexOnly]);
 
   const handleToggleWindowMaximize = useCallback(async () => {
     try {
@@ -594,26 +666,76 @@ export const ClipboardApp: FC = () => {
     (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
       if (e.button !== 0) return;
       const isMultiGesture = e.shiftKey || e.ctrlKey || e.metaKey || multiSelectMode;
-      if (!isMultiGesture) {
-        handledInMouseDownRef.current = null;
+      if (isMultiGesture) {
+        // 在 mousedown 当拍拦截 Shift/Ctrl 原生文字蓝底选区并即时完成勾选/连选（对齐 Windows 原生 ListView 手感，0 吞点击）
+        e.preventDefault();
+        try {
+          window.getSelection()?.removeAllRanges();
+        } catch {
+          // 忽略不可用环境
+        }
+        e.currentTarget.focus({ preventScroll: true });
+        handledInMouseDownRef.current = item.id;
+        suppressClickItemIdRef.current = null;
+        applyItemSelection(item, idx, e);
         return;
       }
-      // 在 mousedown 当拍拦截 Shift/Ctrl 原生文字蓝底选区并即时完成勾选/连选（对齐 Windows 原生 ListView 手感，0 吞点击）
-      e.preventDefault();
-      try {
-        window.getSelection()?.removeAllRanges();
-      } catch {
-        // 忽略不可用环境
-      }
-      e.currentTarget.focus({ preventScroll: true });
-      handledInMouseDownRef.current = item.id;
-      applyItemSelection(item, idx, e);
+
+      handledInMouseDownRef.current = null;
+      if (editingItemId !== null) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, select, a, [data-no-item-drag="true"]')) return;
+
+      // 左键拖动移动距离 >= 8px 时触发 Win32 原生 OLE DoDragDrop（拖入任意输入框直接粘贴且保持面板不关闭）
+      const useClientCoords =
+        e.screenX === 0 && e.screenY === 0 && (e.clientX !== 0 || e.clientY !== 0);
+      const startX = useClientCoords ? e.clientX : e.screenX;
+      const startY = useClientCoords ? e.clientY : e.screenY;
+      const sawButtonsDown = e.buttons > 0;
+
+      const cleanup = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', cleanup);
+        window.removeEventListener('blur', cleanup);
+      };
+      const onMove = (moveEvt: MouseEvent) => {
+        if (sawButtonsDown && (moveEvt.buttons & 1) === 0) {
+          cleanup();
+          return;
+        }
+        const curX = useClientCoords ? moveEvt.clientX : moveEvt.screenX;
+        const curY = useClientCoords ? moveEvt.clientY : moveEvt.screenY;
+        if (Math.hypot(curX - startX, curY - startY) >= 8) {
+          cleanup();
+          suppressClickItemIdRef.current = item.id;
+          setDraggingItemId(item.id);
+          void bridgeRequest('clipboard.startNativeDrag', { id: item.id }, { silent: true })
+            .catch(() => {})
+            .finally(() => {
+              setDraggingItemId((cur) => (cur === item.id ? null : cur));
+              window.setTimeout(() => {
+                if (suppressClickItemIdRef.current === item.id) {
+                  suppressClickItemIdRef.current = null;
+                }
+              }, 80);
+            });
+        }
+      };
+
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', cleanup);
+      window.addEventListener('blur', cleanup);
     },
-    [applyItemSelection, multiSelectMode],
+    [applyItemSelection, editingItemId, multiSelectMode],
   );
 
   const handleItemClick = useCallback(
     (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
+      if (suppressClickItemIdRef.current === item.id) {
+        suppressClickItemIdRef.current = null;
+        e.preventDefault();
+        return;
+      }
       if (handledInMouseDownRef.current === item.id && e.detail > 0) {
         handledInMouseDownRef.current = null;
         return;
@@ -782,6 +904,8 @@ export const ClipboardApp: FC = () => {
   };
 
   const showCheckboxes = multiSelectMode || selectedIds.length > 0;
+  const hasAnyPinned = pinnedCount > 0 || items.some((it) => it.pinned);
+  const showHidePinnedToggle = filterKind !== 'pinned' && (hidePinnedInOtherCategories || hasAnyPinned);
 
   return (
     <div
@@ -905,6 +1029,30 @@ export const ClipboardApp: FC = () => {
         </div>
 
         <div className="clip-popup__filter-right">
+          {showHidePinnedToggle && (
+            <button
+              type="button"
+              className={`clip-popup__pill${hidePinnedInOtherCategories ? ' clip-popup__pill--active' : ''}`}
+              aria-pressed={hidePinnedInOtherCategories}
+              onClick={() => void handleToggleHidePinned()}
+              title={
+                hidePinnedInOtherCategories
+                  ? t('clipboard.showPinnedTip', 'Show pinned items in this category again')
+                  : t('clipboard.hidePinnedTip', 'Hide pinned items from other categories (view them in Pinned tab)')
+              }
+            >
+              {hidePinnedInOtherCategories ? (
+                <Pin size={14} aria-hidden="true" />
+              ) : (
+                <PinOff size={14} aria-hidden="true" />
+              )}
+              <span>
+                {hidePinnedInOtherCategories
+                  ? t('clipboard.showPinnedBtn', 'Show Pinned')
+                  : t('clipboard.hidePinnedBtn', 'Hide Pinned')}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             className={`clip-popup__pill${showCheckboxes ? ' clip-popup__pill--active' : ''}`}
@@ -1169,13 +1317,15 @@ export const ClipboardApp: FC = () => {
                   }}
                   type="button"
                   role="option"
+                  draggable={false}
                   aria-selected={idx === selectedIndex || isChecked}
                   data-clip-id={item.id}
-                  className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}${isChecked ? ' clip-popup__item--checked' : ''}`}
+                  title={t('clipboard.dragItemTip', 'Drag to any input field or app to paste')}
+                  className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}${isChecked ? ' clip-popup__item--checked' : ''}${draggingItemId === item.id ? ' clip-popup__item--dragging' : ''}`}
                   onMouseDown={(e) => handleItemMouseDown(item, idx, e)}
                   onClick={(e) => handleItemClick(item, idx, e)}
                   onDoubleClick={() => {
-                    if (!multiSelectMode && selectedIds.length === 0) {
+                    if (!multiSelectMode && selectedIds.length === 0 && suppressClickItemIdRef.current !== item.id) {
                       void handleActivate(item, false, true);
                     }
                   }}
@@ -1208,6 +1358,7 @@ export const ClipboardApp: FC = () => {
                     <span className="clip-popup__item-badges">
                       {item.copyCount > 1 && <CodeBadge>{`x${item.copyCount}`}</CodeBadge>}
                       {item.pinned && <Pin size={13} strokeWidth={2.4} className="clip-popup__pin-dot" aria-hidden="true" />}
+                      <GripVertical size={13} strokeWidth={2} className="clip-popup__item-drag-grip" aria-hidden="true" />
                     </span>
                   </div>
 
@@ -1225,6 +1376,7 @@ export const ClipboardApp: FC = () => {
                         src={`${BLOBS_BASE_URL}${encodeURIComponent(item.imageFile)}`}
                         alt={item.preview}
                         loading="lazy"
+                        draggable={false}
                       />
                     )}
                     <span className="clip-popup__text-snippet">
@@ -1456,6 +1608,10 @@ export const ClipboardApp: FC = () => {
           <span className="clip-popup__hint">
             <CodeBadge>Ctrl/Shift+Click</CodeBadge>
             <span>{t('clipboard.hintMultiSelect', 'Multi-Select')}</span>
+          </span>
+          <span className="clip-popup__hint">
+            <CodeBadge>{t('clipboard.hintDragKey', 'Drag')}</CodeBadge>
+            <span>{t('clipboard.hintDragPaste', 'Drop to Paste')}</span>
           </span>
           <span className="clip-popup__hint">
             <CodeBadge>Esc</CodeBadge>

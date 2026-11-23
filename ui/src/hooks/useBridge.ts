@@ -444,7 +444,17 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
       return {
         format: 'png', quality: 90, saveToFile: true, copyToClipboard: true,
         saveDirectory: '', showCrosshair: false, autoDetectWindow: true,
-        showShortcutHints: true,
+        showShortcutHints: true, regionHistoryLimit: 10, regionHistoryKey: 'R', regionHistoryCount: 0,
+      };
+
+    case 'capture.getRegionHistory':
+      return {
+        success: true,
+        items: [],
+        maxEntries: 10,
+        pinnedCount: 0,
+        primaryWidth: 1920,
+        primaryHeight: 1080,
       };
 
     case 'recording.getSettings':
@@ -534,6 +544,7 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
     case 'hotkey.getAll':
       return [
         { name: 'Screenshot', shortcut: 'F1' },
+        { name: 'Repeat Last Capture', shortcut: 'Shift+F1' },
         { name: 'Record', shortcut: 'Ctrl+Shift+R' },
         { name: 'OCR', shortcut: 'Ctrl+Shift+O' },
         { name: 'Pause Gestures', shortcut: 'Ctrl+Alt+Shift+W' },

@@ -956,5 +956,8 @@
   "重点说明||Text": "ポイント解説",
   "静音||Off": "ミュート",
   "高刷||Smooth": "高フレーム",
-  "鼠标自动运镜||Auto Zoom": "マウス自動ズーム"
+  "鼠标自动运镜||Auto Zoom": "マウス自動ズーム",
+  "Recent Region ": "履歴領域 ",
+  "No recent capture regions": "履歴キャプチャ領域がありません",
+  "Reuse recent capture region": "履歴キャプチャ領域を再利用"
 }

@@ -1,0 +1,569 @@
+/* -----------------------------------------------------------------------------
+ * TextExpanderPage.css -- 文本扩展器设置与沙盒页面样式 (@container 自适应)
+ * ----------------------------------------------------------------------------- */
+
+.text-expander-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ── Hero 概览与一键总开关 ───────────────────────────────────────────────── */
+
+.te-hero {
+  padding: 18px 20px;
+}
+
+.te-hero__row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.te-hero__left {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  min-width: 0;
+  flex: 1;
+}
+
+.te-hero__icon {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.te-hero__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.te-hero__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.te-hero__title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.te-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.83rem;
+  font-weight: 600;
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+
+.te-status-pill--active {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 32%, transparent);
+}
+
+.te-status-pill__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.te-hero__desc {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.te-hero__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.te-hero__switch {
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+/* ── 实时体验沙盒输入框 ──────────────────────────────────────────────────── */
+
+.te-sandbox {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.te-sandbox__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, var(--border-subtle));
+  background: color-mix(in srgb, var(--warning) 9%, var(--bg-surface-secondary));
+  color: var(--text-primary);
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.te-sandbox__notice-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.te-sandbox__notice-icon {
+  color: var(--warning);
+  flex-shrink: 0;
+}
+
+.te-sandbox__textarea {
+  width: 100%;
+  min-height: 92px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 500;
+  line-height: 1.55;
+  resize: vertical;
+  transition: border-color var(--transition-fast);
+}
+
+.te-sandbox__textarea:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.te-sandbox__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.te-sandbox__hints {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.84rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* ── 短语规则管理工具栏与列表 ────────────────────────────────────────────── */
+
+.te-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.te-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.te-search-box__icon {
+  position: absolute;
+  left: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+.te-search-box__input {
+  width: 100%;
+  padding: 8px 32px 8px 34px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-weight: 500;
+  transition: border-color var(--transition-fast);
+}
+
+.te-search-box__input:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.te-search-box__clear {
+  position: absolute;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.te-search-box__clear:hover {
+  background: var(--ghost-hover-bg);
+  color: var(--text-primary);
+}
+
+.te-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.te-rules-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.te-rule-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.te-rule-item:hover {
+  border-color: var(--card-border-hover);
+  background: var(--card-hover);
+}
+
+.te-rule-item--disabled {
+  opacity: 0.65;
+}
+
+.te-rule-item__main {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.te-rule-item__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.te-rule-item__label {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.te-mode-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  font-size: 0.83rem;
+  font-weight: 600;
+  border: 1px solid var(--border-subtle);
+  background: var(--well-bg);
+  color: var(--text-secondary);
+}
+
+.te-mode-chip--immediate {
+  color: var(--primary-hover);
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border-subtle));
+  background: var(--primary-dim);
+}
+
+.te-rule-item__hits {
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+  margin-left: auto;
+}
+
+.te-rule-item__preview {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.te-rule-item__controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.te-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 32px 16px;
+  text-align: center;
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border-subtle);
+  color: var(--text-secondary);
+}
+
+.te-empty-state__icon {
+  color: var(--text-muted);
+}
+
+.te-empty-state__text {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+/* ── 新增 / 编辑短语表单模态框 ───────────────────────────────────────────── */
+
+.te-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.te-form__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.te-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.te-mode-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.te-mode-option:hover {
+  border-color: var(--card-border-hover);
+}
+
+.te-mode-option--active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.te-mode-option__head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.88rem;
+  font-weight: 600;
+}
+
+.te-mode-option__desc {
+  font-size: 0.83rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.te-form__textarea {
+  width: 100%;
+  min-height: 112px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.9rem;
+  font-weight: 500;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.te-form__textarea:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.te-macros {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.te-macros__label {
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.te-macros__bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.te-macro-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.te-macro-pill:hover {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+}
+
+.te-macro-pill__token {
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  color: var(--primary-hover);
+}
+
+.te-form__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ── 隐私与防误触设置区块 ────────────────────────────────────────────────── */
+
+.te-privacy-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  font-size: 0.86rem;
+  font-weight: 500;
+  line-height: 1.5;
+  margin-bottom: 12px;
+}
+
+.te-privacy-banner__icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--primary);
+}
+
+.te-sensitive-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 8px;
+}
+
+.te-excluded-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.te-excluded-row__input {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+/* ── @container 弹性响应式布局 ───────────────────────────────────────────── */
+
+@container (max-width: 620px) {
+  .te-hero__row {
+    flex-direction: column;
+  }
+
+  .te-rule-item {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .te-rule-item__controls {
+    justify-content: flex-end;
+  }
+
+  .te-form__grid,
+  .te-mode-selector {
+    grid-template-columns: 1fr;
+  }
+}

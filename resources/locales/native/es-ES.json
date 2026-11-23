@@ -956,5 +956,8 @@
   "重点说明||Text": "Nota clave",
   "静音||Off": "Silencio",
   "高刷||Smooth": "Fluido",
-  "鼠标自动运镜||Auto Zoom": "Zoom auto ratón"
+  "鼠标自动运镜||Auto Zoom": "Zoom auto ratón",
+  "Recent Region ": "Región reciente ",
+  "No recent capture regions": "No hay regiones de captura recientes",
+  "Reuse recent capture region": "Reutilizar región reciente"
 }

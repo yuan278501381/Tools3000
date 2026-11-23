@@ -52,7 +52,8 @@
     "remote_boost": "원격 제어 부스트",
     "picasa_viewer": "Picasa 이미지 뷰어",
     "clipboard": "클립보드 기록",
-    "file_locksmith": "파일 잠금 해제"
+    "file_locksmith": "파일 잠금 해제",
+    "text_expander": "텍스트 확장기"
   },
   "navSubtitle": {
     "stats": "키보드 및 마우스 사용 활동 통계",
@@ -75,7 +76,8 @@
     "remote_boost": "몰입형 시스템 단축키 직통, 보조키 응급 해제 및 스마트 IME 정리",
     "picasa_viewer": "Rust로 재구현한 경량 Picasa 뷰어(원본 전체 기능 아님), 활성화 시 모든 지원 이미지 형식 자동 연결",
     "clipboard": "재부팅 후에도 유지되는 클립보드 기록, 초고속 검색 및 이미지 핀/번역",
-    "file_locksmith": "상주 메모리 0으로 파일 점유 프로세스 확인 및 안전 해제"
+    "file_locksmith": "상주 메모리 0으로 파일 점유 프로세스 확인 및 안전 해제",
+    "text_expander": "어디서나 짧은 키워드로 상용구, 동적 날짜 및 템플릿을 즉시 확장"
   },
   "extension": {
     "statusRunning": "실행 중",
@@ -376,6 +378,10 @@
       "file_locksmith": {
         "name": "파일 잠금 해제",
         "description": "순수 HKCU 우클릭 메뉴 통합으로 백그라운드 메모리 없이 잠긴 파일의 점유 프로세스를 찾아 안전하게 해제합니다"
+      },
+      "text_expander": {
+        "name": "텍스트 확장기",
+        "description": "날짜·클립보드·커서 위치 매크로와 비밀번호 관리자 자동 예외, 클립보드 기록 비오염을 지원하는 전역 텍스트 확장 엔진. 기본 활성화로 바로 사용할 수 있으며 끌 때는 훅과 메모리 점유가 0입니다."
       }
     },
     "title": "기능 모듈 및 확장"
@@ -527,7 +533,40 @@
     "saveFailed": "이 설정을 저장할 수 없습니다",
     "browseFailed": "폴더 선택 창을 열 수 없습니다",
     "openFolder": "폴더 열기",
-    "openFolderFailed": "폴더를 열 수 없습니다"
+    "openFolderFailed": "폴더를 열 수 없습니다",
+    "regionManagerTitle": "최근 및 고정 캡처 영역 관리",
+    "repeatLastCaptureShortcut": "마지막 영역 다시 캡처",
+    "repeatLastCaptureShortcutDesc": "직전에 사용한 캡처 영역이 자동으로 선택된 상태로 즉시 캡처 시작",
+    "regionCycleKeyLabel": "캡처 화면 내 영역 전환 키",
+    "regionCycleKeyDesc": "캡처 또는 녹화 영역 선택 중 누르면 이전 영역, Shift + 키로 다음 영역으로 순환",
+    "regionKeyR": "R / Shift+R (PixPin 방식, 권장)",
+    "regionKeyBackquote": "` / Shift+` (백틱 키, 사각형 R과 충돌 없음)",
+    "regionKeyF2": "F2 / Shift+F2 (기능 키)",
+    "regionKeyF4": "F4 / Shift+F4 (기능 키)",
+    "regionKeyOff": "화면 내 단축키 전환 끄기",
+    "regionHistoryLimitLabel": "최근 캡처 영역 기억 개수",
+    "regionHistoryLimitDesc": "최근 선택한 영역을 재시작 후에도 자동 보관 (고정된 영역은 자동 삭제되지 않음)",
+    "regionLimitOff": "자동 기억 끄기 (0개)",
+    "regionLimitCount": "최근 {{count}}개",
+    "regionSummary": "총 {{total}}개 · 고정 {{pinned}}개",
+    "regionAddFixed": "고정 영역 추가",
+    "regionClearUnpinned": "미고정 비우기",
+    "regionQuickPresets": "빠른 크기 프리셋(주 모니터 중앙 배치):",
+    "regionFieldName": "영역 이름",
+    "regionNamePlaceholder": "예: 튜토리얼 프레임 / 썸네일 영역",
+    "regionFieldWidth": "너비 (W)",
+    "regionFieldHeight": "높이 (H)",
+    "regionInvalidSize": "올바른 좌표와 크기를 입력하세요 (너비·높이 최소 4px)",
+    "regionClearedToast": "고정되지 않은 최근 영역을 비웠습니다",
+    "regionEmptyHint": "영역 캡처를 완료하면 자동으로 기록됩니다. 상단의 고정 영역 추가로 직접 지정할 수도 있습니다.",
+    "regionUnnamedLabel": "최근 영역 #{{index}}",
+    "regionPinnedBadge": "고정",
+    "regionCaptureNow": "이 영역으로 바로 캡처",
+    "regionCaptureNowShort": "캡처",
+    "regionPin": "고정 영역으로 핀 고정 (자동 삭제 제외)",
+    "regionUnpin": "고정 해제",
+    "regionEdit": "이름 및 좌표 크기 편집",
+    "regionDelete": "영역 삭제"
   },
   "history": {
     "title": "캡처 기록",
@@ -1450,7 +1489,16 @@
     "openDownloadedPortable": "포터블 패키지 열기",
     "installUpdateNow": "{{version}} 설치",
     "downloadUpdateNow": "{{version}} 다운로드",
-    "installUpdateFailed": "업데이트 설치 프로그램을 실행하지 못했습니다"
+    "installUpdateFailed": "업데이트 설치 프로그램을 실행하지 못했습니다",
+    "dismissVersion": "이 버전 알림 무시",
+    "downloadNowBtn": "지금 다운로드",
+    "installNowBtn": "지금 설치",
+    "stripAvailableMessage": "새 버전 {{version}} 사용 가능",
+    "stripReadyMessage": "{{version}} 설치 준비 완료 — 재시작하여 업데이트 완료",
+    "versionDismissedHint": "이 버전의 배지 알림을 숨겼습니다. 언제든 업데이트 확인 또는 다운로드로 재개할 수 있습니다.",
+    "versionDismissedToast": "{{version}} 업데이트 배지를 숨겼습니다",
+    "viewChangelogShort": "변경 내역 보기",
+    "viewUpdate": "업데이트 보기"
   },
   "sidebar": {
     "groupSystem": "시스템",
@@ -1489,7 +1537,8 @@
     "enableAndOpen": "활성화 후 열기",
     "kw_picasa_viewer": "picasa 사진 이미지 뷰어 슬라이드쇼 파일연결 확장자 rust",
     "kw_clipboard": "클립보드 기록 복사 붙여넣기 고정 영구 clipboard",
-    "kw_file_locksmith": "파일 잠금 해제 프로세스 우클릭 메뉴 locksmith unlock"
+    "kw_file_locksmith": "파일 잠금 해제 프로세스 우클릭 메뉴 locksmith unlock",
+    "kw_text_expander": "텍스트 확장기 상용구 스니펫 매크로 자동완성 약어 템플릿 text expander snippet"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000에 오신 것을 환영합니다",
@@ -1544,7 +1593,23 @@
     "next": "다음",
     "prev": "이전",
     "skip": "가이드 건너뛰기",
-    "stepLabel": "{{current}} / {{total}}단계"
+    "stepLabel": "{{current}} / {{total}}단계",
+    "completeTipModules": "모든 모듈은 \"기능 모듈\"이나 트레이 패널에서 언제든 개별적으로 켜고 끌 수 있습니다",
+    "completeTipPicasa": "\"Picasa 이미지 뷰어\"에서 원클릭으로 기본 이미지 뷰어로 지정할 수 있습니다",
+    "completeTipTextExpander": "기본 제공되는 \"텍스트 확장기\"로 어디서나 ;date 나 ;now 를 바로 확장할 수 있습니다 (언제든 편집·해제 가능)",
+    "edgeWheelTip": "화면 좌/우 가장자리 휠 스크롤: 시스템 볼륨이나 외장 모니터 하드웨어 밝기 즉시 조절",
+    "featureClipboard": "영구 클립보드",
+    "featureClipboardDesc": "Alt+V 재부팅 후에도 기록 유지, 병합 붙여넣기, 고정 분리 및 네이티브 드래그 붙여넣기",
+    "featurePicasa": "2 MB 미만 Rust Picasa 뷰어",
+    "featurePicasaDesc": "41개 포맷, 4K 고해상도 DPI 및 독립 실행 바이너리 초고속 열기",
+    "featurePresentRemote": "프레젠테이션 및 원격 보호",
+    "featurePresentRemoteDesc": "키 입력 표시, 스포트라이트 강조 및 RDP/RustDesk 키 눌림 현상 원클릭 해제",
+    "featureStudio": "자동 줌 녹화 스튜디오",
+    "featureStudioDesc": "파형 편집, 클릭 자동 확대 및 원클릭 GIF/MP4 내보내기",
+    "searchSyntaxLabel": "통합 검색 접두어",
+    "searchSyntaxQuickLook": "QuickLook 미리보기",
+    "shortcutClipboard": "클립보드 기록",
+    "shortcutPin": "클립보드에서 바로 핀 고정"
   },
   "hotkey": {
     "pressKeys": "키 또는 단축키 조합을 누르세요...",
@@ -2263,7 +2328,9 @@
     "pillClipboard": "클립보드",
     "pillClipboardFullDesc": "클립보드 기록 (즉시 검색, 그룹 관리 및 일괄 붙여넣기)",
     "pillFileLocksmith": "잠금 해제",
-    "pillFileLocksmithFullDesc": "파일 잠금 해제 (상주 없이 탐색기 우클릭으로 점유 프로세스 확인)"
+    "pillFileLocksmithFullDesc": "파일 잠금 해제 (상주 없이 탐색기 우클릭으로 점유 프로세스 확인)",
+    "pillTextExpander": "상용구",
+    "pillTextExpanderFullDesc": "텍스트 확장기 (시스템 전역 상용구 및 동적 매크로 확장)"
   },
   "dialog": {
     "title": "파일 대화상자 도우미",
@@ -3081,7 +3148,14 @@
     "actionPastePlain": "일반 텍스트",
     "actionEdit": "편집",
     "hintQuickPaste": "1~9번 바로 붙여넣기",
-    "hintMultiSelect": "다중 선택"
+    "hintMultiSelect": "다중 선택",
+    "dragItemTip": "원하는 입력창이나 앱으로 드래그하여 바로 붙여넣기",
+    "hidePinnedBtn": "고정 숨김",
+    "hidePinnedTip": "다른 분류에서 고정 항목 숨기기 (고정 탭에서만 표시)",
+    "hintDragKey": "드래그",
+    "hintDragPaste": "드롭 붙여넣기",
+    "showPinnedBtn": "고정 표시",
+    "showPinnedTip": "이 분류에서 고정 항목 다시 표시"
   },
   "clipboardPage": {
     "overviewGroup": "영구 클립보드 기록",
@@ -3128,7 +3202,9 @@
     "saveBtn": "저장",
     "excludedSavedToast": "제외 앱 목록을 저장했습니다",
     "saveFailedToast": "클립보드 설정 저장에 실패했습니다",
-    "clearedToast": "{{count}}개의 클립보드 기록을 삭제했습니다"
+    "clearedToast": "{{count}}개의 클립보드 기록을 삭제했습니다",
+    "hidePinnedInOtherTitle": "다른 분류에서 고정 항목 숨기기",
+    "hidePinnedInOtherDesc": "고정된 항목을 고정 탭에만 표시하여 전체·텍스트·이미지·파일·색상 목록을 깔끔하게 유지합니다."
   },
   "feedback": {
     "attachLogs": "로컬 익명화된 환경 정보 및 최근 1000줄 진단 로그 첨부",
@@ -3183,5 +3259,81 @@
     "pickFolder": "폴더 선택",
     "inspectNow": "잠금 검사",
     "inspectFailed": "파일 잠금 해제 창을 실행하지 못했습니다"
+  },
+  "textExpander": {
+    "addRuleBtn": "스니펫 추가",
+    "autoExcludeDesc": "비밀번호 관리자, 원격 데스크톱 또는 자격 증명 창이 활성화되면 감지를 자동으로 일시 중지합니다.",
+    "autoExcludeTitle": "비밀번호 관리자 및 보안 터미널 자동 제외",
+    "badgeMacros": "동적 매크로",
+    "badgeOptIn": "꺼짐 시 훅 제로",
+    "badgePrivacy": "기록 오염 없음",
+    "caseSensitiveDesc": "대소문자가 정확히 일치할 때만 확장합니다.",
+    "caseSensitiveTitle": "대소문자 구분",
+    "clearSandboxBtn": "지우기",
+    "clearSearch": "검색 지우기",
+    "deleteRule": "스니펫 삭제",
+    "editRule": "스니펫 편집",
+    "emptyRules": "등록된 스니펫이 없습니다. 첫 번째 단축 상용구를 만들어 보세요.",
+    "emptySearch": "검색어와 일치하는 스니펫이 없습니다.",
+    "enableNowBtn": "지금 활성화",
+    "errDuplicateTrigger": "동일한 트리거와 모드의 스니펫이 이미 존재합니다",
+    "errEmptyTrigger": "트리거 키워드를 입력하세요",
+    "errTriggerNewline": "트리거 키워드에는 줄바꿈을 포함할 수 없습니다",
+    "errTriggerTooLong": "트리거 키워드는 64자를 초과할 수 없습니다",
+    "excludedProcessesDesc": "텍스트 확장을 항상 비활성화할 실행 파일 이름(예: 게임, 터미널)을 쉼표로 구분해 입력하세요.",
+    "excludedProcessesTitle": "사용자 지정 제외 프로세스",
+    "exportBtn": "JSON 내보내기",
+    "exportFailedToast": "스니펫 내보내기 실패",
+    "exportSuccessToast": "스니펫을 내보냈습니다",
+    "fieldLabel": "이름 (선택)",
+    "fieldLabelHint": "목록에 표시할 알기 쉬운 이름",
+    "fieldLabelPlaceholder": "예: 이메일 서명",
+    "fieldMode": "트리거 방식",
+    "fieldReplacement": "확장할 내용",
+    "fieldReplacementPlaceholder": "자동으로 입력할 전체 문구나 템플릿을 입력하세요...",
+    "fieldTrigger": "트리거 키워드",
+    "fieldTriggerHint": "오작동 방지를 위해 ; 또는 / 로 시작하는 것을 권장합니다",
+    "heroDesc": "모든 Windows 앱에서 짧은 약어를 입력하면 전체 문구, 동적 날짜, 클립보드 템플릿 및 커서 위치 코드 블록으로 즉시 확장합니다. 언제든 끌 수 있으며 비활성 시 시스템 훅을 완전히 해제합니다.",
+    "heroTitle": "시스템 전역 텍스트 확장기",
+    "hitCount": "{{count}}회 사용",
+    "importBtn": "JSON 가져오기",
+    "importFailedToast": "스니펫 가져오기 실패",
+    "importInvalidToast": "잘못된 JSON 형식: rules 배열이 없습니다",
+    "importSuccessToast": "{{count}}개의 스니펫을 가져왔습니다",
+    "insertMacroTitle": "동적 변수 삽입",
+    "macroClipboard": "클립보드",
+    "macroCursor": "커서 위치",
+    "macroDate": "날짜",
+    "macroDateTime": "날짜 및 시간",
+    "macroTime": "시간",
+    "modalAddTitle": "스니펫 규칙 추가",
+    "modalEditTitle": "스니펫 규칙 편집",
+    "modeDelimiterDesc": "키워드 입력 후 Space, Tab 또는 Enter를 눌러야 확장하여 단어 앞부분 오입력 확장을 방지합니다.",
+    "modeDelimiterShort": "구분 키",
+    "modeDelimiterTitle": "구분 키 입력 후 확장",
+    "modeImmediateDesc": "마지막 글자를 입력하는 즉시 확장합니다.",
+    "modeImmediateShort": "즉시",
+    "modeImmediateTitle": "입력 완료 즉시 확장",
+    "privacyBanner": "짧은 ASCII 상용구는 클립보드를 쓰지 않는 Unicode 직접 입력을 사용합니다. 여러 줄이나 한글 붙여넣기 시 Windows 개인정보 제외 플래그를 부착해 Tools3000 기록이나 Win+V를 오염시키지 않습니다.",
+    "privacyGroup": "개인정보 보호 및 오작동 방지",
+    "protectedAppsAria": "기본 보호 앱 목록",
+    "restoreClipboardDesc": "여러 줄 또는 비-ASCII 텍스트 확장 140ms 후 기존 클립보드 내용을 조용히 복원합니다.",
+    "restoreClipboardTitle": "붙여넣기 후 기존 클립보드 자동 복원",
+    "ruleDeletedToast": "스니펫 규칙을 삭제했습니다",
+    "ruleDeleteFailed": "스니펫 규칙 삭제 실패",
+    "ruleSavedToast": "스니펫 규칙을 저장했습니다",
+    "ruleSaveFailed": "스니펫 규칙 저장 실패",
+    "rulesGroup": "스니펫 규칙 목록",
+    "sandboxAria": "텍스트 확장 실시간 체험 입력창",
+    "sandboxDisabledHint": "위 마스터 스위치를 켜면 여기서 트리거 확장을 바로 테스트할 수 있습니다.",
+    "sandboxGroup": "실시간 체험 샌드박스",
+    "sandboxPlaceholder": "여기를 클릭해 ;date, ;now, ;thx 등을 입력하고 즉시 확장을 체험해 보세요...",
+    "saveExcludedBtn": "저장",
+    "saveFailed": "설정 저장 실패",
+    "saveRuleBtn": "스니펫 저장",
+    "searchPlaceholder": "트리거, 이름 또는 내용 검색...",
+    "statusActive": "실행 중",
+    "statusDisabled": "꺼짐 (훅 없음)",
+    "tryTriggersLabel": "입력해 보기:"
   }
 }

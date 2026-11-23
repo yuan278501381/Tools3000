@@ -9,6 +9,7 @@ import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, Conf
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
+import { resolveHotkeyLabel } from '../config/hotkeyCatalog';
 import {
   applyLocalAppearance,
   isAccentColor,
@@ -357,28 +358,6 @@ export const GeneralPage: FC = () => {
     }
   }, [t]);
 
-  // ── 快捷键名称映射 ──────────────────────────────────────────────────────
-  const hotkeyNameMap: Record<string, string> = {
-    Screenshot: t('onboarding.shortcutCapture'),
-    Record: t('onboarding.shortcutRecord'),
-    'Record Pause': t('recording.pauseShortcut'),
-    'Record Snapshot': t('general.shortcutRecordSnapshot'),
-    OCR: t('onboarding.shortcutOcr'),
-    'Pause Gestures': t('onboarding.shortcutGesturePause'),
-    'Toggle Search': t('search.title'),
-    'Translate Selection': t('general.shortcutTranslateSelection'),
-    'Pin Toggle': t('general.shortcutPinToggle'),
-    'Pin Paste': t('general.shortcutPinPaste'),
-    'Pin Hide All': t('general.shortcutPinHideAll'),
-    'Pin Arrange': t('general.shortcutPinArrange'),
-    'Mute System Audio': t('general.shortcutMuteSystemAudio'),
-    'Mute Microphone': t('general.shortcutMuteMicrophone'),
-    capture: t('onboarding.shortcutCapture'),
-    recording: t('onboarding.shortcutRecord'),
-    ocr: t('onboarding.shortcutOcr'),
-    gesturePause: t('onboarding.shortcutGesturePause'),
-  };
-
   const rebindHotkey = async (entry: HotkeyEntry, shortcut: string) => {
     const previous = entry.shortcut;
     const previousRegistered = entry.registered;
@@ -394,7 +373,7 @@ export const GeneralPage: FC = () => {
       // 重新拉取完整状态以同步全量冲突关系
       const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
       setHotkeys(Array.isArray(refreshed) ? refreshed : []);
-      toast.success(`${hotkeyNameMap[entry.name] ?? entry.name}: ${applied || t('general.shortcutDisabled')}`);
+      toast.success(`${resolveHotkeyLabel(t, entry.name)}: ${applied || t('general.shortcutDisabled')}`);
     } catch (error) {
       setHotkeys(items => items.map(item =>
         item.name === entry.name && item.shortcut === shortcut
@@ -746,7 +725,7 @@ export const GeneralPage: FC = () => {
                     <div className="general-page__hotkey-info">
                       <div className="general-page__hotkey-name-row">
                         <span className="general-page__hotkey-name">
-                          {hotkeyNameMap[hk.name] ?? hk.name}
+                          {resolveHotkeyLabel(t, hk.name)}
                         </span>
                         <HotkeyStatusBadge entry={hk} />
                       </div>
@@ -755,7 +734,7 @@ export const GeneralPage: FC = () => {
                       <HotkeyRecorder
                         id={`general-hotkey-${hk.name.replace(/\s+/g, '-').toLowerCase()}`}
                         value={hk.shortcut}
-                        ariaLabel={hotkeyNameMap[hk.name] ?? hk.name}
+                        ariaLabel={resolveHotkeyLabel(t, hk.name)}
                         onChange={(value) => void rebindHotkey(hk, value)}
                       />
                     </div>

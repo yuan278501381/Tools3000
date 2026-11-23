@@ -494,6 +494,25 @@
   box-shadow: inset 3px 0 0 var(--primary);
 }
 
+.clip-popup__item--dragging {
+  border-color: var(--primary);
+  opacity: 0.78;
+  cursor: grabbing;
+}
+
+.clip-popup__item-drag-grip {
+  color: var(--text-secondary);
+  opacity: 0.35;
+  cursor: grab;
+  transition: opacity var(--transition-fast), color var(--transition-fast);
+}
+
+.clip-popup__item:hover .clip-popup__item-drag-grip,
+.clip-popup__item--selected .clip-popup__item-drag-grip {
+  opacity: 0.85;
+  color: var(--text-primary);
+}
+
 .clip-popup__item-top {
   display: flex;
   align-items: center;

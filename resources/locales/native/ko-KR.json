@@ -956,5 +956,8 @@
   "重点说明||Text": "핵심 설명",
   "静音||Off": "음소거",
   "高刷||Smooth": "고주사율",
-  "鼠标自动运镜||Auto Zoom": "마우스 자동 줌"
+  "鼠标自动运镜||Auto Zoom": "마우스 자동 줌",
+  "Recent Region ": "최근 영역 ",
+  "No recent capture regions": "최근 캡처 영역이 없습니다",
+  "Reuse recent capture region": "최근 캡처 영역 재사용"
 }

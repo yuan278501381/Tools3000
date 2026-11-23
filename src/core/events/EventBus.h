@@ -164,6 +164,7 @@ struct UpdateStatusChangedEvent {
     bool hasUpdate = false;
     bool readyToInstall = false;
     std::string latestVersion;
+    bool badgeVisible = false;
 };
 
 /// 鼠标活动事件 (供鼠标聚光灯、水波纹与轨迹等演示特效使用)

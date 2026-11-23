@@ -27,6 +27,12 @@ public:
     /// Launches the verified downloaded installer (or highlights the portable ZIP in Explorer).
     bool installDownloadedUpdate(std::string& outError);
 
+    /// Persists the current latestVersion as dismissed and broadcasts badgeVisible = false.
+    bool dismissCurrentUpdate();
+
+    /// Clears any persisted dismissed version so update badges can appear again.
+    void clearDismissedVersion();
+
     /// Registers a host callback invoked after a verified Setup.exe installer has started,
     /// allowing the current process to exit gracefully before file replacement begins.
     void setExitForUpdateCallback(std::function<void()> callback);

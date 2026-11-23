@@ -307,6 +307,108 @@ function checkVersionSingleSourceOfTruth() {
   }
 }
 
+// ── 防线 9：C++ 后端 -> 前端跨边界契约多语言完备性防线（永久杜绝热键名/插件ID/路由静默回退裸英文）──
+function checkBackendContractInternationalization() {
+  const nativeSrcDir = path.resolve('../src');
+  if (!fs.existsSync(nativeSrcDir)) return;
+
+  // 9.1 扫描全部 C++ 源码中的 HotkeyManager::registerHotkey("...") / rebindHotkey("...") 字面量
+  const hotkeyCatalogPath = path.resolve('./src/config/hotkeyCatalog.ts');
+  if (!fs.existsSync(hotkeyCatalogPath)) {
+    console.error(`[ERROR] [Backend Contract i18n Gate] 缺少全局快捷键多语言 SSOT 注册表: ${hotkeyCatalogPath}`);
+    hasError = true;
+    return;
+  }
+
+  const catalogContent = fs.readFileSync(hotkeyCatalogPath, 'utf8');
+  const mappedHotkeys = new Map();
+  const mapEntryRe = /(?:'([^']+)'|"([^"]+)"|([A-Za-z_][A-Za-z0-9_]*))\s*:\s*['"]([^'"]+)['"]/g;
+  const blockMatch = catalogContent.match(/HOTKEY_LABEL_KEYS[\s\S]*?=\s*\{([\s\S]*?)\};/);
+  if (blockMatch) {
+    let m;
+    while ((m = mapEntryRe.exec(blockMatch[1])) !== null) {
+      const hkName = m[1] || m[2] || m[3];
+      const i18nKey = m[4];
+      if (hkName && i18nKey) mappedHotkeys.set(hkName, i18nKey);
+    }
+  }
+
+  const cppFiles = getFiles(nativeSrcDir, ['.cpp', '.h']);
+  const discoveredHotkeys = new Map(); // name -> first file
+  const registerRe = /\b(?:registerHotkey|rebindHotkey)\s*\(\s*"([^"]+)"/g;
+  for (const file of cppFiles) {
+    const raw = fs.readFileSync(file, 'utf8');
+    // 剔除单行与多行注释，防止注释示例误触发
+    const cleaned = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    let m;
+    while ((m = registerRe.exec(cleaned)) !== null) {
+      const hkName = m[1];
+      if (hkName && !discoveredHotkeys.has(hkName)) {
+        discoveredHotkeys.set(hkName, path.relative(path.resolve('..'), file));
+      }
+    }
+  }
+
+  for (const [hkName, sourceFile] of discoveredHotkeys.entries()) {
+    const i18nKey = mappedHotkeys.get(hkName);
+    if (!i18nKey) {
+      console.error(`[ERROR] [Backend Hotkey i18n Gate] C++ 注册的全局快捷键 "${hkName}" (${sourceFile}) 未在 ui/src/config/hotkeyCatalog.ts 中登记多语言映射！`);
+      console.error('   [Rule] 所有 C++ registerHotkey/rebindHotkey 名称必须在 HOTKEY_LABEL_KEYS 中显式映射到真实 8 语种词条，杜绝界面回退裸英文。');
+      hasError = true;
+      continue;
+    }
+    for (const [localeFile, localeData] of allLocalesData.entries()) {
+      if (!hasJsonPath(localeData, i18nKey)) {
+        console.error(`[ERROR] [Backend Hotkey i18n Gate] 快捷键 "${hkName}" 映射键 "${i18nKey}" 在 ${localeFile} 中缺失！`);
+        hasError = true;
+      }
+    }
+  }
+
+  // 9.2 扫描 C++ PluginManager.cpp 内置模块 ID，确保每个内置模块在全 8 语种均有 plugins.items.<id>.{name,description}
+  const pluginMgrPath = path.join(nativeSrcDir, 'core', 'plugin', 'PluginManager.cpp');
+  if (fs.existsSync(pluginMgrPath)) {
+    const pmText = fs.readFileSync(pluginMgrPath, 'utf8');
+    const pluginIds = new Set();
+    const pmRe = /patch\["plugins"\]\["([a-z0-9_]+)"\]\["enabled"\]/g;
+    let m;
+    while ((m = pmRe.exec(pmText)) !== null) {
+      pluginIds.add(m[1]);
+    }
+    for (const pid of pluginIds) {
+      for (const field of ['name', 'description']) {
+        const keyPath = `plugins.items.${pid}.${field}`;
+        for (const [localeFile, localeData] of allLocalesData.entries()) {
+          if (!hasJsonPath(localeData, keyPath)) {
+            console.error(`[ERROR] [Backend Plugin i18n Gate] C++ 内置模块 "${pid}" 缺少多语言键 "${keyPath}" (${localeFile})！`);
+            hasError = true;
+          }
+        }
+      }
+    }
+  }
+
+  // 9.3 校验 routes.ts 所有 APP_ROUTES 在全 8 语种中均存在 sidebar.kw_<id> 搜索关键词
+  const routesPath = path.resolve('./src/config/routes.ts');
+  if (fs.existsSync(routesPath)) {
+    const routesText = fs.readFileSync(routesPath, 'utf8');
+    const routeBlock = routesText.match(/export const APP_ROUTES[\s\S]*?=\s*\[([\s\S]*?)\];/);
+    if (routeBlock) {
+      const idRe = /\{\s*id:\s*'([a-z0-9_]+)'/g;
+      let m;
+      while ((m = idRe.exec(routeBlock[1])) !== null) {
+        const kwKey = `sidebar.kw_${m[1]}`;
+        for (const [localeFile, localeData] of allLocalesData.entries()) {
+          if (!hasJsonPath(localeData, kwKey)) {
+            console.error(`[ERROR] [Route Search Keyword i18n Gate] 路由 "${m[1]}" 缺少侧边栏搜索关键词 "${kwKey}" (${localeFile})！`);
+            hasError = true;
+          }
+        }
+      }
+    }
+  }
+}
+
 // 对所有已注册的语言包执行矩阵比对
 for (const [file, data] of allLocalesData.entries()) {
   checkLocaleMatrix(file, data);
@@ -316,9 +418,10 @@ checkCodeReferences();
 checkSourceCodeFallbacksAndNakedChinese();
 checkPresetAndOptionEntityInternationalization();
 checkVersionSingleSourceOfTruth();
+checkBackendContractInternationalization();
 
 if (hasError) {
-  console.error('\n[ERROR] i18n 与版本同源门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文、裸配置 Label 或版本号失步问题。');
+  console.error('\n[ERROR] i18n 与版本同源门禁审查失败！请修复上述键位缺失、英文泄漏、断裂引用、裸中文、裸配置 Label、后端跨边界契约漏译或版本号失步问题。');
   process.exit(1);
 } else {
   console.log('[OK] i18n 世界级防护门禁与版本单一事实源校验全部通过！');
@@ -330,4 +433,5 @@ if (hasError) {
   console.log('   6. 全库源码 0 裸中文硬编码与 100% 英文 Fallback');
   console.log('   7. 全库 UI 预设与选项实体 100% 接入 labelKey/nameKey 国际化管线');
   console.log('   8. 根目录 VERSION 与 ui/package.json (及 package-lock.json) 版本 100% 单一事实源一致');
+  console.log('   9. C++ 后端注册热键 / 内置模块 ID / 路由搜索词 100% 跨边界多语言全覆盖');
 }

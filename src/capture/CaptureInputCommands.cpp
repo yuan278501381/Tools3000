@@ -8,6 +8,7 @@
 #include "capture/CaptureInputInternal.h"
 #include "capture/CaptureOverlay.h"
 #include "capture/CaptureHistory.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/ClipboardUtils.h"
 #include "capture/PinWindow.h"
 #include "capture/ScrollCapture.h"
@@ -1183,6 +1184,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     offsetY = winRc.top;
                 }
                 CaptureRegion region{x1 + offsetX, y1 + offsetY, w, h};
+                if (!m_state->isLongImageMode() && !CaptureOverlay::instance().isEditingPinned()) {
+                    CaptureRegionHistory::instance().record(RECT{
+                        region.x, region.y, region.x + region.width, region.y + region.height});
+                }
                 if (m_state->isLongImageMode()) {
                     const D2D1_RECT_F anchor = m_state->toolbarAnchorRect();
                     region = CaptureRegion{
@@ -1219,6 +1224,10 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
                     offsetY = winRc.top;
                 }
                 CaptureRegion region{x1 + offsetX, y1 + offsetY, w, h};
+                if (!m_state->isLongImageMode() && !CaptureOverlay::instance().isEditingPinned()) {
+                    CaptureRegionHistory::instance().record(RECT{
+                        region.x, region.y, region.x + region.width, region.y + region.height});
+                }
                 if (m_state->isLongImageMode()) {
                     const D2D1_RECT_F anchor = m_state->toolbarAnchorRect();
                     region = CaptureRegion{
@@ -1258,9 +1267,16 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             cv::Mat cropped;
             if (m_state->markup.elementCount() > 0) cropped = m_state->markup.getCompositeImage();
             else cropped = cleanBase;
-            int origX = x1 + GetSystemMetrics(SM_XVIRTUALSCREEN);
-            int origY = y1 + GetSystemMetrics(SM_YVIRTUALSCREEN);
-            CaptureRegion reg{origX, origY, w, h, m_state->cornerRadius};
+            int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            RECT winRc{};
+            if (m_hwnd && IsWindow(m_hwnd) && GetWindowRect(m_hwnd, &winRc)) {
+                offsetX = winRc.left;
+                offsetY = winRc.top;
+            }
+            CaptureRegion reg{x1 + offsetX, y1 + offsetY, w, h, m_state->cornerRadius};
+            CaptureRegionHistory::instance().record(RECT{
+                reg.x, reg.y, reg.x + reg.width, reg.y + reg.height});
 
             const bool bakedDecorations =
                 (m_state->beautyShell.enabled || m_state->cornerRadius > 0.5f) && !cropped.empty();
@@ -1301,8 +1317,16 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
 
             int offsetX = GetSystemMetrics(SM_XVIRTUALSCREEN);
             int offsetY = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            RECT winRc{};
+            if (m_hwnd && IsWindow(m_hwnd) && GetWindowRect(m_hwnd, &winRc)) {
+                offsetX = winRc.left;
+                offsetY = winRc.top;
+            }
 
             RECT capRect = {x1 + offsetX, y1 + offsetY, x1 + offsetX + w, y1 + offsetY + h};
+            if (!m_state->isLongImageMode() && !CaptureOverlay::instance().isEditingPinned()) {
+                CaptureRegionHistory::instance().record(capRect);
+            }
 
             // 先关闭常规覆盖层与提示浮窗，长截图统一使用带硬件防截隔离的专属交互式控制台
             ShortcutHintOverlay::instance().hide();

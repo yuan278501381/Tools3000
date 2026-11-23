@@ -52,7 +52,8 @@
     "remote_boost": "Remote Boost",
     "picasa_viewer": "Picasa Photo Viewer",
     "clipboard": "Clipboard History",
-    "file_locksmith": "File Locksmith"
+    "file_locksmith": "File Locksmith",
+    "text_expander": "Text Expander"
   },
   "navSubtitle": {
     "stats": "Keystrokes and mouse usage activity",
@@ -75,7 +76,8 @@
     "remote_boost": "Immersive hotkey tunnel, emergency flush & smart IME sanitizing",
     "picasa_viewer": "Rust recreation of the lightweight Picasa viewer (not the full suite); auto-associates all supported image formats when enabled",
     "clipboard": "Reboot-persistent clipboard history, instant search & 1-click image Pin/Translate",
-    "file_locksmith": "Zero-resident file lock inspector and safe unlocker"
+    "file_locksmith": "Zero-resident file lock inspector and safe unlocker",
+    "text_expander": "Expand short keywords into full snippets, dynamic dates, and templates system-wide"
   },
   "extension": {
     "statusRunning": "Running",
@@ -376,6 +378,10 @@
       "file_locksmith": {
         "name": "File Locksmith",
         "description": "Pure HKCU right-click menu integration with zero background RAM usage to inspect and safely unlock busy files or folders"
+      },
+      "text_expander": {
+        "name": "Text Expander",
+        "description": "Native system-wide snippet expansion with dynamic date/clipboard/cursor macros, password-manager privacy guard, and zero clipboard history pollution. Ready out of the box and unhooks cleanly with zero idle RAM when turned off."
       }
     },
     "title": "Plugins & Extensions"
@@ -527,7 +533,40 @@
     "saveFailed": "Could not save this setting",
     "browseFailed": "Could not open the folder picker",
     "openFolder": "Open Folder",
-    "openFolderFailed": "Could not open folder"
+    "openFolderFailed": "Could not open folder",
+    "regionManagerTitle": "Recent & Saved Capture Regions",
+    "repeatLastCaptureShortcut": "Repeat Last Capture",
+    "repeatLastCaptureShortcutDesc": "Open screenshot overlay with your most recent capture region already framed",
+    "regionCycleKeyLabel": "In-Overlay Region Cycle Key",
+    "regionCycleKeyDesc": "While selecting a capture or recording area, press to step older or Shift + key to step newer",
+    "regionKeyR": "R / Shift+R (PixPin style, recommended)",
+    "regionKeyBackquote": "` / Shift+` (Backquote, zero conflict with Rectangle R)",
+    "regionKeyF2": "F2 / Shift+F2 (Function key)",
+    "regionKeyF4": "F4 / Shift+F4 (Function key)",
+    "regionKeyOff": "Disable in-overlay cycle key",
+    "regionHistoryLimitLabel": "Recent Region History Limit",
+    "regionHistoryLimitDesc": "Automatically remember recent capture boxes across restarts; pinned regions are never evicted",
+    "regionLimitOff": "Off (0 regions)",
+    "regionLimitCount": "Last {{count}} regions",
+    "regionSummary": "{{total}} saved · {{pinned}} pinned",
+    "regionAddFixed": "Add Fixed Region",
+    "regionClearUnpinned": "Clear Unpinned",
+    "regionQuickPresets": "Quick presets (centered on primary display):",
+    "regionFieldName": "Region Name",
+    "regionNamePlaceholder": "e.g. Tutorial Frame / Cover Box",
+    "regionFieldWidth": "Width",
+    "regionFieldHeight": "Height",
+    "regionInvalidSize": "Enter valid coordinates and size (width and height must be at least 4 px)",
+    "regionClearedToast": "Cleared unpinned region history",
+    "regionEmptyHint": "Completed region captures appear here automatically, or click Add Fixed Region to define an exact pixel box.",
+    "regionUnnamedLabel": "Recent Region #{{index}}",
+    "regionPinnedBadge": "Pinned",
+    "regionCaptureNow": "Capture with this region now",
+    "regionCaptureNowShort": "Capture",
+    "regionPin": "Pin as fixed region (never evicted)",
+    "regionUnpin": "Unpin region",
+    "regionEdit": "Edit name and geometry",
+    "regionDelete": "Delete region"
   },
   "history": {
     "title": "Capture History",
@@ -1450,7 +1489,16 @@
     "openDownloadedPortable": "Open Portable Package",
     "installUpdateNow": "Install {{version}}",
     "downloadUpdateNow": "Download {{version}}",
-    "installUpdateFailed": "Failed to launch update installer"
+    "installUpdateFailed": "Failed to launch update installer",
+    "dismissVersion": "Dismiss this version",
+    "downloadNowBtn": "Download Now",
+    "installNowBtn": "Install Now",
+    "stripAvailableMessage": "New version {{version}} is available",
+    "stripReadyMessage": "{{version}} is ready to install — restart to complete the update",
+    "versionDismissedHint": "Badge reminder dismissed for this version. Check for updates or download anytime to resume.",
+    "versionDismissedToast": "Dismissed update badge for {{version}}",
+    "viewChangelogShort": "View release notes",
+    "viewUpdate": "View Update"
   },
   "sidebar": {
     "groupSystem": "System",
@@ -1489,7 +1537,8 @@
     "enableAndOpen": "Enable & Open",
     "kw_picasa_viewer": "picasa photo image picture viewer slideshow association format rust",
     "kw_clipboard": "clipboard history copy paste pin persistent",
-    "kw_file_locksmith": "file lock unlock handle process context menu locksmith"
+    "kw_file_locksmith": "file lock unlock handle process context menu locksmith",
+    "kw_text_expander": "text expander snippet phrase macro template shortcut abbreviation espanso beeftext"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",
@@ -1544,7 +1593,23 @@
     "next": "Next",
     "prev": "Previous",
     "skip": "Skip Guide",
-    "stepLabel": "Step {{current}} of {{total}}"
+    "stepLabel": "Step {{current}} of {{total}}",
+    "completeTipModules": "Every module can be toggled independently anytime in \"Modules\" or the system tray",
+    "completeTipPicasa": "Set as your default photo viewer in 1 click inside \"Picasa Photo Viewer\"",
+    "completeTipTextExpander": "Try typing ;date or ;now anywhere with built-in \"Text Expander\" (customize or toggle off anytime)",
+    "edgeWheelTip": "Screen Left/Right Edge Scroll: adjust volume or external monitor hardware brightness directly",
+    "featureClipboard": "Persistent Clipboard",
+    "featureClipboardDesc": "Alt+V history surviving reboots, merge paste, pinned tabs & native drag-out",
+    "featurePicasa": "< 2 MB Rust Picasa Viewer",
+    "featurePicasaDesc": "41 formats, 4K High-DPI & instant standalone binary",
+    "featurePresentRemote": "Spotlight & Remote Guard",
+    "featurePresentRemoteDesc": "Keycast overlay, spotlight highlight & RDP/RustDesk stuck-key flush",
+    "featureStudio": "Auto-Zoom Recording Studio",
+    "featureStudioDesc": "Waveform editing, click auto-zoom & 1-click GIF/MP4 export",
+    "searchSyntaxLabel": "Omni Search Prefixes",
+    "searchSyntaxQuickLook": "QuickLook Preview",
+    "shortcutClipboard": "Clipboard History",
+    "shortcutPin": "Pin from Clipboard"
   },
   "hotkey": {
     "pressKeys": "Press a key or combination...",
@@ -2263,7 +2328,9 @@
     "pillClipboard": "Clipboard",
     "pillClipboardFullDesc": "Clipboard History (Instant recall, search & multi-paste)",
     "pillFileLocksmith": "Unlock",
-    "pillFileLocksmithFullDesc": "File Locksmith (Zero-resident Explorer right-click file lock inspector)"
+    "pillFileLocksmithFullDesc": "File Locksmith (Zero-resident Explorer right-click file lock inspector)",
+    "pillTextExpander": "Snippets",
+    "pillTextExpanderFullDesc": "Text Expander (System-wide phrase & macro expansion)"
   },
   "dialog": {
     "title": "File Dialog Enhancer",
@@ -3081,7 +3148,14 @@
     "actionPastePlain": "Plain Text",
     "actionEdit": "Edit",
     "hintQuickPaste": "Quick Paste 1-9",
-    "hintMultiSelect": "Multi-Select"
+    "hintMultiSelect": "Multi-Select",
+    "dragItemTip": "Drag to any input field or app to paste",
+    "hidePinnedBtn": "Hide Pinned",
+    "hidePinnedTip": "Hide pinned items from other categories (view them in the Pinned tab)",
+    "hintDragKey": "Drag",
+    "hintDragPaste": "Drop to Paste",
+    "showPinnedBtn": "Show Pinned",
+    "showPinnedTip": "Show pinned items in this category again"
   },
   "clipboardPage": {
     "overviewGroup": "Persistent Clipboard History",
@@ -3128,7 +3202,9 @@
     "saveBtn": "Save",
     "excludedSavedToast": "Excluded apps list saved",
     "saveFailedToast": "Failed to save clipboard settings",
-    "clearedToast": "Removed {{count}} clipboard items"
+    "clearedToast": "Removed {{count}} clipboard items",
+    "hidePinnedInOtherTitle": "Hide Pinned Items in Other Categories",
+    "hidePinnedInOtherDesc": "Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors."
   },
   "feedback": {
     "attachLogs": "Attach locally redacted environment info and latest 1000 log lines",
@@ -3183,5 +3259,81 @@
     "pickFolder": "Pick Folder",
     "inspectNow": "Inspect Locks",
     "inspectFailed": "Failed to launch File Locksmith window"
+  },
+  "textExpander": {
+    "addRuleBtn": "Add Snippet",
+    "autoExcludeDesc": "Automatically pause phrase detection when password managers, remote desktop, or credential prompts are in focus.",
+    "autoExcludeTitle": "Auto-Skip Password Managers & Secure Terminals",
+    "badgeMacros": "Dynamic Macros",
+    "badgeOptIn": "Zero Hooks When Off",
+    "badgePrivacy": "Zero History Pollution",
+    "caseSensitiveDesc": "Require exact uppercase and lowercase letter matching.",
+    "caseSensitiveTitle": "Case Sensitive",
+    "clearSandboxBtn": "Clear",
+    "clearSearch": "Clear search",
+    "deleteRule": "Delete snippet",
+    "editRule": "Edit snippet",
+    "emptyRules": "No snippet rules yet. Create your first shortcut phrase.",
+    "emptySearch": "No snippet rules match your search.",
+    "enableNowBtn": "Enable Now",
+    "errDuplicateTrigger": "A snippet with this trigger keyword already exists",
+    "errEmptyTrigger": "Trigger keyword cannot be empty",
+    "errTriggerNewline": "Trigger keyword cannot contain line breaks",
+    "errTriggerTooLong": "Trigger keyword cannot exceed 64 characters",
+    "excludedProcessesDesc": "Comma-separated executable names (e.g. games or terminals) where text expansion is always disabled.",
+    "excludedProcessesTitle": "Custom Excluded Processes",
+    "exportBtn": "Export JSON",
+    "exportFailedToast": "Failed to export snippet rules",
+    "exportSuccessToast": "Snippet rules exported",
+    "fieldLabel": "Label (Optional)",
+    "fieldLabelHint": "Friendly name shown in the snippet list",
+    "fieldLabelPlaceholder": "Email Signature",
+    "fieldMode": "Trigger Mode",
+    "fieldReplacement": "Expanded Content",
+    "fieldReplacementPlaceholder": "Enter the expanded text or template...",
+    "fieldTrigger": "Trigger Keyword",
+    "fieldTriggerHint": "Prefix with ; or / to avoid accidental triggers",
+    "heroDesc": "Expand short keywords into full snippets, dynamic dates, clipboard templates, and cursor-positioned code blocks across any Windows app. Toggle off anytime with zero residual hooks.",
+    "heroTitle": "System-Wide Text Expander",
+    "hitCount": "{{count}} hits",
+    "importBtn": "Import JSON",
+    "importFailedToast": "Failed to import snippet rules",
+    "importInvalidToast": "Invalid JSON format: missing rules array",
+    "importSuccessToast": "Imported {{count}} snippet rules",
+    "insertMacroTitle": "Insert Dynamic Variable",
+    "macroClipboard": "Clipboard",
+    "macroCursor": "Cursor",
+    "macroDate": "Date",
+    "macroDateTime": "Date & Time",
+    "macroTime": "Time",
+    "modalAddTitle": "Add Snippet Rule",
+    "modalEditTitle": "Edit Snippet Rule",
+    "modeDelimiterDesc": "Wait for Space, Tab, or Enter before expanding to prevent word-prefix mistypes.",
+    "modeDelimiterShort": "Boundary",
+    "modeDelimiterTitle": "After Boundary Key",
+    "modeImmediateDesc": "Expand immediately after typing the last character.",
+    "modeImmediateShort": "Instant",
+    "modeImmediateTitle": "Immediate",
+    "privacyBanner": "Short ASCII snippets use zero-clipboard Unicode input. Multi-line or rich text paste attaches Windows privacy exclusion markers so expansions never pollute Tools3000 Clipboard History or Win+V.",
+    "privacyGroup": "Privacy & Anti-Mistype Guard",
+    "protectedAppsAria": "Built-in protected apps",
+    "restoreClipboardDesc": "Silently restore your previous clipboard text 140ms after pasting multi-line or non-ASCII expansions.",
+    "restoreClipboardTitle": "Restore Original Clipboard After Paste",
+    "ruleDeletedToast": "Snippet rule deleted",
+    "ruleDeleteFailed": "Failed to delete snippet rule",
+    "ruleSavedToast": "Snippet rule saved",
+    "ruleSaveFailed": "Failed to save snippet rule",
+    "rulesGroup": "Snippet Rules",
+    "sandboxAria": "Live text expander sandbox",
+    "sandboxDisabledHint": "Enable the master switch above to test typing triggers live right here.",
+    "sandboxGroup": "Live Try-it Sandbox",
+    "sandboxPlaceholder": "Click here and type a trigger such as ;date, ;now, or ;thx to see instant expansion...",
+    "saveExcludedBtn": "Save",
+    "saveFailed": "Failed to save settings",
+    "saveRuleBtn": "Save Snippet",
+    "searchPlaceholder": "Search triggers, labels, or content...",
+    "statusActive": "Active",
+    "statusDisabled": "Disabled (Zero Hooks)",
+    "tryTriggersLabel": "Try typing:"
   }
 }

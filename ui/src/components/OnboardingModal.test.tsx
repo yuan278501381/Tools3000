@@ -3,12 +3,13 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OnboardingModal } from './OnboardingModal';
+import * as bridge from '../hooks/useBridge';
 
 // Mock i18next
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
-    t: (key: string, options?: Record<string, unknown>) => {
-      if (options?.current && options?.total) {
+    t: (key: string, options?: string | Record<string, unknown>) => {
+      if (options && typeof options === 'object' && options.current && options.total) {
         return `Step ${options.current} of ${options.total}`;
       }
       return key;
@@ -21,55 +22,68 @@ describe('OnboardingModal', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(bridge, 'bridgeRequest').mockResolvedValue(null);
   });
 
   afterEach(() => {
     cleanup();
   });
 
-  it('renders Step 0 with exactly 7 core capability feature cards, including Remote Boost', () => {
+  it('renders Step 0 with 8 flagship capability cards (2x4) covering all 12 core modules', () => {
     const { container } = render(<OnboardingModal onComplete={onCompleteMock} />);
 
     // Step 0 header
     expect(screen.getByText('onboarding.welcomeTitle')).toBeTruthy();
     expect(screen.getByText('onboarding.welcomeSubtitle')).toBeTruthy();
 
-    // 7 Core features inside .onboarding__features container
+    // 8 Flagship features inside .onboarding__features container
     const featuresContainer = container.querySelector('.onboarding__features');
     expect(featuresContainer).toBeTruthy();
 
     const cards = featuresContainer?.querySelectorAll('.onboarding__feature-card');
-    expect(cards?.length).toBe(7);
+    expect(cards?.length).toBe(8);
 
     expect(screen.getByText('onboarding.featureSearch')).toBeTruthy();
+    expect(screen.getByText('onboarding.featureClipboard')).toBeTruthy();
     expect(screen.getByText('onboarding.featureCapture')).toBeTruthy();
-    expect(screen.getAllByText('onboarding.featureGesture').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('onboarding.featureKeycast')).toBeTruthy();
     expect(screen.getByText('onboarding.featureDialogEnhancer')).toBeTruthy();
-    expect(screen.getByText('onboarding.featureSpotlight')).toBeTruthy();
-    expect(screen.getByText('onboarding.featureRemoteBoost')).toBeTruthy();
-    expect(screen.getByText('onboarding.featureRemoteBoostDesc')).toBeTruthy();
+    expect(screen.getByText('onboarding.featureStudio')).toBeTruthy();
+    expect(screen.getAllByText('onboarding.featureGesture').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('onboarding.featurePicasa')).toBeTruthy();
+    expect(screen.getByText('onboarding.featurePresentRemote')).toBeTruthy();
+    expect(screen.getByText('onboarding.featurePresentRemoteDesc')).toBeTruthy();
   });
 
-  it('navigates through steps to shortcuts and showcase, verifying Remote Boost entries and tab switching', async () => {
+  it('navigates through steps to shortcuts, omni-search prefixes, edge wheel tip, showcase tabs, and completion tips', async () => {
     render(<OnboardingModal onComplete={onCompleteMock} />);
 
-    // Step 0 -> Step 1 (Shortcuts)
+    // Step 0 -> Step 1 (Shortcuts & Omni Search Prefixes)
     const nextButton = screen.getByRole('button', { name: /onboarding\.next/i });
     await act(async () => {
       fireEvent.click(nextButton);
     });
 
     expect(screen.getByText('onboarding.shortcutsTitle')).toBeTruthy();
+    expect(screen.getByText('onboarding.shortcutClipboard')).toBeTruthy();
+    expect(screen.getByText('Alt + V')).toBeTruthy();
+    expect(screen.getByText('onboarding.shortcutPin')).toBeTruthy();
+    expect(screen.getByText('F3')).toBeTruthy();
     expect(screen.getByText('onboarding.shortcutRemoteFlush')).toBeTruthy();
     expect(screen.getByText('Ctrl + Alt + Backspace')).toBeTruthy();
+    expect(screen.getByText('app:')).toBeTruthy();
+    expect(screen.getByText('bm:')).toBeTruthy();
+    expect(screen.getByText('cmd:')).toBeTruthy();
+    expect(screen.getByText('content:')).toBeTruthy();
+    expect(screen.getByText('Space')).toBeTruthy();
+    expect(screen.getByText('onboarding.searchSyntaxQuickLook')).toBeTruthy();
 
-    // Step 1 -> Step 2 (Gestures & Showcase)
+    // Step 1 -> Step 2 (Gestures, Edge Wheel Tip & Showcase)
     await act(async () => {
       fireEvent.click(nextButton);
     });
 
     expect(screen.getByText('onboarding.gestureTitle')).toBeTruthy();
+    expect(screen.getByText('onboarding.edgeWheelTip')).toBeTruthy();
     expect(screen.getByText('onboarding.tabSpotlight')).toBeTruthy();
     expect(screen.getByText('onboarding.tabRemote')).toBeTruthy();
 
@@ -87,18 +101,44 @@ describe('OnboardingModal', () => {
     expect(screen.getByText('onboarding.remoteItem3')).toBeTruthy();
     expect(screen.getByText('onboarding.remoteItem4')).toBeTruthy();
 
-    // Step 2 -> Step 3 (Complete)
+    // Step 2 -> Step 3 (Complete + Quick Tips)
     await act(async () => {
       fireEvent.click(nextButton);
     });
 
     expect(screen.getByText('onboarding.completeTitle')).toBeTruthy();
+    expect(screen.getByText('onboarding.completeTipPicasa')).toBeTruthy();
+    expect(screen.getByText('onboarding.completeTipModules')).toBeTruthy();
     const startButton = screen.getByRole('button', { name: /onboarding\.startButton/i });
     await act(async () => {
       fireEvent.click(startButton);
     });
 
     expect(onCompleteMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('hydrates live clipboard and pin hotkeys from hotkey.getAll bridge response', async () => {
+    vi.spyOn(bridge, 'bridgeRequest').mockImplementation(async (method: string) => {
+      if (method === 'hotkey.getAll') {
+        return [
+          { name: 'Toggle Clipboard', shortcut: 'Ctrl+Shift+V' },
+          { name: 'Pin Paste', shortcut: 'Ctrl+F3' },
+        ];
+      }
+      return null;
+    });
+
+    await act(async () => {
+      render(<OnboardingModal onComplete={onCompleteMock} />);
+    });
+
+    const nextButton = screen.getByRole('button', { name: /onboarding\.next/i });
+    await act(async () => {
+      fireEvent.click(nextButton);
+    });
+
+    expect(screen.getByText('Ctrl + Shift + V')).toBeTruthy();
+    expect(screen.getByText('Ctrl + F3')).toBeTruthy();
   });
 
   it('supports backwards navigation via the previous button', async () => {

@@ -4,6 +4,7 @@
 
 #include "ui/ClipboardWindow.h"
 #include "clipboard/ClipboardManager.h"
+#include "clipboard/ClipboardNativeDrag.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/logger/Logger.h"
@@ -72,8 +73,70 @@ bool ClipboardWindow::isVisible() const noexcept {
     return m_visible.load(std::memory_order_acquire) && m_hwnd && IsWindowVisible(m_hwnd);
 }
 
+HWND ClipboardWindow::resolveValidTargetForegroundHwnd(HWND candidate, HWND selfHwnd) noexcept {
+    return tools3000::clipboard::ClipboardManager::normalizeValidTargetHwnd(candidate, selfHwnd);
+}
+
+bool ClipboardWindow::isForegroundActive() const noexcept {
+    if (!m_hwnd || !IsWindow(m_hwnd) || !IsWindowVisible(m_hwnd) || IsIconic(m_hwnd)) {
+        return false;
+    }
+    return tools3000::clipboard::ClipboardManager::isTargetForegroundActive(m_hwnd);
+}
+
+void ClipboardWindow::installForegroundTracker() {
+    if (m_fgEventHook != nullptr) return;
+    // 仅在剪贴板面板可见期间订阅系统前台窗口切换事件（关闭后立刻卸载，闲置 0 钩子）：
+    // 置顶或拖拽驻留期间从软件 A 切到软件 B 时，第一时间实时刷新 m_previousForegroundHwnd，
+    // 彻底消除跨进程 WM_ACTIVATE(lParam==0) 盲区与“切到 B 仍贴到 A”痛点。
+    m_fgEventHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        nullptr,
+        &ClipboardWindow::foregroundWinEventProc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT);
+}
+
+void ClipboardWindow::uninstallForegroundTracker() {
+    if (m_fgEventHook != nullptr) {
+        UnhookWinEvent(m_fgEventHook);
+        m_fgEventHook = nullptr;
+    }
+}
+
+void CALLBACK ClipboardWindow::foregroundWinEventProc(
+    HWINEVENTHOOK /*hWinEventHook*/,
+    DWORD event,
+    HWND hwnd,
+    LONG idObject,
+    LONG /*idChild*/,
+    DWORD /*idEventThread*/,
+    DWORD /*dwmsEventTime*/) {
+    if (event != EVENT_SYSTEM_FOREGROUND || !hwnd || idObject != OBJID_WINDOW) {
+        return;
+    }
+    auto& self = ClipboardWindow::instance();
+    if (!self.m_visible.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (self.m_inSizeMove || self.m_inNativeDrag.load(std::memory_order_acquire)) {
+        return;
+    }
+    const HWND validRoot = resolveValidTargetForegroundHwnd(hwnd, self.m_hwnd);
+    if (validRoot) {
+        self.m_previousForegroundHwnd = validRoot;
+    }
+}
+
 void ClipboardWindow::toggle(HINSTANCE hInstance) {
-    if (isVisible()) {
+    if (m_pendingReveal) {
+        // 冷启动首帧准备阶段再按热键：保持等待显形，绝不中途误关导致“连按三下才呼出”
+        LOG_INFO("ClipboardWindow: toggle ignored during cold-start pending reveal");
+        return;
+    }
+    if (shouldHideOnToggle(isVisible(), m_pendingReveal, isForegroundActive())) {
         hide();
     } else {
         show(hInstance);
@@ -85,9 +148,12 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
         hInstance = GetModuleHandleW(nullptr);
     }
 
-    const HWND fg = GetForegroundWindow();
-    if (fg && fg != m_hwnd && IsWindow(fg)) {
-        m_previousForegroundHwnd = fg;
+    // 呼出前微秒级核对系统剪贴板序列号：兜底补采任何因源应用短持锁或睡眠/RDP 漏掉的最新复制
+    tools3000::clipboard::ClipboardManager::instance().syncSystemClipboardIfNeeded();
+
+    const HWND validFg = resolveValidTargetForegroundHwnd(GetForegroundWindow(), m_hwnd);
+    if (validFg) {
+        m_previousForegroundHwnd = validFg;
     }
 
     if (!m_hwnd || !IsWindow(m_hwnd)) {
@@ -104,6 +170,7 @@ void ClipboardWindow::show(HINSTANCE hInstance) {
     updatePlacement();
     m_showTimeTick = GetTickCount64();
     m_visible.store(true, std::memory_order_release);
+    installForegroundTracker();
 
     const bool readyToRevealNow = m_webViewReady && m_controller != nullptr;
     if (readyToRevealNow) {
@@ -140,15 +207,36 @@ void ClipboardWindow::revealWindowNow() {
     m_pendingReveal = false;
     m_suspendedOrCold = false;
     m_showTimeTick = GetTickCount64();
+    installForegroundTracker();
 
-    ShowWindow(m_hwnd, SW_SHOW);
-    SetWindowPos(
-        m_hwnd,
-        m_pinned ? HWND_TOPMOST : HWND_TOP,
-        0, 0, 0, 0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
-    BringWindowToTop(m_hwnd);
-    SetForegroundWindow(m_hwnd);
+    if (IsIconic(m_hwnd)) {
+        ShowWindow(m_hwnd, SW_RESTORE);
+    } else {
+        ShowWindow(m_hwnd, SW_SHOW);
+    }
+    if (m_pinned || m_dragSessionHold) {
+        SetWindowPos(
+            m_hwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    } else {
+        // 瞬时抬顶再卸下置顶，配合 activateWindowForeground 彻底突破 Windows 前台锁，杜绝掉后台
+        SetWindowPos(
+            m_hwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        SetWindowPos(
+            m_hwnd,
+            HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    }
+    if (!tools3000::core::WinUtils::activateWindowForeground(m_hwnd)) {
+        BringWindowToTop(m_hwnd);
+        SetForegroundWindow(m_hwnd);
+    }
     SetActiveWindow(m_hwnd);
     SetFocus(m_hwnd);
     if (m_controller) {
@@ -179,6 +267,15 @@ void ClipboardWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
     m_pendingReveal = false;
+    m_dragSessionHold = false;
+    uninstallForegroundTracker();
+    if (!m_pinned) {
+        SetWindowPos(
+            m_hwnd,
+            HWND_NOTOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    }
     ShowWindow(m_hwnd, SW_HIDE);
     m_visible.store(false, std::memory_order_release);
     // 延迟 25 秒再软挂起 WebView2：高频连续复制粘贴期间保持 GPU 帧热存活，秒开零黑屏。
@@ -187,6 +284,8 @@ void ClipboardWindow::hide() {
 }
 
 void ClipboardWindow::destroy() {
+    uninstallForegroundTracker();
+    m_dragSessionHold = false;
     tools3000::core::MessageBridge::instance().unregisterEventPusher("clipboard_window");
     m_suspendController.abandon();
     ++m_generation;
@@ -207,6 +306,8 @@ void ClipboardWindow::destroy() {
         DestroyWindow(hwnd);
     }
     m_visible.store(false, std::memory_order_release);
+    m_inNativeDrag.store(false, std::memory_order_release);
+    m_lastNativeDragEndTick = 0;
     m_webViewReady = false;
     m_suspendedOrCold = true;
     m_pendingReveal = false;
@@ -242,6 +343,9 @@ void ClipboardWindow::notifyWindowStateToWeb() {
 
 void ClipboardWindow::setPinned(bool pinned) {
     m_pinned = pinned;
+    if (!m_pinned) {
+        m_dragSessionHold = false;
+    }
     if (m_hwnd && IsWindow(m_hwnd)) {
         SetWindowPos(
             m_hwnd,
@@ -486,6 +590,57 @@ void ClipboardWindow::initializeWebView2() {
                                                 const std::wstring wReply = tools3000::core::WinUtils::utf8ToWstring(reply.dump());
                                                 sender->PostWebMessageAsString(wReply.c_str());
                                             };
+                                            if (method == "clipboard.startNativeDrag") {
+                                                const auto params = parsed.value("params", json::object());
+                                                const uint64_t itemId = params.is_object()
+                                                    ? params.value("id", static_cast<uint64_t>(0))
+                                                    : 0;
+                                                sendReply({{"success", itemId > 0}});
+                                                if (itemId > 0 && generation == m_generation.load() &&
+                                                    m_hwnd && IsWindow(m_hwnd) &&
+                                                    !m_inNativeDrag.load(std::memory_order_acquire)) {
+                                                    tools3000::core::MainThreadDispatcher::instance().postDeferred(
+                                                        [this, generation, itemId]() {
+                                                            if (generation != m_generation.load() ||
+                                                                !m_hwnd || !IsWindow(m_hwnd)) {
+                                                                return;
+                                                            }
+                                                            if (m_inNativeDrag.exchange(true, std::memory_order_acq_rel)) {
+                                                                return;
+                                                            }
+                                                            struct NativeDragGuard {
+                                                                ClipboardWindow* owner;
+                                                                ~NativeDragGuard() {
+                                                                    owner->m_lastNativeDragEndTick = GetTickCount64();
+                                                                    owner->m_inNativeDrag.store(false, std::memory_order_release);
+                                                                }
+                                                            } dragGuard{this};
+                                                            const auto outcome = tools3000::clipboard::startNativeDragForItem(itemId, m_hwnd);
+                                                            if (outcome.delivered() &&
+                                                                generation == m_generation.load() &&
+                                                                m_hwnd && IsWindow(m_hwnd)) {
+                                                                m_dragSessionHold = true;
+                                                                if (outcome.targetRootHwnd) {
+                                                                    const HWND validTarget = resolveValidTargetForegroundHwnd(
+                                                                        outcome.targetRootHwnd, m_hwnd);
+                                                                    if (validTarget) {
+                                                                        m_previousForegroundHwnd = validTarget;
+                                                                    }
+                                                                }
+                                                                if (!m_pinned) {
+                                                                    // 拖放成功后保持剪贴板面板无激活浮于目标窗之上，
+                                                                    // 杜绝 Chrome 地址栏延迟异步抢焦点导致面板消失或被压底。
+                                                                    SetWindowPos(
+                                                                        m_hwnd,
+                                                                        HWND_TOPMOST,
+                                                                        0, 0, 0, 0,
+                                                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                                                                }
+                                                            }
+                                                        });
+                                                }
+                                                return S_OK;
+                                            }
                                             if (method == "clipboard.startDrag") {
                                                 if (generation == m_generation.load() && m_hwnd && IsWindow(m_hwnd)) {
                                                     ReleaseCapture();
@@ -610,6 +765,7 @@ void ClipboardWindow::initializeWebView2() {
                             [this, generation](const std::string& eventName, const json& data) {
                                 if (eventName != "appearance:changed" &&
                                     eventName != "clipboard:stateChanged" &&
+                                    eventName != "clipboard:settingsChanged" &&
                                     eventName != "clipboard:updated") {
                                     return;
                                 }
@@ -754,20 +910,68 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_ACTIVATE: {
-                if (LOWORD(wParam) == WA_INACTIVE && self->m_visible.load() &&
-                    !self->m_pendingReveal && !self->m_pinned && !self->m_inSizeMove) {
-                    if (GetTickCount64() - self->m_showTimeTick > 200) {
-                        PostMessageW(hwnd, WM_CLIPBOARD_VERIFY_DEACTIVATED, 0, 0);
+                const WORD activeState = LOWORD(wParam);
+                if (activeState != WA_INACTIVE) {
+                    if (lParam != 0) {
+                        const HWND lostRoot = resolveValidTargetForegroundHwnd(
+                            reinterpret_cast<HWND>(lParam), hwnd);
+                        if (lostRoot) {
+                            self->m_previousForegroundHwnd = lostRoot;
+                        }
                     }
+                    return 0;
+                }
+
+                // 窗口失焦时同步追踪新激活窗口（含置顶常驻与拖拽驻留态切到其他应用窗口的场景）
+                if (!self->m_inSizeMove && !self->m_inNativeDrag.load(std::memory_order_acquire)) {
+                    if (lParam != 0) {
+                        const HWND gainedRoot = resolveValidTargetForegroundHwnd(
+                            reinterpret_cast<HWND>(lParam), hwnd);
+                        if (gainedRoot) {
+                            self->m_previousForegroundHwnd = gainedRoot;
+                        }
+                    } else if (self->m_pinned || self->m_dragSessionHold) {
+                        PostMessageW(hwnd, WM_CLIPBOARD_CAPTURE_FOREGROUND, 0, 0);
+                    }
+                }
+
+                if (shouldAutoHideOnDeactivate(
+                        self->m_visible.load(std::memory_order_acquire),
+                        self->m_pendingReveal,
+                        self->m_pinned,
+                        self->m_inSizeMove,
+                        self->m_inNativeDrag.load(std::memory_order_acquire),
+                        GetTickCount64(),
+                        self->m_showTimeTick,
+                        self->m_lastNativeDragEndTick,
+                        self->m_dragSessionHold)) {
+                    PostMessageW(hwnd, WM_CLIPBOARD_VERIFY_DEACTIVATED, 0, 0);
                 }
                 return 0;
             }
             case WM_CLIPBOARD_VERIFY_DEACTIVATED: {
-                if (self->m_visible.load() && !self->m_pendingReveal &&
-                    !self->m_pinned && !self->m_inSizeMove) {
+                if (shouldAutoHideOnDeactivate(
+                        self->m_visible.load(std::memory_order_acquire),
+                        self->m_pendingReveal,
+                        self->m_pinned,
+                        self->m_inSizeMove,
+                        self->m_inNativeDrag.load(std::memory_order_acquire),
+                        GetTickCount64(),
+                        self->m_showTimeTick,
+                        self->m_lastNativeDragEndTick,
+                        self->m_dragSessionHold)) {
                     const HWND fg = GetForegroundWindow();
                     if (fg != hwnd && (!fg || !IsChild(hwnd, fg))) {
                         self->hide();
+                    }
+                }
+                return 0;
+            }
+            case WM_CLIPBOARD_CAPTURE_FOREGROUND: {
+                if (!self->m_inSizeMove && !self->m_inNativeDrag.load(std::memory_order_acquire)) {
+                    const HWND fg = resolveValidTargetForegroundHwnd(GetForegroundWindow(), hwnd);
+                    if (fg) {
+                        self->m_previousForegroundHwnd = fg;
                     }
                 }
                 return 0;

@@ -40,6 +40,7 @@ constexpr int DownloadReceiveTimeoutMs = 30000;
 constexpr size_t MaxResponseBytes = 1024 * 1024;
 constexpr uint64_t MaxInstallerBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr int64_t AutomaticRetrySeconds = 6 * 60 * 60;
+constexpr const char* DismissedVersionConfigKey = "/update/dismissedVersion";
 
 using json = nlohmann::json;
 
@@ -113,6 +114,29 @@ std::vector<int> parseVersion(std::string version) {
         start = end + 1;
     }
     return parts;
+}
+
+std::string normalizeVersionTag(std::string_view raw) {
+    const std::string extracted = extractVersionString(std::string(raw));
+    if (!extracted.empty()) {
+        return "v" + extracted;
+    }
+    return trimAscii(raw);
+}
+
+bool isSameVersionTag(std::string_view left, std::string_view right) {
+    const std::string normLeft = normalizeVersionTag(left);
+    const std::string normRight = normalizeVersionTag(right);
+    return !normLeft.empty() && normLeft == normRight;
+}
+
+std::string readDismissedVersion() {
+    return normalizeVersionTag(
+        ConfigManager::instance().get<std::string>(DismissedVersionConfigKey, ""));
+}
+
+void writeDismissedVersion(const std::string& versionTag) {
+    ConfigManager::instance().set(DismissedVersionConfigKey, versionTag);
 }
 
 bool isRunningPortableMode() noexcept {
@@ -448,9 +472,16 @@ std::string UpdateChecker::formatReleaseNotesSummary(std::string_view rawNotes, 
 std::string UpdateChecker::getStateJsonString() const {
     std::lock_guard lock(m_stateMutex);
     const auto& s = m_state;
+    const bool readyToInstall = (s.status == "readyToInstall" && !s.downloadedFilePath.empty());
+    const std::string dismissedVersion = readDismissedVersion();
+    const bool dismissed = s.hasUpdate && isSameVersionTag(s.latestVersion, dismissedVersion);
+    const bool badgeVisible = s.hasUpdate && !dismissed;
     const json payload = {
         {"status", s.status},
         {"hasUpdate", s.hasUpdate},
+        {"badgeVisible", badgeVisible},
+        {"dismissed", dismissed},
+        {"dismissedVersion", dismissedVersion},
         {"isPortable", s.isPortable},
         {"currentVersion", s.currentVersion},
         {"latestVersion", s.latestVersion},
@@ -460,7 +491,7 @@ std::string UpdateChecker::getStateJsonString() const {
         {"assetSize", s.assetSize},
         {"downloadedBytes", s.downloadedBytes},
         {"progress", s.progress},
-        {"readyToInstall", s.status == "readyToInstall" && !s.downloadedFilePath.empty()},
+        {"readyToInstall", readyToInstall},
         {"autoDownloadUpdates", ConfigManager::instance().get<bool>("/general/autoDownloadUpdates", true)},
         {"error", s.error}
     };
@@ -470,9 +501,15 @@ std::string UpdateChecker::getStateJsonString() const {
 void UpdateChecker::broadcastStateLocked(bool emitLegacyResult, bool emitToast) {
     const auto& s = m_state;
     const bool readyToInstall = (s.status == "readyToInstall" && !s.downloadedFilePath.empty());
+    const std::string dismissedVersion = readDismissedVersion();
+    const bool dismissed = s.hasUpdate && isSameVersionTag(s.latestVersion, dismissedVersion);
+    const bool badgeVisible = s.hasUpdate && !dismissed;
     const json statePayload = {
         {"status", s.status},
         {"hasUpdate", s.hasUpdate},
+        {"badgeVisible", badgeVisible},
+        {"dismissed", dismissed},
+        {"dismissedVersion", dismissedVersion},
         {"isPortable", s.isPortable},
         {"currentVersion", s.currentVersion},
         {"latestVersion", s.latestVersion},
@@ -497,9 +534,10 @@ void UpdateChecker::broadcastStateLocked(bool emitLegacyResult, bool emitToast) 
     EventBus::instance().publish(UpdateStatusChangedEvent{
         s.hasUpdate,
         readyToInstall,
-        s.latestVersion
+        s.latestVersion,
+        badgeVisible
     });
-    if (emitToast && s.hasUpdate) {
+    if (emitToast && badgeVisible) {
         const bool isZh = WinUtils::isSystemLanguageChinese();
         std::wstring message;
         if (readyToInstall) {
@@ -515,10 +553,42 @@ void UpdateChecker::broadcastStateLocked(bool emitLegacyResult, bool emitToast) 
     }
 }
 
+bool UpdateChecker::dismissCurrentUpdate() {
+    std::lock_guard stLock(m_stateMutex);
+    if (!m_state.hasUpdate || m_state.latestVersion.empty()) {
+        return false;
+    }
+    const std::string normalized = normalizeVersionTag(m_state.latestVersion);
+    if (normalized.empty()) {
+        return false;
+    }
+    writeDismissedVersion(normalized);
+    LOG_INFO("UpdateChecker: dismissed update badge for {}", normalized);
+    broadcastStateLocked(/*emitLegacyResult=*/false, /*emitToast=*/false);
+    return true;
+}
+
+void UpdateChecker::clearDismissedVersion() {
+    std::lock_guard stLock(m_stateMutex);
+    const std::string existing = readDismissedVersion();
+    if (existing.empty()) {
+        return;
+    }
+    writeDismissedVersion("");
+    LOG_INFO("UpdateChecker: cleared dismissed update version (previous={})", existing);
+    if (m_state.hasUpdate) {
+        broadcastStateLocked(/*emitLegacyResult=*/false, /*emitToast=*/false);
+    }
+}
+
 bool UpdateChecker::checkAsync(bool force) {
     if (m_stopping.load()) return false;
     auto& config = ConfigManager::instance();
     if (!force && !config.get<bool>("/general/checkUpdates", true)) return false;
+
+    if (force) {
+        clearDismissedVersion();
+    }
 
     const int64_t now = unixNow();
     if (!force) {
@@ -555,6 +625,10 @@ bool UpdateChecker::downloadUpdateAsync() {
         std::lock_guard stLock(m_stateMutex);
         if (!m_state.hasUpdate || m_state.downloadUrl.empty() || m_state.assetName.empty()) {
             return false;
+        }
+        if (!readDismissedVersion().empty()) {
+            writeDismissedVersion("");
+            LOG_INFO("UpdateChecker: cleared dismissed version on explicit download request");
         }
         if (m_state.status == "readyToInstall" && !m_state.downloadedFilePath.empty()) {
             std::error_code ec;
@@ -896,12 +970,23 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
         LOG_INFO("更新检查完成: {}", next.status);
         {
             std::lock_guard stLock(m_stateMutex);
+            const std::string prevDismissed = readDismissedVersion();
+            if (next.hasUpdate && !prevDismissed.empty() &&
+                isNewerVersion(next.latestVersion, prevDismissed)) {
+                writeDismissedVersion("");
+                LOG_INFO("UpdateChecker: newer release {} supersedes dismissed version {}, clearing dismissal",
+                         next.latestVersion, prevDismissed);
+            }
+            const bool isDismissed =
+                next.hasUpdate && isSameVersionTag(next.latestVersion, readDismissedVersion());
+
             m_state = next;
             shouldAutoDownload = autoDownloadIfAvailable &&
                                  m_state.hasUpdate &&
+                                 !isDismissed &&
                                  m_state.status == "available" &&
                                  !m_state.downloadUrl.empty();
-            broadcastStateLocked(/*emitLegacyResult=*/true, /*emitToast=*/!shouldAutoDownload);
+            broadcastStateLocked(/*emitLegacyResult=*/true, /*emitToast=*/!shouldAutoDownload && !isDismissed);
         }
     }
     m_busy = false;

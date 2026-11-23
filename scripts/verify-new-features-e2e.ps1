@@ -54,7 +54,11 @@ $FeatureFilter = @(
     "DialogPathMemoryTest.*",
     "DialogOverlayLayoutTest.*",
     "DialogPipeClientTest.*",
-    "WinUtilsOpenProgramAndClipboardContractTest.*"
+    "WinUtilsOpenProgramAndClipboardContractTest.*",
+    "CaptureRegionHistoryTest.*",
+    "PinZoomStageTest.*",
+    "ClipboardManagerTest.*",
+    "TextExpanderMatcherTest.*"
 ) -join ":"
 
 Write-Host "[INFO] [E2E-1/3] 执行全部新增模块核心单测组..."

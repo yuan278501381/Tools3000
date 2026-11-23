@@ -15,11 +15,17 @@ import {
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
+  TextCursorInput,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Button, Toggle, CodeBadge } from '../components/UIKit';
 import type { NavId } from '../components/Sidebar';
+import {
+  getBuiltinPluginAliases,
+  getBuiltinPluginDisplayOrder,
+  getBuiltinPluginPrimaryRoute,
+} from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './PluginsPage.css';
 
@@ -66,41 +72,9 @@ const ICONS = {
   picasa_viewer: ImageIcon,
   picasaviewer: ImageIcon,
   clipboard: ClipboardList,
+  text_expander: TextCursorInput,
+  textexpander: TextCursorInput,
 } as const;
-
-const PLUGIN_DISPLAY_ORDER: Record<string, number> = {
-  search: 1,
-  clipboard: 2,
-  gesture: 3,
-  capture: 4,
-  dialogenhancer: 5,
-  dialog_enhancer: 5,
-  file_locksmith: 6,
-  filelocksmith: 6,
-  keycast: 7,
-  spotlight: 8,
-  remote_boost: 9,
-  remote: 9,
-  picasa_viewer: 10,
-  picasaviewer: 10,
-};
-
-const PLUGIN_NAV_MAP: Record<string, NavId> = {
-  search: 'search',
-  clipboard: 'clipboard',
-  gesture: 'gesture',
-  capture: 'capture',
-  dialogenhancer: 'dialog_enhancer',
-  dialog_enhancer: 'dialog_enhancer',
-  file_locksmith: 'file_locksmith',
-  filelocksmith: 'file_locksmith',
-  keycast: 'keycast',
-  spotlight: 'spotlight',
-  remote_boost: 'remote_boost',
-  remote: 'remote_boost',
-  picasa_viewer: 'picasa_viewer',
-  picasaviewer: 'picasa_viewer',
-};
 
 export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavigate }) => {
   const { t } = useTranslation();
@@ -147,15 +121,7 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
 
   const updatePluginState = useCallback((id: string, enabled: boolean) => {
     setPlugins((items) => {
-      const aliases = (id === 'dialogenhancer' || id === 'dialog_enhancer')
-        ? ['dialogenhancer', 'dialog_enhancer']
-        : (id === 'remote_boost' || id === 'remote')
-          ? ['remote_boost', 'remote']
-          : (id === 'picasa_viewer' || id === 'picasaviewer')
-            ? ['picasa_viewer', 'picasaviewer']
-            : (id === 'file_locksmith' || id === 'filelocksmith')
-              ? ['file_locksmith', 'filelocksmith']
-              : [id];
+      const aliases = getBuiltinPluginAliases(id);
       const next = items.map((item) => {
         if (!aliases.includes(item.id)) return item;
         // 若二进制缺失处于 unavailable 状态，绝不被外部状态事件误覆写为 disabled 并解锁开关
@@ -225,6 +191,13 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
     }
   });
 
+  useBridgeEvent('textExpander:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('text_expander', payload.enabled);
+    }
+  });
+
   useBridgeEvent('gesture:stateChanged', (data: unknown) => {
     const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
     if (payload && typeof payload.enabled === 'boolean') {
@@ -262,11 +235,14 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
   };
 
   const sortedPlugins = useMemo(() => {
-    return [...plugins].sort((a, b) => {
-      const orderA = PLUGIN_DISPLAY_ORDER[a.id] ?? 99;
-      const orderB = PLUGIN_DISPLAY_ORDER[b.id] ?? 99;
-      return orderA - orderB;
-    });
+    return plugins
+      .map((plugin, originalIndex) => ({
+        plugin,
+        originalIndex,
+        displayOrder: getBuiltinPluginDisplayOrder(plugin.id),
+      }))
+      .sort((a, b) => (a.displayOrder - b.displayOrder) || (a.originalIndex - b.originalIndex))
+      .map((entry) => entry.plugin);
   }, [plugins]);
 
   if (loading) return <div className="plugins-page__loading">{t('common.loading')}</div>;
@@ -386,18 +362,22 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
                   </div>
                 </details>
 
-                {onNavigate && plugin.enabled && plugin.active && PLUGIN_NAV_MAP[plugin.id] && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="plugin-card__config-btn"
-                    onClick={() => onNavigate(PLUGIN_NAV_MAP[plugin.id])}
-                    title={t('plugins.configure')}
-                  >
-                    <SlidersHorizontal size={13} strokeWidth={1.9} />
-                    <span>{t('plugins.configure')}</span>
-                  </Button>
-                )}
+                {(() => {
+                  const targetNav = getBuiltinPluginPrimaryRoute(plugin.id);
+                  if (!onNavigate || !plugin.enabled || !plugin.active || !targetNav) return null;
+                  return (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="plugin-card__config-btn"
+                      onClick={() => onNavigate(targetNav)}
+                      title={t('plugins.configure')}
+                    >
+                      <SlidersHorizontal size={13} strokeWidth={1.9} />
+                      <span>{t('plugins.configure')}</span>
+                    </Button>
+                  );
+                })()}
               </div>
             </article>
           );

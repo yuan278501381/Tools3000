@@ -8,6 +8,7 @@
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
 #include "capture/CaptureHistory.h"
+#include "capture/CaptureRegionHistory.h"
 #include "capture/ShortcutHintOverlay.h"
 #include "capture/ScrollCapture.h"
 #include "capture/ScrollCaptureEditorOverlay.h"
@@ -18,6 +19,7 @@
 #include "core/accessibility/OverlayAnnouncement.h"
 #include "core/accessibility/OverlayUiaProvider.h"
 #include "core/config/ConfigManager.h"
+#include "core/ipc/MessageBridge.h"
 #include "core/hotkey/KeyboardHook.h"
 #include "core/utils/ThemeUtils.h"
 
@@ -346,6 +348,7 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     m_editPinnedCallback = nullptr;
     m_editLongImageCallback = nullptr;
     resetTransientOverlayState();
+    CaptureRegionHistory::instance().resetCursor();
     m_state.state = OverlayState::Selecting;
     m_state.dragStart = {0, 0};
     m_state.dragEnd = {0, 0};
@@ -482,6 +485,18 @@ void CaptureOverlay::startSelection(const CaptureOptions& options, OverlayMode m
     SetFocus(m_hwnd);
     CaptureInput::ensureCursorVisible();
     m_input.updateHoverCursor(m_state.currentCursor);
+    if (mode == OverlayMode::Screenshot) {
+        if (options.hasInitialRegion) {
+            (void)m_input.applyExplicitRegionSelection(
+                m_hwnd, options.initialRegion, options.initialRegionName);
+        } else if (options.autoApplyLastRegion) {
+            if (CaptureRegionHistory::instance().hasHistory()) {
+                (void)m_input.applyHistoryRegionSelection(m_hwnd, /*stepNewer=*/false);
+            } else {
+                m_input.showNoHistoryRegionToast(m_hwnd);
+            }
+        }
+    }
     tools3000::core::accessibility::announceOverlay(
         m_hwnd,
         tools3000::core::trWCstr(L"截图选区。拖动鼠标选择区域；Enter 确认；Esc 取消。", L"Capture selection. Drag to select an area; Enter to confirm; Esc to cancel.")
@@ -1187,6 +1202,39 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     auto cb = m_state.callback;
     auto rcb = m_state.recordCallback;
     auto mode = m_state.mode;
+
+    if (!editPinnedCb && !editPinnedMarkupCb && !editLongCb) {
+        auto& regionHistory = CaptureRegionHistory::instance();
+        if (regionHistory.record(RECT{
+                region.x,
+                region.y,
+                region.x + region.width,
+                region.y + region.height
+            })) {
+            nlohmann::json arr = nlohmann::json::array();
+            for (const auto& entry : regionHistory.entries()) {
+                arr.push_back({
+                    {"id", entry.id},
+                    {"l", entry.rect.left},
+                    {"t", entry.rect.top},
+                    {"r", entry.rect.right},
+                    {"b", entry.rect.bottom},
+                    {"name", entry.name},
+                    {"pinned", entry.pinned},
+                    {"updatedAt", entry.updatedAt}
+                });
+            }
+            tools3000::core::ConfigManager::instance().set<nlohmann::json>(
+                "/capture/regionHistoryItems", arr);
+            tools3000::core::MessageBridge::instance().pushEvent(
+                "capture:regionHistoryChanged",
+                {
+                    {"items", arr},
+                    {"maxEntries", regionHistory.maxEntries()},
+                    {"pinnedCount", regionHistory.pinnedCount()}
+                });
+        }
+    }
 
     // 阶段 1 (视觉退场): 立即同步隐藏覆盖层与提示窗，释放光标捕获，
     // 确保录屏首帧不被遮挡，桌面视觉即刻恢复纯净交互。

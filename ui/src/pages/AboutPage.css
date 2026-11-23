@@ -95,6 +95,33 @@
   background: color-mix(in srgb, var(--success) 10%, transparent);
 }
 
+.about-update-panel--dismissed {
+  border-color: var(--card-border);
+  background: var(--well-bg);
+}
+
+.about-update-panel--dismissed .about-update-panel__dot {
+  background: var(--text-muted);
+}
+
+.about-update-panel__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
+}
+
+.about-update-panel__dismissed-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
 .about-update-panel__row {
   display: flex;
   align-items: center;
