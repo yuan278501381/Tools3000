@@ -1,21 +1,21 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **Suite de productividad nativa todo-en-uno y ultraligera para Windows**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · **Español**
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · **Español**
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#descarga-e-instalación)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#descarga-e-instalación)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[Descargar última versión](#descarga-e-instalación)** · [Vista general](#vista-general) · [Demostraciones](#demostraciones) · [Seguridad y verificación](#verificación-de-seguridad-y-confianza) · [Por qué lo creé](#por-qué-creé-tools3000) · [Qué reemplaza](#qué-reemplaza-tools3000) · [Contribuir](#comentarios-y-cocreación) · [Guía para desarrolladores](docs/DEVELOPER.md)
+**[Descargar última versión](#descarga-e-instalación)** · [Vista general](#vista-general) · [Demostraciones](#demostraciones) · [Seguridad y verificación](#verificación-de-seguridad-y-confianza) · [Por qué lo creé](#por-qué-creé-tools3000) · [Qué reemplaza](#qué-reemplaza-tools3000) · [Contribuir](#comentarios-y-cocreación) · [Guía para desarrolladores](../DEVELOPER.md)
 
 </div>
 
@@ -28,7 +28,7 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
 ## Vista general
 
 <p align="center">
-  <img src="docs/images/es-ES/feature_bento_overview.png" alt="Resumen de las doce capacidades principales de Tools3000" width="100%" />
+  <img src="../images/es-ES/feature_bento_overview.png" alt="Resumen de las doce capacidades principales de Tools3000" width="100%" />
 </p>
 
 ---
@@ -38,67 +38,67 @@ Tools3000 integra en una sola aplicación nativa para Windows las herramientas e
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/search_demo.webp" alt="Búsqueda instantánea de archivos, apps, comandos y marcadores con Favicon y vista previa con Espacio" width="100%" /><br />
+      <img src="../images/es-ES/search_demo.webp" alt="Búsqueda instantánea de archivos, apps, comandos y marcadores con Favicon y vista previa con Espacio" width="100%" /><br />
       <sub><b>Búsqueda Instantánea y Vista Previa</b> · Apps, marcadores con Favicons reales, Live Watch y vista previa de ZIP y fuentes con Espacio</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/ocr_live_text_demo.webp" alt="OCR sin conexión en 8 idiomas, selección y edición directa" width="100%" /><br />
+      <img src="../images/es-ES/ocr_live_text_demo.webp" alt="OCR sin conexión en 8 idiomas, selección y edición directa" width="100%" /><br />
       <sub><b>OCR Sin Conexión en 8 Idiomas</b> · Detecta idiomas automáticamente offline; copia, subraya con línea ondulada o edita en el sitio</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/scroll_capture_demo.webp" alt="Captura con desplazamiento automático y recorte no destructivo" width="100%" /><br />
+      <img src="../images/es-ES/scroll_capture_demo.webp" alt="Captura con desplazamiento automático y recorte no destructivo" width="100%" /><br />
       <sub><b>Captura con Desplazamiento</b> · Unión automática con vista previa en vivo y recorte no destructivo</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/screen_recording_demo.webp" alt="Grabación de pantalla y Estudio con zoom automático" width="100%" /><br />
+      <img src="../images/es-ES/screen_recording_demo.webp" alt="Grabación de pantalla y Estudio con zoom automático" width="100%" /><br />
       <sub><b>Grabación y Estudio Auto-Zoom</b> · Zoom inteligente en clics y exportación a MP4, GIF y WebP animado</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/content_search_demo.webp" alt="Búsqueda en contenido de documentos con copia en un clic" width="100%" /><br />
+      <img src="../images/es-ES/content_search_demo.webp" alt="Búsqueda en contenido de documentos con copia en un clic" width="100%" /><br />
       <sub><b>Búsqueda de Contenido</b> · Busca dentro de PDF, Word, Excel y código fuente con copia de línea en un clic</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/capture_markup_demo.webp" alt="Anotación precisa con lupa óptica discontinua y mosaico" width="100%" /><br />
+      <img src="../images/es-ES/capture_markup_demo.webp" alt="Anotación precisa con lupa óptica discontinua y mosaico" width="100%" /><br />
       <sub><b>Anotación Precisa</b> · Ajuste automático a controles, lupa óptica discontinua, mosaico de privacidad y pasos numerados</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/pin_groups_demo.webp" alt="Pines en pantalla con filtrado por grupos y mosaico automático" width="100%" /><br />
+      <img src="../images/es-ES/pin_groups_demo.webp" alt="Pines en pantalla con filtrado por grupos y mosaico automático" width="100%" /><br />
       <sub><b>Pines en Pantalla y Grupos</b> · Fija referencias arriba (F3), filtra por color de grupo y ordena en cuadrícula en un clic</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/mouse_gesture_demo.webp" alt="Gestos globales de ratón y volumen con rueda en el borde" width="100%" /><br />
+      <img src="../images/es-ES/mouse_gesture_demo.webp" alt="Gestos globales de ratón y volumen con rueda en el borde" width="100%" /><br />
       <sub><b>Gestos Globales de Ratón</b> · Cancelar al pausar activo por defecto, cambio inteligente a ventanas abiertas y volumen en el borde</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/translate_demo.webp" alt="Traducción de capturas in situ 1:1 con protección de código" width="100%" /><br />
+      <img src="../images/es-ES/translate_demo.webp" alt="Traducción de capturas in situ 1:1 con protección de código" width="100%" /><br />
       <sub><b>Traducción de Capturas In Situ</b> · Motores gratuitos sin clave + BYOK, superposición limpia 1:1, protección de código y cambio en 0 ms</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/clipboard_demo.webp" alt="Portapapeles persistente con pegado combinado Shift/Ctrl" width="100%" /><br />
+      <img src="../images/es-ES/clipboard_demo.webp" alt="Portapapeles persistente con pegado combinado Shift/Ctrl" width="100%" /><br />
       <sub><b>Portapapeles Persistente (Alt + V)</b> · Persiste tras reinicios, pegado combinado Shift/Ctrl, Rich Text y control en bandeja</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/dialog_enhancer_demo.webp" alt="Asistente de Diálogos con búsqueda inline estilo Listary" width="100%" /><br />
+      <img src="../images/es-ES/dialog_enhancer_demo.webp" alt="Asistente de Diálogos con búsqueda inline estilo Listary" width="100%" /><br />
       <sub><b>Asistente de Diálogos</b> · Búsqueda y salto de carpetas estilo Listary en Abrir/Guardar sin sobrescribir el nombre del archivo</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/es-ES/file_locksmith_demo.webp" alt="Desbloqueo de Archivos y control rápido en bandeja" width="100%" /><br />
+      <img src="../images/es-ES/file_locksmith_demo.webp" alt="Desbloqueo de Archivos y control rápido en bandeja" width="100%" /><br />
       <sub><b>Desbloqueo de Archivos</b> · Detecta qué app bloquea un archivo desde el menú contextual, búsqueda o página dedicada y libéralo en 1 clic</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/es-ES/text_expander_demo.webp" alt="Expansor de Texto Global: expansión instantánea de snippets, macros dinámicas y cero contaminación del historial" width="68%" /><br />
+      <img src="../images/es-ES/text_expander_demo.webp" alt="Expansor de Texto Global: expansión instantánea de snippets, macros dinámicas y cero contaminación del historial" width="68%" /><br />
       <sub><b>Expansor de Texto</b> · Escribe <code>;date</code> o <code>;sig</code> en cualquier app con macros dinámicas, protección de contraseñas y cero contaminación del portapapeles</sub>
     </td>
   </tr>
@@ -134,7 +134,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget (Manifiestos oficiales incluidos)**: los manifiestos de `Yy1.Tools3000` en [`packaging/winget/`](packaging/winget/) se actualizan y validan con `winget validate` en cada lanzamiento. Una vez integrado en `microsoft/winget-pkgs`, instala con `winget install Yy1.Tools3000` (validación local: `winget install -m packaging/winget`).
+- **Winget (Manifiestos oficiales incluidos)**: los manifiestos de `Yy1.Tools3000` en [`packaging/winget/`](../../packaging/winget/) se actualizan y validan con `winget validate` en cada lanzamiento. Una vez integrado en `microsoft/winget-pkgs`, instala con `winget install Yy1.Tools3000` (validación local: `winget install -m packaging/winget`).
 
 ### Opción 2: Descarga directa desde GitHub Releases
 
@@ -144,18 +144,18 @@ Obtén la última versión en **[GitHub Releases](https://github.com/yuan2785013
 - **Archivo portátil (`Tools3000-vX.Y.Z-win-x64-portable.zip`)** — Extrae y ejecuta directamente guardando toda la configuración en la misma carpeta.
 - **Sumas de verificación (`SHA256SUMS.txt`)** — Hashes SHA-256 para comprobar la integridad de cada artefacto publicado.
 
-> **Requisitos del sistema**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025, con soporte nativo en código y compilación para `x64` y `ARM64` (GitHub Releases ofrece actualmente instalador y versión portátil precompilados para `x64`; en equipos ARM64 se puede compilar nativamente siguiendo la [Guía para desarrolladores](docs/DEVELOPER.md) o ejecutar la versión `x64`), requiere Microsoft Edge WebView2 Runtime integrado. La interfaz de la aplicación admite de forma nativa 8 idiomas (incluido español) y sigue el idioma del sistema de forma predeterminada.
+> **Requisitos del sistema**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025, con soporte nativo en código y compilación para `x64` y `ARM64` (GitHub Releases ofrece actualmente instalador y versión portátil precompilados para `x64`; en equipos ARM64 se puede compilar nativamente siguiendo la [Guía para desarrolladores](../DEVELOPER.md) o ejecutar la versión `x64`), requiere Microsoft Edge WebView2 Runtime integrado. La interfaz de la aplicación admite de forma nativa 8 idiomas (incluido español) y sigue el idioma del sistema de forma predeterminada.
 
 ### Verificación de seguridad y confianza
 
-Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](SECURITY.md)**):
+Transparencia total sin cajas negras (detalles completos en **[SECURITY.md](../../.github/SECURITY.md)**):
 
 1. **Verificación SHA-256**: comprueba el archivo descargado frente a `SHA256SUMS.txt` en PowerShell:
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **Inspección pública en VirusTotal**: introduce el SHA-256 en **[VirusTotal](https://www.virustotal.com/)** (o usa los enlaces directos incluidos en las notas de los próximos lanzamientos) para consultar 70+ motores de seguridad.
-3. **Aviso de Windows Defender SmartScreen**: mientras un proyecto independiente de código abierto no cuente con firma comercial EV/pública de confianza (SignPath / Trusted Signing en trámite) o en versiones recién publicadas, Windows puede mostrar «Editor desconocido». Tras verificar SHA-256 y VirusTotal, haz clic en **Más información -> Ejecutar de todas formas**, o compila desde el código fuente con la **[Guía para desarrolladores](docs/DEVELOPER.md)**.
+3. **Aviso de Windows Defender SmartScreen**: mientras un proyecto independiente de código abierto no cuente con firma comercial EV/pública de confianza (SignPath / Trusted Signing en trámite) o en versiones recién publicadas, Windows puede mostrar «Editor desconocido». Tras verificar SHA-256 y VirusTotal, haz clic en **Más información -> Ejecutar de todas formas**, o compila desde el código fuente con la **[Guía para desarrolladores](../DEVELOPER.md)**.
 4. **SPDX SBOM integrado**: tanto el instalador como el archivo portátil incluyen `SBOM.spdx.json` y `THIRD_PARTY_NOTICES.txt`.
 
 ---
@@ -231,7 +231,7 @@ Compatibilidad total con carpetas de instalación y nombres de usuario de Window
 
 - **Reportar un error**: la vía más rápida es desde la propia aplicación — haz clic en **`Enviar comentarios`** en la esquina inferior izquierda de Configuración (o en **`Configuración -> Acerca de -> Enviar comentarios`**). Admite pegar capturas con `Ctrl + V` y oculta localmente rutas de usuario, correos, IPs y tokens antes de exportar el paquete de diagnóstico (con las últimas 1000 líneas de registro) o prellenar un Issue de GitHub. También puedes reportarlo manualmente mediante la **[plantilla de Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Proponer mejoras**: abre un **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** o conversa en **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
-- **Cocrear código**: los Pull Requests son bienvenidos — consulta la **[Guía para desarrolladores](docs/DEVELOPER.md)** y la **[Guía de empaquetado](packaging/README.md)**.
+- **Cocrear código**: los Pull Requests son bienvenidos — consulta la **[Guía para desarrolladores](../DEVELOPER.md)** y la **[Guía de empaquetado](../../packaging/README.md)**.
 
 ---
 
@@ -249,6 +249,6 @@ Compatibilidad total con carpetas de instalación y nombres de usuario de Window
 
 ## Documentación y licencia
 
-- **Desarrollo y Seguridad**: instrucciones de compilación en la **[Guía para desarrolladores](docs/DEVELOPER.md)**, política de seguridad en **[SECURITY.md](SECURITY.md)** e historial en **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
-- **Licencia**: Publicado bajo la **[GNU GPL v3.0](LICENSE)** (con [excepción de enlace Windows / WebView2](LICENSE-EXCEPTION.md)).
+- **Desarrollo y Seguridad**: instrucciones de compilación en la **[Guía para desarrolladores](../DEVELOPER.md)**, política de seguridad en **[SECURITY.md](../../.github/SECURITY.md)** e historial en **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
+- **Licencia**: Publicado bajo la **[GNU GPL v3.0](../../LICENSE)** (con [excepción de enlace Windows / WebView2](../../LICENSE-EXCEPTION.md)).
 - **Derechos de autor**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

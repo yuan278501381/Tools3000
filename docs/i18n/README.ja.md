@@ -1,21 +1,21 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **軽量・ネイティブな Windows オールインワン生産性ツールスイート**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **日本語** · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · **日本語** · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#ダウンロードとインストール)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#ダウンロードとインストール)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[最新版をダウンロード](#ダウンロードとインストール)** · [機能一覧](#機能一覧) · [デモ](#アニメーションデモ) · [セキュリティと検証](#セキュリティ検証と信頼性) · [開発のきっかけ](#開発のきっかけ) · [置き換え対象一覧](#置き換え対象一覧) · [共創・フィードバック](#共創とフィードバック) · [開発者ガイド](docs/DEVELOPER.md)
+**[最新版をダウンロード](#ダウンロードとインストール)** · [機能一覧](#機能一覧) · [デモ](#アニメーションデモ) · [セキュリティと検証](#セキュリティ検証と信頼性) · [開発のきっかけ](#開発のきっかけ) · [置き換え対象一覧](#置き換え対象一覧) · [共創・フィードバック](#共創とフィードバック) · [開発者ガイド](../DEVELOPER.md)
 
 </div>
 
@@ -28,7 +28,7 @@ Tools3000 は、日々の業務で頻繁に使う **高速ファイル・アプ�
 ## 機能一覧
 
 <p align="center">
-  <img src="docs/images/ja-JP/feature_bento_overview.png" alt="Tools3000 12のコア機能オーバービュー" width="100%" />
+  <img src="../images/ja-JP/feature_bento_overview.png" alt="Tools3000 12のコア機能オーバービュー" width="100%" />
 </p>
 
 ---
@@ -38,67 +38,67 @@ Tools3000 は、日々の業務で頻繁に使う **高速ファイル・アプ�
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/search_demo.webp" alt="ミリ秒ファイル・アプリ・コマンド・ブックマーク統合検索と Space プレビュー" width="100%" /><br />
+      <img src="../images/ja-JP/search_demo.webp" alt="ミリ秒ファイル・アプリ・コマンド・ブックマーク統合検索と Space プレビュー" width="100%" /><br />
       <sub><b>高速統合検索 ＆ クイックプレビュー</b> · 実アイコン付きアプリ/ブックマーク/コマンド検索、Live 自動更新＆圧縮/フォント即プレビュー</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/ocr_live_text_demo.webp" alt="8言語自動オフライン OCR・ライブテキスト選択・その場文字修正" width="100%" /><br />
+      <img src="../images/ja-JP/ocr_live_text_demo.webp" alt="8言語自動オフライン OCR・ライブテキスト選択・その場文字修正" width="100%" /><br />
       <sub><b>8言語オフライン OCR ＆ 注釈</b> · 切替不要で 8 言語をローカル自動認識、ドラッグコピー・波線・その場文字修正</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/scroll_capture_demo.webp" alt="自動スクロールキャプチャと非破壊トリミング" width="100%" /><br />
+      <img src="../images/ja-JP/scroll_capture_demo.webp" alt="自動スクロールキャプチャと非破壊トリミング" width="100%" /><br />
       <sub><b>スクロールキャプチャ</b> · 自動スクロールでシームレス結合、リアルタイムプレビューと上下の非破壊トリミング</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/screen_recording_demo.webp" alt="画面録画と自動ズームスタジオ" width="100%" /><br />
+      <img src="../images/ja-JP/screen_recording_demo.webp" alt="画面録画と自動ズームスタジオ" width="100%" /><br />
       <sub><b>画面録画 ＆ 自動ズームスタジオ</b> · 画面録画・スマート自動ズーム・MP4 / GIF / アニメーション WebP 出力</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/content_search_demo.webp" alt="ドキュメント本文検索とワンクリック行コピー" width="100%" /><br />
+      <img src="../images/ja-JP/content_search_demo.webp" alt="ドキュメント本文検索とワンクリック行コピー" width="100%" /><br />
       <sub><b>ドキュメント全文検索</b> · PDF / Word / Excel / ソースコード本文を横断検索し、行番号クリックで即コピー</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/capture_markup_demo.webp" alt="精密スクリーンショット注釈と光学ルーペ" width="100%" /><br />
+      <img src="../images/ja-JP/capture_markup_demo.webp" alt="精密スクリーンショット注釈と光学ルーペ" width="100%" /><br />
       <sub><b>精密スクリーンショット注釈</b> · 要素自動吸着、破線光学ルーペ、モザイク、自動連番スタンプ</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/pin_groups_demo.webp" alt="デスクトップピン留めとグループ切り替え・自動整列" width="100%" /><br />
+      <img src="../images/ja-JP/pin_groups_demo.webp" alt="デスクトップピン留めとグループ切り替え・自動整列" width="100%" /><br />
       <sub><b>ピン留め ＆ グループ管理</b> · F3 で最前面固定、カラーグループ絞り込みとワンクリック自動整列</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/mouse_gesture_demo.webp" alt="グローバルマウスジェスチャーと画面端ホイール音量調整" width="100%" /><br />
+      <img src="../images/ja-JP/mouse_gesture_demo.webp" alt="グローバルマウスジェスチャーと画面端ホイール音量調整" width="100%" /><br />
       <sub><b>グローバルマウスジェスチャー</b> · 一時停止キャンセル既定 ON、既存ウィンドウ切替、即時実行＆画面端ホイール音量</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/translate_demo.webp" alt="スクリーンショットその場1:1翻訳とコード保護" width="100%" /><br />
+      <img src="../images/ja-JP/translate_demo.webp" alt="スクリーンショットその場1:1翻訳とコード保護" width="100%" /><br />
       <sub><b>スクリーンショットその場翻訳</b> · キー不要エンジン＋BYOK 対応、自然な 1:1 上書き・コード保護・0ms 原文切替</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/clipboard_demo.webp" alt="永続クリップボード履歴と Shift/Ctrl 連結貼付" width="100%" /><br />
+      <img src="../images/ja-JP/clipboard_demo.webp" alt="永続クリップボード履歴と Shift/Ctrl 連結貼付" width="100%" /><br />
       <sub><b>永続クリップボード履歴 (Alt + V)</b> · 再起動後も保持、Shift/Ctrl 順序結合貼付・リッチテキスト・トレイ切替</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/dialog_enhancer_demo.webp" alt="ファイルダイアログ助手 Listary 風の窓内即検索ジャンプ" width="100%" /><br />
+      <img src="../images/ja-JP/dialog_enhancer_demo.webp" alt="ファイルダイアログ助手 Listary 風の窓内即検索ジャンプ" width="100%" /><br />
       <sub><b>ファイルダイアログ助手</b> · Windows 開く/保存窓内で即座にフォルダー検索＆移動、保存ファイル名は完全保護</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ja-JP/file_locksmith_demo.webp" alt="ファイルロック解除とトレイ切替スイッチ" width="100%" /><br />
+      <img src="../images/ja-JP/file_locksmith_demo.webp" alt="ファイルロック解除とトレイ切替スイッチ" width="100%" /><br />
       <sub><b>ファイルロック解除</b> · 右クリック・検索結果・設定画面から占有アプリを特定しワンクリックで安全解除</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/ja-JP/text_expander_demo.webp" alt="システム全体テキスト展開：短縮語の即時展開・動的マクロ・履歴非汚染" width="68%" /><br />
+      <img src="../images/ja-JP/text_expander_demo.webp" alt="システム全体テキスト展開：短縮語の即時展開・動的マクロ・履歴非汚染" width="68%" /><br />
       <sub><b>テキスト展開</b> · 任意のアプリで <code>;date</code> / <code>;sig</code> を即時展開。動的マクロ・パスワード管理アプリ除外・履歴非汚染に対応</sub>
     </td>
   </tr>
@@ -134,7 +134,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget（公式スキーマ準拠マニフェスト同梱）**：[`packaging/winget/`](packaging/winget/) に `winget validate` 検証済みの `Yy1.Tools3000` マニフェストを自動生成しています。`microsoft/winget-pkgs` 登録後は `winget install Yy1.Tools3000` で直接導入できます（ローカル検証は `winget install -m packaging/winget`）。
+- **Winget（公式スキーマ準拠マニフェスト同梱）**：[`packaging/winget/`](../../packaging/winget/) に `winget validate` 検証済みの `Yy1.Tools3000` マニフェストを自動生成しています。`microsoft/winget-pkgs` 登録後は `winget install Yy1.Tools3000` で直接導入できます（ローカル検証は `winget install -m packaging/winget`）。
 
 ### 方法 2：GitHub Releases から直接ダウンロード
 
@@ -144,18 +144,18 @@ scoop install tools3000/tools3000
 - **ポータブル版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解凍するだけで即利用可能。設定やデータはすべて展開先フォルダー内に保存されます。
 - **チェックサム（`SHA256SUMS.txt`）** — 各リリースの SHA-256 整合性検証ハッシュを同梱しています。
 
-> **動作環境**：Windows 10（1809 以降）/ Windows 11 / Windows Server 2019–2025。ソース・ビルド基盤は `x64`・`ARM64` ネイティブ対応（GitHub Releases では現在 `x64` ビルド済みインストーラー／ポータブル版を配布中。ARM64 環境は[開発者ガイド](docs/DEVELOPER.md)に沿ってネイティブビルド、または `x64` 版を直接実行可能）、標準の Microsoft Edge WebView2 Runtime が必要です。アプリ UI は日本語を含む 8 言語にネイティブ対応し、既定で OS 言語に自動追従します。
+> **動作環境**：Windows 10（1809 以降）/ Windows 11 / Windows Server 2019–2025。ソース・ビルド基盤は `x64`・`ARM64` ネイティブ対応（GitHub Releases では現在 `x64` ビルド済みインストーラー／ポータブル版を配布中。ARM64 環境は[開発者ガイド](../DEVELOPER.md)に沿ってネイティブビルド、または `x64` 版を直接実行可能）、標準の Microsoft Edge WebView2 Runtime が必要です。アプリ UI は日本語を含む 8 言語にネイティブ対応し、既定で OS 言語に自動追従します。
 
 ### セキュリティ検証と信頼性
 
-透明性と安心感を最優先し、4 つの検証手段を用意しています（詳細は **[SECURITY.md](SECURITY.md)**）：
+透明性と安心感を最優先し、4 つの検証手段を用意しています（詳細は **[SECURITY.md](../../.github/SECURITY.md)**）：
 
 1. **SHA-256 整合性チェック**：PowerShell でローカルのハッシュを算出し `SHA256SUMS.txt` と照合できます：
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公開スキャン確認**：**[VirusTotal](https://www.virustotal.com/)** に SHA-256 を入力する（または今後の Release ノート記載の直リンクを開く）ことで、70 以上のセキュリティエンジンの結果を公開確認できます。
-3. **Windows Defender SmartScreen 警告について**：個人 OSS で商用 EV 署名／公的信頼署名（SignPath 等を準備中）が未適用、または新バージョン直後のレピュテーション蓄積前は「Windows によって PC が保護されました」と表示される場合があります。SHA-256 と VirusTotal を確認のうえ **「詳細情報 -> 実行」** で続行するか、**[開発者ガイド](docs/DEVELOPER.md)** からソースビルドしてください。
+3. **Windows Defender SmartScreen 警告について**：個人 OSS で商用 EV 署名／公的信頼署名（SignPath 等を準備中）が未適用、または新バージョン直後のレピュテーション蓄積前は「Windows によって PC が保護されました」と表示される場合があります。SHA-256 と VirusTotal を確認のうえ **「詳細情報 -> 実行」** で続行するか、**[開発者ガイド](../DEVELOPER.md)** からソースビルドしてください。
 4. **SPDX SBOM 同梱**：インストーラーおよびポータブル版には依存関係一覧 `SBOM.spdx.json` と `THIRD_PARTY_NOTICES.txt` を同梱しています。
 
 ---
@@ -231,7 +231,7 @@ scoop install tools3000/tools3000
 
 - **不具合報告**：アプリ内の **設定画面左下「フィードバック」**（または **`設定 -> バージョン情報 -> フィードバック`**）からの送信が最も簡単です。`Ctrl + V` でスクリーンショットを直接貼り付けられ、ユーザー名パス・メール・IP・トークン等をローカルで自動マスキングした上で診断バンドル（直近 1000 行のログ含む）の書き出しや GitHub Issue の自動入力ができます。**[Bug Report テンプレート](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** から直接ご報告いただくことも可能です。
 - **機能提案**：**[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** や **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** で気軽にアイデアを共有いただけます。
-- **Pull Request 共創**：コントリビューションを大歓迎しています。詳細は **[開発者ガイド](docs/DEVELOPER.md)**・**[パッケージ管理ガイド](packaging/README.md)** を参照してください。
+- **Pull Request 共創**：コントリビューションを大歓迎しています。詳細は **[開発者ガイド](../DEVELOPER.md)**・**[パッケージ管理ガイド](../../packaging/README.md)** を参照してください。
 
 ---
 
@@ -249,6 +249,6 @@ scoop install tools3000/tools3000
 
 ## ドキュメントとライセンス
 
-- **開発・セキュリティ**：ビルド手順と SDK は **[開発者ガイド](docs/DEVELOPER.md)**、セキュリティポリシーは **[SECURITY.md](SECURITY.md)**、変更履歴は **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)** をご覧ください。
-- **ライセンス**：**[GNU GPL v3.0](LICENSE)** の下で公開されています（[Windows / WebView2 リンク例外](LICENSE-EXCEPTION.md) 付き）。
+- **開発・セキュリティ**：ビルド手順と SDK は **[開発者ガイド](../DEVELOPER.md)**、セキュリティポリシーは **[SECURITY.md](../../.github/SECURITY.md)**、変更履歴は **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)** をご覧ください。
+- **ライセンス**：**[GNU GPL v3.0](../../LICENSE)** の下で公開されています（[Windows / WebView2 リンク例外](../../LICENSE-EXCEPTION.md) 付き）。
 - **著作権**：`Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

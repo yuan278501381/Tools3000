@@ -30,7 +30,13 @@ param (
 )
 
 $ErrorActionPreference = "Stop"
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$ScriptFileDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
+$RepoCandidate = Split-Path -Parent (Split-Path -Parent $ScriptFileDir)
+$ScriptDir = if ((-not (Test-Path -LiteralPath (Join-Path $ScriptFileDir "VERSION"))) -and (Test-Path -LiteralPath (Join-Path $RepoCandidate "VERSION"))) {
+    $RepoCandidate
+} else {
+    $ScriptFileDir
+}
 Set-Location $ScriptDir
 
 $TraceID = [guid]::NewGuid().ToString("N").Substring(0, 8)

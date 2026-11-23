@@ -1,21 +1,21 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **Лёгкий нативный универсальный набор продуктивности для Windows**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Русский** · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · **Русский** · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#загрузка-и-установка)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#загрузка-и-установка)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[Скачать последнюю версию](#загрузка-и-установка)** · [Обзор](#обзор-возможностей) · [Демонстрация](#демонстрация-функций) · [Безопасность и проверка](#проверка-безопасности-и-доверие) · [Зачем я создал Tools3000](#почему-я-создал-tools3000) · [Что заменяет](#что-заменяет-tools3000) · [Участие](#обратная-связь-и-совместная-разработка) · [Руководство разработчика](docs/DEVELOPER.md)
+**[Скачать последнюю версию](#загрузка-и-установка)** · [Обзор](#обзор-возможностей) · [Демонстрация](#демонстрация-функций) · [Безопасность и проверка](#проверка-безопасности-и-доверие) · [Зачем я создал Tools3000](#почему-я-создал-tools3000) · [Что заменяет](#что-заменяет-tools3000) · [Участие](#обратная-связь-и-совместная-разработка) · [Руководство разработчика](../DEVELOPER.md)
 
 </div>
 
@@ -28,7 +28,7 @@ Tools3000 объединяет повседневные инструменты �
 ## Обзор возможностей
 
 <p align="center">
-  <img src="docs/images/ru-RU/feature_bento_overview.png" alt="Обзор двенадцати ключевых возможностей Tools3000" width="100%" />
+  <img src="../images/ru-RU/feature_bento_overview.png" alt="Обзор двенадцати ключевых возможностей Tools3000" width="100%" />
 </p>
 
 ---
@@ -38,67 +38,67 @@ Tools3000 объединяет повседневные инструменты �
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/search_demo.webp" alt="Мгновенный поиск файлов, приложений, команд и закладок с Favicon и предпросмотром по пробелу" width="100%" /><br />
+      <img src="../images/ru-RU/search_demo.webp" alt="Мгновенный поиск файлов, приложений, команд и закладок с Favicon и предпросмотром по пробелу" width="100%" /><br />
       <sub><b>Мгновенный поиск и предпросмотр</b> · Приложения, закладки с реальными Favicon, Live-обновление и Space-просмотр архивов и шрифтов</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/ocr_live_text_demo.webp" alt="Офлайн-OCR на 8 языках, выделение и редактирование текста на изображении" width="100%" /><br />
+      <img src="../images/ru-RU/ocr_live_text_demo.webp" alt="Офлайн-OCR на 8 языках, выделение и редактирование текста на изображении" width="100%" /><br />
       <sub><b>Офлайн-OCR (8 языков) и разметка</b> · Автоопределение кириллицы, CJK и латиницы локально: копирование, подчёркивание и правка на месте</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/scroll_capture_demo.webp" alt="Длинный скриншот с автопрокруткой и неразрушающей обрезкой" width="100%" /><br />
+      <img src="../images/ru-RU/scroll_capture_demo.webp" alt="Длинный скриншот с автопрокруткой и неразрушающей обрезкой" width="100%" /><br />
       <sub><b>Скриншот с прокруткой</b> · Автосклейка с предпросмотром в реальном времени и неразрушающая обрезка краёв</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/screen_recording_demo.webp" alt="Запись экрана и студия с автозумом" width="100%" /><br />
+      <img src="../images/ru-RU/screen_recording_demo.webp" alt="Запись экрана и студия с автозумом" width="100%" /><br />
       <sub><b>Запись экрана и Студия с автозумом</b> · умный автозум и экспорт в MP4, GIF и анимированный WebP</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/content_search_demo.webp" alt="Поиск по содержимому документов и копирование строки в один клик" width="100%" /><br />
+      <img src="../images/ru-RU/content_search_demo.webp" alt="Поиск по содержимому документов и копирование строки в один клик" width="100%" /><br />
       <sub><b>Поиск по содержимому</b> · Поиск внутри PDF, Word, Excel и исходного кода с копированием строки по клику</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/capture_markup_demo.webp" alt="Точная разметка скриншотов и оптическая лупа" width="100%" /><br />
+      <img src="../images/ru-RU/capture_markup_demo.webp" alt="Точная разметка скриншотов и оптическая лупа" width="100%" /><br />
       <sub><b>Точная разметка</b> · Автопривязка к элементам, пунктирная лупа, мозаика и нумерация шагов</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/pin_groups_demo.webp" alt="Закреплённые скриншоты, цветовые группы и автовыравнивание" width="100%" /><br />
+      <img src="../images/ru-RU/pin_groups_demo.webp" alt="Закреплённые скриншоты, цветовые группы и автовыравнивание" width="100%" /><br />
       <sub><b>Закрепление и группы</b> · Фиксация поверх окон (F3), фильтрация по группам и автоукладка сеткой в один клик</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/mouse_gesture_demo.webp" alt="Глобальные жесты мышью и громкость колесом у края экрана" width="100%" /><br />
+      <img src="../images/ru-RU/mouse_gesture_demo.webp" alt="Глобальные жесты мышью и громкость колесом у края экрана" width="100%" /><br />
       <sub><b>Жесты мышью</b> · Отмена при паузе по умолчанию, умное переключение уже открытых окон и громкость у края экрана</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/translate_demo.webp" alt="Перевод скриншотов на месте 1:1 с защитой кода" width="100%" /><br />
+      <img src="../images/ru-RU/translate_demo.webp" alt="Перевод скриншотов на месте 1:1 с защитой кода" width="100%" /><br />
       <sub><b>Перевод скриншотов на месте</b> · Бесплатные движки без ключей + BYOK LLM, аккуратное наложение 1:1, защита кода и 0 мс оригинал</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/clipboard_demo.webp" alt="Постоянный буфер обмена с пакетной склейкой Shift/Ctrl" width="100%" /><br />
+      <img src="../images/ru-RU/clipboard_demo.webp" alt="Постоянный буфер обмена с пакетной склейкой Shift/Ctrl" width="100%" /><br />
       <sub><b>Постоянный буфер обмена (Alt + V)</b> · Сохраняется после перезагрузки, склейка Shift/Ctrl по порядку, HTML/RTF и тумблер в трее</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/dialog_enhancer_demo.webp" alt="Помощник диалогов с встроенным поиском папок как в Listary" width="100%" /><br />
+      <img src="../images/ru-RU/dialog_enhancer_demo.webp" alt="Помощник диалогов с встроенным поиском папок как в Listary" width="100%" /><br />
       <sub><b>Помощник диалогов</b> · Встроенный поиск и переход по папкам в окнах «Открыть / Сохранить» без перезаписи имени файла</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ru-RU/file_locksmith_demo.webp" alt="Разблокировка файлов и быстрый тумблер в трее" width="100%" /><br />
+      <img src="../images/ru-RU/file_locksmith_demo.webp" alt="Разблокировка файлов и быстрый тумблер в трее" width="100%" /><br />
       <sub><b>Разблокировка файлов</b> · Поиск программ, держащих файл, из контекстного меню, поиска или отдельной страницы — снятие в 1 клик</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/ru-RU/text_expander_demo.webp" alt="Системная автозамена текста: мгновенные сниппеты, динамические макросы и чистая история буфера" width="68%" /><br />
+      <img src="../images/ru-RU/text_expander_demo.webp" alt="Системная автозамена текста: мгновенные сниппеты, динамические макросы и чистая история буфера" width="68%" /><br />
       <sub><b>Автозамена текста</b> · Введите <code>;date</code> или <code>;sig</code> в любом окне — динамические макросы, защита менеджеров паролей и без загрязнения буфера</sub>
     </td>
   </tr>
@@ -134,7 +134,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget (готовые официальные манифесты)**: в каталоге [`packaging/winget/`](packaging/winget/) автоматически обновляются и проходят `winget validate` манифесты `Yy1.Tools3000`. После публикации в `microsoft/winget-pkgs` установка будет доступна через `winget install Yy1.Tools3000` (локально: `winget install -m packaging/winget`).
+- **Winget (готовые официальные манифесты)**: в каталоге [`packaging/winget/`](../../packaging/winget/) автоматически обновляются и проходят `winget validate` манифесты `Yy1.Tools3000`. После публикации в `microsoft/winget-pkgs` установка будет доступна через `winget install Yy1.Tools3000` (локально: `winget install -m packaging/winget`).
 
 ### Способ 2: Прямая загрузка с GitHub Releases
 
@@ -144,18 +144,18 @@ scoop install tools3000/tools3000
 - **Портативный архив (`Tools3000-vX.Y.Z-win-x64-portable.zip`)** — распакуйте и запускайте сразу, все настройки и данные хранятся в папке программы.
 - **Контрольные суммы (`SHA256SUMS.txt`)** — хеши SHA-256 для проверки целостности каждого файла релиза.
 
-> **Системные требования**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025; исходный код и система сборки нативно поддерживают `x64` и `ARM64` (в GitHub Releases сейчас публикуются готовые сборки `x64`, на устройствах ARM64 можно собрать нативно по [Руководству разработчика](docs/DEVELOPER.md) или запускать `x64`-версию), требуется встроенный Microsoft Edge WebView2 Runtime. Интерфейс приложения поддерживает 8 языков, включая русский, и по умолчанию следует за языком системы.
+> **Системные требования**: Windows 10 (1809+) / Windows 11 / Windows Server 2019–2025; исходный код и система сборки нативно поддерживают `x64` и `ARM64` (в GitHub Releases сейчас публикуются готовые сборки `x64`, на устройствах ARM64 можно собрать нативно по [Руководству разработчика](../DEVELOPER.md) или запускать `x64`-версию), требуется встроенный Microsoft Edge WebView2 Runtime. Интерфейс приложения поддерживает 8 языков, включая русский, и по умолчанию следует за языком системы.
 
 ### Проверка безопасности и доверие
 
-Полная прозрачность без чёрных ящиков (подробнее в **[SECURITY.md](SECURITY.md)**):
+Полная прозрачность без чёрных ящиков (подробнее в **[SECURITY.md](../../.github/SECURITY.md)**):
 
 1. **Проверка целостности SHA-256**: сверьте файл с `SHA256SUMS.txt` в PowerShell:
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **Публичная проверка на VirusTotal**: вставьте SHA-256 файла на **[VirusTotal](https://www.virustotal.com/)** (в новых релизах ссылки на VirusTotal добавляются прямо в описание релиза), чтобы проверить вердикты 70+ антивирусных движков.
-3. **Предупреждение Windows Defender SmartScreen**: пока у независимого open-source проекта нет коммерческого EV/публично доверенного сертификата (оформление SignPath / Trusted Signing в процессе) или свежий релиз ещё не набрал репутацию, Windows может показать «Неизвестный издатель». После проверки SHA-256 и VirusTotal нажмите **«Подробнее -> Выполнить в любом случае»** или соберите программу самостоятельно из исходников по **[Руководству разработчика](docs/DEVELOPER.md)**.
+3. **Предупреждение Windows Defender SmartScreen**: пока у независимого open-source проекта нет коммерческого EV/публично доверенного сертификата (оформление SignPath / Trusted Signing в процессе) или свежий релиз ещё не набрал репутацию, Windows может показать «Неизвестный издатель». После проверки SHA-256 и VirusTotal нажмите **«Подробнее -> Выполнить в любом случае»** или соберите программу самостоятельно из исходников по **[Руководству разработчика](../DEVELOPER.md)**.
 4. **Встроенный SPDX SBOM**: в установщик и портативный архив входят `SBOM.spdx.json` и `THIRD_PARTY_NOTICES.txt` со всеми зависимостями.
 
 ---
@@ -231,7 +231,7 @@ scoop install tools3000/tools3000
 
 - **Сообщить об ошибке**: удобнее всего прямо в приложении — нажмите **`Обратная связь`** в левом нижнем углу окна настроек (или **`Настройки -> О программе -> Обратная связь`**). Можно вставить скриншот через `Ctrl + V`: Tools3000 локально очистит пути с именем пользователя, почту, IP и токены, после чего выгрузит диагностический архив (с последними 1000 строками журнала) или предзаполнит GitHub Issue. Также можно отправить отчёт вручную через **[шаблон Bug Report](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**.
 - **Предложить идею**: создайте **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** или обсудите в **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**.
-- **Участвовать в разработке**: Pull Request всегда приветствуются — см. **[Руководство разработчика](docs/DEVELOPER.md)** и **[руководство по пакетам](packaging/README.md)**.
+- **Участвовать в разработке**: Pull Request всегда приветствуются — см. **[Руководство разработчика](../DEVELOPER.md)** и **[руководство по пакетам](../../packaging/README.md)**.
 
 ---
 
@@ -249,6 +249,6 @@ scoop install tools3000/tools3000
 
 ## Документация и лицензия
 
-- **Разработка и безопасность**: инструкции по сборке в **[Руководстве разработчика](docs/DEVELOPER.md)**, политика безопасности в **[SECURITY.md](SECURITY.md)**, история версий в **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
-- **Лицензия**: распространяется под **[GNU GPL v3.0](LICENSE)** (с [исключением связывания Windows / WebView2](LICENSE-EXCEPTION.md)).
+- **Разработка и безопасность**: инструкции по сборке в **[Руководстве разработчика](../DEVELOPER.md)**, политика безопасности в **[SECURITY.md](../../.github/SECURITY.md)**, история версий в **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
+- **Лицензия**: распространяется под **[GNU GPL v3.0](../../LICENSE)** (с [исключением связывания Windows / WebView2](../../LICENSE-EXCEPTION.md)).
 - **Авторские права**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

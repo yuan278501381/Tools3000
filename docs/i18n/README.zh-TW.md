@@ -1,21 +1,21 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **輕量、原生的 Windows 多合一桌面效率工具集**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · **繁體中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+[English](../../README.md) · [简体中文](README.zh-CN.md) · **繁體中文** · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#安裝與下載)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#安裝與下載)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[立即下載最新版本](#安裝與下載)** · [核心功能一覽](#核心功能一覽) · [全功能展示](#全功能動態展示) · [安全與校驗](#安全校驗與信任說明) · [開發初衷](#開發初衷) · [一軟替代清單](#一軟替代清單) · [參與共創](#參與共創與回饋) · [開發者指南](docs/DEVELOPER.md)
+**[立即下載最新版本](#安裝與下載)** · [核心功能一覽](#核心功能一覽) · [全功能展示](#全功能動態展示) · [安全與校驗](#安全校驗與信任說明) · [開發初衷](#開發初衷) · [一軟替代清單](#一軟替代清單) · [參與共創](#參與共創與回饋) · [開發者指南](../DEVELOPER.md)
 
 </div>
 
@@ -28,7 +28,7 @@ Tools3000 將日常高頻使用的**檔案/應用/系統工具與原站圖示書
 ## 核心功能一覽
 
 <p align="center">
-  <img src="docs/images/zh-TW/feature_bento_overview.png" alt="Tools3000 十二大核心功能一圖速覽" width="100%" />
+  <img src="../images/zh-TW/feature_bento_overview.png" alt="Tools3000 十二大核心功能一圖速覽" width="100%" />
 </p>
 
 ---
@@ -38,67 +38,67 @@ Tools3000 將日常高頻使用的**檔案/應用/系統工具與原站圖示書
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/search_demo.webp" alt="毫秒級檔案、應用、命令與原站圖示書籤搜尋及空白鍵快速預覽" width="100%" /><br />
+      <img src="../images/zh-TW/search_demo.webp" alt="毫秒級檔案、應用、命令與原站圖示書籤搜尋及空白鍵快速預覽" width="100%" /><br />
       <sub><b>極速融合搜尋與空白鍵預覽</b> · 原圖示直達應用/書籤/系統工具，即時刷新並按空白鍵直看文件/壓縮檔/字型</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/ocr_live_text_demo.webp" alt="8 國語言離線文字辨識、貼圖框選與原位改字" width="100%" /><br />
+      <img src="../images/zh-TW/ocr_live_text_demo.webp" alt="8 國語言離線文字辨識、貼圖框選與原位改字" width="100%" /><br />
       <sub><b>8 國語言離線識字與批註</b> · 跨語種免切換離線識字，拖選複製 / 波浪線 / 原位改字</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/scroll_capture_demo.webp" alt="捲動長擷圖與首尾無損裁切" width="100%" /><br />
+      <img src="../images/zh-TW/scroll_capture_demo.webp" alt="捲動長擷圖與首尾無損裁切" width="100%" /><br />
       <sub><b>捲動長擷圖</b> · 自動捲動無縫拼接、右側即時預覽，首尾一鍵無損裁切</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/screen_recording_demo.webp" alt="高畫質螢幕錄影與自動運鏡演播室" width="100%" /><br />
+      <img src="../images/zh-TW/screen_recording_demo.webp" alt="高畫質螢幕錄影與自動運鏡演播室" width="100%" /><br />
       <sub><b>錄影與自動運鏡演播室</b> · 螢幕錄影、智慧自動運鏡，一鍵匯出 WeChat GIF、動態 WebP 與 MP4</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/content_search_demo.webp" alt="文件內容深度搜尋與行號一鍵複製" width="100%" /><br />
+      <img src="../images/zh-TW/content_search_demo.webp" alt="文件內容深度搜尋與行號一鍵複製" width="100%" /><br />
       <sub><b>文件內容搜尋</b> · 穿透檢索 PDF / Word / Excel / 程式碼內文，高亮上下文並一鍵複製整行</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/capture_markup_demo.webp" alt="精準擷圖標註與預設虛線光學放大鏡" width="100%" /><br />
+      <img src="../images/zh-TW/capture_markup_demo.webp" alt="精準擷圖標註與預設虛線光學放大鏡" width="100%" /><br />
       <sub><b>精準擷圖標註</b> · 預設虛線光學放大鏡、自動吸附控制項、隱私馬賽克與自動重排步驟序號</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/pin_groups_demo.webp" alt="桌面貼圖與多貼圖群組切換與一鍵整理" width="100%" /><br />
+      <img src="../images/zh-TW/pin_groups_demo.webp" alt="桌面貼圖與多貼圖群組切換與一鍵整理" width="100%" /><br />
       <sub><b>桌面貼圖與貼圖群組</b> · F3 多圖置頂與色彩分組，頂部導覽列按組秒切顯隱、一鍵磁吸平鋪</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/mouse_gesture_demo.webp" alt="全域滑鼠手勢與螢幕邊緣滾輪調音" width="100%" /><br />
+      <img src="../images/zh-TW/mouse_gesture_demo.webp" alt="全域滑鼠手勢與螢幕邊緣滾輪調音" width="100%" /><br />
       <sub><b>全域滑鼠手勢</b> · 預設停頓自動取消防誤觸、智慧切回已有視窗、不放鍵瞬發與螢幕邊緣滾輪調音量</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/translate_demo.webp" alt="截圖原位 1:1 翻譯與程式碼保護" width="100%" /><br />
+      <img src="../images/zh-TW/translate_demo.webp" alt="截圖原位 1:1 翻譯與程式碼保護" width="100%" /><br />
       <sub><b>截圖原位翻譯</b> · 免 Key 雙通道 + 自訂大模型，智慧擦除無痕覆寫、程式碼原樣保留與 0ms 原譯瞬切</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/clipboard_demo.webp" alt="重啟不遺失的剪貼簿歷史與 Shift/Ctrl 批次合併貼上" width="100%" /><br />
+      <img src="../images/zh-TW/clipboard_demo.webp" alt="重啟不遺失的剪貼簿歷史與 Shift/Ctrl 批次合併貼上" width="100%" /><br />
       <sub><b>剪貼簿歷史 (Alt + V)</b> · 關機重啟不遺失，Shift/Ctrl 批次按序合併貼上、富文字、分組與系統匣開關</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/dialog_enhancer_demo.webp" alt="檔案對話框助手 Listary 風格內嵌即搜即跳" width="100%" /><br />
+      <img src="../images/zh-TW/dialog_enhancer_demo.webp" alt="檔案對話框助手 Listary 風格內嵌即搜即跳" width="100%" /><br />
       <sub><b>檔案對話框助手</b> · 開啟/另存新檔及自身彈窗直接搜目錄一鍵跳，另存檔名絕不覆蓋</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-TW/file_locksmith_demo.webp" alt="檔案佔用解鎖與系統匣快捷開關" width="100%" /><br />
+      <img src="../images/zh-TW/file_locksmith_demo.webp" alt="檔案佔用解鎖與系統匣快捷開關" width="100%" /><br />
       <sub><b>檔案佔用解鎖</b> · 右鍵檔案、搜尋結果或頁內直選，秒查佔用行程並一鍵安全解鎖</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/zh-TW/text_expander_demo.webp" alt="全域文字擴展器：簡短縮寫秒速展開、動態巨集與零剪貼簿污染" width="68%" /><br />
+      <img src="../images/zh-TW/text_expander_demo.webp" alt="全域文字擴展器：簡短縮寫秒速展開、動態巨集與零剪貼簿污染" width="68%" /><br />
       <sub><b>文字擴展器</b> · 在任意視窗輸入 <code>;date</code> / <code>;sig</code> 秒速展開，支援動態巨集、密碼管理器避讓與零剪貼簿污染</sub>
     </td>
   </tr>
@@ -134,7 +134,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget（官方規範清單已就緒）**：儲存庫 [`packaging/winget/`](packaging/winget/) 已隨版本自動產生並通過微軟官方 `winget validate` 校驗（套件 ID：`Yy1.Tools3000`），收錄至 `microsoft/winget-pkgs` 官方源後即可直接執行 `winget install Yy1.Tools3000`（原始碼環境亦可透過 `winget install -m packaging/winget` 本機安裝）。
+- **Winget（官方規範清單已就緒）**：儲存庫 [`packaging/winget/`](../../packaging/winget/) 已隨版本自動產生並通過微軟官方 `winget validate` 校驗（套件 ID：`Yy1.Tools3000`），收錄至 `microsoft/winget-pkgs` 官方源後即可直接執行 `winget install Yy1.Tools3000`（原始碼環境亦可透過 `winget install -m packaging/winget` 本機安裝）。
 
 ### 方式二：GitHub Releases 直接下載
 
@@ -144,18 +144,18 @@ scoop install tools3000/tools3000
 - **免安裝可攜版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解壓即用，設定與資料完整保存在目前資料夾。
 - **校驗清單（`SHA256SUMS.txt`）** — 提供每次發佈的 SHA-256 完整性校驗值。
 
-> **系統需求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，原始碼與建置管線原生支援 `x64` 與 `ARM64` 架構（GitHub Releases 目前預先編譯提供 `x64` 安裝程式與可攜版，ARM64 裝置可依[開發者指南](docs/DEVELOPER.md)原生編譯或直接執行 `x64` 版本），依賴系統內建 Microsoft Edge WebView2 Runtime。軟體介面原生支援 8 種語言，預設自動跟隨系統語言。
+> **系統需求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，原始碼與建置管線原生支援 `x64` 與 `ARM64` 架構（GitHub Releases 目前預先編譯提供 `x64` 安裝程式與可攜版，ARM64 裝置可依[開發者指南](../DEVELOPER.md)原生編譯或直接執行 `x64` 版本），依賴系統內建 Microsoft Edge WebView2 Runtime。軟體介面原生支援 8 種語言，預設自動跟隨系統語言。
 
 ### 安全校驗與信任說明
 
-Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SECURITY.md)**）：
+Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](../../.github/SECURITY.md)**）：
 
 1. **SHA-256 完整性校驗**：下載後可在 PowerShell 核對雜湊並與 `SHA256SUMS.txt` 比對：
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公開查驗**：前往 **[VirusTotal](https://www.virustotal.com/)** 輸入發佈檔 SHA-256（後續每次 GitHub Release 頁面亦直接附帶可點擊直連），公開檢視 70+ 主流防毒引擎掃描結果。
-3. **關於 Windows Defender SmartScreen 提示**：獨立開源專案在尚未配置商業 EV / 公網受信任程式碼簽章（SignPath / Trusted Signing 推進中）或新版剛發佈累積信譽初期，Windows 可能彈出「未知發行者」提示；核對 SHA-256 與 VirusTotal 無誤後點選 **「其他資訊 -> 仍要執行」** 即可，或依 **[開發者指南](docs/DEVELOPER.md)** 從原始碼自行編譯。
+3. **關於 Windows Defender SmartScreen 提示**：獨立開源專案在尚未配置商業 EV / 公網受信任程式碼簽章（SignPath / Trusted Signing 推進中）或新版剛發佈累積信譽初期，Windows 可能彈出「未知發行者」提示；核對 SHA-256 與 VirusTotal 無誤後點選 **「其他資訊 -> 仍要執行」** 即可，或依 **[開發者指南](../DEVELOPER.md)** 從原始碼自行編譯。
 4. **內嵌 SPDX 軟體物料清單（SBOM）**：安裝程式與可攜版根目錄均隨附 `SBOM.spdx.json` 與 `THIRD_PARTY_NOTICES.txt`，所有相依套件與開源授權透明可查。
 
 ---
@@ -231,7 +231,7 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 
 - **問題回報**：建議直接在軟體內點擊 **設定視窗左下角「問題回饋」**（或 **`設定 -> 關於 -> 問題回饋`**），支援 `Ctrl + V` 直接貼上截圖，並在本機自動遮蔽使用者名稱路徑、信箱、IP 與金鑰後一鍵匯出診斷套件（含最近 1000 行日誌）或預填 GitHub Issue；亦可直接透過 **[Bug Report 範本](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 手動提交。
 - **功能建議**：歡迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
-- **開源共創**：歡迎提交 Pull Request，建置細節參閱 **[開發者指南](docs/DEVELOPER.md)** 與 **[套件管理器說明](packaging/README.md)**。
+- **開源共創**：歡迎提交 Pull Request，建置細節參閱 **[開發者指南](../DEVELOPER.md)** 與 **[套件管理器說明](../../packaging/README.md)**。
 
 ---
 
@@ -249,6 +249,6 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](SE
 
 ## 文件與授權
 
-- **開發與安全**：原始碼編譯與外掛 SDK 見 **[開發者指南](docs/DEVELOPER.md)**，安全驗證與漏洞揭露見 **[SECURITY.md](SECURITY.md)**，版本更新紀錄見 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
-- **開源授權**：本專案採用 **[GNU GPL v3.0](LICENSE)** 開源釋出（附 [Windows / WebView2 連結豁免](LICENSE-EXCEPTION.md)）。
+- **開發與安全**：原始碼編譯與外掛 SDK 見 **[開發者指南](../DEVELOPER.md)**，安全驗證與漏洞揭露見 **[SECURITY.md](../../.github/SECURITY.md)**，版本更新紀錄見 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
+- **開源授權**：本專案採用 **[GNU GPL v3.0](../../LICENSE)** 開源釋出（附 [Windows / WebView2 連結豁免](../../LICENSE-EXCEPTION.md)）。
 - **版權聲明**：`Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

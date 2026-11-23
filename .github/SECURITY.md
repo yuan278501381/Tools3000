@@ -14,7 +14,7 @@
    ```
 2. **VirusTotal 公开多引擎查验**：在 [VirusTotal](https://www.virustotal.com/) 搜索栏直接输入发布包的 SHA-256（或点击每次 Release 说明中的直达链接），即可核验 70+ 款主流安全引擎的公开检测结果。
 3. **内置 SPDX 软件物料清单（SBOM）**：安装包与便携包根目录均随附 `SBOM.spdx.json` 与 `THIRD_PARTY_NOTICES.txt`，完整列出全部开源第三方依赖与许可证信息。
-4. **完全开源自编译（零黑盒）**：所有 C++ / Rust / React 源码全部公开，任何用户均可通过 [开发者指南](docs/DEVELOPER.md) 在本机从源码独立编译验证。
+4. **完全开源自编译（零黑盒）**：所有 C++ / Rust / React 源码全部公开，任何用户均可通过 [开发者指南](../docs/DEVELOPER.md) 在本机从源码独立编译验证。
 
 ---
 

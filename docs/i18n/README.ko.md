@@ -1,21 +1,21 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **가볍고 빠른 네이티브 Windows 올인원 생산성 도구 모음**
 
-[English](README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · **한국어** · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+[English](../../README.md) · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · **한국어** · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![Stars](https://img.shields.io/github/stars/yuan278501381/Tools3000?style=flat-square&color=F59E0B)](https://github.com/yuan278501381/Tools3000/stargazers)
 [![Downloads](https://img.shields.io/github/downloads/yuan278501381/Tools3000/total?style=flat-square&color=0EA5E9)](https://github.com/yuan278501381/Tools3000/releases)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#다운로드-및-설치)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#다운로드-및-설치)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[최신 버전 다운로드](#다운로드-및-설치)** · [핵심 기능](#핵심-기능-한눈에-보기) · [기능 데모](#기능-데모) · [보안 및 검증](#보안-검증-및-신뢰-안내) · [개발 계기](#개발-계기) · [대체 가능 목록](#대체-가능-도구-목록) · [참여 및 피드백](#피드백-및-공동-제작) · [개발자 가이드](docs/DEVELOPER.md)
+**[최신 버전 다운로드](#다운로드-및-설치)** · [핵심 기능](#핵심-기능-한눈에-보기) · [기능 데모](#기능-데모) · [보안 및 검증](#보안-검증-및-신뢰-안내) · [개발 계기](#개발-계기) · [대체 가능 목록](#대체-가능-도구-목록) · [참여 및 피드백](#피드백-및-공동-제작) · [개발자 가이드](../DEVELOPER.md)
 
 </div>
 
@@ -28,7 +28,7 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 
 ## 핵심 기능 한눈에 보기
 
 <p align="center">
-  <img src="docs/images/ko-KR/feature_bento_overview.png" alt="Tools3000 12대 핵심 기능 개요" width="100%" />
+  <img src="../images/ko-KR/feature_bento_overview.png" alt="Tools3000 12대 핵심 기능 개요" width="100%" />
 </p>
 
 ---
@@ -38,67 +38,67 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/search_demo.webp" alt="밀리초 파일·앱·명령·원본 아이콘 북마크 통합 검색 및 Space 빠른 미리보기" width="100%" /><br />
+      <img src="../images/ko-KR/search_demo.webp" alt="밀리초 파일·앱·명령·원본 아이콘 북마크 통합 검색 및 Space 빠른 미리보기" width="100%" /><br />
       <sub><b>초고속 통합 검색 및 빠른 미리보기</b> · 앱·원본 Favicon 북마크·시스템 도구 통합, 실시간 반영 및 압축/글꼴 Space 미리보기</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/ocr_live_text_demo.webp" alt="8개국어 오프라인 OCR, 텍스트 선택 및 원위치 수정" width="100%" /><br />
+      <img src="../images/ko-KR/ocr_live_text_demo.webp" alt="8개국어 오프라인 OCR, 텍스트 선택 및 원위치 수정" width="100%" /><br />
       <sub><b>8개국어 오프라인 OCR 및 주석</b> · 언어 전환 없이 자동 인식, 드래그 복사 · 물결 밑줄 · 원위치 텍스트 수정 지원</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/scroll_capture_demo.webp" alt="자동 스크롤 긴 캡처 및 무손실 자르기" width="100%" /><br />
+      <img src="../images/ko-KR/scroll_capture_demo.webp" alt="자동 스크롤 긴 캡처 및 무손실 자르기" width="100%" /><br />
       <sub><b>자동 스크롤 긴 캡처</b> · 실시간 자동 이어붙이기와 상하단 무손실 자르기</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/screen_recording_demo.webp" alt="화면 녹화 및 자동 줌 스튜디오" width="100%" /><br />
+      <img src="../images/ko-KR/screen_recording_demo.webp" alt="화면 녹화 및 자동 줌 스튜디오" width="100%" /><br />
       <sub><b>화면 녹화 및 자동 줌 스튜디오</b> · 화면 녹화, 스마트 자동 줌, MP4 / GIF / 애니메이션 WebP 원클릭 내보내기</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/content_search_demo.webp" alt="문서 본문 검색 및 행 번호 원클릭 복사" width="100%" /><br />
+      <img src="../images/ko-KR/content_search_demo.webp" alt="문서 본문 검색 및 행 번호 원클릭 복사" width="100%" /><br />
       <sub><b>문서 본문 검색</b> · PDF / Word / Excel / 소스 코드 내부 본문 검색 및 행 번호 클릭 복사</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/capture_markup_demo.webp" alt="정밀 스크린샷 주석 및 광학 돋보기" width="100%" /><br />
+      <img src="../images/ko-KR/capture_markup_demo.webp" alt="정밀 스크린샷 주석 및 광학 돋보기" width="100%" /><br />
       <sub><b>정밀 스크린샷 주석</b> · 창·요소 자동 스냅, 점선 광학 돋보기, 모자이크, 자동 번호 배지</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/pin_groups_demo.webp" alt="화면 고정 핀 그룹 필터링 및 원클릭 자동 정렬" width="100%" /><br />
+      <img src="../images/ko-KR/pin_groups_demo.webp" alt="화면 고정 핀 그룹 필터링 및 원클릭 자동 정렬" width="100%" /><br />
       <sub><b>화면 고정 핀 및 그룹 관리</b> · F3 최상위 고정, 색상 그룹별 표시 전환 및 원클릭 자동 타일 정렬</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/mouse_gesture_demo.webp" alt="전역 마우스 제스처 및 화면 가장자리 휠 볼륨 조절" width="100%" /><br />
+      <img src="../images/ko-KR/mouse_gesture_demo.webp" alt="전역 마우스 제스처 및 화면 가장자리 휠 볼륨 조절" width="100%" /><br />
       <sub><b>전역 마우스 제스처</b> · 멈춤 자동 취소 기본 활성, 기존 창 스마트 전환, 즉시 실행 및 화면 가장자리 휠 볼륨</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/translate_demo.webp" alt="스크린샷 원위치 1:1 번역 및 코드 보호" width="100%" /><br />
+      <img src="../images/ko-KR/translate_demo.webp" alt="스크린샷 원위치 1:1 번역 및 코드 보호" width="100%" /><br />
       <sub><b>스크린샷 원위치 번역</b> · 키 없이 무료 번역 + BYOK 지원, 깔끔한 1:1 덮어쓰기 · 코드 보호 · 0ms 원문 전환</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/clipboard_demo.webp" alt="영구 클립보드 기록 및 Shift/Ctrl 병합 붙여넣기" width="100%" /><br />
+      <img src="../images/ko-KR/clipboard_demo.webp" alt="영구 클립보드 기록 및 Shift/Ctrl 병합 붙여넣기" width="100%" /><br />
       <sub><b>영구 클립보드 기록 (Alt + V)</b> · 재부팅 후에도 유지, Shift/Ctrl 순차 병합 붙여넣기 · 서식 · 트레이 스위치</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/dialog_enhancer_demo.webp" alt="파일 대화상자 도우미 Listary 스타일 내장 즉시 검색" width="100%" /><br />
+      <img src="../images/ko-KR/dialog_enhancer_demo.webp" alt="파일 대화상자 도우미 Listary 스타일 내장 즉시 검색" width="100%" /><br />
       <sub><b>파일 대화상자 도우미</b> · Windows 열기/저장 창에서 폴더 즉시 검색·이동, 저장 파일명은 절대 덮어쓰지 않음</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/ko-KR/file_locksmith_demo.webp" alt="파일 잠금 해제 및 트레이 스위치" width="100%" /><br />
+      <img src="../images/ko-KR/file_locksmith_demo.webp" alt="파일 잠금 해제 및 트레이 스위치" width="100%" /><br />
       <sub><b>파일 잠금 해제</b> · 우클릭·검색 결과·전용 페이지에서 점유 앱을 즉시 찾고 원클릭 안전 해제</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/ko-KR/text_expander_demo.webp" alt="전역 텍스트 확장기: 짧은 약어 즉시 확장, 동적 매크로 및 클립보드 기록 비오염" width="68%" /><br />
+      <img src="../images/ko-KR/text_expander_demo.webp" alt="전역 텍스트 확장기: 짧은 약어 즉시 확장, 동적 매크로 및 클립보드 기록 비오염" width="68%" /><br />
       <sub><b>텍스트 확장기</b> · 어디서나 <code>;date</code> / <code>;sig</code> 즉시 확장, 동적 매크로·비밀번호 관리자 자동 제외·클립보드 비오염 지원</sub>
     </td>
   </tr>
@@ -134,7 +134,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget (공식 규격 매니페스트 내장)**: [`packaging/winget/`](packaging/winget/)에 `winget validate` 검증을 통과한 `Yy1.Tools3000` 매니페스트가 자동 유지됩니다. `microsoft/winget-pkgs` 반영 후 `winget install Yy1.Tools3000`으로 바로 설치할 수 있습니다 (로컬 검증: `winget install -m packaging/winget`).
+- **Winget (공식 규격 매니페스트 내장)**: [`packaging/winget/`](../../packaging/winget/)에 `winget validate` 검증을 통과한 `Yy1.Tools3000` 매니페스트가 자동 유지됩니다. `microsoft/winget-pkgs` 반영 후 `winget install Yy1.Tools3000`으로 바로 설치할 수 있습니다 (로컬 검증: `winget install -m packaging/winget`).
 
 ### 방법 2: GitHub Releases 직접 다운로드
 
@@ -144,18 +144,18 @@ scoop install tools3000/tools3000
 - **포터블 압축 파일 (`Tools3000-vX.Y.Z-win-x64-portable.zip`)** — 압축 해제 후 바로 실행할 수 있으며 모든 설정과 데이터가 현재 폴더에 저장됩니다.
 - **체크섬 (`SHA256SUMS.txt`)** — 모든 릴리스 아티팩트의 SHA-256 무결성 해시를 제공합니다.
 
-> **시스템 요구 사항**: Windows 10 (1809 이상) / Windows 11 / Windows Server 2019–2025, 소스 및 빌드 파이프라인에서 `x64` 및 `ARM64` 네이티브 지원 (GitHub Releases는 현재 사전 빌드된 `x64` 설치 파일 및 포터블 패키지 제공, ARM64 기기는 [개발자 가이드](docs/DEVELOPER.md)에 따라 네이티브 빌드하거나 `x64` 버전을 바로 실행 가능), 시스템 내장 Microsoft Edge WebView2 Runtime 필요. 앱 UI는 한국어를 포함한 8개 언어를 기본 지원하며 시스템 언어를 자동으로 따릅니다.
+> **시스템 요구 사항**: Windows 10 (1809 이상) / Windows 11 / Windows Server 2019–2025, 소스 및 빌드 파이프라인에서 `x64` 및 `ARM64` 네이티브 지원 (GitHub Releases는 현재 사전 빌드된 `x64` 설치 파일 및 포터블 패키지 제공, ARM64 기기는 [개발자 가이드](../DEVELOPER.md)에 따라 네이티브 빌드하거나 `x64` 버전을 바로 실행 가능), 시스템 내장 Microsoft Edge WebView2 Runtime 필요. 앱 UI는 한국어를 포함한 8개 언어를 기본 지원하며 시스템 언어를 자동으로 따릅니다.
 
 ### 보안 검증 및 신뢰 안내
 
-완전한 투명성을 위해 4중 검증 절차를 제공합니다 (자세한 내용은 **[SECURITY.md](SECURITY.md)** 참조):
+완전한 투명성을 위해 4중 검증 절차를 제공합니다 (자세한 내용은 **[SECURITY.md](../../.github/SECURITY.md)** 참조):
 
 1. **SHA-256 무결성 확인**: 다운로드 후 PowerShell에서 해시를 계산해 `SHA256SUMS.txt`와 대조하세요:
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 공개 검사**: **[VirusTotal](https://www.virustotal.com/)**에서 파일 SHA-256을 조회하거나(이후 Release 노트에는 바로가기 링크 포함) 70개 이상 보안 엔진 결과를 투명하게 확인할 수 있습니다.
-3. **Windows Defender SmartScreen 안내**: 독립 오픈소스 프로젝트가 상용 EV/공인 코드 서명(SignPath / Trusted Signing 준비 중) 적용 전이거나 신규 릴리스 직후에는 "알 수 없는 게시자" 안내가 표시될 수 있습니다. SHA-256 및 VirusTotal 확인 후 **추가 정보 -> 실행**을 선택하거나 **[개발자 가이드](docs/DEVELOPER.md)**에 따라 소스에서 직접 빌드할 수 있습니다.
+3. **Windows Defender SmartScreen 안내**: 독립 오픈소스 프로젝트가 상용 EV/공인 코드 서명(SignPath / Trusted Signing 준비 중) 적용 전이거나 신규 릴리스 직후에는 "알 수 없는 게시자" 안내가 표시될 수 있습니다. SHA-256 및 VirusTotal 확인 후 **추가 정보 -> 실행**을 선택하거나 **[개발자 가이드](../DEVELOPER.md)**에 따라 소스에서 직접 빌드할 수 있습니다.
 4. **SPDX SBOM 내장**: 설치 파일과 포터블 패키지 모두 `SBOM.spdx.json` 및 `THIRD_PARTY_NOTICES.txt`를 포함합니다.
 
 ---
@@ -231,7 +231,7 @@ scoop install tools3000/tools3000
 
 - **버그 제보**: 앱 안에서 **설정 창 왼쪽 하단 `피드백 보내기`**(또는 **`설정 -> 정보 -> 피드백 보내기`**)를 이용하면 가장 빠릅니다. `Ctrl + V`로 스크린샷을 바로 붙여넣을 수 있으며, 사용자 경로·이메일·IP·토큰 등을 로컬에서 자동 비식별화한 뒤 진단 번들(최근 1000줄 로그 포함) 내보내기 또는 GitHub Issue 자동 입력을 지원합니다. **[Bug Report 템플릿](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)**으로 직접 제보할 수도 있습니다.
 - **기능 제안**: **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 또는 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)**에서 의견을 나눠 주세요.
-- **오픈소스 공창**: Pull Request를 환영합니다. 자세한 내용은 **[개발자 가이드](docs/DEVELOPER.md)** 및 **[패키징 가이드](packaging/README.md)**를 참고하세요.
+- **오픈소스 공창**: Pull Request를 환영합니다. 자세한 내용은 **[개발자 가이드](../DEVELOPER.md)** 및 **[패키징 가이드](../../packaging/README.md)**를 참고하세요.
 
 ---
 
@@ -249,6 +249,6 @@ scoop install tools3000/tools3000
 
 ## 문서 및 라이선스
 
-- **개발 및 보안**: 빌드 안내와 SDK는 **[개발자 가이드](docs/DEVELOPER.md)**, 보안 정책은 **[SECURITY.md](SECURITY.md)**, 릴리스 기록은 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**에서 확인하세요.
-- **라이선스**: **[GNU GPL v3.0](LICENSE)** 하에 배포됩니다 ([Windows / WebView2 링크 예외](LICENSE-EXCEPTION.md) 포함).
+- **개발 및 보안**: 빌드 안내와 SDK는 **[개발자 가이드](../DEVELOPER.md)**, 보안 정책은 **[SECURITY.md](../../.github/SECURITY.md)**, 릴리스 기록은 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**에서 확인하세요.
+- **라이선스**: **[GNU GPL v3.0](../../LICENSE)** 하에 배포됩니다 ([Windows / WebView2 링크 예외](../../LICENSE-EXCEPTION.md) 포함).
 - **저작권**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

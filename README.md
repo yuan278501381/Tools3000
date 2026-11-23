@@ -6,7 +6,7 @@
 
 **Lightweight, native all-in-one desktop productivity suite for Windows**
 
-**English** · [简体中文](README.zh-CN.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+**English** · [简体中文](docs/i18n/README.zh-CN.md) · [繁體中文](docs/i18n/README.zh-TW.md) · [日本語](docs/i18n/README.ja.md) · [한국어](docs/i18n/README.ko.md) · [Русский](docs/i18n/README.ru.md) · [Português (Brasil)](docs/i18n/README.pt-BR.md) · [Español](docs/i18n/README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/yuan278501381/Tools3000/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/yuan278501381/Tools3000/actions/workflows/ci.yml)
@@ -150,7 +150,7 @@ Grab the latest release from **[GitHub Releases](https://github.com/yuan27850138
 
 ### Security Verification & Trust
 
-Tools3000 is built for complete zero-black-box transparency (full details in **[SECURITY.md](SECURITY.md)**):
+Tools3000 is built for complete zero-black-box transparency (full details in **[SECURITY.md](.github/SECURITY.md)**):
 
 1. **SHA-256 Integrity Verification**: Verify your download against `SHA256SUMS.txt` in PowerShell:
    ```powershell
@@ -251,6 +251,6 @@ Full compatibility with install folders and Windows usernames containing Chinese
 
 ## Documentation & License
 
-- **Development, Privacy & Security**: Contribution guide in **[CONTRIBUTING.md](CONTRIBUTING.md)**; build & architecture in **[Developer Guide](docs/DEVELOPER.md)**; zero-telemetry privacy policy in **[PRIVACY.md](PRIVACY.md)**; security policy in **[SECURITY.md](SECURITY.md)**; release history on **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
+- **Development, Privacy & Security**: Contribution guide in **[CONTRIBUTING.md](.github/CONTRIBUTING.md)**; build & architecture in **[Developer Guide](docs/DEVELOPER.md)**; zero-telemetry privacy policy in **[PRIVACY.md](docs/PRIVACY.md)**; security policy in **[SECURITY.md](.github/SECURITY.md)**; release history on **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**.
 - **License**: Released under the **[GNU GPL v3.0](LICENSE)** (with [Windows / WebView2 Linking Exception](LICENSE-EXCEPTION.md)).
 - **Copyright**: `Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)

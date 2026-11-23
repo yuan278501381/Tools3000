@@ -1,12 +1,12 @@
 <div align="center">
 
-<img src="resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
+<img src="../../resources/Tools3000-T-signature-assets/t-ribbon-color.svg" alt="Tools3000" width="88" height="88" />
 
 # Tools3000
 
 **轻量、原生的 Windows 多合一桌面效率工具集**
 
-[English](README.md) · **简体中文** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
+[English](../../README.md) · **简体中文** · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Русский](README.ru.md) · [Português (Brasil)](README.pt-BR.md) · [Español](README.es.md)
 
 [![Release](https://img.shields.io/github/v/release/yuan278501381/Tools3000?style=flat-square&label=Release&color=2563EB)](https://github.com/yuan278501381/Tools3000/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/yuan278501381/Tools3000/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/yuan278501381/Tools3000/actions/workflows/ci.yml)
@@ -15,9 +15,9 @@
 [![Glama MCP](https://glama.ai/mcp/servers/yuan278501381/Tools3000/badges/score.svg)](https://glama.ai/mcp/servers/yuan278501381/Tools3000)
 [![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20%2F%20Server-0F172A?style=flat-square)](#安装与下载)
 [![Arch](https://img.shields.io/badge/Arch-x64%20%7C%20ARM64-334155?style=flat-square)](#安装与下载)
-[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPL--3.0-10B981?style=flat-square)](../../LICENSE)
 
-**[项目官网](https://yuan278501381.github.io/Tools3000/)** · **[立即下载最新版本](#安装与下载)** · [核心功能一览](#核心功能一览) · [全功能演示](#全功能动态演示) · [安全与校验](#安全校验与信任说明) · [开发初衷](#开发初衷) · [一软替代清单](#一软替代清单) · [参与共创](#参与共创与反馈) · [开发者指南](docs/DEVELOPER.md)
+**[项目官网](https://yuan278501381.github.io/Tools3000/)** · **[立即下载最新版本](#安装与下载)** · [核心功能一览](#核心功能一览) · [全功能演示](#全功能动态演示) · [安全与校验](#安全校验与信任说明) · [开发初衷](#开发初衷) · [一软替代清单](#一软替代清单) · [参与共创](#参与共创与反馈) · [开发者指南](../DEVELOPER.md)
 
 </div>
 
@@ -30,7 +30,7 @@ Tools3000 将日常高频的**文件/应用/系统命令与原站图标书签搜
 ## 核心功能一览
 
 <p align="center">
-  <img src="docs/images/zh-CN/feature_bento_overview.png" alt="Tools3000 十二大核心功能一图速览" width="100%" />
+  <img src="../images/zh-CN/feature_bento_overview.png" alt="Tools3000 十二大核心功能一图速览" width="100%" />
 </p>
 
 ---
@@ -40,67 +40,67 @@ Tools3000 将日常高频的**文件/应用/系统命令与原站图标书签搜
 <table>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/search_demo.webp" alt="毫秒级文件、应用、命令与原站图标书签融合搜索及空格快速预览" width="100%" /><br />
+      <img src="../images/zh-CN/search_demo.webp" alt="毫秒级文件、应用、命令与原站图标书签融合搜索及空格快速预览" width="100%" /><br />
       <sub><b>极速融合搜索与空格预览</b> · 原图标直达应用/知乎等书签/系统命令，Live 实时刷新与空格直看文档/压缩包/字体</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/ocr_live_text_demo.webp" alt="全 8 语种高精度离线文本识别、贴图划选与原位改字" width="100%" /><br />
+      <img src="../images/zh-CN/ocr_live_text_demo.webp" alt="全 8 语种高精度离线文本识别、贴图划选与原位改字" width="100%" /><br />
       <sub><b>全 8 语种离线文本识别与批注</b> · 跨语种零切换离线识字、准确率高于微信截图 OCR，拖选复制/波浪线/改字</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/scroll_capture_demo.webp" alt="滚动长截图与首尾无损裁切" width="100%" /><br />
+      <img src="../images/zh-CN/scroll_capture_demo.webp" alt="滚动长截图与首尾无损裁切" width="100%" /><br />
       <sub><b>滚动长截图</b> · 自动滚动无缝拼接、右侧实时预览，首尾一键无损裁切</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/screen_recording_demo.webp" alt="录屏与自动运镜演播室" width="100%" /><br />
+      <img src="../images/zh-CN/screen_recording_demo.webp" alt="录屏与自动运镜演播室" width="100%" /><br />
       <sub><b>录屏与自动运镜演播室</b> · 屏幕录制、智能自动运镜，一键转微信 GIF、动态 WebP 与 MP4</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/content_search_demo.webp" alt="文档内容深度搜索与行号一键复制" width="100%" /><br />
+      <img src="../images/zh-CN/content_search_demo.webp" alt="文档内容深度搜索与行号一键复制" width="100%" /><br />
       <sub><b>文档内容搜索</b> · 穿透检索 PDF / Word / Excel / 代码正文，高亮上下文并一键复制行</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/capture_markup_demo.webp" alt="精准截图标注与默认虚线放大镜" width="100%" /><br />
+      <img src="../images/zh-CN/capture_markup_demo.webp" alt="精准截图标注与默认虚线放大镜" width="100%" /><br />
       <sub><b>精准截图标注</b> · 默认虚线光学放大镜、自动吸附控件、隐私马赛克与自愈序号</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/pin_groups_demo.webp" alt="桌面贴图与多贴图分组按组切换与一键整理" width="100%" /><br />
+      <img src="../images/zh-CN/pin_groups_demo.webp" alt="桌面贴图与多贴图分组按组切换与一键整理" width="100%" /><br />
       <sub><b>桌面贴图与贴图组</b> · F3 多图置顶与彩色分组，顶部导览条按组秒切显隐、一键磁吸平铺</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/mouse_gesture_demo.webp" alt="全局鼠标手势与屏幕边缘滚轮" width="100%" /><br />
+      <img src="../images/zh-CN/mouse_gesture_demo.webp" alt="全局鼠标手势与屏幕边缘滚轮" width="100%" /><br />
       <sub><b>全局鼠标手势</b> · 默认停顿自动取消防误触、应用参数精准切窗、不松键瞬发与边缘滚轮调音量</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/translate_demo.webp" alt="微信级截图原位翻译与代码标识符保护" width="100%" /><br />
+      <img src="../images/zh-CN/translate_demo.webp" alt="微信级截图原位翻译与代码标识符保护" width="100%" /><br />
       <sub><b>微信级截图原位翻译</b> · 免 Key 双通道 + 自定义大模型，智能擦除无痕覆盖、代码原样保留与 0ms 原译瞬切</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/clipboard_demo.webp" alt="重启不丢的剪贴板历史与 Shift/Ctrl 批量合并粘贴" width="100%" /><br />
+      <img src="../images/zh-CN/clipboard_demo.webp" alt="重启不丢的剪贴板历史与 Shift/Ctrl 批量合并粘贴" width="100%" /><br />
       <sub><b>剪贴板历史 (Alt + V)</b> · 关机重启不丢，Shift/Ctrl 按序合并粘贴、富文本、分组与托盘快捷开关</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/dialog_enhancer_demo.webp" alt="文件对话框助手 Listary 风格内嵌即搜即跳" width="100%" /><br />
+      <img src="../images/zh-CN/dialog_enhancer_demo.webp" alt="文件对话框助手 Listary 风格内嵌即搜即跳" width="100%" /><br />
       <sub><b>文件对话框助手</b> · 打开/另存为及软件自身弹窗直接搜目录一键跳，另存为文件名绝不覆盖</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/zh-CN/file_locksmith_demo.webp" alt="文件占用解锁与托盘快捷开关" width="100%" /><br />
+      <img src="../images/zh-CN/file_locksmith_demo.webp" alt="文件占用解锁与托盘快捷开关" width="100%" /><br />
       <sub><b>文件占用解锁</b> · 右键文件、搜索结果或页内直选，秒查占用进程并一键安全解锁</sub>
     </td>
   </tr>
   <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/zh-CN/text_expander_demo.webp" alt="全局文本扩展器：短缩写秒速展开、动态宏与零剪贴板污染" width="68%" /><br />
+      <img src="../images/zh-CN/text_expander_demo.webp" alt="全局文本扩展器：短缩写秒速展开、动态宏与零剪贴板污染" width="68%" /><br />
       <sub><b>文本扩展器</b> · 输入 <code>;date</code> / <code>;sig</code> 任意窗口秒速展开，动态宏、密码管理器避让与零剪贴板污染</sub>
     </td>
   </tr>
@@ -136,7 +136,7 @@ scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000
 scoop install tools3000/tools3000
 ```
 
-- **Winget（官方规范清单已就绪）**：仓库 [`packaging/winget/`](packaging/winget/) 已随版本自动生成并通过微软官方 `winget validate` 校验（包 ID：`Yy1.Tools3000`），收录至微软官方 `microsoft/winget-pkgs` 源后可直接运行 `winget install Yy1.Tools3000`（源码环境亦可通过 `winget install -m packaging/winget` 本地安装）。
+- **Winget（官方规范清单已就绪）**：仓库 [`packaging/winget/`](../../packaging/winget/) 已随版本自动生成并通过微软官方 `winget validate` 校验（包 ID：`Yy1.Tools3000`），收录至微软官方 `microsoft/winget-pkgs` 源后可直接运行 `winget install Yy1.Tools3000`（源码环境亦可通过 `winget install -m packaging/winget` 本地安装）。
 
 ### 方式二：GitHub Releases 直接下载
 
@@ -146,18 +146,18 @@ scoop install tools3000/tools3000
 - **绿色便携版（`Tools3000-vX.Y.Z-win-x64-portable.zip`）** — 解压即用，配置与数据均保存在当前目录。
 - **校验清单（`SHA256SUMS.txt`）** — 提供每次发布的 SHA-256 完整性校验值。
 
-> **系统要求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，源码与构建管线原生支持 `x64` 与 `ARM64` 架构（GitHub Releases 当前预编译提供 `x64` 安装包与便携包，ARM64 设备可按[开发者指南](docs/DEVELOPER.md)原生编译或直接运行 `x64` 版本），依赖系统内置 Microsoft Edge WebView2 Runtime。界面原生支持简体中文、繁體中文、English、日本語、한국어、Русский、Português (Brasil)、Español 共 8 种语言，默认自动跟随系统语言。
+> **系统要求**：Windows 10（1809 及以上）/ Windows 11 / Windows Server 2019–2025，源码与构建管线原生支持 `x64` 与 `ARM64` 架构（GitHub Releases 当前预编译提供 `x64` 安装包与便携包，ARM64 设备可按[开发者指南](../DEVELOPER.md)原生编译或直接运行 `x64` 版本），依赖系统内置 Microsoft Edge WebView2 Runtime。界面原生支持简体中文、繁體中文、English、日本語、한국어、Русский、Português (Brasil)、Español 共 8 种语言，默认自动跟随系统语言。
 
 ### 安全校验与信任说明
 
-为彻底消除对 Windows 桌面工具的安全顾虑，Tools3000 提供四重零黑盒验证机制（完整披露见 **[SECURITY.md](SECURITY.md)**）：
+为彻底消除对 Windows 桌面工具的安全顾虑，Tools3000 提供四重零黑盒验证机制（完整披露见 **[SECURITY.md](../../.github/SECURITY.md)**）：
 
 1. **SHA-256 完整性校验**：下载后可在 PowerShell 中核对本地文件哈希，并与对应版本的 `SHA256SUMS.txt` 比对：
    ```powershell
    Get-FileHash .\Tools3000-vX.Y.Z-Setup.exe -Algorithm SHA256
    ```
 2. **VirusTotal 公开查毒**：在 **[VirusTotal](https://www.virustotal.com/)** 搜索框输入发布包 SHA-256（后续每个 GitHub Release 说明页也将直接附带可点击的 VirusTotal 哈希直链），即可公开核验 70+ 主流杀毒引擎检测结果。
-3. **关于 Windows Defender SmartScreen 提示**：独立开源项目在尚未配置商业 EV / 公网可信代码签名（SignPath / Trusted Signing 推进中）或新版本刚发布尚未累积云端信誉前，Windows 可能会弹出「Windows 已保护你的电脑（未知发布者）」提示。核对 SHA-256 与 VirusTotal 无误后点击 **「更多信息 -> 仍要运行」** 即可继续；如您更偏好完全自主可控，也可随时依据 **[开发者指南](docs/DEVELOPER.md)** 从源码从零编译。
+3. **关于 Windows Defender SmartScreen 提示**：独立开源项目在尚未配置商业 EV / 公网可信代码签名（SignPath / Trusted Signing 推进中）或新版本刚发布尚未累积云端信誉前，Windows 可能会弹出「Windows 已保护你的电脑（未知发布者）」提示。核对 SHA-256 与 VirusTotal 无误后点击 **「更多信息 -> 仍要运行」** 即可继续；如您更偏好完全自主可控，也可随时依据 **[开发者指南](../DEVELOPER.md)** 从源码从零编译。
 4. **内嵌 SPDX 软件物料清单（SBOM）**：每个安装包与便携包根目录均随附 `SBOM.spdx.json` 与 `THIRD_PARTY_NOTICES.txt`，所有依赖与开源许可透明可查。
 
 ---
@@ -234,7 +234,7 @@ scoop install tools3000/tools3000
 - **报告问题**：推荐直接在软件内点击 **设置窗口左下角「问题反馈」**（或 **`设置 -> 关于 -> 问题反馈`**），支持 `Ctrl + V` 直接粘贴截图，并在本地自动抹除用户名路径、邮箱、IP 与密钥等隐私后一键导出诊断包（含最近 1000 行日志）或预填 GitHub Issue；也可以直接通过 **[Bug Report 模板](https://github.com/yuan278501381/Tools3000/issues/new?template=bug_report.yml)** 手动提交。
 - **需求建议**：有好用的顺手小功能想法，欢迎提交 **[Feature Request](https://github.com/yuan278501381/Tools3000/issues/new?template=feature_request.yml)** 或前往 **[GitHub Discussions](https://github.com/yuan278501381/Tools3000/discussions)** 交流。
 - **社区交流与友链**：欢迎前往 **[LINUX DO](https://linux.do/)** 社区分享使用体验与改进建议。
-- **代码共创**：非常欢迎提交 Pull Request（也欢迎借助 AI 共同打磨），构建与开发细节请参阅 **[开发者指南](docs/DEVELOPER.md)** 与 **[包管理器维护说明](packaging/README.md)**。
+- **代码共创**：非常欢迎提交 Pull Request（也欢迎借助 AI 共同打磨），构建与开发细节请参阅 **[开发者指南](../DEVELOPER.md)** 与 **[包管理器维护说明](../../packaging/README.md)**。
 
 ---
 
@@ -252,6 +252,6 @@ scoop install tools3000/tools3000
 
 ## 文档与许可
 
-- **开发、隐私与安全**：贡献指南见 **[CONTRIBUTING.md](CONTRIBUTING.md)**，源码编译与插件扩展见 **[开发者指南](docs/DEVELOPER.md)**，零遥测隐私承诺见 **[PRIVACY.md](PRIVACY.md)**，安全披露见 **[SECURITY.md](SECURITY.md)**，版本变更见 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
-- **开源协议**：本项目基于 **[GNU GPL v3.0](LICENSE)** 开源（附 [Windows / WebView2 链接豁免](LICENSE-EXCEPTION.md)）。
+- **开发、隐私与安全**：贡献指南见 **[CONTRIBUTING.md](../../.github/CONTRIBUTING.md)**，源码编译与插件扩展见 **[开发者指南](../DEVELOPER.md)**，零遥测隐私承诺见 **[PRIVACY.md](../PRIVACY.md)**，安全披露见 **[SECURITY.md](../../.github/SECURITY.md)**，版本变更见 **[GitHub Releases](https://github.com/yuan278501381/Tools3000/releases)**。
+- **开源协议**：本项目基于 **[GNU GPL v3.0](../../LICENSE)** 开源（附 [Windows / WebView2 链接豁免](../../LICENSE-EXCEPTION.md)）。
 - **版权声明**：`Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors` · [@yuan278501381](https://github.com/yuan278501381)
