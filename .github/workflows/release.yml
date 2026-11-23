@@ -76,7 +76,7 @@ jobs:
         uses: mozilla/sccache-action@v0.0.8
 
       - name: Cache vcpkg Binary Artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/vcpkg-archives
           key: vcpkg-archives-${{ runner.os }}-x64-${{ hashFiles('vcpkg.json') }}
