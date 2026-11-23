@@ -150,10 +150,16 @@ where
     let id = id_opt.unwrap();
 
     match method {
-        // 以下 3 个控制方法 100% 静态响应，绝对不唤醒 Tools3000_SearchService
+        // 以下控制与自省方法 100% 静态响应，绝对不唤醒 Tools3000_SearchService
         "initialize" => Some(make_jsonrpc_result(id, build_initialize_result(msg))),
         "ping" => Some(make_jsonrpc_result(id, JsonValue::object())),
         "tools/list" => Some(make_jsonrpc_result(id, build_tools_list_result())),
+        "resources/list" => Some(make_jsonrpc_result(id, build_empty_list_result("resources"))),
+        "resources/templates/list" => Some(make_jsonrpc_result(
+            id,
+            build_empty_list_result("resourceTemplates"),
+        )),
+        "prompts/list" => Some(make_jsonrpc_result(id, build_empty_list_result("prompts"))),
         "tools/call" => {
             let params = msg.get("params");
             let tool_name = params
@@ -184,7 +190,7 @@ fn build_initialize_result(req: &JsonValue) -> JsonValue {
         .unwrap_or(MCP_PROTOCOL_VERSION);
 
     let negotiated = match client_proto {
-        "2024-11-05" | "2025-03-26" | "2025-06-18" => client_proto,
+        "2024-11-05" | "2025-03-26" | "2025-06-18" | "2025-11-25" => client_proto,
         _ => MCP_PROTOCOL_VERSION,
     };
 
@@ -233,6 +239,12 @@ fn build_tools_list_result() -> JsonValue {
 
     let mut out = JsonValue::object();
     out.insert("tools", JsonValue::Array(tools));
+    out
+}
+
+fn build_empty_list_result(field: &str) -> JsonValue {
+    let mut out = JsonValue::object();
+    out.insert(field, JsonValue::Array(Vec::new()));
     out
 }
 
@@ -568,18 +580,21 @@ mod tests {
             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\"}}\n",
             "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n",
             "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}\n",
-            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n"
+            "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"resources/list\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"resources/templates/list\"}\n",
+            "{\"jsonrpc\":\"2.0\",\"id\":6,\"method\":\"prompts/list\"}\n"
         );
         let mut reader = Cursor::new(input.as_bytes());
         let mut output = Vec::new();
         run_mcp_loop(&mut reader, &mut output, &backend, LoadedCliConfig::default).unwrap();
 
-        // 严格 DEMAND_START 不变量：初始化、通知、心跳与工具列表必须 0 次触碰搜索服务
+        // 严格 DEMAND_START 不变量：初始化、通知、心跳与全部自省列表必须 0 次触碰搜索服务
         assert_eq!(backend.calls.get(), 0);
         assert_eq!(backend.auto_starts.get(), 0);
 
         let lines: Vec<&str> = std::str::from_utf8(&output).unwrap().lines().collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 6);
         let list_resp = parse_json(lines[2]).unwrap();
         let tools = list_resp
             .get("result")
@@ -587,6 +602,22 @@ mod tests {
             .and_then(|t| t.as_array())
             .unwrap();
         assert_eq!(tools.len(), 3);
+
+        let resources_resp = parse_json(lines[3]).unwrap();
+        assert_eq!(
+            resources_resp.get("result").and_then(|r| r.get("resources")).and_then(|a| a.as_array()).map(|a| a.len()),
+            Some(0)
+        );
+        let templates_resp = parse_json(lines[4]).unwrap();
+        assert_eq!(
+            templates_resp.get("result").and_then(|r| r.get("resourceTemplates")).and_then(|a| a.as_array()).map(|a| a.len()),
+            Some(0)
+        );
+        let prompts_resp = parse_json(lines[5]).unwrap();
+        assert_eq!(
+            prompts_resp.get("result").and_then(|r| r.get("prompts")).and_then(|a| a.as_array()).map(|a| a.len()),
+            Some(0)
+        );
     }
 
     #[test]

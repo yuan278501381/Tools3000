@@ -7,20 +7,8 @@
 //   - 严格恪守 DEMAND_START 铁律：auto_start=false 时零 SCM 启动、零便携进程拉起。
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::config::LoadedCliConfig;
-use crate::constants::{
-    KERNEL_AUTH_PIPE_NAME, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, PIPE_IO_CHUNK_BYTES,
-    SEARCH_SERVICE_NAME, SERVICE_INIT_WAIT_DEADLINE_MS, SERVICE_POLL_INTERVAL_MS,
-    SERVICE_START_HARD_DEADLINE_MS, TOKEN_HEX_LEN, TOKEN_PIPE_PREFIX, USER_SID_PIPE_PREFIX,
-};
-use crate::json::{parse_json, JsonValue};
-use std::env;
-use std::ffi::OsStr;
-use std::os::windows::ffi::OsStrExt;
-use std::path::PathBuf;
-use std::ptr;
-use std::thread;
-use std::time::{Duration, Instant};
+use crate::constants::{MAX_REQUEST_BYTES, TOKEN_HEX_LEN};
+use crate::json::JsonValue;
 
 /// 可测试的抽象搜索后端接口（便于单元测试注入离线 Mock，验证零唤醒不变量）
 pub trait SearchBackend {
@@ -30,6 +18,7 @@ pub trait SearchBackend {
 
 // ── 4 字节小端分帧编码/解码纯函数 ────────────────────────────────────────────
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn encode_frame_header(payload_len: usize) -> Result<[u8; 4], String> {
     if payload_len == 0 || payload_len > MAX_REQUEST_BYTES {
         return Err(format!("request payload size {} out of range", payload_len));
@@ -37,6 +26,7 @@ pub fn encode_frame_header(payload_len: usize) -> Result<[u8; 4], String> {
     Ok((payload_len as u32).to_le_bytes())
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn decode_frame_header(header: [u8; 4], limit: usize) -> Result<usize, String> {
     let len = u32::from_le_bytes(header) as usize;
     if len == 0 || len > limit {
@@ -45,6 +35,7 @@ pub fn decode_frame_header(header: [u8; 4], limit: usize) -> Result<usize, Strin
     Ok(len)
 }
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn is_valid_pipe_token(token: &str) -> bool {
     token.len() == TOKEN_HEX_LEN
         && token
@@ -52,7 +43,27 @@ pub fn is_valid_pipe_token(token: &str) -> bool {
             .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
-// ── Win32 FFI 声明（kernel32 + advapi32，兼容 x64 与 ARM64 Windows MSVC） ─────
+// ── Win32 FFI 实现（仅在 Windows 目标编译；Linux 容器仅执行 MCP Introspection 静态响应） ──
+
+#[cfg(windows)]
+mod platform {
+    use super::{decode_frame_header, encode_frame_header, is_valid_pipe_token, SearchBackend};
+    use crate::config::LoadedCliConfig;
+    use crate::constants::{
+        KERNEL_AUTH_PIPE_NAME, MAX_RESPONSE_BYTES, PIPE_IO_CHUNK_BYTES, SEARCH_SERVICE_NAME,
+        SERVICE_INIT_WAIT_DEADLINE_MS, SERVICE_POLL_INTERVAL_MS, SERVICE_START_HARD_DEADLINE_MS,
+        TOKEN_PIPE_PREFIX, USER_SID_PIPE_PREFIX,
+    };
+    use crate::json::{parse_json, JsonValue};
+    use std::env;
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::PathBuf;
+    use std::ptr;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    // ── Win32 FFI 声明（kernel32 + advapi32，兼容 x64 与 ARM64 Windows MSVC） ─────
 
 type Handle = *mut core::ffi::c_void;
 type ScHandle = *mut core::ffi::c_void;
@@ -750,10 +761,42 @@ impl SearchBackend for WinPipeBackend {
         }
     }
 }
+} // mod platform (windows)
+
+#[cfg(not(windows))]
+mod platform {
+    use super::SearchBackend;
+    use crate::config::LoadedCliConfig;
+    use crate::json::JsonValue;
+
+    /// 非 Windows 平台（如 Linux Docker / Glama MCP Introspection 沙箱）占位后端：
+    /// 允许 `tools3000-cli mcp` 完整响应 initialize / ping / tools/list / resources/list / prompts/list，
+    /// 仅在实际执行依赖 NTFS MFT 服务的 tools/call 时给出清晰的跨平台提示。
+    pub struct WinPipeBackend;
+
+    impl WinPipeBackend {
+        pub fn from_config(_cfg: &LoadedCliConfig) -> Self {
+            Self
+        }
+    }
+
+    impl SearchBackend for WinPipeBackend {
+        fn is_pipe_running(&self) -> bool {
+            false
+        }
+
+        fn send_request(&self, _payload: &JsonValue, _auto_start: bool) -> Result<JsonValue, String> {
+            Err("Tools3000 NTFS search service requires Windows".to_string())
+        }
+    }
+}
+
+pub use platform::WinPipeBackend;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::constants::MAX_RESPONSE_BYTES;
 
     #[test]
     fn frame_header_codec_matches_cpp_contract() {
