@@ -1317,7 +1317,15 @@ TEST(LiveTextOcrTest, PinInPlaceTextAnnotationSupportsStackingColorSwitchAndUndo
         SendMessageW(pinHwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(cfx + 5, cfy + 2));
         SendMessageW(pinHwnd, WM_LBUTTONUP, 0, MAKELPARAM(cfx + 5, cfy + 2));
 
-        ASSERT_TRUE(OpenClipboard(nullptr));
+        bool opened = false;
+        for (int attempt = 0; attempt < 15; ++attempt) {
+            if (OpenClipboard(nullptr)) {
+                opened = true;
+                break;
+            }
+            Sleep(15);
+        }
+        ASSERT_TRUE(opened);
         const bool hasImage = (IsClipboardFormatAvailable(CF_DIB) != FALSE) ||
                               (IsClipboardFormatAvailable(CF_BITMAP) != FALSE);
         const bool hasText = (IsClipboardFormatAvailable(CF_UNICODETEXT) != FALSE);

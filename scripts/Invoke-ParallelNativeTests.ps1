@@ -26,39 +26,58 @@ if (-not (Test-Path -LiteralPath $TestExePath -PathType Leaf)) {
     throw "找不到原生单元测试可执行文件: $TestExePath"
 }
 
-# 1. 精确盘点所有非 DISABLED 用例总数作为数学防漏基线
+# 1. 精确盘点所有非 DISABLED 用例清单作为数学防漏基线，并按桌面共享资源安全隔离进行 MECE 确定性分片
 $listLines = @(& $TestExePath --gtest_list_tests 2>&1)
 if ($LASTEXITCODE -ne 0) {
     throw "无法列举 GTest 用例清单 (exit=$LASTEXITCODE)"
 }
-$expectedTotalTests = 0
+$allTests = New-Object System.Collections.Generic.List[string]
 $currentSuite = ""
 foreach ($line in $listLines) {
-    if ($line -match '^(\S+)\.\s*$') {
+    if ($line -match '^(\S+)\.\s*(?:#.*)?$') {
         $currentSuite = $Matches[1]
     } elseif ($line -match '^\s+(\S+)') {
-        $caseName = $Matches[1]
-        if (-not $currentSuite.StartsWith("DISABLED_") -and -not $caseName.StartsWith("DISABLED_")) {
-            $expectedTotalTests++
+        $caseName = ($Matches[1] -replace '#.*$', '').Trim()
+        if (-not [string]::IsNullOrWhiteSpace($currentSuite) -and -not $currentSuite.StartsWith("DISABLED_") -and -not $caseName.StartsWith("DISABLED_")) {
+            $allTests.Add("$currentSuite.$caseName")
         }
     }
 }
+$expectedTotalTests = $allTests.Count
 if ($expectedTotalTests -le 0) {
     throw "未能从 $TestExePath 解析到有效 GTest 用例数"
 }
 
-# 2. 定义严格互斥无交集的 3 路并发分片（覆盖全集 100%，且所有创建顶层 Win32 GUI 浮层/贴图的用例独占单进程 FAST，彻底消除跨进程窗口拦截碰撞）
-$ocrCorePattern   = "*Ocr*:*LiveOcr*"
-$ocrPluginPattern = "*TextReplace*:*WorkerIsolation*"
-$filterCore       = $ocrCorePattern
-$filterPlugin     = "${ocrPluginPattern}-${ocrCorePattern}"
-$filterFast       = "-${ocrCorePattern}:${ocrPluginPattern}"
+# 2. 定义严格互斥无交集的 3 路并发分片（数学划分：覆盖全集 100%，0 遗漏、0 重复）
+#    红线铁律：所有会触碰 Windows 会话全局共享资源（全局剪贴板 OpenClipboard、顶层 Win32 窗口类 FindWindowW/Tools3000_PinWindow 等）
+#    的用例必须 100% 收敛至单一桌面独占进程 FAST，彻底消除跨进程剪贴板覆盖与窗口互杀竞态。
+$sessionSharedRegex = '(Pin|Clipboard|Capture|Window|LiveOcrLayoutAndRowAlignment|Dialog|Tray|Toast|Spotlight|Keycast|QuickLook|Overlay|Recorder|Gesture)'
+$ocrCoreCases   = New-Object System.Collections.Generic.List[string]
+$ocrPluginCases = New-Object System.Collections.Generic.List[string]
+$fastCases      = New-Object System.Collections.Generic.List[string]
+
+foreach ($fullName in $allTests) {
+    if ($fullName -match $sessionSharedRegex) {
+        $fastCases.Add($fullName)
+    } elseif ($fullName -match '(WorkerIsolation|TextReplace)') {
+        $ocrPluginCases.Add($fullName)
+    } elseif ($fullName -match '(Ocr|LiveOcr)') {
+        $ocrCoreCases.Add($fullName)
+    } else {
+        $fastCases.Add($fullName)
+    }
+}
+
+$partitionSum = $ocrCoreCases.Count + $ocrPluginCases.Count + $fastCases.Count
+if ($partitionSum -ne $expectedTotalTests) {
+    throw "MECE 分片划分异常：$partitionSum != $expectedTotalTests"
+}
 
 $shards = @(
-    @{ Name = "OCR_CORE";   Filter = $filterCore;   TotalShards = 1; ShardIndex = 0 },
-    @{ Name = "OCR_PLUGIN"; Filter = $filterPlugin; TotalShards = 1; ShardIndex = 0 },
-    @{ Name = "FAST";       Filter = $filterFast;   TotalShards = 1; ShardIndex = 0 }
-)
+    @{ Name = "OCR_CORE";   Cases = $ocrCoreCases },
+    @{ Name = "OCR_PLUGIN"; Cases = $ocrPluginCases },
+    @{ Name = "FAST";       Cases = $fastCases }
+) | Where-Object { $_.Cases.Count -gt 0 }
 
 $hostModelsDir = Join-Path $env:LOCALAPPDATA "Tools3000\models"
 $sandboxRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("tools3000_gtest_" + $TraceId + "_" + [guid]::NewGuid().ToString("N").Substring(0, 6))
@@ -67,7 +86,8 @@ New-Item -ItemType Directory -Path $sandboxRoot -Force | Out-Null
 $wallSw = [System.Diagnostics.Stopwatch]::StartNew()
 $running = @()
 try {
-    Write-Host "[TEST] 启动 3 路沙箱隔离并发 C++ 单元测试 (全量基线: $expectedTotalTests 个用例)..." -ForegroundColor Cyan
+    Write-Host "[TEST] 启动 $($shards.Count) 路沙箱隔离并发 C++ 单元测试 (全量基线: $expectedTotalTests 个用例 | OCR_CORE=$($ocrCoreCases.Count), OCR_PLUGIN=$($ocrPluginCases.Count), FAST=$($fastCases.Count))..." -ForegroundColor Cyan
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($s in $shards) {
         $dataDir = Join-Path $sandboxRoot $s.Name
         New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
@@ -76,9 +96,13 @@ try {
             $null = New-Item -ItemType Junction -Path (Join-Path $dataDir "models") -Target $hostModelsDir
         }
 
+        # 通过 --gtest_flagfile 精确传递用例清单，避免 Windows CreateProcess 32KB 命令行上限与通配符歧义
+        $flagFile = Join-Path $dataDir "gtest.flagfile"
+        [System.IO.File]::WriteAllText($flagFile, "--gtest_filter=" + ($s.Cases -join ":") + "`n", $utf8NoBom)
+
         $psi = New-Object System.Diagnostics.ProcessStartInfo
         $psi.FileName = $TestExePath
-        $psi.Arguments = "--gtest_brief=1 --gtest_filter=$($s.Filter)"
+        $psi.Arguments = "--gtest_brief=1 `"--gtest_flagfile=$flagFile`""
         $psi.WorkingDirectory = Split-Path -Parent $TestExePath
         $psi.UseShellExecute = $false
         $psi.RedirectStandardOutput = $true
@@ -87,10 +111,6 @@ try {
         $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
         $psi.CreateNoWindow = $true
         $psi.EnvironmentVariables["TOOLS3000_DATA_ROOT"] = $dataDir
-        if ($s.TotalShards -gt 1) {
-            $psi.EnvironmentVariables["GTEST_TOTAL_SHARDS"] = "$($s.TotalShards)"
-            $psi.EnvironmentVariables["GTEST_SHARD_INDEX"] = "$($s.ShardIndex)"
-        }
 
         $shardSw = [System.Diagnostics.Stopwatch]::StartNew()
         $proc = [System.Diagnostics.Process]::Start($psi)
