@@ -14,7 +14,7 @@ path = "src/main.rs"
 flate2 = "1"
 gif = "0.13"
 image-webp = "0.2"
-png = "0.17"
+png = "0.18"
 resvg = { version = "0.45", default-features = false }
 
 # 微软官方零成本 Win32 / Direct2D / DirectComposition / DirectWrite / WIC 绑定
