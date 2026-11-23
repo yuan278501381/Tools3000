@@ -153,11 +153,13 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
         std::string shmNameUtf8;
         std::string modelDirUtf8;
         std::string modelTier;
+        std::string scriptMode;
         std::string traceId;
         if (!worker::readPod(pipe.get(), meta, /*overlapped=*/true, 10000, abortEvent.get()) ||
             !worker::readString(pipe.get(), shmNameUtf8, /*overlapped=*/true, 10000, abortEvent.get()) ||
             !worker::readString(pipe.get(), modelDirUtf8, /*overlapped=*/true, 10000, abortEvent.get()) ||
             !worker::readString(pipe.get(), modelTier, /*overlapped=*/true, 10000, abortEvent.get()) ||
+            !worker::readString(pipe.get(), scriptMode, /*overlapped=*/true, 10000, abortEvent.get()) ||
             !worker::readString(pipe.get(), traceId, /*overlapped=*/true, 10000, abortEvent.get())) {
             break;
         }
@@ -196,7 +198,7 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
 
         // 只读共享内存直接包装 cv::Mat 头（零拷贝！）
         cv::Mat sharedView(meta.height, meta.width, CV_8UC3, view.bytes(), static_cast<size_t>(meta.stepBytes));
-        const std::vector<OcrResult> results = DeepOcrEngine::instance().extractText(sharedView);
+        const std::vector<OcrResult> results = DeepOcrEngine::instance().extractText(sharedView, scriptMode);
         const DeepOcrRunStats stats = DeepOcrEngine::instance().lastRunStats();
         const std::string activeTier = DeepOcrEngine::instance().effectiveModelTier();
 

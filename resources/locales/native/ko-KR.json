@@ -893,5 +893,21 @@
   "Translation complete (Press Tab or click pill for original)": "원위치 번역 완료 (Tab 또는 하단 배지로 원본 전환)",
   "No translatable prose found (code identifiers, filenames or paths kept as-is)": "번역할 본문을 찾지 못했습니다(코드 식별자, 파일명 또는 경로는 원본 유지)",
   "缺少 Microsoft Edge WebView2 运行时": "Microsoft Edge WebView2 런타임이 필요합니다",
-  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "이 Windows 시스템에 Microsoft Edge WebView2 런타임이 설치되어 있지 않아 설정, 검색 및 클립보드 UI를 표시할 수 없습니다.\n\n예를 클릭하여 공식 Microsoft 다운로드 페이지를 열고 설치한 뒤 Tools3000을 다시 시작하세요."
+  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "이 Windows 시스템에 Microsoft Edge WebView2 런타임이 설치되어 있지 않아 설정, 검색 및 클립보드 UI를 표시할 수 없습니다.\n\n예를 클릭하여 공식 Microsoft 다운로드 페이지를 열고 설치한 뒤 Tools3000을 다시 시작하세요.",
+  "OCR Script": "OCR 문자",
+  "CJK": "중영",
+  "JA": "일본어",
+  "KO": "한국어",
+  "RU": "러시아어",
+  "LA": "라틴어",
+  "Not installed": "미설치",
+  "Auto Detect (Recommended)": "자동 감지 (권장)",
+  "Chinese & English": "중국어 및 영어",
+  "Japanese": "일본어",
+  "Korean": "한국어",
+  "Russian (Cyrillic)": "러시아어 (키릴)",
+  "Spanish / Portuguese (Latin)": "스페인어 / 포르투갈어 (라틴)",
+  "Auto Detect": "자동 감지",
+  "OCR Script: {0}": "OCR 문자: {0}",
+  "This offline script pack is not installed yet — download it in Settings > OCR": "해당 오프라인 언어 팩이 설치되지 않았습니다. '설정 > OCR'에서 다운로드하세요"
 }

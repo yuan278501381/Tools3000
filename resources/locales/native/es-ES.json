@@ -893,5 +893,21 @@
   "Translation complete (Press Tab or click pill for original)": "Traducción completada (pulsa Tab o haz clic para ver el original)",
   "No translatable prose found (code identifiers, filenames or paths kept as-is)": "No se encontró texto traducible (identificadores de código, nombres de archivo o rutas sin cambios)",
   "缺少 Microsoft Edge WebView2 运行时": "Se requiere Microsoft Edge WebView2 Runtime",
-  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "Microsoft Edge WebView2 Runtime no está instalado en este sistema Windows, por lo que no se pueden mostrar las ventanas de Configuración, Búsqueda y Portapapeles.\n\nHaz clic en Sí para abrir la página oficial de descarga de Microsoft y reinicia Tools3000 después de instalarlo."
+  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "Microsoft Edge WebView2 Runtime no está instalado en este sistema Windows, por lo que no se pueden mostrar las ventanas de Configuración, Búsqueda y Portapapeles.\n\nHaz clic en Sí para abrir la página oficial de descarga de Microsoft y reinicia Tools3000 después de instalarlo.",
+  "OCR Script": "Idioma de OCR",
+  "CJK": "CJK",
+  "JA": "JA",
+  "KO": "KO",
+  "RU": "RU",
+  "LA": "LA",
+  "Not installed": "No instalado",
+  "Auto Detect (Recommended)": "Detección automática (recomendado)",
+  "Chinese & English": "Chino e inglés",
+  "Japanese": "Japonés",
+  "Korean": "Coreano",
+  "Russian (Cyrillic)": "Ruso (cirílico)",
+  "Spanish / Portuguese (Latin)": "Español / Portugués (latino)",
+  "Auto Detect": "Detección automática",
+  "OCR Script: {0}": "Idioma de OCR: {0}",
+  "This offline script pack is not installed yet — download it in Settings > OCR": "Este paquete de idioma sin conexión aún no está instalado; descárgalo en Ajustes > OCR"
 }

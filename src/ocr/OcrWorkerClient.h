@@ -37,6 +37,7 @@ public:
         const cv::Mat& bgrImage,
         const std::filesystem::path& modelDir,
         const std::string& modelTier,
+        const std::string& scriptMode,
         std::vector<OcrResult>& outResults,
         DeepOcrRunStats& outStats,
         std::string& outActiveTier);
@@ -66,6 +67,7 @@ private:
         const cv::Mat& bgrImage,
         const std::filesystem::path& modelDir,
         const std::string& modelTier,
+        const std::string& scriptMode,
         std::vector<OcrResult>& outResults,
         DeepOcrRunStats& outStats,
         std::string& outActiveTier);

@@ -23,6 +23,7 @@
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "ocr/DeepOcrEngine.h"
 
 #include <d2d1_1.h>
 #include <imm.h>
@@ -59,6 +60,15 @@ PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
     snap.hasTranslation = self->hasTranslationResult();
     snap.isShowingTranslation = self->isShowingTranslation();
     snap.isTranslationInFlight = self->isTranslationInFlight();
+    snap.activeOcrScriptMode = self->effectiveOcrScriptMode();
+    snap.hasOcrScriptOverride = self->hasOcrScriptModeOverride();
+    {
+        const auto& deepOcr = tools3000::ocr::DeepOcrEngine::instance();
+        snap.scriptPackJapanInstalled = deepOcr.isScriptPackInstalled("japan");
+        snap.scriptPackKoreanInstalled = deepOcr.isScriptPackInstalled("korean");
+        snap.scriptPackCyrillicInstalled = deepOcr.isScriptPackInstalled("cyrillic");
+        snap.scriptPackLatinInstalled = deepOcr.isScriptPackInstalled("latin");
+    }
     snap.scale = self->scale();
     snap.opacity = self->opacity();
 
@@ -154,6 +164,9 @@ void executePinContextMenuCommand(PinWindow* self, HWND hwnd, const PinMenuComma
             break;
         case PinMenuAction::SelectAllText:
             self->selectAllText();
+            break;
+        case PinMenuAction::SetOcrScriptMode:
+            self->setOcrScriptModeOverride(PinOcrScriptParam::toModeString(cmd.param));
             break;
         case PinMenuAction::SaveImage:
             if (hwnd && IsWindow(hwnd)) {

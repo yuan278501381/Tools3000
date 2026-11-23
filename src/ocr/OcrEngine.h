@@ -76,11 +76,11 @@ public:
     /// Windows.Media.Ocr 语言包是否就绪
     bool isWindowsOcrAvailable() const noexcept { return m_available; }
 
-    /// 提取文字 (逐行结果 + 行包围盒 + 字符级精确 charBoxes)。
-    std::vector<OcrResult> extractText(const cv::Mat& image);
+    /// 提取文字 (逐行结果 + 行包围盒 + 字符级精确 charBoxes；支持单次识字语种路由覆写)。
+    std::vector<OcrResult> extractText(const cv::Mat& image, const std::string& scriptModeOverride = {});
 
-    /// 完整提取页面实景信息 (逐行文字 + charBoxes + 图中二维码 + 实际生效引擎标识)。
-    OcrPageExtraction extractPage(const cv::Mat& image);
+    /// 完整提取页面实景信息 (逐行文字 + charBoxes + 图中二维码 + 实际生效引擎标识；支持单次识字语种路由覆写)。
+    OcrPageExtraction extractPage(const cv::Mat& image, const std::string& scriptModeOverride = {});
 
     /// 毫秒级顺手检测并解码图像中的全部二维码 (基于 OpenCV 内置 QRCodeDetector / quirc)。
     static std::vector<OcrQrResult> detectQrCodes(const cv::Mat& image);

@@ -893,5 +893,21 @@
   "Translation complete (Press Tab or click pill for original)": "原位翻譯完成（按 Tab 或點擊底部膠囊切換原圖對照）",
   "No translatable prose found (code identifiers, filenames or paths kept as-is)": "未發現可翻譯正文（程式碼識別字、檔案名稱或路徑保持原樣）",
   "缺少 Microsoft Edge WebView2 运行时": "缺少 Microsoft Edge WebView2 執行階段",
-  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "目前 Windows 系統尚未安裝 Microsoft Edge WebView2 執行階段，因此設定、搜尋與剪貼簿介面暫時無法顯示。\n\n按一下「是」立即開啟微軟官方頁面下載安裝，完成後重新啟動 Tools3000 即可正常使用。"
+  "当前 Windows 系统未安装 Microsoft Edge WebView2 运行时，因此设置、搜索与剪贴板界面暂时无法显示。\n\n点击“是”立即打开微软官方页面下载安装，完成后重启 Tools3000 即可正常使用。": "目前 Windows 系統尚未安裝 Microsoft Edge WebView2 執行階段，因此設定、搜尋與剪貼簿介面暫時無法顯示。\n\n按一下「是」立即開啟微軟官方頁面下載安裝，完成後重新啟動 Tools3000 即可正常使用。",
+  "OCR Script": "辨識語種",
+  "CJK": "中英",
+  "JA": "日語",
+  "KO": "韓語",
+  "RU": "俄語",
+  "LA": "西/葡",
+  "Not installed": "未安裝",
+  "Auto Detect (Recommended)": "自動辨識 (推薦)",
+  "Chinese & English": "中文與英文",
+  "Japanese": "日語",
+  "Korean": "韓語",
+  "Russian (Cyrillic)": "俄語 (西里爾)",
+  "Spanish / Portuguese (Latin)": "西 / 葡 / 歐文 (拉丁)",
+  "Auto Detect": "自動辨識",
+  "OCR Script: {0}": "辨識語種：{0}",
+  "This offline script pack is not installed yet — download it in Settings > OCR": "該語種離線辨識擴充包尚未安裝，請前往「設定 -> 文字辨識」按需下載"
 }

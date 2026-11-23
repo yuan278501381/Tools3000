@@ -3156,8 +3156,10 @@ TEST(LiveTextOcrTest, Full18FixturesOcrAccuracyLatencyMemoryBenchmark) {
         totalAnchorsHit += hitCnt;
         totalAnchorsAll += sp.anchors.size();
 
-        std::printf("  [%02zu] %-36s | %4dx%-4d | %-8s | %6.1f | %6.1f | %3zu | %3zu | %4zu | %zu | %.3f | %.3f | %2zu | %zu/%zu | %2d | %5.1f | %5.1f\n",
+        const auto deepStats = DeepOcrEngine::instance().lastRunStats();
+        std::printf("  [%02zu] %-36s | %4dx%-4d | %-8s | %-8s | %6.1f | %6.1f | %3zu | %3zu | %4zu | %zu | %.3f | %.3f | %2zu | %zu/%zu | %2d | %5.1f | %5.1f\n",
                     idx + 1, sp.relPath, img.cols, img.rows, page.activeEngine.c_str(),
+                    deepStats.detectedScript.empty() ? "-" : deepStats.detectedScript.c_str(),
                     wallMs, cpuMs, page.lines.size(), atomic.size(), chars, page.qrCodes.size(),
                     avgConf, p10Conf, lowConfCnt, hitCnt, sp.anchors.size(), gluedEn, privMb, wsMb);
 
@@ -4009,4 +4011,239 @@ TEST(WorkerIsolationTest, RecordEncodeAndStudioExportWorkersOutOfProcessEndToEnd
     EXPECT_FALSE(decodedFrame.empty());
     reader.close();
     StudioVideoCompositor::clearGlobalCaches();
+}
+
+#include "capture/PinContextMenuModel.h"
+#include "ocr/OcrWorkerProtocol.h"
+
+TEST(LiveTextOcrTest, MultilingualOcrFixtureCatalogIntegrity) {
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto multiDir = ocrDir / "multilang";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_directory(multiDir, ec)) << "Missing tests/fixtures/ocr/multilang directory";
+
+    constexpr const char* kMultilangFixtures[] = {
+        "zh_tw_settings_card.png",
+        "ja_settings_card.png",
+        "ko_dark_settings_card.png",
+        "ru_settings_card.png",
+        "es_pt_settings_card.png",
+    };
+
+    for (const char* name : kMultilangFixtures) {
+        const auto p = multiDir / name;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing multilingual OCR fixture: " << name;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to decode multilingual OCR fixture: " << name;
+        EXPECT_GT(img.cols, 400) << name;
+        EXPECT_GT(img.rows, 150) << name;
+    }
+}
+
+TEST(LiveTextOcrTest, OnnxIrClampAndMultilingualScriptPackContract) {
+    using namespace tools3000::ocr;
+    using namespace tools3000::capture;
+
+    // 1. 验证 ONNX ir_version > 8 精准钳位至 8 且后部负载字节 100% 比特无损
+    std::vector<uint8_t> payloadV10 = {
+        0x08, 0x0A,                               // field 1 (ir_version) = 10
+        0x12, 0x06, 'p', 'a', 'd', 'd', 'l', 'e', // field 2 (producer_name)
+        0x22, 0x04, 0xDE, 0xAD, 0xBE, 0xEF        // payload guard bytes (>= 16 bytes)
+    };
+    const auto originalCopy = payloadV10;
+    EXPECT_TRUE(DeepOcrEngine::clampOnnxIrVersionForWinMl(payloadV10));
+    ASSERT_EQ(payloadV10.size(), originalCopy.size());
+    EXPECT_EQ(payloadV10[0], 0x08u);
+    EXPECT_EQ(payloadV10[1], 0x08u);
+    for (size_t i = 2; i < originalCopy.size(); ++i) {
+        EXPECT_EQ(payloadV10[i], originalCopy[i]) << "Byte corrupted at offset " << i;
+    }
+    // 幂等校验：已为 ir_version=8 再次调用返回 false（未改写）且字节不变
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(payloadV10));
+    EXPECT_EQ(payloadV10[1], 0x08u);
+
+    // 截断异常缓冲区安全返回 false
+    std::vector<uint8_t> tinyBuf = {0x08, 0x0A};
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(tinyBuf));
+
+    // 2. 验证模型状态契约返回完整 4 个轻量语种扩展包元数据
+    const auto status = DeepOcrEngine::instance().getModelStatus();
+    ASSERT_EQ(status.scriptPacks.size(), 4u);
+    EXPECT_EQ(status.scriptPacks[0].id, "japan");
+    EXPECT_EQ(status.scriptPacks[1].id, "korean");
+    EXPECT_EQ(status.scriptPacks[2].id, "cyrillic");
+    EXPECT_EQ(status.scriptPacks[3].id, "latin");
+    for (const auto& sp : status.scriptPacks) {
+        EXPECT_GT(sp.estimatedBytes, 5ULL * 1024ULL * 1024ULL) << sp.id;
+    }
+
+    // 3. 验证 OcrWorkerProtocol 协议升级至 v3
+    EXPECT_EQ(worker_proto::kProtocolVersion, 3u);
+
+    // 4. 验证贴图右键「文字划选与翻译 -> 识字语种」3 级子菜单结构与状态微标回显
+    PinContextMenuSnapshot snap;
+    snap.isChinese = true;
+    snap.activeOcrScriptMode = "korean";
+    snap.hasOcrScriptOverride = true;
+    snap.scriptPackJapanInstalled = true;
+    snap.scriptPackKoreanInstalled = true;
+    snap.scriptPackCyrillicInstalled = false;
+    snap.scriptPackLatinInstalled = false;
+
+    const auto rootMenu = PinContextMenuBuilder::buildRootMenu(snap);
+    const PinMenuItem* ocrSub = nullptr;
+    for (const auto& item : rootMenu.items) {
+        if (item.hasSubmenu() && item.icon == CaptureIconId::ActionExtractText) {
+            ocrSub = &item;
+            break;
+        }
+    }
+    ASSERT_NE(ocrSub, nullptr);
+
+    const PinMenuItem* scriptSub = nullptr;
+    for (const auto& sub : ocrSub->submenu) {
+        if (sub.hasSubmenu() && sub.submenu.size() >= 6u) {
+            scriptSub = &sub;
+            break;
+        }
+    }
+    ASSERT_NE(scriptSub, nullptr);
+    EXPECT_FALSE(scriptSub->statusBadge.empty());
+
+    int checkedKorean = 0;
+    int missingPackBadges = 0;
+    for (const auto& opt : scriptSub->submenu) {
+        if (opt.isSeparator) continue;
+        if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
+            opt.command.param == PinOcrScriptParam::kKorean && opt.isChecked) {
+            ++checkedKorean;
+        }
+        if (!opt.statusBadge.empty()) {
+            ++missingPackBadges;
+        }
+    }
+    EXPECT_EQ(checkedKorean, 1);
+    EXPECT_EQ(missingPackBadges, 2); // cyrillic + latin marked as not installed
+}
+
+TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
+    using namespace tools3000::ocr;
+
+    auto& deep = DeepOcrEngine::instance();
+    const char* dlEnv = std::getenv("TOOLS3000_TEST_DOWNLOAD_SCRIPT_PACKS");
+    if (dlEnv && *dlEnv && std::string(dlEnv) != "0") {
+        ASSERT_TRUE(deep.startScriptPackDownload("all"));
+        bool finished = false;
+        for (int i = 0; i < 600; ++i) {
+            const auto st = deep.getModelStatus();
+            if (!st.downloading) {
+                finished = true;
+                EXPECT_TRUE(st.error.empty()) << "Download error: " << st.error;
+                break;
+            }
+            Sleep(250);
+        }
+        ASSERT_TRUE(finished) << "Timed out downloading multilingual script packs";
+        EXPECT_TRUE(deep.isModelInstalled());
+        EXPECT_TRUE(deep.isScriptPackInstalled("japan"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("korean"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("cyrillic"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("latin"));
+    }
+
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "Base PP-OCRv4 model bundle not installed";
+    }
+
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto multiDir = ocrDir / "multilang";
+
+    struct MultiSpec {
+        const char* file;
+        const char* expectedScript;
+        bool requiresPack;
+        std::vector<const char*> anchors;
+    };
+    const std::vector<MultiSpec> specs = {
+        {"zh_tw_settings_card.png", "cjk", false, {"繁體中文", "Tools3000", "95.2%"}},
+        {"ja_settings_card.png", "japan", true, {"オフライン文字認識", "スクリーンショット", "Tools3000", "キャンセル"}},
+        {"ko_dark_settings_card.png", "korean", true, {"오프라인", "스크린샷을", "네트워크", "v1.4.0"}},
+        {"ru_settings_card.png", "cyrillic", true, {"Автономное", "русский", "DirectML GPU", "26%"}},
+        {"es_pt_settings_card.png", "latin", true, {"Configuración", "Español", "Português", "¿Desea"}},
+    };
+
+    auto queryPrivMb = []() -> double {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc))) {
+            return static_cast<double>(pmc.PrivateUsage) / (1024.0 * 1024.0);
+        }
+        return 0.0;
+    };
+
+    const double privStart = queryPrivMb();
+    std::cout << "\n[MULTILANG-OCR-BENCH] Start PrivateMB=" << privStart << "\n";
+
+    for (const auto& sp : specs) {
+        if (sp.requiresPack && !deep.isScriptPackInstalled(sp.expectedScript)) {
+            std::cout << "  [SKIP] " << sp.file << " (pack '" << sp.expectedScript << "' not installed)\n";
+            continue;
+        }
+        const auto p = multiDir / sp.file;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << sp.file;
+
+        const auto t0 = std::chrono::steady_clock::now();
+        // 显式传入 "auto" 模拟中文用户在默认自动模式零切换截外语图
+        const auto lines = deep.extractText(img, "auto");
+        const auto t1 = std::chrono::steady_clock::now();
+        const double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+        const auto st = deep.lastRunStats();
+        const double privNow = queryPrivMb();
+
+        std::string joined;
+        double confSum = 0.0;
+        for (const auto& l : lines) {
+            if (!joined.empty()) joined += "\n";
+            joined += l.text;
+            confSum += l.confidence;
+        }
+        const double avgConf = lines.empty() ? 0.0 : (confSum / static_cast<double>(lines.size()));
+
+        std::cout << "  [" << sp.expectedScript << "] " << sp.file
+                  << " -> detected=" << st.detectedScript
+                  << " wallMs=" << ms
+                  << " lines=" << lines.size()
+                  << " avgConf=" << avgConf
+                  << " privMB=" << privNow << "\n";
+        for (const auto& l : lines) {
+            std::cout << "      (" << l.confidence << ") " << l.text << "\n";
+        }
+
+        EXPECT_EQ(st.detectedScript, sp.expectedScript) << sp.file << " joined=" << joined;
+        EXPECT_GE(avgConf, 0.90) << sp.file;
+        for (const char* anchor : sp.anchors) {
+            EXPECT_NE(joined.find(anchor), std::string::npos)
+                << sp.file << " missing anchor '" << anchor << "' in: " << joined;
+        }
+    }
+
+    // 验证 OcrEngine 缓存键随 scriptMode 严格隔离（同一张韩文图在 "cjk" 与 "korean" 覆写下绝不互串缓存）
+    if (deep.isScriptPackInstalled("korean")) {
+        const auto koPath = multiDir / "ko_dark_settings_card.png";
+        const cv::Mat koImg = cv::imread(tools3000::core::WinUtils::wstringToUtf8(koPath.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(koImg.empty());
+        const auto cjkPage = OcrEngine::instance().extractPage(koImg, "cjk");
+        const auto koPage = OcrEngine::instance().extractPage(koImg, "korean");
+        std::string koJoined;
+        for (const auto& l : koPage.lines) koJoined += l.text + "\n";
+        EXPECT_NE(koJoined.find("오프라인"), std::string::npos);
+        EXPECT_GT(koPage.lines.size(), cjkPage.lines.size());
+    }
+
+    deep.releaseLoadedModels();
+    const double privAfterRelease = queryPrivMb();
+    std::cout << "[MULTILANG-OCR-BENCH] After releaseLoadedModels PrivateMB=" << privAfterRelease << "\n";
 }

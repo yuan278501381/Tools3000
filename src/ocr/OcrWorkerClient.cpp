@@ -172,6 +172,7 @@ bool OcrWorkerClient::runSingleRequestLocked(
     const cv::Mat& bgrImage,
     const std::filesystem::path& modelDir,
     const std::string& modelTier,
+    const std::string& scriptMode,
     std::vector<OcrResult>& outResults,
     DeepOcrRunStats& outStats,
     std::string& outActiveTier) {
@@ -223,6 +224,7 @@ bool OcrWorkerClient::runSingleRequestLocked(
         !worker::writeString(m_pipe.get(), shmNameUtf8, /*overlapped=*/true) ||
         !worker::writeString(m_pipe.get(), modelDirUtf8, /*overlapped=*/true) ||
         !worker::writeString(m_pipe.get(), modelTier, /*overlapped=*/true) ||
+        !worker::writeString(m_pipe.get(), scriptMode, /*overlapped=*/true) ||
         !worker::writeString(m_pipe.get(), traceId, /*overlapped=*/true)) {
         return false;
     }
@@ -240,6 +242,7 @@ bool OcrWorkerClient::extractText(
     const cv::Mat& bgrImage,
     const std::filesystem::path& modelDir,
     const std::string& modelTier,
+    const std::string& scriptMode,
     std::vector<OcrResult>& outResults,
     DeepOcrRunStats& outStats,
     std::string& outActiveTier) {
@@ -265,7 +268,7 @@ bool OcrWorkerClient::extractText(
         if (!ensureWorkerConnectedLocked(exePath, modelTier, modelDir)) {
             return false;
         }
-        if (runSingleRequestLocked(bgrImage, modelDir, modelTier, outResults, outStats, outActiveTier)) {
+        if (runSingleRequestLocked(bgrImage, modelDir, modelTier, scriptMode, outResults, outStats, outActiveTier)) {
             const long long wallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - tWallStart).count();
             LOG_INFO("DeepOcrEngine: isolated worker (pid={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",

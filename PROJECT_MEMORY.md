@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-23] 全 8 语种跨语种零切换离线 OCR 与原位翻译系统 + 低配机单槽互斥架构落地 (`DeepOcrEngine*`, `OcrEngine*`, `OcrWorker*`, `PluginEntry.cpp`, `PinContextMenuModel*`, `PinWindow*`, `OcrPage.tsx`, 8 套前端 JSON, 6 套原生词典, `tests/fixtures/ocr/multilang/`)
+- **核心产品与架构权衡（彻底解耦「软件界面语言」与「屏幕源图语种」，兼顾低配办公本）**：
+  1. **主力基座零退化选型**：实机对比 `ch_PP-OCRv4_rec` (10.35MB, `885ms`, `1420MB`) 与 `ch_PP-OCRv5_rec_mobile` (18,383 词表, `1011ms +14%`, `1753MB +333MB`)，确立 **保留 `ch_PP-OCRv4_rec` 为简中/繁中/英主力基座**，避免拖累普通中英用户与低配机；按文字体系 MECE 新增 4 个复用同一套 `det+cls`、内嵌完整词典的按需轻扩展包：`japan` (`japan_PP-OCRv4_rec_mobile.onnx`, 9.3MB, IR8)、`korean` (`korean_PP-OCRv5_rec_mobile.onnx`, 12.9MB, IR10->8)、`cyrillic` (`cyrillic_PP-OCRv5_rec_mobile.onnx`, 7.7MB, IR10->8)、`latin` (`latin_PP-OCRv5_rec_mobile.onnx`, 7.5MB, IR10->8)，双源 ModelScope（`modelscope.cn` / `modelscope.ai`）按需下载；
+  2. **WinML 加载 PP-OCRv5 ONNX 关键兼容突破 (`DeepOcrEngine::clampOnnxIrVersionForWinMl`)**：实测官方 PP-OCRv5 ONNX 均为 `ir_version=10, opset=14`（25 个基础算子），直接加载被 Win10/11 原生 WinML 拒绝 (`rc=1`)；下载落盘校验阶段原位将顶层 Protobuf field 1 `ir_version` 无损钳位至 `8` (`0x08 0x0A -> 0x08 0x08`)，100% 原生 WinML 满速运行；
+  3. **低配机护航架构与四重正交自动嗅探 (`DeepOcrEngine.cpp`)**：
+     - 扩展识别槽采用单一互斥 CPU SIMD 动态 32 对齐微批会话（`CloseModelOnSessionCreation(true)`，加载新扩展包先释放旧槽，0 DirectML 显存峰增量）；
+     - `scriptMode="auto"` 下以四重正交异常门控（存活率坍塌、密度坍塌含空格 `0.30f` 视觉宽、多假名/低汉字日文线索防图标单 `の` 误触、西里尔伪拉丁畸变排除标准 CamelCase/PascalCase、去 3 字母域名碰撞词的欧陆变音符词形）+ 高汉字占比中文主文档零探针短路 + 信号导向排序 + Top-3 限宽探针 + 命中即早停 + `650ms` 低配机时间预算护栏；胜出语种免重跑 `det` 直接全页重识；俄语路径内置西里尔-拉丁视觉同形字上下文净化（如 `DireсtML -> DirectML`）；
+  4. **全栈透传与极客兜底体验**：
+     - 独立短命 `OcrWorker` 二进制协议升级至 `kProtocolVersion = 3u`，透传 `scriptMode` 并回传 `detectedScript`；`OcrEngine` 缓存键编入 `scriptMode + installedScriptPacksSignature()` 严防装包/切语种串缓存；
+     - 贴图右键「文字划选与翻译 -> 识字语种」新增 3 级直切子菜单（单张覆写并自动重识/自动无缝重译）；设置页 `OcrPage.tsx` 新增多语种识别路由与 4 扩展包微晶管理卡（支持一键全下/单包下删），并补齐 Windows OCR 下拉遗漏的 `ru-RU`/`pt-BR`/`es-ES`（8 语种 100% 对齐）；
+  5. **实机端到端全维验收数据**：
+     - 真实 HTTPS 下载全部 4 扩展包 + IR 钳位 100% 通过；
+     - 全 5 张多语种样本（`tests/fixtures/ocr/multilang/`）在默认 `auto` 零切换下 5/5 精确路由（繁中 `cjk` 0.944、日文 `japan` 0.980、韩文 `korean` 0.998、俄文 `cyrillic` 0.998、西葡 `latin` 0.9995），连续横跨 5 套模型内存恒定平坦（`~1410 MB`）、卸载归落 `~77~116 MB`；
+     - 中国用户 `zh-CN` 环境零切换将韩/日/俄/西葡 4 张外语图端到端原位翻译为简体中文，4 张译图均经亲眼视觉终审达标；
+     - 安装全部 4 扩展包后重跑原 18 张高清中/英基准图：**18/18 全部 `cjk`（0 误切、0 扩展会话加载）**，峰值私有内存 **`1423.5 MB`**（0 抬升），工作集卸载归落 `3.2 MB`，`postman` 热跑 `821 ms`（`sessions=5`）；关联 C++ 回归 **217/217 PASS**（含协议 v3 `WorkerIsolationTest`），前端 Vitest + 6 重并发静态门禁 + Vite 生产包全绿。
+
 ### [2026-11-23] 18 图双维全量实测基准 + 8 张 2K/1080p 原生高清样本升级 + DirectML 互斥大桶省 495 MB + 高分屏原位翻译通用精修 (`DeepOcrEngine.cpp`, `InPlaceTranslateEngine.cpp`, `tests/fixtures/translate/`, `tests/unit/test_live_ocr.inc`, `tests/unit/test_capture.inc`)
 - **测试样本高清化溯源与实测验证**：
   1. **样本模糊成因与真实用户体验定性**：此前聊天窗口上传的大屏截图被压缩为最长边 `1024px`，将 12px 桌面汉字压成 `6~8px` 糊点；Tools3000 真实截图/贴图/剪贴板直读 1:1 物理像素，不受影响。已从本机 `%LOCALAPPDATA%\Tools3000` 找回并视觉终审确认 **8 张原生 2K/1080p 无损原图**（`522x1683` ~ `2572x1896`，含 `2512x1560` 全区域零泄密无痕脱敏版 `postman_api_dark_sanitized.png`）替换入库 `tests/fixtures/translate/`；升级后该 8 图核心锚点命中率达 **48/48 (100%)**，`hackernews` 均置信度 `0.847 -> 0.985`、`sap_b1_form_designer` `0.736 -> 0.885`、`postman` `0.872 -> 0.949`。
