@@ -6,6 +6,15 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 永久全球化铁律：8 国语言 README、13 核常青总览海报与社区文案的跨地域本地化（Localization vs Translation）规范
+- **1. 背景与数据依据**：
+  - 跨国软件转化研究（CSA Research `26%–48%` 视觉本地化转化提升）与本仓首轮全球投放实测对照表明：将中文语境专属参照物（如 `WeChat-ready GIF`、`QQ / WeChat`、`PixPin`）字面硬译至英文/日韩/拉美文档会造成明显的异国陌生感（Foreignness Friction）；同时在 `feature_bento_overview.png` 角标写死旧版本号（如 `v1.4.2`）会导致版本升级后首屏图文失真，13 张动图同屏并发循环播放及下载入口深埋第 130 行亦拖累欧美及移动端 5 秒首屏留存。
+- **2. 强制执行的四维地域化标准（已固化至 `.agents/rules/agent.md` 第 9 节）**：
+  - **本土参照物精准映射**：① 英文版 (`README.md`) 零 `WeChat/QQ/PixPin` 残留，对标 `ShareX / Greenshot / Snipaste / PowerToys Text Extractor / Discord & Slack GIF`；② 日文版 (`README.ja.md`) 对标日本国民工具 `Rapture / Clibor / WinShot` 并强调 `レジストリを汚さないポータブル対応`（零注册表污染）；③ 韩文版 (`README.ko.md`) 对标 `픽픽(PicPick) / 알캡처(ALCapture) / 칼무리(Kalmuri)` 并强调 `광고·번들 제로`（零广告零捆绑）；④ 俄/葡/西版对标 `Lightshot / ShareX` 与 `Telegram / Discord / WhatsApp` 并突出 `~2–6 MB` 低内存优势；⑤ 中文版保留微信 GIF 与 PixPin 等本土痛点锚点；
+  - **常青无版本号总览海报与零省略门禁**：全 8 语种 `docs/images/<locale>/feature_bento_overview.png` 移除具体版本号角标，统一采用 13 核常青品牌标识，且每次渲染后必须肉眼/脚本核验卡片标题 **0 处 `...` 截断**；
+  - **首屏快速安装置顶与动图分级折叠**：顶部简介下方置顶 3 行 Quick Install 直达框；英文主 `README.md` 采用「首屏精选 6 项核心动图展开 + 其余 7 项 `<details>` 折叠」降噪提速，官网 `docs/site/index.html` 下载直链由 `scripts/release.ps1` 自动随版本幂等同步防 404；
+  - **对外克制表达与 HN 提交暗坑备忘**：对外发版与文档严禁出现「万星」字眼；Hacker News 后台会自动将标题中的 `&` 展开为 `and`（字符数 +2），故 `Show HN` 标题须直接写 `and` 且总长 `<= 78` 字符，提交页仅填 `title` + `url`（`text` 留空），跳转后贴一楼首评；**实测门禁注意**：HN 新账号或低 Karma 账号提交 `Show HN` 会触发官方自动限流拦截（`Update re Show HNs: We're temporarily restricting Show HNs...`），此时**严禁去掉 `Show HN:` 前缀强发同一链接绕过门禁（会导致账号 Shadowban 或仓库域名被惩罚）**，须先通过纯技术评论自然积累约 20–50 Karma 与账龄自动解锁，或当共享代理 IP 导致新号落入账号级 `auto-kill`（公开 API 返回 `dead: true`）时由注册邮箱向官方 `hn@ycombinator.com` 说明开源身份与代理网络环境申请标记 `legit` 白名单后再正式首发；同时维护者不直接手写英文（1:1 原文复制），全链路对外英文草稿强制采用纯 ASCII 键盘手打风格（严禁 Unicode 长破折号 `—` 与 AI 套话）并附简体中文对照。
+
 ### [2026-11-24] 贴图海量 4K 大图内存封顶五层架构：全局单飞三级优先级 OCR 调度器、超长图切片、冷热无损压缩池与 256MB 预算护栏
 - **1. 根因审计**：
   - 旧版 `PinWindow::create()` 对每张上屏贴图立即执行 `m_sourceImage.clone()` + `std::thread::detach()`，并发冲入 `OcrEngine::extractPage` 同时拉起 N 路 `std::async(detectQrCodes)` 二维码图像金字塔，批量贴出 15~20 张 4K 大图时瞬时衍生 30+ 线程并冲高 `1.2~2.5 GB` 峰值内存；且每个线程结束均调 `WinUtils::trimWorkingSet()` 造成连续贴图软缺页抖动；

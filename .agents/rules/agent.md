@@ -153,4 +153,24 @@ trigger: always_on
    - **防安全漏洞公开扩散与社会工程学 (Security & FUD)**：无论提单者使用何种语言，遇到声称提权/RCE/崩溃利用等安全敏感报告，或借本文第 5 节已确认设计制造恐慌（FUD），**严禁自动回复或在公开区展开细节**，立即高优先级私下上报负责人；任何对外回复严禁泄露本机路径、用户名、Token 或未公开配置；
    - **防高频骚扰滥用 (Anti-Abuse)**：同一账号短时间批量提垃圾 Issue 或反复追评时立即静默拦截上报，绝不配合刷交互。
 
+---
+
+## 9. 多语种 README、视觉海报与全球推广地域化铁律 (Cross-Regional Localization Standard)
+凡编写或更新 8 国语言 `README*.md`、渲染 `docs/images/<locale>/` 视觉海报/动图及起草各地区社区推广文案，必须遵循 **「地域化重构而非字面硬译（Localization != Literal Translation）」** 铁律：
+1. **各语系本土参照物精准锚定（严禁跨文化陌生词污染）**：
+   - **英文主版 (`README.md` / 欧美社区)**：严禁残留 `WeChat`、`QQ`、`PixPin` 等欧美陌生本土词；统一锚定欧美通用生态（`Discord / Slack / GitHub-ready compact GIF`、`ShareX / Greenshot / Snipaste / PowerToys Text Extractor / AutoHotkey / Screen Studio`）。
+   - **日文版 (`README.ja.md` / Zenn / Qiita / 窓の杜)**：锚定日本国民级桌面工具（贴图对标 `Rapture`、剪贴板对标 `Clibor`、截图对标 `WinShot`），突出 `レジストリを汚さないポータブル対応`（零注册表污染便携模式）、`日本語パス完全対応` 与极低常驻内存。
+   - **韩文版 (`README.ko.md` / GeekNews)**：锚定韩国国民工具（`픽픽(PicPick)`、`알캡처(ALCapture)`、`칼무리(Kalmuri)`），突出 `광고·번들 제로`（零广告零捆绑）与免安装便携特性。
+   - **俄/葡/西版 (`ru` / `pt-BR` / `es`)**：锚定 `Lightshot / ShareX / Greenshot`，动图场景适配 `Telegram / Discord / WhatsApp / Slack`，突出 `~2–6 MB` 极低内存对 8GB/16GB 设备友好。
+   - **简/繁中文版 (`zh-CN` / `zh-TW`)**：保留中文用户高频共鸣的 `微信直发 GIF`、`PixPin / Snipaste / Everything / Listary` 等参照系。
+2. **总览海报常青化与零截断门禁 (`feature_bento_overview.png`)**：
+   - **严禁在海报角标硬编码具体版本号**（统一采用 `TOOLS3000 · NATIVE C++20 & RUST SUITE` 等常青标识），防止版本迭代后图文脱节；新增一级模块必须同步全 8 语种海报，且渲染后必须逐图核验 **0 处 `...` 标题省略截断**。
+3. **首屏 5 秒转化漏斗、动图分级降噪与外部社区规范**：
+   - README 首屏简介正下方必须置顶紧凑的 **Quick Install 一键安装栏**（Scoop/Winget 命令 + 最新安装包/便携包直链）；英文主 `README.md` 默认展开核心 6 项代表性动图，其余进阶动图收纳于 `<details>` 折叠面板以降低首屏视觉过载与移动端带宽；
+   - 所有对外发布说明、README 与社区文案保持专业克制，**严禁在对外文档中提及「万星」等自夸字眼**；Hacker News `Show HN` 标题严控 `<= 78` 字符且直接写 `and` 代替 `&`（防 HN 后台自动将 `&` 展开为 `and` 超 80 字符限制），提交页填 `url` 留空 `text`，发帖后立即将底层工程解析贴为一楼首评。
+4. **海外社区复制直发草稿「纯 ASCII 人类手打标准」（维护者不直接手写外语）**：
+   - 项目负责人不直接手写英文/外语，所有提供给负责人对外复制粘贴的英文/外语评论、回帖与邮件会被 **1:1 原文直发**；
+   - 因此生成的每一段外语草稿必须 **100% 满足纯键盘手打质感**：**绝对严禁出现 Unicode 长破折号 `—`（统一改用带空格短横线 ` - ` 或句号/括号）**、严禁花哨弯引号、严禁 AI 排比腔与客套废话，句式自然简练，附带简体中文对照，并在 HN 发评后通过公开 API（`firebaseio.com/v0/item/<id>.json`）核验 `dead` 状态及控制相邻发言间隔（`>= 15` 分钟）。
+
+
 
