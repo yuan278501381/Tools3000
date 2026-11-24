@@ -3,7 +3,8 @@
     Tools3000 世界级全自动发版流水线 (DevOps Master Release Pipeline)
 .DESCRIPTION
     一键完成：版本自增 +1 -> 提交 Release 说明 -> 非快进合并至 main -> 全量编译与生命周期端到端门禁 ->
-    EXE 版本强校验 -> 资产打包与 SHA256 校验 -> Git 打 Tag 与全量推送 -> GitHub Release 官方发布 -> 自动检出下一阶段特性分支。
+    EXE 版本强校验 -> 资产打包与 SHA256 校验 -> Git 打 Tag 与全量推送 -> GitHub Release 官方发布 ->
+    遵循 Trunk-Based 规范自动清理已合并的短期语义分支并停留于干净 main（或切入显式指定的下一专题分支）。
 .EXAMPLE
     pwsh scripts/release.ps1                 # 默认补丁版本自增 +1 (如 1.0.0 -> 1.0.1)
     pwsh scripts/release.ps1 -Bump Minor     # 次版本自增 +1 (如 1.0.0 -> 1.1.0)
@@ -16,6 +17,7 @@ param(
     [Alias("Title")]
     [string]$ReleaseTitle = "",
     [string]$NextFeatureBranch = "",
+    [switch]$KeepSourceBranch = $false,      # 保留已合并的源专题分支（默认按 Trunk-Based 规范发版后自动清理）
     [switch]$LocalOnly = $false,             # 仅本地演练发版 (不推送到远端 Git，不发布 GitHub Release)
     [switch]$SkipGitHubPublish = $false,     # 推送 Git 标签但跳过 GitHub Release 网页发布
     [switch]$CleanBuild = $false             # 强制清理 build/、重新 npm ci 并清空第三方 DLL 签名缓存执行全量冷编译
@@ -590,15 +592,17 @@ if (-not $LocalOnly) {
     if ($LASTEXITCODE -ne 0) { throw "推送 main 分支失败！" }
     git push origin "refs/tags/$TargetTag"
     if ($LASTEXITCODE -ne 0) { throw "推送标签 $TargetTag 失败！" }
-    if ($CurrentBranch -ne "main") {
-        git checkout $CurrentBranch
-        if ($LASTEXITCODE -ne 0) { throw "切回分支 $CurrentBranch 失败！" }
+    if ($OriginalBranch -ne "main" -and $KeepSourceBranch) {
+        git checkout $OriginalBranch
+        if ($LASTEXITCODE -ne 0) { throw "切回分支 $OriginalBranch 失败！" }
         git merge main
-        if ($LASTEXITCODE -ne 0) { throw "将 main 同步回 $CurrentBranch 失败！" }
-        git push origin $CurrentBranch
-        if ($LASTEXITCODE -ne 0) { throw "推送分支 $CurrentBranch 失败！" }
+        if ($LASTEXITCODE -ne 0) { throw "将 main 同步回 $OriginalBranch 失败！" }
+        git push origin $OriginalBranch
+        if ($LASTEXITCODE -ne 0) { throw "推送分支 $OriginalBranch 失败！" }
+        git checkout main
+        if ($LASTEXITCODE -ne 0) { throw "切回 main 分支失败！" }
     }
-    Write-Host "[OK] Git 分支与 Tag 已全量同步至远程 GitHub" -ForegroundColor Green
+    Write-Host "[OK] Git main 分支与 Tag 已全量同步至远程 GitHub" -ForegroundColor Green
 } else {
     Write-Host "[INFO] [LocalOnly] 跳过 Git 远程推送" -ForegroundColor Yellow
 }
@@ -628,11 +632,38 @@ if (-not $LocalOnly -and -not $SkipGitHubPublish) {
     Write-Host "[INFO] [LocalOnly] 跳过 GitHub Release 官方发布" -ForegroundColor Yellow
 }
 
-# 12. 恢复原开发分支或检出显式指定的下一阶段特性分支 (严禁硬编码历史废弃分支)
+# 12. Trunk-Based 短期语义分支用完即删，默认停留干净 main 或切入显式指定的新专题分支
+$ActiveBranchNow = (git branch --show-current).Trim()
+if ($ActiveBranchNow -ne "main") {
+    git checkout main
+    if ($LASTEXITCODE -ne 0) { throw "切回 main 分支失败！" }
+}
+
+if ($OriginalBranch -ne "main" -and -not $KeepSourceBranch) {
+    Write-Host "[GIT] 按 Trunk-Based 规范清理已完全合并的短期分支: $OriginalBranch" -ForegroundColor Cyan
+    if (-not $LocalOnly) {
+        $RemoteSourceBranch = @(git ls-remote --heads origin $OriginalBranch)
+        if ($LASTEXITCODE -eq 0 -and $RemoteSourceBranch.Count -gt 0) {
+            git push origin --delete $OriginalBranch
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "[WARN] 远端分支 origin/$OriginalBranch 删除失败（不影响已发布的 $TargetTag）" -ForegroundColor Yellow
+            } else {
+                Write-Host "[OK] 已删除远端已合并分支: origin/$OriginalBranch" -ForegroundColor Green
+            }
+        }
+    }
+    git branch -d $OriginalBranch
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[WARN] 本地分支 $OriginalBranch 未被安全删除（请手动核查合并状态）" -ForegroundColor Yellow
+    } else {
+        Write-Host "[OK] 已删除本地已合并分支: $OriginalBranch" -ForegroundColor Green
+    }
+}
+
 $FinalBranch = "main"
 if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
     $FinalBranch = $NextFeatureBranch
-    Write-Host "[GIT] 切换至指定的下一阶段特性分支: $FinalBranch" -ForegroundColor Cyan
+    Write-Host "[GIT] 切换至指定的下一阶段专题分支: $FinalBranch" -ForegroundColor Cyan
     git show-ref --verify --quiet "refs/heads/$FinalBranch"
     $NextFeatureBranchExists = $LASTEXITCODE -eq 0
     if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 1) {
@@ -651,16 +682,13 @@ if (-not [string]::IsNullOrWhiteSpace($NextFeatureBranch)) {
         git push origin -u $FinalBranch
         if ($LASTEXITCODE -ne 0) { throw "推送后续分支 $FinalBranch 失败！" }
     }
-} elseif ($OriginalBranch -ne "main") {
+} elseif ($OriginalBranch -ne "main" -and $KeepSourceBranch) {
     $FinalBranch = $OriginalBranch
-    $ActiveBranchNow = (git branch --show-current).Trim()
-    if ($ActiveBranchNow -ne $OriginalBranch) {
-        Write-Host "[GIT] 切回发版前所在分支并同步 main: $OriginalBranch" -ForegroundColor Cyan
-        git checkout $OriginalBranch
-        if ($LASTEXITCODE -ne 0) { throw "切回原分支 $OriginalBranch 失败！" }
-        git merge main
-        if ($LASTEXITCODE -ne 0) { throw "将 main 同步回原分支 $OriginalBranch 失败！" }
-    }
+    Write-Host "[GIT] 按 -KeepSourceBranch 保留并切回原分支: $OriginalBranch" -ForegroundColor Cyan
+    git checkout $OriginalBranch
+    if ($LASTEXITCODE -ne 0) { throw "切回原分支 $OriginalBranch 失败！" }
+    git merge main
+    if ($LASTEXITCODE -ne 0) { throw "将 main 同步回原分支 $OriginalBranch 失败！" }
 } else {
     $FinalBranch = (git branch --show-current).Trim()
 }

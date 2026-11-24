@@ -6,6 +6,14 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 永久 Git 分支治理铁律：主干开发 + 短期语义分支用完即删（Trunk-Based / GitHub Flow，已固化至 `.agents/rules/agent.md` 第 7 节与 `scripts/release.ps1`）
+- **1. 问题复盘**：早期 `scripts/release.ps1` 发版合并 `main` 后默认切回原分支并推送，导致历史专题分支 `feature/rust-picasa-viewer` 在 Picasa 模块结束后被长期当作通用开发分支复用，持续产生名不副实的 `merge(feature/rust-picasa-viewer)` 记录。
+- **2. 确立的工程铁律（方案 B · 业界世界级标准）**：
+  - **唯一常驻主干 `main`**：不再维护长期 `dev` 分支，天然零漂移对接 GitHub 社区 PR、Dependabot（如 PR `#27`）与 CI/CD；
+  - **一题一语义短分支，严禁复用已合入旧分支**：每次开启新需求/缺陷修复/专项优化，必须基于最新 `main` 切出短期语义分支（`feat/*`、`fix/*`、`perf/*`、`refactor/*`、`docs/*`、`chore/*`）；
+  - **保留 `--no-ff` 自文档圆环 + 发版后自动销毁**：向 `main` 合入时保留 `--no-ff` 双父节点圆环（如 `merge(fix/stability-memory-and-drag)`）；`scripts/release.ps1` 发版并打 Tag 后默认不再回推或复活源分支，自动通过安全删除（`git branch -d` + `git push origin --delete`）清理本地与远端已合并短分支并停留在干净 `main`（支持可选 `-NextFeatureBranch` 或 `-KeepSourceBranch`）；
+  - **严禁重写已发布公网历史**：已锚定公网 Release Tag（`v1.4.4 ~ v1.4.6`）与公开 Fork 的历史提交绝不 `filter-repo` / `push --force`；已审计确认 100% 合并进 `main` 的历史分支 `feature/rust-picasa-viewer` 与 `feature/industry-preview-ocr-studio` 本地及远端全部安全清理。
+
 ### [2026-11-24] Windows Server 2019 启动闪退 (`ntdll!RtlCompactHeap`) 根治、闲置内存锯齿四层治理与 Dependabot `#42` 闭环
 - **1. Windows Server 2019 (`Build 17763`) 启动约 5 秒闪退根因与根治 (`WinUtils.cpp`, `main.cpp`, `WebViewEnvironmentManager.{h,cpp}`, `TrayWindow.cpp`)**:
   - *PDB 符号化精确调用链*：通过本机 `v1.4.6` PDB 符号化 `Tools3000_crash_20261124_222912.dmp` 确凿定位：`Tools3000Core.dll!WinUtils::trimWorkingSet+0x7D` -> `Tools3000Core.dll!WinUtils::compactProcessHeaps+0x79` -> `ntdll.dll+0x9A9D` (`RtlCompactHeap`, `0xC0000005 ACCESS_VIOLATION`)；
