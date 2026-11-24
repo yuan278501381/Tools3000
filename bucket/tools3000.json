@@ -1,5 +1,5 @@
 {
-  "version": "1.4.6",
+  "version": "1.4.7",
   "description": "Lightweight native Windows all-in-one productivity suite: instant NTFS file & content search, QuickLook, screenshot markup, scrolling capture, offline OCR, screen recorder with auto-zoom Studio, and global mouse gestures.",
   "homepage": "https://github.com/yuan278501381/Tools3000",
   "license": "GPL-3.0-only",
@@ -9,8 +9,8 @@
   ],
   "architecture": {
     "64bit": {
-      "url": "https://github.com/yuan278501381/Tools3000/releases/download/v1.4.6/Tools3000-v1.4.6-win-x64-portable.zip",
-      "hash": "0cdeb252beec0c0348047aaa75b55807e198a056fa96c904a5aba0757da2853d"
+      "url": "https://github.com/yuan278501381/Tools3000/releases/download/v1.4.7/Tools3000-v1.4.7-win-x64-portable.zip",
+      "hash": "c1cf8720984b9f85c0cce67dc3d30305ae7044b521505d2d9cea949281d1e138"
     }
   },
   "bin": [
