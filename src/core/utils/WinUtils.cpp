@@ -186,18 +186,13 @@ void WinUtils::compactProcessHeaps() noexcept {
     // 1. 通知 UCRT 将空闲大块归还底层操作系统堆
     _heapmin();
 
-    // 2. 紧缩默认进程堆与各模块私有 Win32 堆
+    // 2. 仅安全紧缩默认进程堆（保证已序列化且进程全周期有效）。
+    // 严禁遍历 GetProcessHeaps() 强行 HeapCompact 第三方/系统 DLL（combase、WebView2、taskschd、输入法等）
+    // 的私有堆：部分私有堆带有 HEAP_NO_SERIALIZE 标志或正在并发 HeapDestroy，跨线程紧缩会在
+    // ntdll!RtlCompactHeap 内触发 0xC0000005 访问违例（已在 Windows Server 2019 实机崩溃转储验证）。
     const HANDLE defaultHeap = GetProcessHeap();
     if (defaultHeap) {
         HeapCompact(defaultHeap, 0);
-    }
-    std::array<HANDLE, 64> heaps{};
-    const DWORD count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
-    const DWORD limit = (std::min)(count, static_cast<DWORD>(heaps.size()));
-    for (DWORD i = 0; i < limit; ++i) {
-        if (heaps[i] && heaps[i] != defaultHeap) {
-            HeapCompact(heaps[i], 0);
-        }
     }
 }
 

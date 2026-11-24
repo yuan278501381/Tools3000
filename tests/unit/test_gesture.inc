@@ -3219,6 +3219,38 @@ TEST(GestureTrailOverlayTest, ExpandingDirtyRectAndZOrderTopmostRecovery) {
     overlay.shutdown();
 }
 
+TEST(GestureTrailOverlayTest, IdleSurfaceReleaseFreesAndLazilyRecreatesOnNextGesture) {
+    using namespace tools3000::gesture;
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
+    // 冷启动后合成器热就绪但尚未预占 4K 全屏显存表面（0MB 空载起点）
+    EXPECT_FALSE(overlay.hasAllocatedSurfaces());
+
+    // 1. 首次手势按需懒分配全屏硬件/软件轨迹表面
+    overlay.beginTrail();
+    overlay.addPoint(160.0f, 160.0f);
+    overlay.addPoint(320.0f, 240.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    EXPECT_TRUE(overlay.hasAllocatedSurfaces());
+    EXPECT_TRUE(overlay.isVisible());
+    overlay.hide();
+
+    // 2. 闲置表面回收释放全部大尺寸表面与 DXGI 显存缓存，但保持合成器热就绪
+    overlay.releaseIdleSurfacesNow();
+    EXPECT_FALSE(overlay.hasAllocatedSurfaces());
+
+    // 3. 下一笔手势无缝按需懒重建表面并正常呈现
+    overlay.beginTrail();
+    overlay.addPoint(200.0f, 200.0f);
+    overlay.addPoint(380.0f, 280.0f);
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    EXPECT_TRUE(overlay.hasAllocatedSurfaces());
+    EXPECT_TRUE(overlay.isVisible());
+
+    overlay.hide();
+    overlay.shutdown();
+}
+
 TEST(GestureTrailOverlayTest, TaskbarZOrderAndFullscreenAvoidanceProtection) {
     using namespace tools3000::gesture;
     // 1. 验证纯函数边界条件与全屏几何缩减策略 (vw - 1, vh - 1)

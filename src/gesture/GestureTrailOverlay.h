@@ -150,6 +150,12 @@ public:
     /// 获取累积手势脏矩形 (供测试与外部诊断断言)
     RECT accumulatedStrokeDirtyRect() const noexcept { return m_accumulatedStrokeDirtyRect; }
 
+    /// 查询当前是否仍驻留全屏 DComp/GDI 轨迹表面（供闲置显存释放测试与诊断）
+    bool hasAllocatedSurfaces() const noexcept { return m_hasAllocatedSurfaces.load(std::memory_order_acquire); }
+
+    /// 冷路径闲置显存/表面立即释放入口（供单测验证回收与懒重建闭环）
+    void releaseIdleSurfacesNow();
+
 private:
     GestureTrailOverlay() = default;
     ~GestureTrailOverlay() = default;
@@ -182,6 +188,7 @@ private:
     void handleDisplayChange();
     void releaseCompositorSurfacesLocked();
     void releaseCompositorLocked();
+    void releaseIdleSurfacesLocked();
 
     bool presentToastLocked(const std::string& resultText, bool recognized, bool excessive,
                             int toastCenterX, int toastCenterY, float toastScale,
@@ -275,7 +282,7 @@ private:
     void applyThemeColorsLocked();
 
     /// 在生命周期退场时执行真正的隐藏与资源释放，禁止从鼠标钩子调用
-    void applyHideOverlayState();
+    void applyHideOverlayState(uint64_t expectedEpoch);
 
     /// 释放 D2D 资源。调用方必须已持有 m_renderMutex。
     void releaseD2DResourcesLocked();
@@ -361,6 +368,9 @@ private:
 
     // DirectComposition 硬件合成设备与视口表面
     bool m_compositorReady = false;
+    std::atomic<bool> m_hasAllocatedSurfaces{false};
+    std::atomic<bool> m_idleSurfaceReleaseRequested{false};
+    std::atomic<uint64_t> m_idleSurfaceReleaseGen{0};
     Microsoft::WRL::ComPtr<ID3D11Device> m_d3dDevice;
     Microsoft::WRL::ComPtr<IDCompositionDevice> m_dcompDevice;
     Microsoft::WRL::ComPtr<IDCompositionTarget> m_trailDcompTarget;

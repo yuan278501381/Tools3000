@@ -7,6 +7,8 @@
 #include "core/utils/UiThreadJoin.h"
 #include "core/logger/Logger.h"
 
+#include <dxgi1_3.h>
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dcomp.lib")
@@ -361,12 +363,21 @@ bool MouseFeedbackOverlayBase::initCompositorLocked() {
 void MouseFeedbackOverlayBase::releaseCompositorLocked() {
     onReleaseDeviceResources();
     releaseDcompSurfaceLocked();
+    if (m_dcompDevice) {
+        m_dcompDevice->Commit();
+    }
     m_d2dContext.Reset();
     m_d2dDevice.Reset();
     m_d2dFactory1.Reset();
     m_dcompVisual.Reset();
     m_dcompTarget.Reset();
     m_dcompDevice.Reset();
+    if (m_d3dDevice) {
+        Microsoft::WRL::ComPtr<IDXGIDevice3> dxgi3;
+        if (SUCCEEDED(m_d3dDevice.As(&dxgi3)) && dxgi3) {
+            dxgi3->Trim();
+        }
+    }
     m_d3dDevice.Reset();
     m_compositorReady.store(false, std::memory_order_release);
 }

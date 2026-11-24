@@ -6492,6 +6492,42 @@ TEST(QuietIdleHygieneTest, HeapCompactAndScheduleQuietIdleTrimCallback) {
     EXPECT_GE(observedDelays[1], 250u);
 }
 
+TEST(QuietIdleHygieneTest, CompactProcessHeapsSurvivesConcurrentPrivateNoSerializeHeaps) {
+    using tools3000::core::WinUtils;
+
+    // 防回退回归测试（Windows Server 2019 崩溃根因）：
+    // 并发线程持续创建/读写/销毁 HEAP_NO_SERIALIZE 私有堆时，compactProcessHeaps() 绝不得
+    // 越界触碰第三方私有堆（否则在 ntdll!RtlCompactHeap 中触发 0xC0000005）。
+    std::atomic<bool> stop{false};
+    auto churnPrivateNoSerializeHeap = [&stop]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            HANDLE h = HeapCreate(HEAP_NO_SERIALIZE, 4096, 0);
+            if (!h) continue;
+            for (int i = 0; i < 8; ++i) {
+                void* p = HeapAlloc(h, HEAP_NO_SERIALIZE, 256);
+                if (p) HeapFree(h, HEAP_NO_SERIALIZE, p);
+            }
+            HeapDestroy(h);
+        }
+    };
+
+    std::thread t1(churnPrivateNoSerializeHeap);
+    std::thread t2(churnPrivateNoSerializeHeap);
+    for (int i = 0; i < 150; ++i) {
+        WinUtils::compactProcessHeaps();
+    }
+    stop.store(true, std::memory_order_relaxed);
+    t1.join();
+    t2.join();
+
+    // 验证 PerformanceMonitor 观察者按需采样模式：显式 2000ms 启动且被观测后处于实时档
+    auto& monitor = tools3000::core::PerformanceMonitor::instance();
+    monitor.start(2000);
+    (void)monitor.getMetrics();
+    EXPECT_EQ(monitor.currentSamplingIntervalMs(), 2000);
+    monitor.stop();
+}
+
 TEST(ShellForegroundLaunchTest, ExtractsTitleHintAndResolvesAssociatedExecutable) {
     using tools3000::core::WinUtils;
 

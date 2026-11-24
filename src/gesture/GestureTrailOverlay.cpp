@@ -25,6 +25,7 @@
 #include "core/accessibility/OverlayUiaProvider.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <utility>
 #include <climits>
@@ -32,6 +33,7 @@
 #include <dcomp.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <dwmapi.h>
 #include <timeapi.h>
 #include <avrt.h>
@@ -398,10 +400,14 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
         SetEvent(readyEvent);
     }
 
+    static constexpr auto kIdleSurfaceReleaseDelay = std::chrono::seconds(30);
+    std::chrono::steady_clock::time_point idleSurfaceSince{};
+
     while (!stopToken.stop_requested()) {
         const bool isFading = m_fading.load(std::memory_order_relaxed);
         const bool pendingControl = m_hideRequested.load(std::memory_order_acquire) ||
-                                    m_dismissPrevious.load(std::memory_order_acquire);
+                                    m_dismissPrevious.load(std::memory_order_acquire) ||
+                                    m_idleSurfaceReleaseRequested.load(std::memory_order_acquire);
         const bool activeDraw = m_wantVisible.load(std::memory_order_relaxed) ||
                                 (!m_pointQueue.empty()) ||
                                 m_renderRequested.load(std::memory_order_relaxed) ||
@@ -426,13 +432,14 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
         if (m_pacer.isIdle()) {
             m_renderLoopActive.store(false, std::memory_order_release);
 
-            // 双重检验：如果在置 false 之前有新点推入、请求渲染或收到隐藏控制指令，立即取消休眠
+            // 双重检验：如果在置 false 之前有新点推入、请求渲染或收到隐藏/释放控制指令，立即取消休眠
             if (!m_pointQueue.empty() ||
                 m_wantVisible.load(std::memory_order_acquire) ||
                 m_renderRequested.load(std::memory_order_acquire) ||
                 m_fading.load(std::memory_order_acquire) ||
                 m_hideRequested.load(std::memory_order_acquire) ||
-                m_dismissPrevious.load(std::memory_order_acquire)) {
+                m_dismissPrevious.load(std::memory_order_acquire) ||
+                m_idleSurfaceReleaseRequested.load(std::memory_order_acquire)) {
                 m_renderLoopActive.store(true, std::memory_order_release);
                 if (m_fading.load(std::memory_order_relaxed)) {
                     m_pacer.beginFadeout(0);
@@ -444,21 +451,55 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
             m_renderLoopActive.store(true, std::memory_order_release);
         }
 
-        // 2. 节拍等待与硬件锁步 (Idle 0% CPU 挂起，Active/Fadeout 混合休眠微自旋)
+        // 2. 节拍等待与硬件锁步 (Idle 0% CPU 挂起 + 30s 闲置自动回收全屏 4K DComp 表面与 DXGI 显存)
         bool readyToPresent = false;
         if (m_pacer.isIdle()) {
+            DWORD waitMs = INFINITE;
+            if (m_hasAllocatedSurfaces.load(std::memory_order_acquire)) {
+                const auto now = std::chrono::steady_clock::now();
+                if (idleSurfaceSince == std::chrono::steady_clock::time_point{}) {
+                    idleSurfaceSince = now;
+                }
+                const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - idleSurfaceSince);
+                const auto limitMs = std::chrono::duration_cast<std::chrono::milliseconds>(kIdleSurfaceReleaseDelay);
+                if (elapsedMs >= limitMs) {
+                    bool released = false;
+                    {
+                        std::lock_guard renderLock(m_renderMutex);
+                        if (m_pointQueue.empty() &&
+                            !m_wantVisible.load(std::memory_order_acquire) &&
+                            !m_fading.load(std::memory_order_acquire)) {
+                            releaseIdleSurfacesLocked();
+                            released = true;
+                        }
+                    }
+                    idleSurfaceSince = {};
+                    if (released) {
+                        LOG_DEBUG("GestureTrailOverlay: released idle full-screen DComp/GDI surfaces and trimmed DXGI memory");
+                        tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
+                    }
+                    waitMs = INFINITE;
+                } else {
+                    waitMs = static_cast<DWORD>((std::max<int64_t>)(1000, (limitMs - elapsedMs).count()));
+                }
+            } else {
+                idleSurfaceSince = {};
+            }
+
             MsgWaitForMultipleObjectsEx(
                 m_wakeEvent ? 1 : 0,
                 m_wakeEvent ? &m_wakeEvent : nullptr,
-                INFINITE,
+                waitMs,
                 QS_ALLINPUT,
                 MWMO_INPUTAVAILABLE
             );
             m_wakeRender.store(false, std::memory_order_relaxed);
             if (!m_pointQueue.empty() || m_wantVisible.load(std::memory_order_relaxed) || m_fading.load(std::memory_order_relaxed)) {
+                idleSurfaceSince = {};
                 m_renderLoopActive.store(true, std::memory_order_release);
             }
         } else {
+            idleSurfaceSince = {};
             readyToPresent = m_pacer.waitOrPace(m_wakeEvent);
             m_wakeRender.store(false, std::memory_order_relaxed);
         }
@@ -491,10 +532,27 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
         }
 
         if (m_hideRequested.exchange(false, std::memory_order_acq_rel)) {
-            if (m_hideEpoch.load(std::memory_order_acquire) == m_trailEpoch.load(std::memory_order_acquire)) {
-                applyHideOverlayState();
-                continue;
+            const uint64_t hideEpoch = m_hideEpoch.load(std::memory_order_acquire);
+            if (hideEpoch == m_trailEpoch.load(std::memory_order_acquire)) {
+                applyHideOverlayState(hideEpoch);
+                if (!m_idleSurfaceReleaseRequested.load(std::memory_order_acquire)) {
+                    continue;
+                }
             }
+        }
+
+        if (m_idleSurfaceReleaseRequested.exchange(false, std::memory_order_acq_rel)) {
+            {
+                std::lock_guard renderLock(m_renderMutex);
+                if (m_pointQueue.empty() &&
+                    !m_wantVisible.load(std::memory_order_acquire) &&
+                    !m_fading.load(std::memory_order_acquire)) {
+                    releaseIdleSurfacesLocked();
+                }
+            }
+            idleSurfaceSince = {};
+            m_idleSurfaceReleaseGen.fetch_add(1, std::memory_order_release);
+            continue;
         }
 
         if (m_dismissPrevious.exchange(false, std::memory_order_acq_rel)) {
@@ -600,7 +658,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                                 m_standaloneToastMode.store(false, std::memory_order_release);
                                 m_fadeClockStarted.store(false, std::memory_order_relaxed);
                                 m_pulseIntensity.store(0.0f, std::memory_order_relaxed);
-                                applyHideOverlayState();
+                                applyHideOverlayState(fadeEpoch);
                                 m_pacer.setIdle();
                                 m_renderLoopActive.store(false, std::memory_order_release);
                                 continue;
@@ -644,7 +702,7 @@ void GestureTrailOverlay::renderLoop(std::stop_token stopToken, HANDLE readyEven
                             m_fading.store(false, std::memory_order_relaxed);
                             m_fadeClockStarted.store(false, std::memory_order_relaxed);
                             m_pulseIntensity.store(0.0f, std::memory_order_relaxed);
-                            applyHideOverlayState();
+                            applyHideOverlayState(fadeEpoch);
                             m_pacer.setIdle();
                             m_renderLoopActive.store(false, std::memory_order_release);
                             continue;
@@ -907,8 +965,11 @@ void GestureTrailOverlay::raiseZOrderForDraw() {
     wakeRender();
 }
 
-void GestureTrailOverlay::applyHideOverlayState() {
-    if (m_hideEpoch.load(std::memory_order_acquire) != m_trailEpoch.load(std::memory_order_acquire)) {
+void GestureTrailOverlay::applyHideOverlayState(uint64_t expectedEpoch) {
+    auto isStale = [this, expectedEpoch]() noexcept {
+        return m_trailEpoch.load(std::memory_order_acquire) != expectedEpoch;
+    };
+    if (isStale()) {
         return;
     }
     m_visible.store(false, std::memory_order_release);
@@ -919,20 +980,25 @@ void GestureTrailOverlay::applyHideOverlayState() {
     m_pulseIntensity.store(0.0f, std::memory_order_release);
     {
         std::lock_guard lock{m_renderMutex};
+        if (isStale()) return;
         clearCanvasLocked();
-        // 保持全屏 DComp 表面常驻显存，杜绝下一笔手势重新申请表面
+        // 保持全屏 DComp 表面在 30s 活跃期内常驻显存，闲置满 30s 后由 renderLoop 自动回收
     }
+    if (isStale()) return;
     if (m_hwnd) {
         ShowWindow(m_hwnd, SW_HIDE);
     }
     hideToastWindow();
-    m_pointQueue.clear();
+    if (isStale()) return;
     {
         std::lock_guard lock{m_trailMutex};
+        if (isStale()) return;
+        m_pointQueue.clear();
         m_points.clear();
         m_resultText.clear();
         m_smoothPathGeometry.Reset();
     }
+    if (isStale()) return;
     m_isRecognized.store(false);
     m_fadeAlpha.store(1.0f, std::memory_order_release);
     m_pulseIntensity.store(0.0f, std::memory_order_release);
@@ -983,6 +1049,7 @@ bool GestureTrailOverlay::recreateBitmapLocked(int x, int y, int width, int heig
     m_originY = y;
     m_width = width;
     m_height = height;
+    m_hasAllocatedSurfaces.store(true, std::memory_order_release);
 
     if (m_renderTarget) {
         m_renderTarget.Reset();
@@ -1282,8 +1349,8 @@ bool GestureTrailOverlay::ensureCompositorLocked() {
     m_toastEffectGroup = std::move(toastEffect);
     m_compositorReady = true;
 
-    // 预分配全虚拟屏 DirectComposition 硬件表面
-    preallocateTrailSurfacesLocked(m_virtualW, m_virtualH);
+    // 仅保持 D3D11/D2D/DComp 合成器与 Visual 树热就绪，不于冷启动时提前占用 4K 全屏显存表面；
+    // 首次手势落下时由 fitSurface() 按需懒分配，并在闲置 30 秒后自动回收释放。
     return true;
 }
 
@@ -1366,6 +1433,7 @@ bool GestureTrailOverlay::preallocateTrailSurfacesLocked(int width, int height) 
     m_dirtySurfaceRect = { 0, 0, 0, 0 };
     m_trailDcompVisual->SetContent(m_frontCtx.surface.Get());
     m_dcompDevice->Commit();
+    m_hasAllocatedSurfaces.store(true, std::memory_order_release);
     return true;
 }
 
@@ -1389,10 +1457,47 @@ void GestureTrailOverlay::releaseCompositorSurfacesLocked() {
     m_lastToastH = 0;
     m_accumulatedStrokeDirtyRect = { 0, 0, 0, 0 };
     m_dirtySurfaceRect = { 0, 0, 0, 0 };
+    if (!m_memoryBitmap) {
+        m_hasAllocatedSurfaces.store(false, std::memory_order_release);
+    }
+}
+
+void GestureTrailOverlay::releaseIdleSurfacesLocked() {
+    releaseCompositorSurfacesLocked();
+    if (m_dcompDevice) {
+        m_dcompDevice->Commit();
+    }
+    releaseD2DResourcesLocked();
+    if (m_d3dDevice) {
+        Microsoft::WRL::ComPtr<IDXGIDevice3> dxgi3;
+        if (SUCCEEDED(m_d3dDevice.As(&dxgi3)) && dxgi3) {
+            dxgi3->Trim();
+        }
+    }
+    m_hasAllocatedSurfaces.store(false, std::memory_order_release);
+}
+
+void GestureTrailOverlay::releaseIdleSurfacesNow() {
+    if (!m_renderThread.joinable()) {
+        std::lock_guard lock(m_renderMutex);
+        releaseIdleSurfacesLocked();
+        return;
+    }
+    const uint64_t prevGen = m_idleSurfaceReleaseGen.load(std::memory_order_acquire);
+    m_idleSurfaceReleaseRequested.store(true, std::memory_order_release);
+    wakeRender();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+    while (m_idleSurfaceReleaseGen.load(std::memory_order_acquire) == prevGen &&
+           std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 }
 
 void GestureTrailOverlay::releaseCompositorLocked() {
     releaseCompositorSurfacesLocked();
+    if (m_dcompDevice) {
+        m_dcompDevice->Commit();
+    }
     m_d2dContext.Reset();
     m_d2dDevice.Reset();
     m_rootDcompVisual.Reset();
@@ -1402,6 +1507,12 @@ void GestureTrailOverlay::releaseCompositorLocked() {
     m_toastEffectGroup.Reset();
     m_trailDcompTarget.Reset();
     m_dcompDevice.Reset();
+    if (m_d3dDevice) {
+        Microsoft::WRL::ComPtr<IDXGIDevice3> dxgi3;
+        if (SUCCEEDED(m_d3dDevice.As(&dxgi3)) && dxgi3) {
+            dxgi3->Trim();
+        }
+    }
     m_d3dDevice.Reset();
     m_compositorReady = false;
 }
@@ -1489,6 +1600,7 @@ bool GestureTrailOverlay::createD2DResources() {
         ReleaseDC(nullptr, hdcScreen);
         if (!m_memoryDC || !m_memoryBitmap || !pBits) return fail();
         m_oldBitmap = (HBITMAP)SelectObject(m_memoryDC, m_memoryBitmap);
+        m_hasAllocatedSurfaces.store(true, std::memory_order_release);
     }
     
     RECT memRect = { 0, 0, m_width, m_height };
@@ -2459,6 +2571,7 @@ bool GestureTrailOverlay::presentToastLocked(const std::string& resultText, bool
             clearDcompSurfaceLocked(m_toastBackCtx.surface.Get(), nullptr);
             m_toastDcompW = allocW;
             m_toastDcompH = allocH;
+            m_hasAllocatedSurfaces.store(true, std::memory_order_release);
         }
 
         const int surfaceW = m_toastDcompW;
@@ -2608,7 +2721,7 @@ void GestureTrailOverlay::handleDisplayChange() {
         SetWindowPos(m_hwnd, nullptr, m_originX, m_originY, m_width, m_height,
                      SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
     }
-    if (m_compositorReady && m_dcompDevice) {
+    if (m_compositorReady && m_dcompDevice && m_frontCtx.surface) {
         preallocateTrailSurfacesLocked(newVw, newVh);
     }
     LOG_INFO("Display topology change adapted: virtual screen ({},{}) {}x{}", newVx, newVy, newVw, newVh);

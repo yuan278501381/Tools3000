@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <WebView2.h>
 
+#include <atomic>
 #include <functional>
 #include <cstdint>
 #include <mutex>
@@ -23,6 +24,7 @@ public:
     static WebViewEnvironmentManager& instance();
     void acquire(ReadyCallback callback);
     void shutdown();
+    bool isInitializing() const noexcept;
 
 private:
     enum class State { Idle, Initializing, Ready };
@@ -37,6 +39,7 @@ private:
 
     std::mutex m_mutex;
     State m_state = State::Idle;
+    std::atomic<bool> m_initializing{false};
     uint64_t m_generation = 0;
     tools3000::core::WebViewProfileSlotLease m_profileSlotLease;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;

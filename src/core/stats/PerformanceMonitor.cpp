@@ -12,9 +12,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <iomanip>
+#include <cstdio>
 #include <numeric>
-#include <sstream>
 
 namespace tools3000::core {
 
@@ -156,7 +155,29 @@ void PerformanceMonitor::stop() {
     if (wasRunning) LOG_INFO("PerformanceMonitor: 已停止");
 }
 
+void PerformanceMonitor::markObserverActive() const noexcept {
+    const uint64_t now = GetTickCount64();
+    const uint64_t prev = m_lastObserverTick.exchange(now, std::memory_order_acq_rel);
+    if (prev == 0 || (now >= prev && (now - prev) >= OBSERVER_ACTIVE_WINDOW_MS)) {
+        m_wakeCv.notify_one();
+    }
+}
+
+int PerformanceMonitor::currentSamplingIntervalMs() const noexcept {
+    if (m_etwRegistered.load(std::memory_order_acquire) &&
+        TraceLoggingProviderEnabled(g_tools3000PerformanceProvider, 0, 0)) {
+        return m_intervalMs;
+    }
+    const uint64_t lastObs = m_lastObserverTick.load(std::memory_order_acquire);
+    const uint64_t now = GetTickCount64();
+    if (lastObs != 0 && now >= lastObs && (now - lastObs) < OBSERVER_ACTIVE_WINDOW_MS) {
+        return m_intervalMs;
+    }
+    return (std::max)(m_intervalMs, IDLE_BACKOFF_INTERVAL_MS);
+}
+
 PerfMetrics PerformanceMonitor::getMetrics() const {
+    markObserverActive();
     std::lock_guard lock(m_mutex);
     auto metrics = m_currentMetrics;
     metrics.latencies = latencySummariesLocked();
@@ -228,20 +249,25 @@ void PerformanceMonitor::recordCounter(const std::string& name, std::uint64_t va
 }
 
 std::vector<PerfMetrics> PerformanceMonitor::getHistory(int count) const {
+    markObserverActive();
     std::lock_guard lock(m_mutex);
     if (count <= 0 || m_history.empty()) return {};
-    int n = std::min(count, static_cast<int>(m_history.size()));
+    int n = (std::min)(count, static_cast<int>(m_history.size()));
     return std::vector<PerfMetrics>(m_history.end() - n, m_history.end());
 }
 
 void PerformanceMonitor::sampleLoop() {
     while (m_running.load()) {
         sampleOnce();
-        // One waitable sleep per interval keeps idle wakeups and battery use low,
-        // while stop() can still wake the thread immediately.
+        // 按需自适应退避采样：性能页打开或 ETW 挂载时保持高频实时，静默后台退避至 30s，
+        // 避免后台每 2s 周期性唤醒产生不必要的堆分配与共享 DLL 软缺页波动。
+        const int sleepMs = currentSamplingIntervalMs();
         std::unique_lock wakeLock(m_wakeMutex);
-        m_wakeCv.wait_for(wakeLock, std::chrono::milliseconds(m_intervalMs),
-                          [this] { return !m_running.load(); });
+        m_wakeCv.wait_for(wakeLock, std::chrono::milliseconds(sleepMs),
+                          [this, sleepMs] {
+                              return !m_running.load() ||
+                                     (sleepMs > m_intervalMs && currentSamplingIntervalMs() <= m_intervalMs);
+                          });
     }
 }
 
@@ -256,14 +282,16 @@ void PerformanceMonitor::sampleOnce() {
             std::chrono::steady_clock::now() - m_startedAt).count();
     }
 
-    // 时间戳
+    // 零堆分配栈上格式化 ISO-8601 时间戳（替代 std::ostringstream + std::put_time 消除 locale 页错误）
     auto now = std::chrono::system_clock::now();
     auto time_t = std::chrono::system_clock::to_time_t(now);
     std::tm localTm{};
     localtime_s(&localTm, &time_t);
-    std::ostringstream oss;
-    oss << std::put_time(&localTm, "%Y-%m-%dT%H:%M:%S");
-    metrics.timestamp = oss.str();
+    char tsBuf[32]{};
+    std::snprintf(tsBuf, sizeof(tsBuf), "%04d-%02d-%02dT%02d:%02d:%02d",
+                  localTm.tm_year + 1900, localTm.tm_mon + 1, localTm.tm_mday,
+                  localTm.tm_hour, localTm.tm_min, localTm.tm_sec);
+    metrics.timestamp.assign(tsBuf);
 
     // 合并延迟数据（保留上一次的延迟记录，它们由外部主动上报）
     {
@@ -279,7 +307,7 @@ void PerformanceMonitor::sampleOnce() {
 
         m_history.push_back(metrics);
         if (static_cast<int>(m_history.size()) > MAX_HISTORY) {
-            m_history.erase(m_history.begin());
+            m_history.pop_front();
         }
     }
     if (m_etwRegistered.load(std::memory_order_acquire) &&
