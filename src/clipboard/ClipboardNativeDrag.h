@@ -60,6 +60,11 @@ struct NativeDragPayload {
         return !unicodeText.empty() || !htmlBytes.empty() || !filePaths.empty() ||
                !dibBytes.empty() || !pngBytes.empty();
     }
+
+    /// 判定载荷是否为纯文本/富文本（不含任何文件或图片二进制格式）
+    bool isPureTextPayload() const noexcept {
+        return filePaths.empty() && dibBytes.empty() && pngBytes.empty() && !unicodeText.empty();
+    }
 };
 
 /// 判定目标窗口是否属于命令行终端 / TUI 宿主（如 Windows Terminal / ConHost / WezTerm / Alacritty / Mintty）：
@@ -91,6 +96,25 @@ bool shouldBypassOleTextDropForHost(
 
 inline bool shouldBypassOlePlainTextDropForHost(std::wstring_view processExeLower) noexcept {
     return shouldBypassOleTextDropForHost(processExeLower, /*payloadIsSingleHttpUrl=*/false);
+}
+
+/// 判定某次 IDataObject::GetData 调用是否应当计为“外部目标已真实消费原生 OLE 载荷”：
+/// - 鼠标位于剪贴板面板自身上方时（首帧 WebView2 DragEnter 预读）绝不计入；
+/// - 图片/文件载荷（isPureTextPayload == false）面向所有外部应用（含 Antigravity / Cursor / 浏览器）
+///   均走原生 OLE 交付，调用 GetData 后必须计入，严禁再补发落点 Ctrl+V 造成双图/双文件重复插入；
+/// - 纯文本载荷落入需绕过外层附件 DropZone 的宿主时，不计入 OLE 已消费，交由落点智能直贴完成。
+inline bool shouldRecordOleDataRetrieval(
+    bool overSourceClipboard,
+    bool isPureTextPayload,
+    std::wstring_view targetExeLower,
+    bool payloadIsSingleHttpUrl) noexcept {
+    if (overSourceClipboard) {
+        return false;
+    }
+    if (!isPureTextPayload) {
+        return true;
+    }
+    return !shouldBypassOleTextDropForHost(targetExeLower, payloadIsSingleHttpUrl);
 }
 
 /// 判定 WM_NCHITTEST 返回值是否属于安全的客户区落点（严禁误点击标题栏/关闭按钮/菜单栏/边框）；

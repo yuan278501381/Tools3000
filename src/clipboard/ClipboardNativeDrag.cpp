@@ -631,11 +631,7 @@ public:
 
     void enableDynamicPlainTextHostGuard(HWND sourceClipboardHwnd) noexcept {
         m_sourceClipboardHwnd = sourceClipboardHwnd;
-        m_isPureTextPayload =
-            m_payload.filePaths.empty() &&
-            m_payload.dibBytes.empty() &&
-            m_payload.pngBytes.empty() &&
-            !m_payload.unicodeText.empty();
+        m_isPureTextPayload = m_payload.isPureTextPayload();
         m_isSingleHttpUrl = m_isPureTextPayload && isSingleHttpUrlPayload(m_payload);
     }
 
@@ -796,13 +792,23 @@ private:
         if (sourceWindowMatches(rawRoot, m_sourceClipboardHwnd)) {
             return CursorDropZoneRelation::OverSourceSelf;
         }
+        // 仅纯文本载荷需要对 AI IDE / 浏览器绕过外层文件 DropZone；
+        // 图片与文件载荷走原生 OLE，对任何外部窗口调用 GetData 都必须归类为 NormalExternal 以便标记已消费，
+        // 彻底杜绝 Antigravity / 浏览器 OLE 已插入图片后又触发智能回退 Ctrl+V 出现双图。
+        if (!m_isPureTextPayload) {
+            return CursorDropZoneRelation::NormalExternal;
+        }
         HWND root = ClipboardManager::normalizeValidTargetHwnd(hit, m_sourceClipboardHwnd);
         if (!root || isDesktopShellWindow(root)) return CursorDropZoneRelation::NormalExternal;
         const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(root);
         if (procPath.empty()) return CursorDropZoneRelation::NormalExternal;
         const std::wstring exeLower =
             tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
-        if (shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl)) {
+        if (!shouldRecordOleDataRetrieval(
+                /*overSourceClipboard=*/false,
+                /*isPureTextPayload=*/true,
+                exeLower,
+                m_isSingleHttpUrl)) {
             return CursorDropZoneRelation::OverTextBypassHost;
         }
         return CursorDropZoneRelation::NormalExternal;
@@ -1133,11 +1139,7 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
     outcome.targetRootHwnd = targetRoot;
 
     const bool oleRetrieved = concreteDataObj->wasAnyDataRetrieved();
-    const bool isPureTextPayload =
-        payload.filePaths.empty() &&
-        payload.dibBytes.empty() &&
-        payload.pngBytes.empty() &&
-        !payload.unicodeText.empty();
+    const bool isPureTextPayload = payload.isPureTextPayload();
     const bool isSingleHttpUrl = isPureTextPayload && isSingleHttpUrlPayload(payload);
 
     std::wstring dropTargetExeLower;
