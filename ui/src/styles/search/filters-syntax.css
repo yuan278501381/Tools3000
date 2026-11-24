@@ -11,6 +11,15 @@
     gap: 10px;
     background: var(--search-subbar-bg);
     border-bottom: 1px solid var(--search-item-border);
+    cursor: grab;
+}
+
+.search-container:not(.search-container--maximized) .search-categories-bar:active:not(:has(button:active)) {
+    cursor: grabbing;
+}
+
+.search-container--maximized .search-categories-bar {
+    cursor: default;
 }
 
 .search-categories {

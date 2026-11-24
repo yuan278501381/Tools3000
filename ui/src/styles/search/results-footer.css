@@ -378,6 +378,15 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums lining-nums;
     font-feature-settings: "tnum" 1;
+    cursor: grab;
+}
+
+.search-container:not(.search-container--maximized) .search-footer:active:not(:has(button:active)) {
+    cursor: grabbing;
+}
+
+.search-container--maximized .search-footer {
+    cursor: default;
 }
 
 .search-footer-left {

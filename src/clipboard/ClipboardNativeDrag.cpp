@@ -368,13 +368,16 @@ void dispatchSmartDropPasteAsync(
             // 让目标窗口（特别是 Chrome / Electron）先完成 WM_ACTIVATE 记住的上次控件焦点恢复，
             // 随后我们的物理点击才能稳稳将最终焦点落到目标输入框上而不被覆盖
             Sleep(28);
+        } else if (wasAlreadyForeground && isMultiProcessWebHost) {
+            // 若多进程 Web 宿主已在前台，仍留出 28ms 让渲染进程彻底消化完 OLE DragLeave 状态
+            Sleep(28);
         }
 
         if (terminalKind == TerminalPasteKind::NotTerminal) {
             sendSegmentedDesktopClickAt(dropScreenPt);
         }
 
-        Sleep(isMultiProcessWebHost ? 95 : 45);
+        Sleep(isMultiProcessWebHost ? 110 : 45);
 
         // 安全守卫：若前台意外仍停留在剪贴板窗自身，中止按键投递防止误贴回自身搜索框
         const HWND fgNow = GetForegroundWindow();
@@ -692,7 +695,11 @@ public:
         pmedium->tymed = TYMED_HGLOBAL;
         pmedium->hGlobal = hMem;
         pmedium->pUnkForRelease = nullptr;
-        m_anyDataRetrieved.store(true, std::memory_order_release);
+        // 仅当真正面向允许原生 OLE 的外部目标窗返回数据时才标记已消费，
+        // 严禁剪贴板面板自身 WebView2 的首帧 DragEnter 预读污染该状态
+        if (classifyCursorDropRelation() == CursorDropZoneRelation::NormalExternal) {
+            m_anyDataRetrieved.store(true, std::memory_order_release);
+        }
         return S_OK;
     }
 
@@ -722,6 +729,14 @@ public:
         if (dwDirection != DATADIR_GET) {
             return E_NOTIMPL;
         }
+        // 关键防遮罩机制：当拖动纯文本进入现代浏览器（Chrome/Edge/Firefox）或剪贴板自身时，
+        // EnumFormatEtc 直接返回空枚举集，阻止 Chromium 在 DragEnter 构建非空 dataTransfer.types，
+        // 从源头抑制 Google 搜索框弹出「将文件拖放到此处」文件遮罩层，让底层真实 <input>/<textarea> 全程裸露可点击
+        if (m_sourceClipboardHwnd != nullptr && m_isPureTextPayload &&
+            classifyCursorDropRelation() != CursorDropZoneRelation::NormalExternal) {
+            *ppenumFormatEtc = new (std::nothrow) FormatEtcEnumerator({}, 0);
+            return (*ppenumFormatEtc != nullptr) ? S_OK : E_OUTOFMEMORY;
+        }
         *ppenumFormatEtc = new (std::nothrow) FormatEtcEnumerator(m_formats, 0);
         return (*ppenumFormatEtc != nullptr) ? S_OK : E_OUTOFMEMORY;
     }
@@ -739,6 +754,12 @@ public:
     }
 
 private:
+    enum class CursorDropZoneRelation : uint8_t {
+        NormalExternal = 0,
+        OverSourceSelf = 1,
+        OverTextBypassHost = 2,
+    };
+
     ~ClipboardDragDataObject() = default;
 
     HRESULT validateFormatEtc(const FORMATETC* fe) const noexcept {
@@ -752,7 +773,8 @@ private:
         if ((fe->tymed & TYMED_HGLOBAL) == 0) {
             return DV_E_TYMED;
         }
-        if (m_isPureTextPayload && isCursorOverTextBypassHost()) {
+        if (m_sourceClipboardHwnd != nullptr && m_isPureTextPayload &&
+            classifyCursorDropRelation() != CursorDropZoneRelation::NormalExternal) {
             return DV_E_FORMATETC;
         }
         for (const auto& supported : m_formats) {
@@ -763,18 +785,27 @@ private:
         return DV_E_FORMATETC;
     }
 
-    bool isCursorOverTextBypassHost() const noexcept {
+    CursorDropZoneRelation classifyCursorDropRelation() const noexcept {
+        if (!m_sourceClipboardHwnd) return CursorDropZoneRelation::NormalExternal;
         POINT pt{};
-        if (!GetCursorPos(&pt)) return false;
+        if (!GetCursorPos(&pt)) return CursorDropZoneRelation::NormalExternal;
         HWND hit = WindowFromPoint(pt);
-        if (!hit || !IsWindow(hit)) return false;
+        if (!hit || !IsWindow(hit)) return CursorDropZoneRelation::NormalExternal;
+        HWND rawRoot = GetAncestor(hit, GA_ROOT);
+        if (!rawRoot) rawRoot = hit;
+        if (sourceWindowMatches(rawRoot, m_sourceClipboardHwnd)) {
+            return CursorDropZoneRelation::OverSourceSelf;
+        }
         HWND root = ClipboardManager::normalizeValidTargetHwnd(hit, m_sourceClipboardHwnd);
-        if (!root || isDesktopShellWindow(root)) return false;
+        if (!root || isDesktopShellWindow(root)) return CursorDropZoneRelation::NormalExternal;
         const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(root);
-        if (procPath.empty()) return false;
+        if (procPath.empty()) return CursorDropZoneRelation::NormalExternal;
         const std::wstring exeLower =
             tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
-        return shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl);
+        if (shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl)) {
+            return CursorDropZoneRelation::OverTextBypassHost;
+        }
+        return CursorDropZoneRelation::NormalExternal;
     }
 
     std::atomic<ULONG> m_refCount{1};
@@ -1102,17 +1133,39 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
     outcome.targetRootHwnd = targetRoot;
 
     const bool oleRetrieved = concreteDataObj->wasAnyDataRetrieved();
+    const bool isPureTextPayload =
+        payload.filePaths.empty() &&
+        payload.dibBytes.empty() &&
+        payload.pngBytes.empty() &&
+        !payload.unicodeText.empty();
+    const bool isSingleHttpUrl = isPureTextPayload && isSingleHttpUrlPayload(payload);
 
-    LOG_DEBUG("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, oleRead={}, userCancel={}, relLBtn={}, targetInClient={}, termKind={}, webHost={})",
-              itemId,
-              static_cast<unsigned>(dragHr),
-              static_cast<unsigned>(dwEffect),
-              oleRetrieved,
-              dropSource->wasCancelledByUser(),
-              dropSource->wasReleasedLeftButton(),
-              inClientArea,
-              static_cast<unsigned>(terminalKind),
-              isMultiProcessWebHost);
+    std::wstring dropTargetExeLower;
+    if (targetRoot) {
+        const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(targetRoot);
+        if (!procPath.empty()) {
+            dropTargetExeLower =
+                tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+        }
+    }
+    const bool forceBypassAtDrop =
+        isPureTextPayload &&
+        !dropTargetExeLower.empty() &&
+        shouldBypassOleTextDropForHost(dropTargetExeLower, isSingleHttpUrl);
+    const bool effectiveOleRetrieved = forceBypassAtDrop ? false : oleRetrieved;
+
+    LOG_INFO("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, oleRead={}, forceBypass={}, userCancel={}, relLBtn={}, targetInClient={}, termKind={}, webHost={}, exe={})",
+             itemId,
+             static_cast<unsigned>(dragHr),
+             static_cast<unsigned>(dwEffect),
+             oleRetrieved,
+             forceBypassAtDrop,
+             dropSource->wasCancelledByUser(),
+             dropSource->wasReleasedLeftButton(),
+             inClientArea,
+             static_cast<unsigned>(terminalKind),
+             isMultiProcessWebHost,
+             tools3000::core::WinUtils::wstringToUtf8(dropTargetExeLower));
 
     if (!shouldFallbackToSmartDropPaste(
             dragHr,
@@ -1120,8 +1173,8 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
             dropSource->wasCancelledByUser(),
             dropSource->wasReleasedLeftButton(),
             targetRoot != nullptr && inClientArea,
-            oleRetrieved)) {
-        if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE && oleRetrieved) {
+            effectiveOleRetrieved)) {
+        if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE && effectiveOleRetrieved) {
             outcome.status = NativeDragStatus::DroppedByOle;
         } else {
             outcome.status = NativeDragStatus::Cancelled;

@@ -143,16 +143,15 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
 
   const isLoading = loading || isInitialIndexing || isServiceStarting;
 
-  const isHeaderDragSurface = (target: EventTarget | null, currentTarget: EventTarget | null): boolean => {
-    if (target === currentTarget) return true;
+  const isHeaderDragSurface = (target: EventTarget | null): boolean => {
     const el = target as HTMLElement | null;
     if (!el) return false;
-    return Boolean(el.closest('.search-drag-surface'));
+    return !el.closest('input, textarea, select, button, a, [role="listbox"], .search-history-dropdown');
   };
 
   // 使用 4px 拖动启动阈值：防止首次 mousedown 立即进入 Win32 SC_MOVE 模态循环而吞掉双击最大化事件
   const handleTitlebarMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || e.detail >= 2 || !isHeaderDragSurface(e.target, e.currentTarget)) {
+    if (e.button !== 0 || e.detail >= 2 || !isHeaderDragSurface(e.target)) {
       return;
     }
     const startX = e.screenX;
@@ -184,12 +183,12 @@ export const SearchHeader: React.FC<SearchHeaderProps> = ({
       className="search-input-wrapper"
       onMouseDown={handleTitlebarMouseDown}
       onDoubleClick={(e) => {
-        if (isHeaderDragSurface(e.target, e.currentTarget) && onToggleMaximized) {
+        if (isHeaderDragSurface(e.target) && onToggleMaximized) {
           onToggleMaximized();
         }
       }}
       onContextMenu={(e) => {
-        if (isHeaderDragSurface(e.target, e.currentTarget)) {
+        if (isHeaderDragSurface(e.target)) {
           e.preventDefault();
           void bridgeRequest('search.showSystemMenu', { x: e.screenX, y: e.screenY }).catch(() => undefined);
         }

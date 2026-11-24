@@ -2081,6 +2081,52 @@ export default function SearchApp() {
     inputRef.current?.focus();
   };
 
+  const isAuxiliaryDragSurface = useCallback((target: EventTarget | null): boolean => {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    return !el.closest(
+      'button, input, textarea, select, a, [role="tab"], [role="button"], .category-pill, [data-clickable="true"]',
+    );
+  }, []);
+
+  const handleAuxiliaryDragMouseDown = useCallback(
+    (e: ReactMouseEvent<HTMLElement>) => {
+      if (e.button !== 0 || e.detail >= 2 || !isAuxiliaryDragSurface(e.target)) {
+        return;
+      }
+      const startX = e.screenX;
+      const startY = e.screenY;
+      const cleanup = () => {
+        window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('mouseup', cleanup);
+        window.removeEventListener('blur', cleanup);
+      };
+      const onMove = (moveEvt: MouseEvent) => {
+        if ((moveEvt.buttons & 1) === 0) {
+          cleanup();
+          return;
+        }
+        if (Math.hypot(moveEvt.screenX - startX, moveEvt.screenY - startY) >= 4) {
+          cleanup();
+          void bridgeRequest('search.startDrag');
+        }
+      };
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', cleanup);
+      window.addEventListener('blur', cleanup);
+    },
+    [isAuxiliaryDragSurface],
+  );
+
+  const handleAuxiliaryDoubleClick = useCallback(
+    (e: ReactMouseEvent<HTMLElement>) => {
+      if (isAuxiliaryDragSurface(e.target)) {
+        void toggleMaximized();
+      }
+    },
+    [isAuxiliaryDragSurface, toggleMaximized],
+  );
+
   const minimizeWindow = useCallback(() => {
     setShowHistoryMenu(false);
     if (!isComposingRef.current) {
@@ -2292,7 +2338,11 @@ export default function SearchApp() {
           onUserTypingActivity={cancelPendingSelectTimers}
         />
 
-        <div className="search-categories-bar">
+        <div
+          className="search-categories-bar"
+          onMouseDown={handleAuxiliaryDragMouseDown}
+          onDoubleClick={handleAuxiliaryDoubleClick}
+        >
           <SearchCategoryBar
             categories={categories}
             activeCategory={activeCategory}
@@ -2305,6 +2355,7 @@ export default function SearchApp() {
             {/* 全盘已索引总数与耗时统计胶囊 */}
             <div
               className="search-stats-pill"
+              data-clickable={loading ? 'true' : undefined}
               title={
                 loading
                   ? t('search.stopScanTitle', 'Stop active background content scan')
@@ -2600,6 +2651,8 @@ export default function SearchApp() {
             setShowViewSettings(false);
           }}
           onHide={hide}
+          onTitlebarMouseDown={handleAuxiliaryDragMouseDown}
+          onTitlebarDoubleClick={handleAuxiliaryDoubleClick}
         />
 
         <SearchColumnManagerModal

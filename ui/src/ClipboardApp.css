@@ -216,6 +216,12 @@
   color: var(--danger);
 }
 
+.clip-popup--maximized .clip-popup__header,
+.clip-popup--maximized .clip-popup__drag-handle,
+.clip-popup--maximized .clip-popup__filters {
+  cursor: default;
+}
+
 .clip-popup__filters {
   display: flex;
   align-items: center;
@@ -224,6 +230,11 @@
   padding: 8px 14px;
   border-bottom: 1px solid var(--border-subtle);
   background: var(--bg-surface);
+  cursor: grab;
+}
+
+.clip-popup:not(.clip-popup--maximized) .clip-popup__filters:active {
+  cursor: grabbing;
 }
 
 .clip-popup__filter-pills {
