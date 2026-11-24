@@ -81,8 +81,17 @@ TerminalPasteKind classifyTerminalPasteTarget(
 /// 而普通非 URL 纯文本绕过外层附件上传 DropZone 空吞陷阱，直达落点光标粘贴。
 bool isSingleHttpUrlPayload(const NativeDragPayload& payload) noexcept;
 
-/// 判定目标进程是否属于外层全局附件 DropZone 会空吞非 URL 纯文本的桌面 AI / 工具客户端
-bool shouldBypassOlePlainTextDropForHost(std::wstring_view processExeLower) noexcept;
+/// 判定目标进程是否属于外层全局附件/文件 DropZone 会空吞纯文本的宿主：
+/// - 对 AI IDE（Antigravity / Cursor 等）：单条 http(s):// 链接保留原生 OLE 以生成 @Link 胶囊，其余普通文本走落点粘贴；
+/// - 对现代浏览器（Chrome / Edge / Firefox 等）：仅图片/文件走原生 OLE（触发网页「将文件拖放到此处」上传），
+///   所有文本载荷一律绕过网页文件遮罩层并走确定性落点聚焦粘贴（同时避免拖网址误覆盖当前标签页）。
+bool shouldBypassOleTextDropForHost(
+    std::wstring_view processExeLower,
+    bool payloadIsSingleHttpUrl) noexcept;
+
+inline bool shouldBypassOlePlainTextDropForHost(std::wstring_view processExeLower) noexcept {
+    return shouldBypassOleTextDropForHost(processExeLower, /*payloadIsSingleHttpUrl=*/false);
+}
 
 /// 判定 WM_NCHITTEST 返回值是否属于安全的客户区落点（严禁误点击标题栏/关闭按钮/菜单栏/边框）；
 /// 对无边框自绘顶栏窗口（如 Electron / Clash Party），当落点深入窗口内部腹地且避开右上角窗口控制按钮禁区时，

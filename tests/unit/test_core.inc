@@ -6573,6 +6573,10 @@ TEST(ClipboardNativeDragHostPolicyTest, DistinguishesHttpUrlFromPlainTextAndAiId
     EXPECT_FALSE(isSingleHttpUrlPayload(multiWordUrl));
 
     EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"antigravity.exe"));
+    EXPECT_FALSE(shouldBypassOleTextDropForHost(L"antigravity.exe", /*payloadIsSingleHttpUrl=*/true));
+    EXPECT_TRUE(shouldBypassOleTextDropForHost(L"chrome.exe", /*payloadIsSingleHttpUrl=*/false));
+    EXPECT_TRUE(shouldBypassOleTextDropForHost(L"chrome.exe", /*payloadIsSingleHttpUrl=*/true));
+    EXPECT_TRUE(shouldBypassOleTextDropForHost(L"msedge.exe", /*payloadIsSingleHttpUrl=*/false));
     EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"Cursor.exe"));
     EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"Clash Party.exe"));
     EXPECT_FALSE(shouldBypassOlePlainTextDropForHost(L"notepad.exe"));

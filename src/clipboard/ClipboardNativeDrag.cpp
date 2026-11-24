@@ -628,12 +628,12 @@ public:
 
     void enableDynamicPlainTextHostGuard(HWND sourceClipboardHwnd) noexcept {
         m_sourceClipboardHwnd = sourceClipboardHwnd;
-        m_guardNonUrlPlainText =
+        m_isPureTextPayload =
             m_payload.filePaths.empty() &&
             m_payload.dibBytes.empty() &&
             m_payload.pngBytes.empty() &&
-            !m_payload.unicodeText.empty() &&
-            !isSingleHttpUrlPayload(m_payload);
+            !m_payload.unicodeText.empty();
+        m_isSingleHttpUrl = m_isPureTextPayload && isSingleHttpUrlPayload(m_payload);
     }
 
     bool wasAnyDataRetrieved() const noexcept {
@@ -752,7 +752,7 @@ private:
         if ((fe->tymed & TYMED_HGLOBAL) == 0) {
             return DV_E_TYMED;
         }
-        if (m_guardNonUrlPlainText && isCursorOverAttachmentDropzoneHost()) {
+        if (m_isPureTextPayload && isCursorOverTextBypassHost()) {
             return DV_E_FORMATETC;
         }
         for (const auto& supported : m_formats) {
@@ -763,7 +763,7 @@ private:
         return DV_E_FORMATETC;
     }
 
-    bool isCursorOverAttachmentDropzoneHost() const noexcept {
+    bool isCursorOverTextBypassHost() const noexcept {
         POINT pt{};
         if (!GetCursorPos(&pt)) return false;
         HWND hit = WindowFromPoint(pt);
@@ -774,12 +774,13 @@ private:
         if (procPath.empty()) return false;
         const std::wstring exeLower =
             tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
-        return shouldBypassOlePlainTextDropForHost(exeLower);
+        return shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl);
     }
 
     std::atomic<ULONG> m_refCount{1};
     std::atomic<bool> m_anyDataRetrieved{false};
-    bool m_guardNonUrlPlainText = false;
+    bool m_isPureTextPayload = false;
+    bool m_isSingleHttpUrl = false;
     HWND m_sourceClipboardHwnd = nullptr;
     NativeDragPayload m_payload;
     std::vector<FORMATETC> m_formats;
@@ -890,7 +891,18 @@ bool isSingleHttpUrlPayload(const NativeDragPayload& payload) noexcept {
     return isHttp || isHttps;
 }
 
-bool shouldBypassOlePlainTextDropForHost(std::wstring_view processExeLower) noexcept {
+bool shouldBypassOleTextDropForHost(
+    std::wstring_view processExeLower,
+    bool payloadIsSingleHttpUrl) noexcept {
+    // 现代网页浏览器：图片/文件走原生 OLE 以支持网页上传（如 Google 以图搜图「将文件拖放到此处」）；
+    // 所有文本（含 URL）一律绕过网页文件 DropZone 遮罩层，松手后通过落点单击聚焦直接贴入网页搜索框或地址栏
+    if (isBrowserProcessName(processExeLower)) {
+        return true;
+    }
+    // 桌面 AI IDE / 客户端：单条 http(s):// 链接保留原生 OLE 以生成 @Link 上下文卡片，普通非 URL 文本走落点粘贴
+    if (payloadIsSingleHttpUrl) {
+        return false;
+    }
     return equalsIgnoreCaseAsciiW(processExeLower, L"antigravity.exe") ||
            equalsIgnoreCaseAsciiW(processExeLower, L"cursor.exe") ||
            equalsIgnoreCaseAsciiW(processExeLower, L"windsurf.exe") ||
