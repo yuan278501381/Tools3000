@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <mutex>
 #include <string>
@@ -24,7 +25,7 @@ public:
     /// Starts downloading the latest verified release asset in the background.
     bool downloadUpdateAsync();
 
-    /// Launches the verified downloaded installer (or highlights the portable ZIP in Explorer).
+    /// Launches the verified downloaded installer or in-place portable updater and exits cleanly.
     bool installDownloadedUpdate(std::string& outError);
 
     /// Persists the current latestVersion as dismissed and broadcasts badgeVisible = false.
@@ -33,7 +34,7 @@ public:
     /// Clears any persisted dismissed version so update badges can appear again.
     void clearDismissedVersion();
 
-    /// Registers a host callback invoked after a verified Setup.exe installer has started,
+    /// Registers a host callback invoked after a verified updater/installer has started,
     /// allowing the current process to exit gracefully before file replacement begins.
     void setExitForUpdateCallback(std::function<void()> callback);
 
@@ -47,7 +48,22 @@ public:
     static bool isTrustedReleaseDownloadUrl(std::string_view url) noexcept;
     static std::string extractExpectedSha256ForAsset(std::string_view sha256SumsBody, std::string_view assetName);
     static std::string formatReleaseNotesSummary(std::string_view rawNotes, size_t maxBytes = 600);
+    static bool isPortableDirectory(const std::filesystem::path& exeDir) noexcept;
     static std::wstring buildInstallerParameters();
+    static std::wstring buildInstallerParametersForDir(const std::filesystem::path& installDir);
+    static std::wstring buildPortableUpdaterScript(
+        const std::filesystem::path& zipPath,
+        const std::filesystem::path& targetDir,
+        const std::filesystem::path& logFilePath,
+        uint32_t parentPid,
+        bool relaunchAfterUpdate = true);
+    static bool launchPortableInPlaceUpdater(
+        const std::filesystem::path& zipPath,
+        const std::filesystem::path& targetDir,
+        uint32_t parentPid,
+        std::string& outError,
+        bool relaunchAfterUpdate = true,
+        std::filesystem::path* outScriptPath = nullptr);
 
 private:
     struct UpdateStateSnapshot {

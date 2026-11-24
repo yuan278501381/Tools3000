@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <psapi.h>
 #include <sddl.h>

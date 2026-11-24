@@ -24,6 +24,7 @@
 
 #include <windows.h>
 #include "core/i18n/UiI18n.h"
+#include "core/backup/ConfigBackupService.h"
 #include <objbase.h>
 #include <sddl.h>
 #include <shellapi.h>
@@ -2542,6 +2543,7 @@ void shutdownSubsystems() {
     tools3000::core::RemoteMasterEngine::instance().shutdown();
     tools3000::core::WinUtils::emergencyFlushInputState();
     tools3000::core::StatsManager::instance().shutdown();
+    tools3000::core::backup::ConfigBackupService::instance().runAutoBackupOnExitIfEnabled();
     tools3000::core::PerformanceMonitor::instance().stop();
     tools3000::core::MainThreadDispatcher::instance().shutdown();
     tools3000::core::ConfigManager::instance().shutdown();

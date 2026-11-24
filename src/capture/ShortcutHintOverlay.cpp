@@ -5,6 +5,7 @@
 #include "capture/ShortcutHintStyle.h"
 #include "capture/CaptureHudPalette.h"
 #include "capture/CaptureRegionHistory.h"
+#include "capture/CaptureState.h"
 #include "capture/FloatingGlassBar.h"
 
 #include "core/config/ConfigManager.h"
@@ -205,9 +206,21 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                 : std::vector<ShortcutHintItem>{{L"W/A/S/D", L"Move cursor"}, {L"Shift / Tab", L"Toggle snap / nudge"},
                                                 {L"Space", L"Hold to pan"}, {L"Esc", L"Cancel"}};
         case ShortcutHintContext::CaptureSelected: {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            CaptureOptions cfgOpts{};
+            cfgOpts.copyToClipboard = cfg.get<bool>("/capture/copyToClipboard", true);
+            cfgOpts.saveToFile = cfg.get<bool>("/capture/saveToFile", true);
+            const auto confirmDecision = resolveCaptureDeliveryDecision(
+                cfgOpts, CaptureCompletion{CaptureCompletionAction::Default});
+            const std::wstring enterActionLabel =
+                (confirmDecision.shouldCopyToClipboard && confirmDecision.shouldSaveAutomatically)
+                    ? tools3000::core::trWCstrFor(zh, L"复制并保存", L"Copy & save")
+                    : (confirmDecision.shouldSaveAutomatically && !confirmDecision.shouldCopyToClipboard)
+                        ? tools3000::core::trWCstrFor(zh, L"保存并完成", L"Save & finish")
+                        : tools3000::core::trWCstrFor(zh, L"完成并复制", L"Copy & finish");
             std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
-                      {L"Enter", L"完成并复制"},
+                      {L"Enter", enterActionLabel},
                       {L"Ctrl+T", L"贴图置顶"},
                       {L"Ctrl+S", L"另存 (+Shift 快存)"},
                       {L"Ctrl+C", L"复制选区"},
@@ -218,7 +231,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"O / Q / T / N", L"椭圆/箭头/字/号"},
                       {L"Esc", L"分级返回"}}
                 : std::vector<ShortcutHintItem>{
-                      {L"Enter", L"Copy & finish"},
+                      {L"Enter", enterActionLabel},
                       {L"Ctrl+T", L"Pin to screen"},
                       {L"Ctrl+S", L"Save (+Shift quick)"},
                       {L"Ctrl+C", L"Copy region"},

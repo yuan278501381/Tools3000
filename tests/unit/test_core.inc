@@ -856,8 +856,9 @@ TEST(UpdateCheckerTest, InstallerSilentAutoRestartParametersAndNoSelfKillContrac
     std::filesystem::path issPath;
     auto probe = tools3000::core::WinUtils::getExeDirectory();
     for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-        if (std::filesystem::exists(probe / L"installer.iss")) {
-            issPath = probe / L"installer.iss";
+        const auto candidate = probe / L"packaging" / L"installer" / L"installer.iss";
+        if (std::filesystem::exists(candidate)) {
+            issPath = candidate;
             break;
         }
         probe = probe.parent_path();
@@ -4558,13 +4559,14 @@ TEST(CaptureDefaultEnabledContractTest, FreshInstallConfigAndInstallerCheckableA
     cfg.shutdown();
     std::filesystem::remove_all(tempDir, ec);
 
-    // 2. 防回退门禁：校验仓库根 installer.iss 中 capture 父组件在挂载可选子组件时必须声明
+    // 2. 防回退门禁：校验仓库 packaging/installer/installer.iss 中 capture 父组件在挂载可选子组件时必须声明
     //    Types: full compact 与 Flags: checkablealone，防止 Inno Setup 全新安装自动取消勾选截图模块。
     std::filesystem::path probe = std::filesystem::current_path(ec);
     std::filesystem::path issPath;
+    const auto relIss = std::filesystem::path(L"packaging") / L"installer" / L"installer.iss";
     for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
-            issPath = probe / L"installer.iss";
+        if (std::filesystem::exists(probe / relIss, ec)) {
+            issPath = probe / relIss;
             break;
         }
         probe = probe.parent_path();
@@ -4575,8 +4577,8 @@ TEST(CaptureDefaultEnabledContractTest, FreshInstallConfigAndInstallerCheckableA
         if (len > 0 && len < MAX_PATH) {
             probe = std::filesystem::path(exeBuf).parent_path();
             for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
-                    issPath = probe / L"installer.iss";
+                if (std::filesystem::exists(probe / relIss, ec)) {
+                    issPath = probe / relIss;
                     break;
                 }
                 probe = probe.parent_path();
@@ -4649,10 +4651,11 @@ TEST(PicasaViewerDefaultDisabledAndInstallerContractTest, DefaultDisabledInConfi
 
     // 3. 校验 installer.iss：picasaviewer 组件存在、不绑定 full/compact（初始默认不勾选）、8 语种文案齐备且含静默注册钩子
     std::filesystem::path issPath;
+    const auto relIss = std::filesystem::path(L"packaging") / L"installer" / L"installer.iss";
     auto probe = std::filesystem::current_path(ec);
     for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
-            issPath = probe / L"installer.iss";
+        if (std::filesystem::exists(probe / relIss, ec)) {
+            issPath = probe / relIss;
             break;
         }
         probe = probe.parent_path();
@@ -4663,8 +4666,8 @@ TEST(PicasaViewerDefaultDisabledAndInstallerContractTest, DefaultDisabledInConfi
         if (len > 0 && len < MAX_PATH) {
             probe = std::filesystem::path(exeBuf).parent_path();
             for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
-                    issPath = probe / L"installer.iss";
+                if (std::filesystem::exists(probe / relIss, ec)) {
+                    issPath = probe / relIss;
                     break;
                 }
                 probe = probe.parent_path();
@@ -4713,10 +4716,11 @@ TEST(PicasaViewerDefaultDisabledAndInstallerContractTest, DefaultDisabledInConfi
 
 TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract) {
     std::error_code ec;
+    const auto relIss = std::filesystem::path(L"packaging") / L"installer" / L"installer.iss";
     auto locateRepoRoot = [&]() -> std::filesystem::path {
         std::filesystem::path probe = std::filesystem::current_path(ec);
         for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-            if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+            if (std::filesystem::exists(probe / relIss, ec)) {
                 return probe;
             }
             probe = probe.parent_path();
@@ -4726,7 +4730,7 @@ TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract
         if (len > 0 && len < MAX_PATH) {
             probe = std::filesystem::path(exeBuf).parent_path();
             for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-                if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+                if (std::filesystem::exists(probe / relIss, ec)) {
                     return probe;
                 }
                 probe = probe.parent_path();
@@ -4742,7 +4746,7 @@ TEST(InstallerRebootGuardAndI18nTest, PfroSelfHealAndChineseRestartRadioContract
     //    采用 Win32 原生 WriteExactMultiStringValue（绝不回退到会截断末尾空串的 RegWriteMultiStringValue），
     //    覆盖 PendingFileRenameOperations 与 PendingFileRenameOperations2，修复 FilesLocked 漏杀并拉长卸载等待窗口。
     {
-        std::ifstream ifs(repoRoot / L"installer.iss", std::ios::binary);
+        std::ifstream ifs(repoRoot / relIss, std::ios::binary);
         ASSERT_TRUE(ifs.is_open());
         const std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 
@@ -4924,10 +4928,11 @@ TEST(SessionIsolationTest, MultiSessionMutexWebViewSlotLeasesAndConcurrentAtomic
 
     // 4. 源码与安装器防回退契约：main.cpp 与 installer.iss 必须接入 Local\ 会话级互斥体
     {
+        const auto relIss = std::filesystem::path(L"packaging") / L"installer" / L"installer.iss";
         std::filesystem::path probe = std::filesystem::current_path(ec);
         std::filesystem::path repoRoot;
         for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-            if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+            if (std::filesystem::exists(probe / relIss, ec)) {
                 repoRoot = probe;
                 break;
             }
@@ -4940,7 +4945,7 @@ TEST(SessionIsolationTest, MultiSessionMutexWebViewSlotLeasesAndConcurrentAtomic
             EXPECT_NE(mainSrc.find("Local\\\\Tools3000_SingleInstance_Mutex"), std::string::npos);
             EXPECT_NE(mainSrc.find("SessionIsolation::buildSingleInstanceMutexName"), std::string::npos);
 
-            std::ifstream issIfs(repoRoot / L"installer.iss", std::ios::binary);
+            std::ifstream issIfs(repoRoot / relIss, std::ios::binary);
             ASSERT_TRUE(issIfs.is_open());
             const std::string issSrc((std::istreambuf_iterator<char>(issIfs)), std::istreambuf_iterator<char>());
             EXPECT_NE(issSrc.find("CheckForMutexes('Local\\Tools3000_SingleInstance_Mutex')"), std::string::npos);
@@ -4992,10 +4997,11 @@ TEST(UiI18nTest, EightLanguageResolutionCatalogLoadingAndInstallerContract) {
 
     // 3. 定位仓库根并断言 6 套原生词典完整载入、有效翻译且占位符安全替换
     std::error_code ec;
+    const auto relIss = std::filesystem::path(L"packaging") / L"installer" / L"installer.iss";
     std::filesystem::path probe = std::filesystem::current_path(ec);
     std::filesystem::path repoRoot;
     for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
-        if (std::filesystem::exists(probe / L"installer.iss", ec)) {
+        if (std::filesystem::exists(probe / relIss, ec)) {
             repoRoot = probe;
             break;
         }
@@ -5032,7 +5038,7 @@ TEST(UiI18nTest, EightLanguageResolutionCatalogLoadingAndInstallerContract) {
     EXPECT_STREQ(trWCstrFor(true, L"自动运镜", L"Auto Zoom"), L"自动运镜");
 
     // 5. Inno Setup 8 语种安装器契约校验
-    std::ifstream issIfs(repoRoot / L"installer.iss", std::ios::binary);
+    std::ifstream issIfs(repoRoot / relIss, std::ios::binary);
     ASSERT_TRUE(issIfs.is_open());
     const std::string issSrc((std::istreambuf_iterator<char>(issIfs)), std::istreambuf_iterator<char>());
     for (const char* issLang : {
@@ -5517,6 +5523,76 @@ TEST(ClipboardManagerTest, ExcludePinnedQueryV2AndNativeDragDataObject) {
     EXPECT_TRUE(shouldFallbackToSmartDropPaste(S_OK, DROPEFFECT_NONE, false, true, true));
 }
 
+TEST(ClipboardManagerTest, SourceAppFriendlyNameIconExtractionAndPersistence) {
+    using namespace tools3000::clipboard;
+
+    // 1. 纯静态名称归一化规则：去 .exe 噪音、避开 OS 泛化产品名、优选简洁产品名
+    EXPECT_EQ(ClipboardManager::normalizeProcessKey(" Weixin.EXE "), "weixin.exe");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName("Microsoft Edge", "Microsoft Edge", "msedge.exe"),
+              "Microsoft Edge");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName("Visual Studio Code", "Visual Studio Code", "Code.exe"),
+              "Visual Studio Code");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName(
+                  "Notepad", "Microsoft® Windows® Operating System", "notepad.exe"),
+              "Notepad");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName(
+                  "Tools3000 Desktop Productivity Toolkit", "Tools3000", "Tools3000.exe"),
+              "Tools3000");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName("Application", "Launcher", "Weixin.exe"), "Weixin");
+    EXPECT_EQ(ClipboardManager::normalizeFriendlyAppName("App (64-bit)", "MyEditor (64-bit)", "myeditor.exe"),
+              "MyEditor");
+
+    // 2. 实机提取系统真实可执行文件彩色图标 + 友好名，并验证 queryItems 返回 appMeta 且跨重启持久化恢复
+    wchar_t tempDir[MAX_PATH]{};
+    GetTempPathW(MAX_PATH, tempDir);
+    const std::filesystem::path metaTestDir =
+        std::filesystem::path(tempDir) /
+        (L"Tools3000_ClipboardAppMetaTest_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(metaTestDir, ec);
+
+    struct MetaCleanup {
+        std::filesystem::path dir;
+        ~MetaCleanup() {
+            ClipboardManager::instance().shutdown();
+            std::error_code e;
+            std::filesystem::remove_all(dir, e);
+        }
+    } cleanup{metaTestDir};
+
+    wchar_t winDir[MAX_PATH]{};
+    ASSERT_GT(GetWindowsDirectoryW(winDir, MAX_PATH), 0u);
+    const std::filesystem::path explorerPath = std::filesystem::path(winDir) / L"explorer.exe";
+    ASSERT_TRUE(std::filesystem::exists(explorerPath, ec));
+
+    auto& mgr = ClipboardManager::instance();
+    mgr.shutdown();
+    ASSERT_TRUE(mgr.initialize(nullptr, metaTestDir));
+    ASSERT_TRUE(mgr.recordSourceAppMetadataForPath("explorer.exe", explorerPath.wstring()));
+
+    const uint64_t id = t3k_clip_add_item(0, "Hello Explorer", "", 0, 0, "", "explorer.exe", 14, 100, 30, "", "");
+    ASSERT_GT(id, 0u);
+
+    const auto q1 = mgr.queryItems("", "all", 20, 0, "", false);
+    ASSERT_TRUE(q1.contains("appMeta"));
+    ASSERT_TRUE(q1["appMeta"].contains("explorer.exe"));
+    const std::string name1 = q1["appMeta"]["explorer.exe"].value("name", "");
+    const std::string icon1 = q1["appMeta"]["explorer.exe"].value("icon", "");
+    EXPECT_FALSE(name1.empty());
+    EXPECT_EQ(icon1.rfind("data:image/png;base64,", 0), 0u);
+    EXPECT_GT(icon1.size(), 64u);
+    EXPECT_TRUE(std::filesystem::exists(metaTestDir / L"app_meta.json", ec));
+
+    // 模拟重启：彻底关闭后重新初始化，确认无需重新扫盘即可直接从 app_meta.json 恢复图标与友好名
+    mgr.shutdown();
+    ASSERT_TRUE(mgr.initialize(nullptr, metaTestDir));
+    const auto q2 = mgr.queryItems("", "all", 20, 0, "", false);
+    ASSERT_TRUE(q2.contains("appMeta"));
+    ASSERT_TRUE(q2["appMeta"].contains("explorer.exe"));
+    EXPECT_EQ(q2["appMeta"]["explorer.exe"].value("name", ""), name1);
+    EXPECT_EQ(q2["appMeta"]["explorer.exe"].value("icon", ""), icon1);
+}
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 8 语种跨代码页 Unicode 路径、ArchivePreview、FontPreview、FileLocksmith 与
@@ -5752,5 +5828,595 @@ TEST(FontPreviewTest, SystemWindowsFontInspection) {
         std::vector<uint8_t> extracted;
         EXPECT_TRUE(FontPreview::extractStandaloneTtfFromTtc(msyhTtc.wstring(), 0, extracted));
         EXPECT_GT(extracted.size(), 1024u);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 便携版精准识别、一键原地安全热更新与配置云备份（同步盘 / WebDAV / S3 SigV4）
+// 真进程 + 真 ZIP + 真 DPAPI / AES-256-GCM + 真 WinHTTP/Loopback 端到端实测
+// ─────────────────────────────────────────────────────────────────────────────
+#include "core/backup/BackupCrypto.h"
+#include "core/backup/BackupTransport.h"
+#include "core/backup/ConfigBackupService.h"
+
+namespace {
+
+class LoopbackCloudTestServer final {
+public:
+    enum class Mode { WebDav, S3 };
+
+    LoopbackCloudTestServer(Mode mode, std::string authTokenOrAccessKey, std::string s3Secret = {})
+        : m_mode(mode), m_auth(std::move(authTokenOrAccessKey)), m_s3Secret(std::move(s3Secret)) {}
+
+    ~LoopbackCloudTestServer() { stop(); }
+
+    bool start(uint16_t& outPort) {
+        WSADATA wsa{};
+        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+        m_wsaStarted = true;
+
+        m_listenSock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (m_listenSock == INVALID_SOCKET) return false;
+
+        sockaddr_in addr{};
+        addr.sin_family = AF_INET;
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        addr.sin_port = 0; // 让操作系统分配空闲临时端口
+        if (bind(m_listenSock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+            return false;
+        }
+        int addrLen = sizeof(addr);
+        if (getsockname(m_listenSock, reinterpret_cast<sockaddr*>(&addr), &addrLen) == SOCKET_ERROR) {
+            return false;
+        }
+        if (listen(m_listenSock, 16) == SOCKET_ERROR) return false;
+
+        outPort = ntohs(addr.sin_port);
+        m_port = outPort;
+        m_running.store(true);
+        m_thread = std::thread([this]() { serveLoop(); });
+        return true;
+    }
+
+    void stop() {
+        m_running.store(false);
+        if (m_listenSock != INVALID_SOCKET) {
+            closesocket(m_listenSock);
+            m_listenSock = INVALID_SOCKET;
+        }
+        if (m_thread.joinable()) {
+            m_thread.join();
+        }
+        if (m_wsaStarted) {
+            WSACleanup();
+            m_wsaStarted = false;
+        }
+    }
+
+    int verifiedSignatureCount() const { return m_verifiedSigCount.load(); }
+
+private:
+    void serveLoop() {
+        while (m_running.load()) {
+            SOCKET client = accept(m_listenSock, nullptr, nullptr);
+            if (client == INVALID_SOCKET) break;
+            handleClient(client);
+            closesocket(client);
+        }
+    }
+
+    static std::string toLowerCopy(std::string_view sv) {
+        std::string out(sv);
+        std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return out;
+    }
+
+    void handleClient(SOCKET client) {
+        DWORD tv = 5000;
+        setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+        setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
+
+        std::string raw;
+        char buf[4096];
+        size_t headerEnd = std::string::npos;
+        size_t contentLength = 0;
+        while (true) {
+            const int n = recv(client, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            raw.append(buf, static_cast<size_t>(n));
+            if (headerEnd == std::string::npos) {
+                headerEnd = raw.find("\r\n\r\n");
+                if (headerEnd != std::string::npos) {
+                    const std::string hdrsLower = toLowerCopy(std::string_view(raw).substr(0, headerEnd));
+                    const size_t clPos = hdrsLower.find("content-length:");
+                    if (clPos != std::string::npos) {
+                        const size_t eol = hdrsLower.find("\r\n", clPos);
+                        const std::string val = hdrsLower.substr(clPos + 15u, eol - (clPos + 15u));
+                        try { contentLength = static_cast<size_t>(std::stoull(val)); } catch (...) {}
+                    }
+                }
+            }
+            if (headerEnd != std::string::npos && raw.size() >= headerEnd + 4u + contentLength) {
+                break;
+            }
+        }
+        if (headerEnd == std::string::npos) return;
+
+        const std::string headerPart = raw.substr(0, headerEnd);
+        const std::string body = raw.substr(headerEnd + 4u, contentLength);
+
+        const size_t firstEol = headerPart.find("\r\n");
+        const std::string reqLine = (firstEol == std::string::npos) ? headerPart : headerPart.substr(0, firstEol);
+        std::istringstream rl(reqLine);
+        std::string method, target, httpVer;
+        rl >> method >> target >> httpVer;
+
+        std::map<std::string, std::string> headers;
+        size_t pos = (firstEol == std::string::npos) ? headerPart.size() : (firstEol + 2u);
+        while (pos < headerPart.size()) {
+            const size_t nextEol = headerPart.find("\r\n", pos);
+            const std::string line = headerPart.substr(pos, nextEol == std::string::npos ? std::string::npos : nextEol - pos);
+            pos = (nextEol == std::string::npos) ? headerPart.size() : (nextEol + 2u);
+            const size_t colon = line.find(':');
+            if (colon != std::string::npos) {
+                std::string k = toLowerCopy(std::string_view(line).substr(0, colon));
+                std::string v = line.substr(colon + 1u);
+                while (!v.empty() && v.front() == ' ') v.erase(v.begin());
+                headers[std::move(k)] = std::move(v);
+            }
+        }
+
+        auto sendResp = [&](int code, const std::string& statusText, const std::string& contentType, const std::string& respBody) {
+            std::ostringstream oss;
+            oss << "HTTP/1.1 " << code << " " << statusText << "\r\n"
+                << "Content-Type: " << contentType << "\r\n"
+                << "Content-Length: " << respBody.size() << "\r\n"
+                << "Connection: close\r\n\r\n"
+                << respBody;
+            const std::string wire = oss.str();
+            send(client, wire.data(), static_cast<int>(wire.size()), 0);
+        };
+
+        std::string pathOnly = target;
+        std::string queryOnly;
+        const size_t qPos = target.find('?');
+        if (qPos != std::string::npos) {
+            pathOnly = target.substr(0, qPos);
+            queryOnly = target.substr(qPos + 1u);
+        }
+
+        if (m_mode == Mode::WebDav) {
+            const std::string expectedAuth = "Basic " + m_auth;
+            if (headers["authorization"] != expectedAuth) {
+                sendResp(401, "Unauthorized", "text/plain", "auth failed");
+                return;
+            }
+            m_verifiedSigCount.fetch_add(1);
+            if (method == "MKCOL") {
+                sendResp(201, "Created", "text/plain", "");
+                return;
+            }
+            if (method == "PUT") {
+                std::lock_guard<std::mutex> lock(m_mu);
+                m_objects[pathOnly] = body;
+                sendResp(201, "Created", "text/plain", "");
+                return;
+            }
+            if (method == "PROPFIND") {
+                std::ostringstream xml;
+                xml << "<?xml version=\"1.0\" encoding=\"utf-8\"?><D:multistatus xmlns:D=\"DAV:\">";
+                {
+                    std::lock_guard<std::mutex> lock(m_mu);
+                    for (const auto& [k, v] : m_objects) {
+                        xml << "<D:response><D:href>" << k << "</D:href><D:propstat><D:prop>"
+                            << "<D:getcontentlength>" << v.size() << "</D:getcontentlength>"
+                            << "<D:getlastmodified>Tue, 24 Nov 2026 03:00:00 GMT</D:getlastmodified>"
+                            << "</D:prop></D:propstat></D:response>";
+                    }
+                }
+                xml << "</D:multistatus>";
+                sendResp(207, "Multi-Status", "application/xml", xml.str());
+                return;
+            }
+            if (method == "GET") {
+                std::lock_guard<std::mutex> lock(m_mu);
+                auto it = m_objects.find(pathOnly);
+                if (it == m_objects.end()) {
+                    sendResp(404, "Not Found", "text/plain", "missing");
+                    return;
+                }
+                sendResp(200, "OK", "application/json", it->second);
+                return;
+            }
+            if (method == "DELETE") {
+                std::lock_guard<std::mutex> lock(m_mu);
+                m_objects.erase(pathOnly);
+                sendResp(204, "No Content", "text/plain", "");
+                return;
+            }
+            sendResp(405, "Method Not Allowed", "text/plain", "");
+            return;
+        }
+
+        // Mode::S3 — 按 AWS SigV4 独立重算并严格校验每一次请求签名
+        using tools3000::core::backup::BackupCrypto;
+        using tools3000::core::backup::S3SigV4Params;
+        S3SigV4Params verifyParams{};
+        verifyParams.method = method;
+        verifyParams.host = "127.0.0.1:" + std::to_string(m_port);
+        verifyParams.canonicalUri = pathOnly;
+        verifyParams.canonicalQuery = queryOnly;
+        verifyParams.region = "auto";
+        verifyParams.service = "s3";
+        verifyParams.accessKeyId = m_auth;
+        verifyParams.secretAccessKey = m_s3Secret;
+        verifyParams.payloadSha256Hex = BackupCrypto::sha256Hex(body);
+        verifyParams.amzDateUtc = headers["x-amz-date"];
+        verifyParams.contentType = headers.count("content-type") ? headers["content-type"] : "";
+
+        const auto expectedSig = BackupCrypto::buildS3SigV4Headers(verifyParams);
+        if (headers["x-amz-content-sha256"] != expectedSig.payloadSha256 ||
+            headers["authorization"] != expectedSig.authorization) {
+            sendResp(403, "Forbidden", "text/plain", "sigv4 mismatch");
+            return;
+        }
+        m_verifiedSigCount.fetch_add(1);
+
+        if (method == "PUT") {
+            std::lock_guard<std::mutex> lock(m_mu);
+            m_objects[pathOnly] = body;
+            sendResp(200, "OK", "text/plain", "");
+            return;
+        }
+        if (method == "GET" && queryOnly.find("list-type=2") != std::string::npos) {
+            std::ostringstream xml;
+            xml << "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult>";
+            {
+                std::lock_guard<std::mutex> lock(m_mu);
+                for (const auto& [k, v] : m_objects) {
+                    // pathOnly 格式 "/my-bucket/prefix/file.t3kbak"，去掉 "/my-bucket/" 作为对象 Key
+                    std::string objKey = k;
+                    if (!objKey.empty() && objKey.front() == '/') objKey.erase(objKey.begin());
+                    const size_t bucketSlash = objKey.find('/');
+                    if (bucketSlash != std::string::npos) objKey = objKey.substr(bucketSlash + 1u);
+                    xml << "<Contents><Key>" << objKey << "</Key><Size>" << v.size()
+                        << "</Size><LastModified>2026-11-24T03:00:00.000Z</LastModified></Contents>";
+                }
+            }
+            xml << "</ListBucketResult>";
+            sendResp(200, "OK", "application/xml", xml.str());
+            return;
+        }
+        if (method == "GET") {
+            std::lock_guard<std::mutex> lock(m_mu);
+            auto it = m_objects.find(pathOnly);
+            if (it == m_objects.end()) {
+                sendResp(404, "Not Found", "text/plain", "missing");
+                return;
+            }
+            sendResp(200, "OK", "application/json", it->second);
+            return;
+        }
+        if (method == "DELETE") {
+            std::lock_guard<std::mutex> lock(m_mu);
+            m_objects.erase(pathOnly);
+            sendResp(204, "No Content", "text/plain", "");
+            return;
+        }
+        sendResp(405, "Method Not Allowed", "text/plain", "");
+    }
+
+    Mode m_mode;
+    std::string m_auth;
+    std::string m_s3Secret;
+    SOCKET m_listenSock = INVALID_SOCKET;
+    uint16_t m_port = 0;
+    bool m_wsaStarted = false;
+    std::atomic<bool> m_running{false};
+    std::atomic<int> m_verifiedSigCount{0};
+    std::thread m_thread;
+    std::mutex m_mu;
+    std::map<std::string, std::string> m_objects;
+};
+
+}  // namespace
+
+TEST(UpdateCheckerTest, PortableDetectionAndRealInPlaceHotUpdateE2E) {
+    using tools3000::core::UpdateChecker;
+
+    wchar_t tmpRoot[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tmpRoot), 0u);
+    const std::filesystem::path root =
+        std::filesystem::path(tmpRoot) /
+        (L"Tools3000_便携原地更新实测_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    struct Cleanup {
+        std::filesystem::path dir;
+        ~Cleanup() {
+            std::error_code e;
+            std::filesystem::remove_all(dir, e);
+        }
+    } cleanup{root};
+
+    // 1. 便携目录识别单一事实源全分支断言
+    const auto dirWithFlag = root / L"case_flag";
+    const auto dirWithDot = root / L"case_dot_tools3000";
+    const auto dirBareUnzip = root / L"case_bare_unzip";
+    const auto dirInstalled = root / L"case_inno_installed";
+    std::filesystem::create_directories(dirWithFlag, ec);
+    std::filesystem::create_directories(dirWithDot / L".tools3000", ec);
+    std::filesystem::create_directories(dirBareUnzip, ec);
+    std::filesystem::create_directories(dirInstalled, ec);
+    { std::ofstream(dirWithFlag / L"portable.flag") << "portable"; }
+    { std::ofstream(dirInstalled / L"unins000.exe") << "inno"; }
+
+    EXPECT_TRUE(UpdateChecker::isPortableDirectory(dirWithFlag));
+    EXPECT_TRUE(UpdateChecker::isPortableDirectory(dirWithDot));
+    EXPECT_TRUE(UpdateChecker::isPortableDirectory(dirBareUnzip));
+    EXPECT_FALSE(UpdateChecker::isPortableDirectory(dirInstalled));
+
+    // 2. 安装版 /DIR 原地覆盖参数断言
+    const std::wstring dirParams = UpdateChecker::buildInstallerParametersForDir(L"D:\\My Apps\\Tools3000\\");
+    EXPECT_NE(dirParams.find(L"/SILENT"), std::wstring::npos);
+    EXPECT_NE(dirParams.find(L"/DIR=\"D:\\My Apps\\Tools3000\""), std::wstring::npos);
+
+    // 3. 真进程等待 + 真 ZIP 解压 + 真原地热替换端到端实测（含中文目录路径 + 用户数据目录保护）
+    const auto portableDir = root / L"用户便携目录";
+    const auto newPayloadDir = root / L"new_payload";
+    const auto updatesDir = root / L"updates";
+    std::filesystem::create_directories(portableDir / L"plugins", ec);
+    std::filesystem::create_directories(portableDir / L".tools3000" / L"config", ec);
+    std::filesystem::create_directories(portableDir / L"portable_data", ec);
+    std::filesystem::create_directories(newPayloadDir / L"plugins", ec);
+    std::filesystem::create_directories(newPayloadDir / L"data", ec);
+    std::filesystem::create_directories(updatesDir, ec);
+
+    { std::ofstream(portableDir / L"Tools3000.exe", std::ios::binary) << "OLD_EXE_1.4.4"; }
+    { std::ofstream(portableDir / L"plugins" / L"Plugin_Capture.dll", std::ios::binary) << "OLD_DLL"; }
+    { std::ofstream(portableDir / L".tools3000" / L"config" / L"config.json", std::ios::binary) << "{\"keep\":true}"; }
+    { std::ofstream(portableDir / L"portable_data" / L"notes.txt", std::ios::binary) << "USER_PRIVATE_DATA"; }
+
+    { std::ofstream(newPayloadDir / L"Tools3000.exe", std::ios::binary) << "NEW_EXE_1.4.6"; }
+    { std::ofstream(newPayloadDir / L"plugins" / L"Plugin_Capture.dll", std::ios::binary) << "NEW_DLL_1.4.6"; }
+    { std::ofstream(newPayloadDir / L"data" / L"should_be_skipped.txt", std::ios::binary) << "SKIP_ME"; }
+
+    const auto zipPath = updatesDir / L"Tools3000-v1.4.6-win-x64-portable.zip";
+    // 用系统原生 .NET ZipFile 打包含 portable.flag 的真实便携 ZIP
+    std::wstring packCmd =
+        L"powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \""
+        L"Add-Type -AssemblyName System.IO.Compression.FileSystem; "
+        L"[System.IO.Compression.ZipFile]::CreateFromDirectory('" + newPayloadDir.wstring() + L"', '" + zipPath.wstring() + L"'); "
+        L"$z=[System.IO.Compression.ZipFile]::Open('" + zipPath.wstring() + L"','Update'); "
+        L"$e=$z.CreateEntry('portable.flag'); $w=New-Object System.IO.StreamWriter($e.Open()); $w.Write('Tools3000 Portable'); $w.Dispose(); $z.Dispose()\"";
+    STARTUPINFOW packSi{};
+    packSi.cb = sizeof(packSi);
+    packSi.dwFlags = STARTF_USESHOWWINDOW;
+    packSi.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION packPi{};
+    ASSERT_TRUE(CreateProcessW(nullptr, packCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &packSi, &packPi));
+    ASSERT_EQ(WaitForSingleObject(packPi.hProcess, 15000), WAIT_OBJECT_0);
+    CloseHandle(packPi.hThread);
+    CloseHandle(packPi.hProcess);
+    ASSERT_TRUE(std::filesystem::exists(zipPath, ec));
+
+    // 启动一个真实短命子进程模拟原 Tools3000.exe 优雅退场
+    std::wstring dummyCmd = L"cmd.exe /c ping -n 2 127.0.0.1 >nul";
+    STARTUPINFOW dummySi{};
+    dummySi.cb = sizeof(dummySi);
+    dummySi.dwFlags = STARTF_USESHOWWINDOW;
+    dummySi.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION dummyPi{};
+    ASSERT_TRUE(CreateProcessW(nullptr, dummyCmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &dummySi, &dummyPi));
+    const uint32_t dummyPid = static_cast<uint32_t>(dummyPi.dwProcessId);
+    CloseHandle(dummyPi.hThread);
+    CloseHandle(dummyPi.hProcess);
+
+    std::string launchErr;
+    ASSERT_TRUE(UpdateChecker::launchPortableInPlaceUpdater(
+        zipPath, portableDir, dummyPid, launchErr, /*relaunchAfterUpdate=*/false)) << launchErr;
+
+    // 轮询等待真实原地热替换完成（最多 20 秒）
+    auto readAll = [](const std::filesystem::path& p) -> std::string {
+        std::ifstream ifs(p, std::ios::binary);
+        return ifs ? std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>()) : std::string{};
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (readAll(portableDir / L"Tools3000.exe") == "NEW_EXE_1.4.6") {
+            break;
+        }
+        Sleep(150);
+    }
+
+    EXPECT_EQ(readAll(portableDir / L"Tools3000.exe"), "NEW_EXE_1.4.6");
+    EXPECT_EQ(readAll(portableDir / L"plugins" / L"Plugin_Capture.dll"), "NEW_DLL_1.4.6");
+    EXPECT_TRUE(std::filesystem::exists(portableDir / L"portable.flag", ec));
+    // 严格保护全部用户数据目录：未覆盖、未删除、白名单跳过 ZIP 中 data/
+    EXPECT_EQ(readAll(portableDir / L".tools3000" / L"config" / L"config.json"), "{\"keep\":true}");
+    EXPECT_EQ(readAll(portableDir / L"portable_data" / L"notes.txt"), "USER_PRIVATE_DATA");
+    EXPECT_FALSE(std::filesystem::exists(portableDir / L"data" / L"should_be_skipped.txt", ec));
+}
+
+TEST(ConfigBackupServiceTest, CryptoFolderWebDavAndS3SigV4LoopbackE2E) {
+    using namespace tools3000::core::backup;
+
+    // 1. Windows DPAPI 真实加解密往返断言（严禁明文暴露）
+    std::string protectedCred;
+    ASSERT_TRUE(BackupCrypto::dpapiProtectUtf8("SuperSecret_S3_Key!@#", protectedCred));
+    EXPECT_EQ(protectedCred.rfind(kDpapiPrefix, 0), 0u);
+    EXPECT_EQ(protectedCred.find("SuperSecret_S3_Key"), std::string::npos);
+    std::string unprotectedCred;
+    ASSERT_TRUE(BackupCrypto::dpapiUnprotectUtf8(protectedCred, unprotectedCred));
+    EXPECT_EQ(unprotectedCred, "SuperSecret_S3_Key!@#");
+
+    // 2. AES-256-GCM + PBKDF2 端到端加密与防篡改认证断言
+    std::string envelope;
+    std::string cryptoErr;
+    ASSERT_TRUE(BackupCrypto::encryptEnvelope("{\"hello\":\"tools3000\"}", "Passphrase#2026", envelope, cryptoErr)) << cryptoErr;
+    std::string decrypted;
+    ASSERT_TRUE(BackupCrypto::decryptEnvelope(envelope, "Passphrase#2026", decrypted, cryptoErr)) << cryptoErr;
+    EXPECT_EQ(decrypted, "{\"hello\":\"tools3000\"}");
+
+    std::string wrongPlain;
+    EXPECT_FALSE(BackupCrypto::decryptEnvelope(envelope, "WrongPassphrase", wrongPlain, cryptoErr));
+    EXPECT_EQ(cryptoErr, "decrypt_auth_failed");
+
+    auto tamperedJson = nlohmann::json::parse(envelope);
+    std::string ct = tamperedJson["ciphertext"].get<std::string>();
+    ct[0] = (ct[0] == 'A') ? 'B' : 'A';
+    tamperedJson["ciphertext"] = ct;
+    EXPECT_FALSE(BackupCrypto::decryptEnvelope(tamperedJson.dump(), "Passphrase#2026", wrongPlain, cryptoErr));
+    EXPECT_EQ(cryptoErr, "decrypt_auth_failed");
+
+    // 准备隔离数据目录、原始配置与自定义 Lua 脚本
+    wchar_t tmpRoot[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tmpRoot), 0u);
+    const std::filesystem::path root =
+        std::filesystem::path(tmpRoot) /
+        (L"Tools3000_CloudBackupE2E_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(root, ec);
+
+    struct Cleanup {
+        std::filesystem::path dir;
+        ~Cleanup() {
+            std::error_code e;
+            std::filesystem::remove_all(dir, e);
+        }
+    } cleanup{root};
+
+    const auto dataDir = root / L"app_data";
+    const auto cfgFile = dataDir / L"config" / L"config.json";
+    const auto luaFile = dataDir / L"gestures" / L"scripts" / L"my_action.lua";
+    std::filesystem::create_directories(cfgFile.parent_path(), ec);
+    std::filesystem::create_directories(luaFile.parent_path(), ec);
+    { std::ofstream(luaFile, std::ios::binary) << "return 'custom-lua-ok'"; }
+
+    const nlohmann::json originalCfg = {
+        {"general", {{"language", "zh-CN"}, {"theme", "dark"}}},
+        {"gesture", {{"enabled", true}}},
+        {"backup", {{"s3SecretKeyEnc", "dpapi:v1:MUST_NOT_UPLOAD"}}},
+    };
+    { std::ofstream(cfgFile, std::ios::binary) << originalCfg.dump(2); }
+
+    // 校验快照构建器强制剥离了 /backup 敏感凭据子树
+    const auto snapEnv = ConfigBackupService::buildSnapshotEnvelope(originalCfg, dataDir);
+    EXPECT_FALSE(snapEnv["payload"]["config"].contains("backup"));
+    EXPECT_EQ(snapEnv["payload"]["customGestureScripts"].value("my_action.lua", ""), "return 'custom-lua-ok'");
+
+    // 3. 策略 1 (Folder / OneDrive 同步盘) 真实加密备份 + 破坏本地配置 + 安全恢复 + pre-restore 保险断言
+    {
+        ResolvedBackupConfig folderCfg{};
+        folderCfg.settings.provider = BackupProviderType::Folder;
+        folderCfg.settings.folderPath = tools3000::core::WinUtils::wstringToUtf8((root / L"OneDriveSync").wstring());
+        folderCfg.settings.encryptionEnabled = true;
+        folderCfg.settings.keepCount = 2;
+        folderCfg.encryptionPassphrase = "SyncPass#1";
+
+        const auto bRes = ConfigBackupService::backupWithConfig(folderCfg, originalCfg, dataDir);
+        ASSERT_TRUE(bRes.success) << bRes.errorCode;
+        EXPECT_FALSE(bRes.snapshotName.empty());
+
+        const auto lRes = ConfigBackupService::listWithConfig(folderCfg);
+        ASSERT_TRUE(lRes.success);
+        ASSERT_EQ(lRes.snapshots.size(), 1u);
+        EXPECT_TRUE(lRes.snapshots[0].encrypted);
+
+        // 模拟本地配置和脚本被意外改坏/删除
+        { std::ofstream(cfgFile, std::ios::binary | std::ios::trunc) << "{\"general\":{\"theme\":\"broken\"}}"; }
+        std::filesystem::remove(luaFile, ec);
+
+        const nlohmann::json localBackupKeep = {{"provider", "folder"}, {"s3SecretKeyEnc", "dpapi:v1:LOCAL_ONLY"}};
+        const auto rRes = ConfigBackupService::restoreWithConfig(
+            folderCfg, lRes.snapshots[0].id, "", cfgFile, dataDir, localBackupKeep);
+        ASSERT_TRUE(rRes.success) << rRes.errorCode;
+        EXPECT_FALSE(rRes.preRestoreBackupPath.empty());
+        EXPECT_TRUE(std::filesystem::exists(tools3000::core::WinUtils::utf8ToWstring(rRes.preRestoreBackupPath), ec));
+
+        std::ifstream restoredIfs(cfgFile, std::ios::binary);
+        const auto restoredJson = nlohmann::json::parse(restoredIfs);
+        EXPECT_EQ(restoredJson["general"]["theme"].get<std::string>(), "dark");
+        EXPECT_EQ(restoredJson["backup"]["s3SecretKeyEnc"].get<std::string>(), "dpapi:v1:LOCAL_ONLY");
+        std::ifstream luaIfs(luaFile, std::ios::binary);
+        ASSERT_TRUE(luaIfs.good());
+        EXPECT_EQ(std::string((std::istreambuf_iterator<char>(luaIfs)), std::istreambuf_iterator<char>()), "return 'custom-lua-ok'");
+    }
+
+    // 4. 策略 2 (WebDAV) 真实 WinHTTP + Loopback HTTP 服务端全链路实测
+    {
+        const std::string rawCred = "alice:dav-secret";
+        const std::string b64Cred = BackupCrypto::base64Encode(
+            reinterpret_cast<const uint8_t*>(rawCred.data()), rawCred.size());
+        LoopbackCloudTestServer davServer(LoopbackCloudTestServer::Mode::WebDav, b64Cred);
+        uint16_t davPort = 0;
+        ASSERT_TRUE(davServer.start(davPort));
+
+        ResolvedBackupConfig davCfg{};
+        davCfg.settings.provider = BackupProviderType::WebDav;
+        davCfg.settings.webdavUrl = "http://127.0.0.1:" + std::to_string(davPort) + "/dav/Tools3000/";
+        davCfg.settings.webdavUsername = "alice";
+        davCfg.webdavPassword = "dav-secret";
+        davCfg.settings.encryptionEnabled = true;
+        davCfg.encryptionPassphrase = "DavPass#2026";
+
+        const auto bRes = ConfigBackupService::backupWithConfig(davCfg, originalCfg, dataDir);
+        ASSERT_TRUE(bRes.success) << bRes.errorCode;
+
+        const auto lRes = ConfigBackupService::listWithConfig(davCfg);
+        ASSERT_TRUE(lRes.success) << lRes.errorCode;
+        ASSERT_EQ(lRes.snapshots.size(), 1u);
+
+        { std::ofstream(cfgFile, std::ios::binary | std::ios::trunc) << "{\"general\":{\"theme\":\"wiped\"}}"; }
+        const auto rRes = ConfigBackupService::restoreWithConfig(
+            davCfg, lRes.snapshots[0].id, "", cfgFile, dataDir, nlohmann::json::object());
+        ASSERT_TRUE(rRes.success) << rRes.errorCode;
+
+        std::ifstream restoredIfs(cfgFile, std::ios::binary);
+        const auto restoredJson = nlohmann::json::parse(restoredIfs);
+        EXPECT_EQ(restoredJson["general"]["language"].get<std::string>(), "zh-CN");
+        EXPECT_GE(davServer.verifiedSignatureCount(), 4);
+        davServer.stop();
+    }
+
+    // 5. 策略 3 (S3 SigV4) 真实 WinHTTP + Loopback S3 服务端逐请求验签全链路实测
+    {
+        LoopbackCloudTestServer s3Server(LoopbackCloudTestServer::Mode::S3, "AKIA_TEST_KEY", "SECRET_TEST_KEY_999");
+        uint16_t s3Port = 0;
+        ASSERT_TRUE(s3Server.start(s3Port));
+
+        ResolvedBackupConfig s3Cfg{};
+        s3Cfg.settings.provider = BackupProviderType::S3;
+        s3Cfg.settings.s3Endpoint = "http://127.0.0.1:" + std::to_string(s3Port);
+        s3Cfg.settings.s3Region = "auto";
+        s3Cfg.settings.s3Bucket = "my-bucket";
+        s3Cfg.settings.s3Prefix = "tools3000-backups/";
+        s3Cfg.settings.s3AccessKeyId = "AKIA_TEST_KEY";
+        s3Cfg.s3SecretKey = "SECRET_TEST_KEY_999";
+        s3Cfg.settings.s3ForcePathStyle = true;
+        s3Cfg.settings.encryptionEnabled = true;
+        s3Cfg.encryptionPassphrase = "S3Pass#2026";
+
+        const auto bRes = ConfigBackupService::backupWithConfig(s3Cfg, originalCfg, dataDir);
+        ASSERT_TRUE(bRes.success) << bRes.errorCode;
+
+        const auto lRes = ConfigBackupService::listWithConfig(s3Cfg);
+        ASSERT_TRUE(lRes.success) << lRes.errorCode;
+        ASSERT_EQ(lRes.snapshots.size(), 1u);
+
+        { std::ofstream(cfgFile, std::ios::binary | std::ios::trunc) << "{\"general\":{\"theme\":\"wiped\"}}"; }
+        const auto rRes = ConfigBackupService::restoreWithConfig(
+            s3Cfg, lRes.snapshots[0].id, "", cfgFile, dataDir, nlohmann::json::object());
+        ASSERT_TRUE(rRes.success) << rRes.errorCode;
+
+        std::ifstream restoredIfs(cfgFile, std::ios::binary);
+        const auto restoredJson = nlohmann::json::parse(restoredIfs);
+        EXPECT_EQ(restoredJson["general"]["theme"].get<std::string>(), "dark");
+        // PUT + LIST(prune) + LIST + GET 至少 4 次 AWS SigV4 签名全部位级验签通过！
+        EXPECT_GE(s3Server.verifiedSignatureCount(), 4);
+        s3Server.stop();
     }
 }

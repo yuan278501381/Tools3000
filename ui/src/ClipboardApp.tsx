@@ -50,6 +50,7 @@ import {
   Check,
   Sparkles,
   GripVertical,
+  AppWindow,
 } from 'lucide-react';
 import { CodeBadge } from './components/UIKit';
 import {
@@ -93,12 +94,18 @@ export interface ClipboardGroupInfo {
   createdAt: number;
 }
 
+export interface ClipboardSourceAppMeta {
+  name: string;
+  icon: string;
+}
+
 interface ClipboardQueryResponse {
   total: number;
   matched: number;
   pinnedCount?: number;
   hiddenPinnedCount?: number;
   items: ClipboardItemSummary[];
+  appMeta?: Record<string, ClipboardSourceAppMeta>;
 }
 
 interface ClipboardSettingsSnippet {
@@ -120,6 +127,14 @@ function formatBytesCompact(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
+function stripExeSuffix(sourceApp: string): string {
+  const trimmed = sourceApp.trim();
+  if (trimmed.length > 4 && trimmed.toLowerCase().endsWith('.exe')) {
+    return trimmed.slice(0, -4);
+  }
+  return trimmed;
+}
+
 function formatRelativeTime(epochMs: number): string {
   if (!epochMs) return '';
   const diffSec = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
@@ -139,6 +154,7 @@ export const ClipboardApp: FC = () => {
   const [activeGroupId, setActiveGroupId] = useState('');
   const [groups, setGroups] = useState<ClipboardGroupInfo[]>([]);
   const [items, setItems] = useState<ClipboardItemSummary[]>([]);
+  const [appMetaMap, setAppMetaMap] = useState<Record<string, ClipboardSourceAppMeta>>({});
   const [totalCount, setTotalCount] = useState(0);
   const [detailCache, setDetailCache] = useState<{ id: number; text: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -194,6 +210,41 @@ export const ClipboardApp: FC = () => {
     setMultiSelectMode(false);
   }, []);
 
+  const renderSourceAppBadge = useCallback(
+    (sourceApp: string) => {
+      if (!sourceApp) return null;
+      const key = sourceApp.trim().toLowerCase();
+      const meta = appMetaMap[key];
+      const displayLabel = meta?.name?.trim() || stripExeSuffix(sourceApp);
+      const tooltipText =
+        displayLabel.toLowerCase() === sourceApp.trim().toLowerCase()
+          ? sourceApp
+          : `${displayLabel} (${sourceApp})`;
+      return (
+        <span className="clip-popup__source-badge" title={tooltipText}>
+          {meta?.icon ? (
+            <img
+              className="clip-popup__source-icon"
+              src={meta.icon}
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+            />
+          ) : (
+            <AppWindow
+              size={13}
+              strokeWidth={2}
+              className="clip-popup__source-fallback-icon"
+              aria-hidden="true"
+            />
+          )}
+          <span className="clip-popup__source-label">{displayLabel}</span>
+        </span>
+      );
+    },
+    [appMetaMap],
+  );
+
   const selectedItem = items[selectedIndex] ?? null;
   const selectedIdSet = useMemo(() => new Set(selectedIds), [selectedIds]);
   const selectedTextableCount = useMemo(() => {
@@ -239,6 +290,10 @@ export const ClipboardApp: FC = () => {
         );
         if (res && Array.isArray(res.items)) {
           setItems(res.items);
+          if (res.appMeta && typeof res.appMeta === 'object') {
+            const incoming = res.appMeta;
+            setAppMetaMap((prev) => ({ ...prev, ...incoming }));
+          }
           setTotalCount(typeof res.total === 'number' ? res.total : res.items.length);
           if (typeof res.pinnedCount === 'number') {
             setPinnedCount(res.pinnedCount);
@@ -1346,7 +1401,7 @@ export const ClipboardApp: FC = () => {
                         </span>
                       ) : null}
                       {renderKindIcon(item.kind)}
-                      {item.sourceApp ? <CodeBadge>{item.sourceApp}</CodeBadge> : null}
+                      {renderSourceAppBadge(item.sourceApp)}
                       {item.hasRichText && (
                         <span className="clip-popup__rich-pill" title={t('clipboard.richTextTooltip', 'Preserves rich HTML/RTF formatting')}>
                           <Sparkles size={11} aria-hidden="true" />
@@ -1403,7 +1458,7 @@ export const ClipboardApp: FC = () => {
             <>
               <div className="clip-popup__detail-meta-bar">
                 <div className="clip-popup__detail-meta-left">
-                  {selectedItem.sourceApp ? <CodeBadge>{selectedItem.sourceApp}</CodeBadge> : null}
+                  {renderSourceAppBadge(selectedItem.sourceApp)}
                   {selectedItem.hasRichText && (
                     <span className="clip-popup__rich-pill">
                       <Sparkles size={11} aria-hidden="true" />

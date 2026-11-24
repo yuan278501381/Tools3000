@@ -255,9 +255,6 @@ export const AboutPage: FC = () => {
         toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
         return;
       }
-      if (updateResult?.isPortable) {
-        setInstallingUpdate(false);
-      }
     } catch {
       setInstallingUpdate(false);
       toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
@@ -351,9 +348,7 @@ export const AboutPage: FC = () => {
               <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>
                 <Download size={13} className={installingUpdate ? 'about-update-spin' : undefined} />
                 <span>
-                  {updateResult.isPortable
-                    ? t('about.openDownloadedPortable', 'Open Portable Package')
-                    : t('about.installUpdateNow', { version: updateResult.latestVersion ?? '', defaultValue: `Install ${updateResult.latestVersion ?? ''}` })}
+                  {t('about.installUpdateNow', { version: updateResult.latestVersion ?? '', defaultValue: `Install ${updateResult.latestVersion ?? ''}` })}
                 </span>
               </Button>
             ) : updateResult?.hasUpdate && updateResult.status !== 'downloading' ? (

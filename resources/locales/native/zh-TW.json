@@ -959,5 +959,13 @@
   "鼠标自动运镜||Auto Zoom": "滑鼠自動運鏡",
   "Recent Region ": "歷史選區 ",
   "No recent capture regions": "暫無歷史截圖選區",
-  "Reuse recent capture region": "重用歷史截圖區域"
+  "Reuse recent capture region": "重用歷史截圖區域",
+  "Screenshot completed (saved to history)": "擷圖已完成（已存入歷史）",
+  "Screenshot completed": "擷圖已完成",
+  "Done · Copy & Save (Enter)": "完成 · 複製並儲存 (Enter)",
+  "Done & Save (Enter)": "完成並儲存 (Enter)",
+  "Copy & save": "複製並儲存",
+  "Save & finish": "儲存並完成",
+  "Done & Copy (Enter)": "完成並複製 (Enter)",
+  "Copy & finish": "完成並複製"
 }

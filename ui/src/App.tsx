@@ -263,9 +263,6 @@ function App() {
           toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
           return;
         }
-        if (updateState.isPortable) {
-          setInstallingUpdate(false);
-        }
       } catch {
         setInstallingUpdate(false);
         toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
@@ -281,7 +278,7 @@ function App() {
     } catch {
       toast.error(t('about.updateFailed'));
     }
-  }, [installingUpdate, t, updateState.isPortable, updateState.readyToInstall, updateState.status]);
+  }, [installingUpdate, t, updateState.readyToInstall, updateState.status]);
 
   const handleStripDismissUpdate = useCallback(async () => {
     if (dismissingUpdate) return;
@@ -702,9 +699,7 @@ function App() {
                   {updateState.status === 'downloading'
                     ? `${updateState.progress}%`
                     : updateState.readyToInstall
-                      ? (updateState.isPortable
-                          ? t('about.openDownloadedPortable', 'Open Portable Package')
-                          : t('about.installNowBtn' as never, 'Install Now'))
+                      ? t('about.installNowBtn' as never, 'Install Now')
                       : t('about.downloadNowBtn' as never, 'Download Now')}
                 </button>
                 <button

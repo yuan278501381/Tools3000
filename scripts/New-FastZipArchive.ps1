@@ -9,7 +9,9 @@ param(
     [string]$SourceDirectory = "",
     [string]$SourceFilesList = "",
     [ValidateSet("Optimal", "Fastest", "NoCompression")]
-    [string]$CompressionLevel = "Optimal"
+    [string]$CompressionLevel = "Optimal",
+    [string]$ExtraMarkerEntryName = "",
+    [string]$ExtraMarkerContent = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -30,6 +32,22 @@ if (Test-Path -LiteralPath $DestinationPath) {
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
 if (-not [string]::IsNullOrWhiteSpace($SourceDirectory)) {
     [System.IO.Compression.ZipFile]::CreateFromDirectory($SourceDirectory, $DestinationPath, $level, $false)
+    if (-not [string]::IsNullOrWhiteSpace($ExtraMarkerEntryName)) {
+        $zip = [System.IO.Compression.ZipFile]::Open($DestinationPath, [System.IO.Compression.ZipArchiveMode]::Update)
+        try {
+            $existing = $zip.GetEntry($ExtraMarkerEntryName)
+            if ($existing) { $existing.Delete() }
+            $entry = $zip.CreateEntry($ExtraMarkerEntryName, $level)
+            $writer = New-Object System.IO.StreamWriter($entry.Open(), (New-Object System.Text.UTF8Encoding($false)))
+            try {
+                $writer.Write($ExtraMarkerContent)
+            } finally {
+                $writer.Dispose()
+            }
+        } finally {
+            $zip.Dispose()
+        }
+    }
 } elseif (-not [string]::IsNullOrWhiteSpace($SourceFilesList)) {
     $sourceFiles = @($SourceFilesList -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
     $zip = [System.IO.Compression.ZipFile]::Open($DestinationPath, [System.IO.Compression.ZipArchiveMode]::Create)

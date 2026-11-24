@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useCallback, type FC } from 'react';
 import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, ConfirmModal, PageSkeleton } from '../components/UIKit';
+import { CloudBackupCard } from '../components/business/CloudBackupCard';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
@@ -343,6 +344,25 @@ export const GeneralPage: FC = () => {
       toast.error(t('general.resetFailed'), { description: String(e) });
     }
   };
+
+  const refreshAllAfterRestore = useCallback(async () => {
+    try {
+      const [res, refreshedHotkeys] = await Promise.all([
+        bridgeRequest<GeneralSettings>('general.getSettings'),
+        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
+      ]);
+      setSettings(prev => ({ ...prev, ...res }));
+      if (isAccentColor(res.accentColor)) {
+        setAccent(res.accentColor);
+      }
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      applyLanguagePreference(res.language);
+      applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
+      void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
+    } catch {
+      // 忽略静默刷新异常
+    }
+  }, [applyLanguagePreference]);
 
   // ── 刷新快捷键状态 ───────────────────────────────────────────────────────
   const refreshHotkeys = useCallback(async () => {
@@ -803,6 +823,7 @@ export const GeneralPage: FC = () => {
             </Button>
           </SettingRow>
         </Card>
+        <CloudBackupCard onConfigRestored={() => void refreshAllAfterRestore()} />
       </SettingGroup>
 
       <ConfirmModal

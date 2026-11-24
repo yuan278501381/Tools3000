@@ -1040,7 +1040,10 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
     state.toolbarLayoutValid = true;
 }
 
-std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
+std::wstring tooltipForButton(
+    const ToolbarButton& button,
+    bool chinese,
+    const CaptureOptions* options) {
     if (button.command == ToolbarCommand::SelectTool) {
         switch (button.tool) {
             case MarkupTool::Rectangle:
@@ -1121,7 +1124,27 @@ std::wstring tooltipForButton(const ToolbarButton& button, bool chinese) {
                 chinese,
                 L"快速保存 (Ctrl+Shift+S，右键另存为)",
                 L"Quick Save (Ctrl+Shift+S, Right-click Save As)");
-        case ToolbarCommand::Confirm: return chinese ? L"完成并复制 (Enter)" : L"Done & Copy (Enter)";
+        case ToolbarCommand::Confirm: {
+            const CaptureOptions effectiveOpts = options ? *options : CaptureOptions{};
+            const auto decision = resolveCaptureDeliveryDecision(
+                effectiveOpts, CaptureCompletion{CaptureCompletionAction::Default});
+            if (decision.shouldCopyToClipboard && decision.shouldSaveAutomatically) {
+                return tools3000::core::trWCstrFor(
+                    chinese,
+                    L"完成 · 复制并保存 (Enter)",
+                    L"Done · Copy & Save (Enter)");
+            }
+            if (decision.shouldSaveAutomatically && !decision.shouldCopyToClipboard) {
+                return tools3000::core::trWCstrFor(
+                    chinese,
+                    L"完成并保存 (Enter)",
+                    L"Done & Save (Enter)");
+            }
+            return tools3000::core::trWCstrFor(
+                chinese,
+                L"完成并复制 (Enter)",
+                L"Done & Copy (Enter)");
+        }
         case ToolbarCommand::Cancel: return chinese ? L"取消 (Esc)" : L"Cancel (Esc)";
         case ToolbarCommand::ToggleFill:
             if (button.tool == MarkupTool::Text) {

@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 四项社区高优先级能力落地：截图收尾解耦、剪贴板彩色应用图标、便携版原地热更新与配置云端/同步盘安全备份
+- **1. 截图完成动作解耦 + 动态「完成」提示 + 双关兜底复制 (`src/capture/CaptureState.h`, `ScreenCapture.cpp`, `CaptureToolbarLayout.{h,cpp}`, `CaptureRendererToolbar.cpp`, `ShortcutHintOverlay.cpp`, `resources/locales/native/*.json`, 感谢 LINUX DO `@longqiuyu`)**：
+  - `resolveCaptureDeliveryDecision` 移除默认完成下的强制另存为弹窗兜底；开启「自动保存到文件」且关闭「自动复制到剪贴板」时严格仅保存文件不污染剪贴板；当两项同时关闭（且非 OCR 等纯内存直达回调）时，点击「完成」/ `Enter` / 双击无打扰兜底复制到剪贴板（绝不弹另存为框，并与 `Esc` 取消形成清晰区分），长截图同步对齐；
+  - 工具栏 `✓` 按钮悬浮提示与 `ShortcutHintOverlay` 的 `Enter` 提示统一调用 `resolveCaptureDeliveryDecision` 动态切换为「完成 · 复制并保存 / 完成并保存 / 完成并复制」（8 语种原生词典与前端描述全量同步）。
+- **2. 剪贴板来源彩色应用图标 + 友好应用名 (`src/clipboard/ClipboardManager.{h,cpp}`, `ui/src/ClipboardApp.{tsx,css}`, `CMakeLists.txt`, 感谢 LINUX DO `@yue_bro`)**：
+  - 采集前景进程可执行路径时同步通过 Win32 PE VersionInfo (`GetFileVersionInfoW` -> `FileDescription` / `ProductName`) 提取人类可读友好名，通过 `WinUtils::getFileTypeIconBase64` 提取真实 Windows 彩色应用图标，持久化于 `%LOCALAPPDATA%\Tools3000\clipboard\app_meta.json`；
+  - 首次查询老历史条目时以单次进程快照 + `App Paths` 注册表低开销回填元数据；前端胶囊以 `14×14` 真彩图标 + 友好名呈现，悬浮显示完整 `应用名 (proc.exe)`，并保留对友好名与原始进程名的双向搜索过滤；`CMakeLists.txt` 为 `ui_objects` 与 `Tools3000` 显式链接 `version.lib`。
+- **3. 便携版自动更新原地热替换 + 安装版 `/DIR` 保护 (`scripts/New-FastZipArchive.ps1`, `deploy.ps1`, `src/core/update/UpdateChecker.{h,cpp}`, `ui/src/App.tsx`, `AboutPage.tsx`, 感谢 GitHub Issue `#4 @Yafeiml`)**：
+  - `New-FastZipArchive.ps1` 支持 `-ExtraMarkerEntryName` / `-ExtraMarkerContent` 直接向便携版 ZIP 注入 `portable.flag`（零污染源 staging 目录）；
+  - `UpdateChecker::isPortableDirectory` 统一按 `portable.flag` / `.tools3000` / `data` / `portable_data` 及缺失 Inno `unins000.exe` + 卸载注册表综合判定，防止便携版误下 `Setup.exe` 装出双份副本；
+  - 安装版静默升级传参追加 `/DIR="<currentExeDir>"` 锁定原安装目录；便携版下载完 ZIP 后启动独立 UTF-8 BOM PowerShell 热更新脚本（兼容 8 语种与中文路径），等待父进程退出、严格保护用户数据目录（`data`/`config`/`logs`/`clipboard`/`gestures`/`models` 等）、原地覆盖替换二进制、保活 `portable.flag` 并从原路径无缝重启。
+- **4. 多策略配置云备份与端到端加密 (`src/core/backup/{ConfigBackupTypes.h,BackupCrypto.*,BackupTransport.*,ConfigBackupService.*}`, `MessageBridge.cpp`, `main.cpp`, `ui/src/components/business/CloudBackupCard.*`, `GeneralPage.tsx`, 8 语种字典, 感谢 GitHub Issue `#4 @Yafeiml`)**：
+  - **产品权衡与多态策略 (`IBackupTransport`)**：避免在客户端内嵌重型 OAuth SDK 及付费年度 Google CASA Tier 2 审计门槛，采用 **同步文件夹自动探测**（OneDrive / Google Drive / Dropbox / iCloud Drive / 坚果云）、**标准 WebDAV**（原生 `WinHTTP` `MKCOL`/`PROPFIND`/`PUT`/`GET`/`DELETE` + Basic Auth）与 **S3 兼容对象存储**（原生 `WinHTTP` + `BCrypt` AWS Signature Version 4，支持 Path-Style 与 Virtual-Host，兼容 R2 / OSS / MinIO / AWS）三路并进；
+  - **安全与防回退防线**：本机 WebDAV 密码 / S3 Secret Key / 加密口令 100% 通过 Windows DPAPI (`CryptProtectData`) 加密落盘，快照强制剥离 `/backup` 与 `/update` 敏感子树；可选客户端 **AES-256-GCM + PBKDF2-HMAC-SHA256 (100,000 次迭代)** 端到端加密，密文快照使用规范后缀 `.enc.t3kbak`（并兼容旧文件尾部探测）确保全通道列表无需额外下载即可展示加密徽章；恢复前强制生成 `config.pre-restore-<ts>.json` 保险副本并保留本机备份凭据，支持保留份数自动裁剪与可选退出静默自动备份；
+  - **实测验证暗坑收获**：全量 E2E 实测捕获并根治了 `nlohmann::json` 按字母序序列化导致 `ciphertextB64` 位于 `encrypted` 之前使 256B 文件头嗅探误判的隐患，并顺带修复根目录整理后 `tests/unit/test_core.inc` 中 6 处旧 `installer.iss` 定位路径。
+
 ### [2026-11-24] 仓库根目录文件结构整理（44 -> 22 项）与安全优先 Dependabot 配置
 - **根目录极简主义（Single-Viewport Root Rule）**：
   1. 7 份副语种 README 统一移入 `docs/i18n/`（根目录仅保留唯一英文主 `README.md`）；

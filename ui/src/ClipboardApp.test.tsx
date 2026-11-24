@@ -325,4 +325,84 @@ describe('ClipboardApp', () => {
     expect(options[0].getAttribute('aria-selected')).toBe('true');
     expect(options[1].getAttribute('aria-selected')).toBe('false');
   });
+
+  it('renders native colored source app icons with friendly labels and full exe tooltips', async () => {
+    const fakePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    bridgeRequestMock.mockImplementation(async (method: string) => {
+      if (method === 'clipboard.getSettings') {
+        return { hidePinnedInOtherCategories: false };
+      }
+      if (method === 'clipboard.listGroups') {
+        return { groups: [] };
+      }
+      if (method === 'clipboard.query') {
+        return {
+          total: 2,
+          matched: 2,
+          pinnedCount: 0,
+          hiddenPinnedCount: 0,
+          items: [
+            {
+              id: 201,
+              kind: 'image',
+              preview: 'Image 1106x515',
+              hasRichText: false,
+              groupId: '',
+              charCount: 0,
+              lineCount: 1,
+              imageFile: 'wx.png',
+              imageWidth: 1106,
+              imageHeight: 515,
+              sourceApp: 'Weixin.exe',
+              colorHex: '',
+              byteSize: 21299,
+              createdAt: Date.now() - 60_000,
+              updatedAt: Date.now() - 60_000,
+              pinned: false,
+              copyCount: 1,
+            },
+            {
+              id: 202,
+              kind: 'text',
+              preview: 'Edge snippet',
+              hasRichText: true,
+              groupId: '',
+              charCount: 12,
+              lineCount: 1,
+              imageFile: '',
+              imageWidth: 0,
+              imageHeight: 0,
+              sourceApp: 'msedge.exe',
+              colorHex: '',
+              byteSize: 12,
+              createdAt: Date.now() - 30_000,
+              updatedAt: Date.now() - 30_000,
+              pinned: false,
+              copyCount: 1,
+            },
+          ],
+          appMeta: {
+            'weixin.exe': { name: '微信', icon: fakePng },
+            'msedge.exe': { name: 'Microsoft Edge', icon: fakePng },
+          },
+        };
+      }
+      return { success: true };
+    });
+
+    const { container } = render(<ClipboardApp />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText('微信').length).toBeGreaterThanOrEqual(2); // 列表项 + 详情区
+      expect(screen.getByText('Microsoft Edge')).toBeTruthy();
+    });
+
+    const badges = container.querySelectorAll('.clip-popup__source-badge');
+    expect(badges.length).toBe(3); // 左侧 2 项 + 右侧当前选中详情 1 项
+    expect(badges[0].getAttribute('title')).toBe('微信 (Weixin.exe)');
+    expect(badges[1].getAttribute('title')).toBe('Microsoft Edge (msedge.exe)');
+    const icons = container.querySelectorAll('img.clip-popup__source-icon');
+    expect(icons.length).toBe(3);
+    expect(icons[0].getAttribute('src')).toBe(fakePng);
+  });
 });

@@ -1,0 +1,296 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CloudBackupCard.css — 配置云备份与同步盘卡片样式 (@container 自适应 · 零悬空令牌)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.cloud-backup-card {
+  container-type: inline-size;
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cloud-backup__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cloud-backup__title-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.cloud-backup__title-icon {
+  color: var(--primary);
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.cloud-backup__title {
+  margin: 0;
+  font-family: var(--font-sans);
+  font-size: 0.96rem;
+  font-weight: 700;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.cloud-backup__subtitle {
+  margin: 2px 0 0;
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.cloud-backup__last-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.cloud-backup__providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cloud-backup__provider-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color 0.16s ease, color 0.16s ease, background 0.16s ease;
+}
+
+.cloud-backup__provider-btn:hover {
+  border-color: var(--primary);
+  color: var(--text-primary);
+}
+
+.cloud-backup__provider-btn.is-active {
+  border-color: var(--primary);
+  background: var(--primary);
+  color: #ffffff;
+}
+
+.cloud-backup__section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cloud-backup__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+}
+
+@container (max-width: 560px) {
+  .cloud-backup__grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.cloud-backup__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.cloud-backup__field--full {
+  grid-column: 1 / -1;
+}
+
+.cloud-backup__field--toggle {
+  justify-content: center;
+}
+
+.cloud-backup__label {
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.cloud-backup__input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cloud-backup__input,
+.cloud-backup__number-input {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.4;
+  box-sizing: border-box;
+}
+
+.cloud-backup__number-input {
+  width: 84px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.cloud-backup__input:focus,
+.cloud-backup__number-input:focus {
+  outline: none;
+  border-color: var(--primary);
+}
+
+.cloud-backup__detected-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.cloud-backup__detected-label {
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.cloud-backup__drive-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.cloud-backup__drive-chip.is-selected,
+.cloud-backup__drive-chip:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.cloud-backup__options {
+  border-top: 1px solid var(--card-border);
+  padding-top: 8px;
+}
+
+.cloud-backup__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.cloud-backup__snapshots {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 10px;
+}
+
+.cloud-backup__snapshot-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+}
+
+.cloud-backup__snapshot-info {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cloud-backup__enc-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--primary);
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.cloud-backup__snapshot-meta {
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.cloud-backup__empty {
+  padding: 10px;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.cloud-backup__spin {
+  animation: cloudBackupSpin 0.9s linear infinite;
+}
+
+@keyframes cloudBackupSpin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

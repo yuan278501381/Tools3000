@@ -569,6 +569,42 @@
   font-variant-numeric: tabular-nums lining-nums;
 }
 
+.clip-popup__source-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 176px;
+  padding: 2px 7px 2px 5px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.3;
+  vertical-align: middle;
+}
+
+.clip-popup__source-icon {
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.clip-popup__source-fallback-icon {
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.clip-popup__source-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .clip-popup__rich-pill {
   display: inline-flex;
   align-items: center;

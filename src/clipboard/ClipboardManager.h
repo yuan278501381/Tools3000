@@ -27,9 +27,17 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace tools3000::clipboard {
+
+struct SourceAppMetadata {
+    std::string displayName;
+    std::string iconDataUrl;
+    std::string exePath;
+};
 
 struct ClipboardSettings {
     bool enabled = true;
@@ -103,8 +111,16 @@ public:
     /// 注册同进程目标窗口焦点恢复回调（如 SettingsWindow WebView2 焦点恢复，避免反向依赖 UI 层）
     void setTargetFocusRestorer(std::function<void(HWND)> cb);
 
-    // ── 纯静态隐私策略与窗口目标校验工具函数（支持离线单元测试） ────────────────
+    /// 登记来源应用的可执行文件路径并提取/缓存其友好名称与彩色原生图标（线程安全，供后台采集与测试调用）
+    bool recordSourceAppMetadataForPath(const std::string& processExeName, const std::wstring& exePath);
+
+    // ── 纯静态隐私策略、来源应用名称归一化与窗口目标校验工具函数（支持离线单元测试） ──
     static bool isExcludedProcessName(std::string_view processExeName, std::string_view excludedAppsCsv);
+    static std::string normalizeProcessKey(std::string_view processExeName);
+    static std::string normalizeFriendlyAppName(
+        std::string_view fileDescription,
+        std::string_view productName,
+        std::string_view processExeName);
     static std::string fnv1a128Hex(const uint8_t* data, size_t len);
     static bool isTransientInternalOverlayClass(std::wstring_view className) noexcept;
     static HWND normalizeValidTargetHwnd(HWND candidate, HWND selfHwnd) noexcept;
@@ -125,6 +141,7 @@ private:
         std::vector<uint8_t> rawPngBytes;
         std::vector<uint8_t> rawDibBytes;
         std::string sourceApp;
+        std::wstring sourceExePath;
     };
 
     static LRESULT CALLBACK listenerWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
@@ -178,6 +195,15 @@ private:
     std::function<void(const std::string&)> m_changeNotifier;
     std::function<void(HWND)> m_targetFocusRestorer;
     void notifyChanged(const nlohmann::json& payload);
+
+    void loadAppMetadataCacheLocked();
+    void persistAppMetadataCacheLocked() const;
+    nlohmann::json buildAppMetadataForItems(const nlohmann::json& items) const;
+
+    static constexpr size_t kMaxCachedSourceApps = 256;
+    mutable std::mutex m_appMetaMutex;
+    mutable std::unordered_map<std::string, SourceAppMetadata> m_appMetaCache;
+    mutable std::unordered_set<std::string> m_unresolvedAppKeys;
 };
 
 }  // namespace tools3000::clipboard

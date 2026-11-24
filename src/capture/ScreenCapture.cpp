@@ -139,64 +139,17 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                 result.filePath.empty()
                     ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
                     : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
+        } else if (!decision.shouldCopyToClipboard &&
+                   !decision.shouldSaveExplicitly &&
+                   !decision.shouldSaveAutomatically &&
+                   !decision.shouldInvokeMemoryCallback) {
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                decision.shouldRecordHistory
+                    ? (tools3000::core::trWCstrFor(isZh, L"截图已完成（已存入历史）", L"Screenshot completed (saved to history)"))
+                    : (tools3000::core::trWCstrFor(isZh, L"截图已完成", L"Screenshot completed"))});
         }
 
-        // 当用户同时关闭了自动复制与自动保存（且非内存直达回调）时，弹出系统另存为对话框兜底防丢图
-        if (decision.shouldPromptSaveAsFallback && !deliverableImage.empty()) {
-            cv::Mat imgToSave = deliverableImage.clone();
-            const ImageFormat defFmt = activeOpts.format;
-            const int quality = activeOpts.quality;
-            const bool recordHist = decision.shouldRecordHistory;
-            const CaptureRegion savedRegion = region;
-            tools3000::core::MainThreadDispatcher::instance().post(
-                [this, imgToSave, defFmt, quality, recordHist, savedRegion]() {
-                    std::array<wchar_t, 32768> fileBuffer{};
-                    const wchar_t* defExt = (defFmt == ImageFormat::JPEG) ? L"jpg"
-                                          : (defFmt == ImageFormat::BMP)  ? L"bmp"
-                                          : (defFmt == ImageFormat::WebP) ? L"webp" : L"png";
-                    const std::wstring defaultName = std::wstring(L"Tools3000_Screenshot.") + defExt;
-                    wcsncpy_s(fileBuffer.data(), fileBuffer.size(), defaultName.c_str(), _TRUNCATE);
-                    OPENFILENAMEW ofn{};
-                    ofn.lStructSize = sizeof(ofn);
-                    ofn.lpstrFile = fileBuffer.data();
-                    ofn.nMaxFile = static_cast<DWORD>(fileBuffer.size());
-                    ofn.lpstrFilter =
-                        L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0Bitmap (*.bmp)\0*.bmp\0WebP Image (*.webp)\0*.webp\0";
-                    ofn.nFilterIndex = (defFmt == ImageFormat::JPEG) ? 2
-                                     : (defFmt == ImageFormat::BMP)  ? 3
-                                     : (defFmt == ImageFormat::WebP) ? 4 : 1;
-                    ofn.lpstrDefExt = defExt;
-                    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-                    std::string chosenSavedPath;
-                    if (GetSaveFileNameW(&ofn)) {
-                        std::filesystem::path selected(fileBuffer.data());
-                        ImageFormat chosenFmt = ImageFormat::PNG;
-                        if (ofn.nFilterIndex == 2) chosenFmt = ImageFormat::JPEG;
-                        else if (ofn.nFilterIndex == 3) chosenFmt = ImageFormat::BMP;
-                        else if (ofn.nFilterIndex == 4) chosenFmt = ImageFormat::WebP;
-                        if (!selected.has_extension()) {
-                            selected += (chosenFmt == ImageFormat::JPEG) ? L".jpg"
-                                      : (chosenFmt == ImageFormat::BMP)  ? L".bmp"
-                                      : (chosenFmt == ImageFormat::WebP) ? L".webp" : L".png";
-                        }
-                        auto encoded = encodeImage(imgToSave, chosenFmt, quality);
-                        if (!encoded.empty()) {
-                            chosenSavedPath = saveToFile(
-                                encoded,
-                                tools3000::core::WinUtils::wstringToUtf8(selected.wstring()),
-                                chosenFmt);
-                            const bool zh = useChineseCaptureToast();
-                            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                                chosenSavedPath.empty()
-                                    ? (tools3000::core::trWCstrFor(zh, L"截图保存失败", L"Failed to save screenshot"))
-                                    : (tools3000::core::trWCstrFor(zh, L"截图已保存", L"Screenshot saved"))});
-                        }
-                    }
-                    if (recordHist) {
-                        CaptureHistory::instance().push(imgToSave, savedRegion, chosenSavedPath);
-                    }
-                });
-        } else if (decision.shouldRecordHistory) {
+        if (decision.shouldRecordHistory) {
             CaptureHistory::instance().push(markedImage, region, result.filePath);
         }
 
@@ -431,7 +384,11 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     const auto action = static_cast<ScrollFinishAction>(finishActionCode);
     const bool forceCopy = (action == ScrollFinishAction::Copy);
     const bool forceSave = (action == ScrollFinishAction::QuickSave);
-    const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard;
+    const bool fallbackCopyOnConfirm =
+        (action == ScrollFinishAction::Confirm &&
+         !m_activeOptions.copyToClipboard &&
+         !m_activeOptions.saveToFile);
+    const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard || fallbackCopyOnConfirm;
     bool copied = false;
     if (shouldCopy) {
         copied = copyToClipboard(finalImage);
@@ -496,9 +453,8 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
         return;
     }
 
-    const bool promptSaveAs =
-        (action == ScrollFinishAction::SaveAs) ||
-        (action == ScrollFinishAction::Confirm && !shouldCopy && !m_activeOptions.saveToFile);
+    // 仅在显式另存为时弹出文件目录对话框；关闭自动保存后确认长截图不再擅自弹窗
+    const bool promptSaveAs = (action == ScrollFinishAction::SaveAs);
     if (promptSaveAs) {
         cv::Mat imgToSave = finalImage;
         const ImageFormat defFmt = m_activeOptions.format;

@@ -959,5 +959,13 @@
   "鼠标自动运镜||Auto Zoom": "Zoom auto do mouse",
   "Recent Region ": "Região recente ",
   "No recent capture regions": "Nenhuma região de captura recente",
-  "Reuse recent capture region": "Reutilizar região recente"
+  "Reuse recent capture region": "Reutilizar região recente",
+  "Screenshot completed (saved to history)": "Captura concluída (salva no histórico)",
+  "Screenshot completed": "Captura concluída",
+  "Done · Copy & Save (Enter)": "Concluir · Copiar e salvar (Enter)",
+  "Done & Save (Enter)": "Concluir e salvar (Enter)",
+  "Copy & save": "Copiar e salvar",
+  "Save & finish": "Salvar e concluir",
+  "Done & Copy (Enter)": "Concluir e copiar (Enter)",
+  "Copy & finish": "Copiar e concluir"
 }

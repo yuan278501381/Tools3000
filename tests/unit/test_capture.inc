@@ -8732,20 +8732,51 @@ TEST(CaptureDeliveryPolicyTest, RespectsCopyToClipboardSettingAndOcrMemoryDirect
         EXPECT_FALSE(copyDecision.shouldPromptSaveAsFallback);
     }
 
-    // 2. B3 兜底防丢图：同时关闭 copyToClipboard 与 saveToFile 时，默认完成动作触发另存为对话框兜底
+    // 2. 自动复制与自动保存解耦 + 双关兜底复制策略：
+    //    - 开启复制 + 关闭保存：只复制不弹另存为；
+    //    - 关闭复制 + 开启保存：只保存不污染剪贴板；
+    //    - 双项全关（非纯内存直达）：点「完成」无打扰兜底复制到剪贴板，绝不弹另存为，与 Esc 取消区分；
+    //    - 工具栏「完成」提示动态与真实交付决策 100% 对齐。
     {
+        CaptureOptions copyOnly;
+        copyOnly.copyToClipboard = true;
+        copyOnly.saveToFile = false;
+        const auto copyOnlyDecision = resolveCaptureDeliveryDecision(copyOnly, {CaptureCompletionAction::Default});
+        EXPECT_TRUE(copyOnlyDecision.shouldCopyToClipboard);
+        EXPECT_FALSE(copyOnlyDecision.shouldSaveAutomatically);
+        EXPECT_FALSE(copyOnlyDecision.shouldPromptSaveAsFallback);
+
         CaptureOptions bothOff;
         bothOff.copyToClipboard = false;
         bothOff.saveToFile = false;
 
         CaptureCompletion defaultDone;
         defaultDone.action = CaptureCompletionAction::Default;
-        const auto fallbackDecision = resolveCaptureDeliveryDecision(bothOff, defaultDone);
-        EXPECT_FALSE(fallbackDecision.shouldCopyToClipboard);
-        EXPECT_FALSE(fallbackDecision.shouldSaveAutomatically);
-        EXPECT_TRUE(fallbackDecision.shouldPromptSaveAsFallback);
+        const auto bothOffDecision = resolveCaptureDeliveryDecision(bothOff, defaultDone);
+        EXPECT_TRUE(bothOffDecision.shouldCopyToClipboard);
+        EXPECT_FALSE(bothOffDecision.shouldSaveAutomatically);
+        EXPECT_FALSE(bothOffDecision.shouldPromptSaveAsFallback);
+        EXPECT_TRUE(bothOffDecision.shouldRecordHistory);
 
-        // 显式指定另存为目标路径时不重复触发兜底
+        // 动态 Confirm 工具栏悬浮提示必须 1:1 匹配 4 种开关组合
+        ToolbarButton confirmBtn{};
+        confirmBtn.command = ToolbarCommand::Confirm;
+        CaptureOptions bothOn;
+        bothOn.copyToClipboard = true;
+        bothOn.saveToFile = true;
+        CaptureOptions saveOnly;
+        saveOnly.copyToClipboard = false;
+        saveOnly.saveToFile = true;
+        EXPECT_EQ(tooltipForButton(confirmBtn, true, &bothOn), L"完成 · 复制并保存 (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, false, &bothOn), L"Done · Copy & Save (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, true, &copyOnly), L"完成并复制 (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, false, &copyOnly), L"Done & Copy (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, true, &saveOnly), L"完成并保存 (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, false, &saveOnly), L"Done & Save (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, true, &bothOff), L"完成并复制 (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, false, &bothOff), L"Done & Copy (Enter)");
+
+        // 显式指定另存为目标路径时仍正常执行显式保存且尊重 copyToClipboard=false 不覆盖剪贴板
         CaptureCompletion saveAsDone;
         saveAsDone.action = CaptureCompletionAction::SaveAs;
         saveAsDone.filePath = "C:/temp/manual_export.png";
@@ -14789,7 +14820,7 @@ TEST(CaptureQuickSaveRegressionTest, DeliveryDecisionForcesAutoSaveWithoutFallba
         EXPECT_TRUE(d.shouldRecordHistory);
     }
 
-    // 3. 回归确认：SaveAs / Copy / Default 原有交付策略 100% 保持不变
+    // 3. 回归确认：SaveAs / Copy 保持显式行为，Default 在双关时兜底复制到剪贴板且绝不触发另存为弹窗
     {
         CaptureOptions bothOff;
         bothOff.saveToFile = false;
@@ -14797,7 +14828,8 @@ TEST(CaptureQuickSaveRegressionTest, DeliveryDecisionForcesAutoSaveWithoutFallba
 
         const auto dDefault = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Default});
         EXPECT_FALSE(dDefault.shouldSaveAutomatically);
-        EXPECT_TRUE(dDefault.shouldPromptSaveAsFallback);
+        EXPECT_TRUE(dDefault.shouldCopyToClipboard);
+        EXPECT_FALSE(dDefault.shouldPromptSaveAsFallback);
 
         const auto dCopy = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Copy});
         EXPECT_TRUE(dCopy.shouldCopyToClipboard);

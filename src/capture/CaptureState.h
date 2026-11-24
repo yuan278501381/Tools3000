@@ -225,15 +225,14 @@ inline CaptureDeliveryDecision resolveCaptureDeliveryDecision(
         d.shouldCopyToClipboard = options.copyToClipboard;
         d.shouldPromptSaveAsFallback = false;
     } else if (completion.action == CaptureCompletionAction::Default) {
-        // 默认完成动作（Enter、双击选区、点击「完成」勾号）：严格尊重用户 copyToClipboard 开关
-        d.shouldCopyToClipboard = options.copyToClipboard;
-        if (!d.shouldCopyToClipboard &&
-            !d.shouldSaveAutomatically &&
-            !d.shouldSaveExplicitly &&
-            !d.shouldInvokeMemoryCallback) {
-            // 用户同时关闭了自动复制与自动保存且无内存消费方：弹出系统另存为对话框兜底防丢图
-            d.shouldPromptSaveAsFallback = true;
-        }
+        // 默认完成动作（Enter、双击选区、点击「完成」勾号）：
+        // - 开启自动保存到文件时，严格尊重 copyToClipboard 开关（关闭时不覆盖剪贴板）；
+        // - 若非纯内存直达回调（如 OCR），且自动复制与自动保存同时关闭，则点「完成」无打扰兜底复制到剪贴板，
+        //   绝不擅自弹出另存为对话框，同时与按 Esc 取消形成清晰区隔。
+        const bool fallbackCopyWhenBothOff =
+            (!options.copyToClipboard && !options.saveToFile && !d.shouldInvokeMemoryCallback);
+        d.shouldCopyToClipboard = options.copyToClipboard || fallbackCopyWhenBothOff;
+        d.shouldPromptSaveAsFallback = false;
     } else {
         // 显式另存为动作：尊重用户是否开启同时复制到剪贴板
         d.shouldCopyToClipboard = options.copyToClipboard;

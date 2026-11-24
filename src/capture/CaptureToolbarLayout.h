@@ -13,8 +13,11 @@ void rebuildCaptureToolbar(CaptureState& state, const D2D1_RECT_F& selectionRect
 /// 执行截图向区域录屏模式的原子转换与状态清理
 void transitionToRecordMode(CaptureState& state);
 
-/// 获取工具栏按钮的悬停提示文本
-std::wstring tooltipForButton(const ToolbarButton& button, bool chinese);
+/// 获取工具栏按钮的悬停提示文本（传入 options 时动态反映「完成」按钮的真实交付动作）
+std::wstring tooltipForButton(
+    const ToolbarButton& button,
+    bool chinese,
+    const CaptureOptions* options = nullptr);
 
 /// 计算悬停提示浮层矩形（含双工具栏跨栏避让与侧边竖排圆钮水平弹出）
 D2D1_RECT_F calculateTooltipRect(const D2D1_RECT_F& buttonRect, float tw, float th, float scale,
