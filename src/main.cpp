@@ -1513,6 +1513,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             {"trackingId", res.trackingId},
             {"issueUrl", res.issueUrl},
             {"exportedBundlePath", res.exportedBundlePath},
+            {"exportedScreenshotPath", res.exportedScreenshotPath},
+            {"copiedToClipboard", res.copiedToClipboard},
             {"markdownReport", res.markdownReport},
             {"errorMessage", res.errorMessage},
             {"totalRedactions", res.totalRedactions}
@@ -1525,10 +1527,28 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
         return {{"success", ok}};
     });
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.copyBundleFiles", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string bundleUtf8 = jsonStringOr(params, "bundlePath");
+        const std::string shotUtf8 = jsonStringOr(params, "screenshotPath");
+        if (bundleUtf8.empty()) return {{"success", false}};
+        const bool ok = tools3000::core::FeedbackDiagnosticService::copyDiagnosticFilesToClipboard(
+            tools3000::core::WinUtils::utf8ToPath(bundleUtf8),
+            shotUtf8.empty() ? std::filesystem::path{} : tools3000::core::WinUtils::utf8ToPath(shotUtf8));
+        return {{"success", ok}};
+    });
     tools3000::core::MessageBridge::instance().registerHostHandler("feedback.openExternalUrl", [](const nlohmann::json& params) -> nlohmann::json {
         const std::string url = jsonStringOr(params, "url");
-        if (url.rfind("https://github.com/yuan278501381/tools3000/", 0) != 0) {
+        const std::string urlLower = tools3000::core::WinUtils::toLower(url);
+        if (urlLower.rfind("https://github.com/yuan278501381/tools3000/", 0) != 0) {
             return {{"success", false}, {"error", "untrusted_url"}};
+        }
+        // 打开预填 GitHub Issue 页面前自动重刷剪贴板中的诊断包 (.zip + 可选截图)，确保用户过去按一次 Ctrl+V 必中
+        const std::string bundleUtf8 = jsonStringOr(params, "bundlePath");
+        const std::string shotUtf8 = jsonStringOr(params, "screenshotPath");
+        if (!bundleUtf8.empty()) {
+            (void)tools3000::core::FeedbackDiagnosticService::copyDiagnosticFilesToClipboard(
+                tools3000::core::WinUtils::utf8ToPath(bundleUtf8),
+                shotUtf8.empty() ? std::filesystem::path{} : tools3000::core::WinUtils::utf8ToPath(shotUtf8));
         }
         tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
         return {{"success", true}};

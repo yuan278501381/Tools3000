@@ -741,16 +741,38 @@ export const ClipboardApp: FC = () => {
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, a, [data-no-item-drag="true"]')) return;
 
-      // 左键拖动移动距离 >= 8px 时触发 Win32 原生 OLE DoDragDrop（拖入任意输入框直接粘贴且保持面板不关闭）
+      // 左键拖动移动距离 >= 5px 时触发 Win32 原生 OLE DoDragDrop（拖入任意输入框直接粘贴且保持面板不关闭）
       const useClientCoords =
         e.screenX === 0 && e.screenY === 0 && (e.clientX !== 0 || e.clientY !== 0);
       const startX = useClientCoords ? e.clientX : e.screenX;
       const startY = useClientCoords ? e.clientY : e.screenY;
       const sawButtonsDown = e.buttons > 0;
+      const hostEl = e.currentTarget;
+
+      const releaseCapturedPointers = () => {
+        const pidAttr = hostEl?.getAttribute('data-drag-pointer-id');
+        if (pidAttr && typeof hostEl.releasePointerCapture === 'function') {
+          const pid = Number(pidAttr);
+          if (!Number.isNaN(pid)) {
+            try {
+              if (hostEl.hasPointerCapture?.(pid)) {
+                hostEl.releasePointerCapture(pid);
+              }
+            } catch {
+              // ignore pointer release race
+            }
+          }
+          hostEl.removeAttribute('data-drag-pointer-id');
+        }
+      };
 
       const cleanup = () => {
+        releaseCapturedPointers();
         window.removeEventListener('mousemove', onMove);
+        window.removeEventListener('pointermove', onMove);
         window.removeEventListener('mouseup', cleanup);
+        window.removeEventListener('pointerup', cleanup);
+        window.removeEventListener('pointercancel', cleanup);
         window.removeEventListener('blur', cleanup);
       };
       const onMove = (moveEvt: MouseEvent) => {
@@ -760,7 +782,7 @@ export const ClipboardApp: FC = () => {
         }
         const curX = useClientCoords ? moveEvt.clientX : moveEvt.screenX;
         const curY = useClientCoords ? moveEvt.clientY : moveEvt.screenY;
-        if (Math.hypot(curX - startX, curY - startY) >= 8) {
+        if (Math.hypot(curX - startX, curY - startY) >= 5) {
           cleanup();
           suppressClickItemIdRef.current = item.id;
           setDraggingItemId(item.id);
@@ -778,7 +800,10 @@ export const ClipboardApp: FC = () => {
       };
 
       window.addEventListener('mousemove', onMove);
+      window.addEventListener('pointermove', onMove);
       window.addEventListener('mouseup', cleanup);
+      window.addEventListener('pointerup', cleanup);
+      window.addEventListener('pointercancel', cleanup);
       window.addEventListener('blur', cleanup);
     },
     [applyItemSelection, editingItemId, multiSelectMode],
@@ -1377,6 +1402,24 @@ export const ClipboardApp: FC = () => {
                   data-clip-id={item.id}
                   title={t('clipboard.dragItemTip', 'Drag to any input field or app to paste')}
                   className={`clip-popup__item${idx === selectedIndex ? ' clip-popup__item--selected' : ''}${isChecked ? ' clip-popup__item--checked' : ''}${draggingItemId === item.id ? ' clip-popup__item--dragging' : ''}`}
+                  onPointerDown={(e) => {
+                    if (
+                      e.button === 0 &&
+                      !multiSelectMode &&
+                      !e.ctrlKey &&
+                      !e.metaKey &&
+                      !e.shiftKey &&
+                      editingItemId === null &&
+                      !(e.target as HTMLElement | null)?.closest('input, textarea, select, a, [data-no-item-drag="true"]')
+                    ) {
+                      try {
+                        e.currentTarget.setPointerCapture?.(e.pointerId);
+                        e.currentTarget.setAttribute('data-drag-pointer-id', String(e.pointerId));
+                      } catch {
+                        // ignore unsupported synthetic pointer events in tests
+                      }
+                    }
+                  }}
                   onMouseDown={(e) => handleItemMouseDown(item, idx, e)}
                   onClick={(e) => handleItemClick(item, idx, e)}
                   onDoubleClick={() => {

@@ -90,6 +90,10 @@ private:
         size_t eraseCount = 0;
         std::wstring replacementW;
         bool restoreClipboard = true;
+        bool triggeredByDelimiter = false;
+        bool keepDelimiter = true;
+        wchar_t delimiterChar = L'\0';
+        HWND targetFgHwnd = nullptr;
     };
 
     void loadSettingsFromConfigLocked();
@@ -127,7 +131,7 @@ private:
     static bool writeClipboardPlainTextPrivate(const std::wstring& text, DWORD& outSeqAfterWrite);
     static void sendBackspaces(size_t count);
     static void sendDirectUnicodeExpansion(size_t backspaces, std::wstring_view text, size_t moveLeftSteps);
-    static void sendCtrlV();
+    static void sendPasteShortcutForWindow(HWND targetFgHwnd);
     static void sendLeftArrows(size_t count);
     static void waitModifiersReleased(DWORD maxWaitMs);
 

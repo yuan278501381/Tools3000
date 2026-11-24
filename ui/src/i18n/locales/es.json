@@ -3328,7 +3328,11 @@
     "typeLabel": "Tipo de comentario",
     "typeOther": "Comentarios generales",
     "typePerformance": "Rendimiento y memoria",
-    "viewIssue": "Ver Issue"
+    "viewIssue": "Ver Issue",
+    "pasteBundleBanner": "El paquete de diagnóstico anonimizado (y la captura) se ha copiado al portapapeles — ¡solo pulsa Ctrl+V en el editor de GitHub Issue para adjuntarlo al instante!",
+    "openGitHubAndCopyBundle": "Abrir GitHub Issue (paquete copiado)",
+    "copyBundleFiles": "Copiar archivo de diagnóstico",
+    "bundleFilesCopiedToast": "Paquete copiado — pulsa Ctrl+V en GitHub para subirlo"
   },
   "fileLocksmith": {
     "heroTitle": "Desbloqueo de Archivos (Cero Residente)",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "Desactivado (Sin Ganchos)",
     "tryTriggersLabel": "Prueba escribir:",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "Distinguir ancho completo y medio ancho",
+    "fullwidthSensitiveDesc": "Cuando está desactivado, las letras de ancho completo y la puntuación CJK coinciden automáticamente.",
+    "fullwidthBadge": "Ancho estricto",
+    "keepDelimiterTitle": "Conservar tecla delimitadora pulsada",
+    "keepDelimiterDesc": "Conserva el Espacio, Tab o Intro que activó la expansión para seguir escribiendo con fluidez.",
+    "macroGroupDate": "Fecha y hora",
+    "macroGroupClip": "Portapapeles y cursor",
+    "macroGroupSystem": "Desarrollo y sistema",
+    "macroDateCompact": "Fecha compacta",
+    "macroDateSlash": "Fecha con barras",
+    "macroTimeSec": "Hora con segundos",
+    "macroWeekday": "Día de la semana",
+    "macroDateTomorrow": "Mañana",
+    "macroDateYesterday": "Ayer",
+    "macroClipboardTrim": "Portapapeles limpio",
+    "macroUuid": "UUID aleatorio",
+    "macroTimestamp": "Marca de tiempo",
+    "macroUser": "Usuario del sistema",
+    "livePreviewLabel": "Vista previa en vivo",
+    "livePreviewOffsetHint": "Consejo: también se admiten desplazamientos de días como {{example}}"
   },
   "backup": {
     "title": "Copia de seguridad en nube y carpeta sincronizada",

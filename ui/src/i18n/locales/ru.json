@@ -3328,7 +3328,11 @@
     "typeLabel": "Тип обращения",
     "typeOther": "Общий отзыв",
     "typePerformance": "Производительность и память",
-    "viewIssue": "Открыть Issue"
+    "viewIssue": "Открыть Issue",
+    "pasteBundleBanner": "Обезличенный диагностический архив (и скриншот) скопированы в буфер обмена — просто нажмите Ctrl+V в поле ввода GitHub Issue для мгновенной загрузки!",
+    "openGitHubAndCopyBundle": "Открыть GitHub Issue (архив скопирован)",
+    "copyBundleFiles": "Скопировать файл архива",
+    "bundleFilesCopiedToast": "Файл диагностики скопирован — нажмите Ctrl+V на GitHub для загрузки"
   },
   "fileLocksmith": {
     "heroTitle": "Разблокировка файлов (без фона)",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "Выключено (0 хуков)",
     "tryTriggersLabel": "Попробуйте ввести:",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "Различать полноширинные и полуширинные символы",
+    "fullwidthSensitiveDesc": "Если выключено, полноширинные буквы и знаки препинания CJK автоматически совпадают с обычными символами.",
+    "fullwidthBadge": "Ширина",
+    "keepDelimiterTitle": "Сохранять нажатый разделитель",
+    "keepDelimiterDesc": "Оставляет пробел, Tab или Enter после развернутого текста для непрерывного набора.",
+    "macroGroupDate": "Дата и время",
+    "macroGroupClip": "Буфер и курсор",
+    "macroGroupSystem": "Система и разработка",
+    "macroDateCompact": "Компактная дата",
+    "macroDateSlash": "Дата через слэш",
+    "macroTimeSec": "Время с секундами",
+    "macroWeekday": "День недели",
+    "macroDateTomorrow": "Завтра",
+    "macroDateYesterday": "Вчера",
+    "macroClipboardTrim": "Буфер без пробелов",
+    "macroUuid": "Случайный UUID",
+    "macroTimestamp": "Метка времени",
+    "macroUser": "Имя пользователя",
+    "livePreviewLabel": "Предпросмотр развертывания",
+    "livePreviewOffsetHint": "Подсказка: поддерживается любое смещение дней, например {{example}}"
   },
   "backup": {
     "title": "Облачное и локальное резервное копирование",

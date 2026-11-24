@@ -3328,7 +3328,11 @@
     "typeLabel": "フィードバック種別",
     "typeOther": "その他",
     "typePerformance": "パフォーマンス・メモリ問題",
-    "viewIssue": "Issue を表示"
+    "viewIssue": "Issue を表示",
+    "pasteBundleBanner": "匿名化済み診断パック（とスクリーンショット）をクリップボードにコピーしました。GitHub ページを開いたら、入力欄で Ctrl+V を押すだけで添付できます！",
+    "openGitHubAndCopyBundle": "GitHub を開く（診断パックをコピー済）",
+    "copyBundleFiles": "診断ファイルをコピー",
+    "bundleFilesCopiedToast": "診断パックをクリップボードにコピーしました（GitHub で Ctrl+V で添付可能）"
   },
   "fileLocksmith": {
     "heroTitle": "ファイルロック解除（常駐ゼロ）",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "無効（フックゼロ）",
     "tryTriggersLabel": "試してみる：",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "全角と半角を区別する",
+    "fullwidthSensitiveDesc": "オフのとき、全角英数字や日本語入力時の句読点（；sig と ;sig など）を同一視して展開します。",
+    "fullwidthBadge": "全半角厳密",
+    "keepDelimiterTitle": "入力した区切りキーを残す",
+    "keepDelimiterDesc": "展開トリガーとなったスペース・Tab・改行を末尾に残し、自然な連続入力を保ちます。",
+    "macroGroupDate": "日付と時刻",
+    "macroGroupClip": "クリップボードとカーソル",
+    "macroGroupSystem": "開発とシステム",
+    "macroDateCompact": "数値日付",
+    "macroDateSlash": "スラッシュ日付",
+    "macroTimeSec": "秒付き時刻",
+    "macroWeekday": "曜日",
+    "macroDateTomorrow": "明日の日付",
+    "macroDateYesterday": "昨日の日付",
+    "macroClipboardTrim": "空白除去クリップボード",
+    "macroUuid": "ランダム UUID",
+    "macroTimestamp": "タイムスタンプ",
+    "macroUser": "ユーザー名",
+    "livePreviewLabel": "リアルタイム展開プレビュー",
+    "livePreviewOffsetHint": "ヒント：{{example}} のような任意の日数オフセットにも対応しています"
   },
   "backup": {
     "title": "クラウド・同期フォルダ設定バックアップ",

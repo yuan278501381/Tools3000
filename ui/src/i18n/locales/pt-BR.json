@@ -3328,7 +3328,11 @@
     "typeLabel": "Tipo de feedback",
     "typeOther": "Feedback geral",
     "typePerformance": "Desempenho e memória",
-    "viewIssue": "Ver Issue"
+    "viewIssue": "Ver Issue",
+    "pasteBundleBanner": "O pacote de diagnóstico anonimizado (e a captura) foi copiado para a área de transferência — basta pressionar Ctrl+V no editor do GitHub Issue para anexar!",
+    "openGitHubAndCopyBundle": "Abrir GitHub Issue (pacote copiado)",
+    "copyBundleFiles": "Copiar arquivo do pacote",
+    "bundleFilesCopiedToast": "Pacote copiado — pressione Ctrl+V no GitHub para enviar"
   },
   "fileLocksmith": {
     "heroTitle": "Desbloqueio de Arquivos (Zero Residente)",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "Desativado (Zero Ganchos)",
     "tryTriggersLabel": "Experimente digitar:",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "Diferenciar largura total e meia largura",
+    "fullwidthSensitiveDesc": "Quando desativado, letras de largura total e pontuação CJK na mesma tecla correspondem automaticamente.",
+    "fullwidthBadge": "Largura estrita",
+    "keepDelimiterTitle": "Manter tecla delimitadora digitada",
+    "keepDelimiterDesc": "Mantém o Espaço, Tab ou Enter que acionou a expansão para continuar digitando naturalmente.",
+    "macroGroupDate": "Data e hora",
+    "macroGroupClip": "Área de transferência e cursor",
+    "macroGroupSystem": "Desenvolvimento e sistema",
+    "macroDateCompact": "Data compacta",
+    "macroDateSlash": "Data com barras",
+    "macroTimeSec": "Hora com segundos",
+    "macroWeekday": "Dia da semana",
+    "macroDateTomorrow": "Amanhã",
+    "macroDateYesterday": "Ontem",
+    "macroClipboardTrim": "Texto limpo",
+    "macroUuid": "UUID aleatório",
+    "macroTimestamp": "Carimbo de tempo",
+    "macroUser": "Usuário do sistema",
+    "livePreviewLabel": "Prévia em tempo real",
+    "livePreviewOffsetHint": "Dica: deslocamentos de dias como {{example}} também são suportados"
   },
   "backup": {
     "title": "Backup em Nuvem e Pasta Sincronizada",

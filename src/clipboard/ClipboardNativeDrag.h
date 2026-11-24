@@ -76,6 +76,14 @@ TerminalPasteKind classifyTerminalPasteTarget(
     std::wstring_view rootClassName,
     std::wstring_view processExeLower) noexcept;
 
+/// 判定拖拽载荷是否为单条合法 HTTP(S) 链接（不含文件/图片与内部空白）：
+/// 对 AI IDE（如 Antigravity / Cursor）单条 HTTP(S) 链接保留原生 OLE 以生成 @Link 上下文卡片，
+/// 而普通非 URL 纯文本绕过外层附件上传 DropZone 空吞陷阱，直达落点光标粘贴。
+bool isSingleHttpUrlPayload(const NativeDragPayload& payload) noexcept;
+
+/// 判定目标进程是否属于外层全局附件 DropZone 会空吞非 URL 纯文本的桌面 AI / 工具客户端
+bool shouldBypassOlePlainTextDropForHost(std::wstring_view processExeLower) noexcept;
+
 /// 判定 WM_NCHITTEST 返回值是否属于安全的客户区落点（严禁误点击标题栏/关闭按钮/菜单栏/边框）；
 /// 对无边框自绘顶栏窗口（如 Electron / Clash Party），当落点深入窗口内部腹地且避开右上角窗口控制按钮禁区时，
 /// 允许放行 HTCAPTION，消除外层 -webkit-app-region: drag 容器导致的输入框拖放误杀。

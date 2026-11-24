@@ -6552,3 +6552,44 @@ TEST(HotkeyPriorityTest, GetAllOrdersCoreShortcutsAheadOfRecordingControls) {
     EXPECT_GE(idxMuteMic, 0);
     EXPECT_LT(idxScreenshot, idxMuteMic);
 }
+
+TEST(ClipboardNativeDragHostPolicyTest, DistinguishesHttpUrlFromPlainTextAndAiIdeHosts) {
+    using namespace tools3000::clipboard;
+
+    NativeDragPayload urlPayload;
+    urlPayload.unicodeText = L"  https://github.com/yuan278501381/Tools3000/issues/25 \r\n";
+    EXPECT_TRUE(isSingleHttpUrlPayload(urlPayload));
+
+    NativeDragPayload plainPayload;
+    plainPayload.unicodeText = L"NXhy123";
+    EXPECT_FALSE(isSingleHttpUrlPayload(plainPayload));
+
+    NativeDragPayload ed2kPayload;
+    ed2kPayload.unicodeText = L"ed2k://|file|demo.iso|1024|HASH|/";
+    EXPECT_FALSE(isSingleHttpUrlPayload(ed2kPayload));
+
+    NativeDragPayload multiWordUrl;
+    multiWordUrl.unicodeText = L"https://github.com/a https://github.com/b";
+    EXPECT_FALSE(isSingleHttpUrlPayload(multiWordUrl));
+
+    EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"antigravity.exe"));
+    EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"Cursor.exe"));
+    EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"Clash Party.exe"));
+    EXPECT_FALSE(shouldBypassOlePlainTextDropForHost(L"notepad.exe"));
+    EXPECT_FALSE(shouldBypassOlePlainTextDropForHost(L"explorer.exe"));
+}
+
+TEST(FeedbackTailPreservationTest, KeepsUrlWithinSafeLimitWithEffectiveLocaleAndCtrlVGuide) {
+    using namespace tools3000::core;
+    FeedbackSubmissionInput input;
+    input.feedbackType = "bug";
+    input.title = "Issue 25 Diagnostic Tail Test";
+    input.description = "Verify latest log lines and Ctrl+V guide are never truncated mid-block.";
+    input.includeLogs = true;
+
+    const auto preview = FeedbackDiagnosticService::buildDiagnosticPreview(input, 200);
+    EXPECT_TRUE(preview.environment.contains("effectiveLocale"));
+    EXPECT_LE(preview.githubIssueUrl.size(), 7600u);
+    EXPECT_NE(preview.githubIssueUrl.find("Ctrl%2BV"), std::string::npos);
+    EXPECT_EQ(preview.githubIssueUrl.find("please%20attach%20the%20exported"), std::string::npos);
+}

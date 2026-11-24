@@ -69,6 +69,8 @@ struct FeedbackSubmitOutcome {
     std::string trackingId;
     std::string issueUrl;
     std::string exportedBundlePath;
+    std::string exportedScreenshotPath;
+    bool copiedToClipboard = false;
     std::string markdownReport;
     std::string errorMessage;
     uint32_t totalRedactions = 0;
@@ -102,6 +104,11 @@ public:
 
     /// 执行方案 C 双轨提交：已配置中继优先直交，离线/未配置无缝降级为本地脱敏包 + 预填 GitHub Issue URL
     static FeedbackSubmitOutcome submitFeedback(const FeedbackSubmissionInput& input);
+
+    /// 将导出的脱敏 .zip 诊断包（及可选独立截图文件）以 CF_HDROP 写入系统剪贴板，支持在 GitHub Issue 编辑器直接按 Ctrl+V 一键上传附件
+    static bool copyDiagnosticFilesToClipboard(
+        const std::filesystem::path& bundleZipPath,
+        const std::filesystem::path& optionalScreenshotPath = {});
 
     /// 获取仓库官方 GitHub Issues 基础地址
     static std::string getGitHubNewIssueBaseUrl();

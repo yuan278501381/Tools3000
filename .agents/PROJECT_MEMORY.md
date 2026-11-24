@@ -6,6 +6,18 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 三大交互与诊断体验终局闭环：剪贴板双通道防 AI 附件层空吞与网页动态框聚焦、文本扩展器 8 语种全半角/14 宏升维、问题反馈最新日志保真与剪贴板一键 Ctrl+V 传包
+- **1. 剪贴板拖拽双通道精准协同与跨窗指针捕获 (`src/clipboard/ClipboardNativeDrag.{h,cpp}`, `ui/src/ClipboardApp.tsx`)**:
+  - *根因*：① 同为管理员权限时，拖向 `Antigravity` / `Cursor` 等 AI IDE 走原生 OLE，其聊天区外层全局附件上传 DropZone 对 `http(s)://` 生成 `@Link` 卡片却将非 URL 普通纯文本 `e.preventDefault()` 后静默丢弃，且 Chromium 在 `DragEnter` 预读 `GetData` 绕过了假接收检测；② 跨权限拖向普通权限 `Chrome` 网页内动态展开搜索框（如新标签页 Fakebox、`+ 问问 Google`）时，原代码在 `activateWindowForeground` 后 0ms 瞬发合并点击且仅等 45ms 即发 `Ctrl+V`，被窗口 `WM_ACTIVATE` 旧焦点恢复反吞或早于跨进程 DOM 获焦；③ 卡片左边缘极速甩出窗口时未挂载 `PointerCapture` 偶发漏触发起拖；
+  - *根治*：① 新增 `isSingleHttpUrlPayload` 与 `shouldBypassOlePlainTextDropForHost`，拖单条 `http(s)://` 或文件/图片进 AI IDE 保留原生 `@Link` 胶囊与附件上传，非 URL 普通纯文本自动绕过外层附件层直达确定性落点聚焦粘贴；② 重排五步聚焦管线（先激活等前台就绪 + 静置 `28ms` 消化 `WM_ACTIVATE` -> 分步 `MOVE` `10ms` / `LEFTDOWN` `14ms` / `LEFTUP` -> Web 容器静置 `95ms` -> 硬件扫描码 `Ctrl+V`），并放行 `Chrome_WidgetWin_1` 标签栏下方全客户区；③ 前端卡片挂载 `setPointerCapture` 与 `5px` 灵敏阈值。
+- **2. 文本扩展器 8 语种全半角等价、边界符保留、14 类动态变量与实时预览 (`src/text_expander/TextExpander{Types,Matcher,Manager}.*`, `ui/src/pages/TextExpanderPage.{tsx,css}`, 8 语种词典)**:
+  - 新增 `fullwidthSensitive`（默认 `false` = 自动兼容中日韩全角英数 `U+FF01..0xFF5E`、全角空格及 `；：、。！？（）【】“”￥` 等同键位标点）、拉丁重音与俄语西里尔字母大小写折叠及韩/俄/西/葡多语种词首边界保护；
+  - 新增 `keepDelimiter`（`Delimiter` 边界模式默认 `true` = 展开后无损保留触发空格/Tab/回车并自动修正 `{{cursor}}` 回退步数），剪贴板粘贴路径同步兼容 `Windows Terminal` (`Ctrl+Shift+V`) 与 `mintty` (`Shift+Insert`)；
+  - 动态宏扩充至 3 组 15 项胶囊（`{{date}}`、`{{date_compact}}`、`{{date_slash}}`、`{{date+1d}}`/`{{date-1d}}` 及任意 `±Nd` 偏移、`{{time}}`、`{{time_sec}}`、`{{datetime}}`、8 语种本地化 `{{weekday}}`、`{{clipboard}}`、`{{clipboard_trim}}`、`{{cursor}}`、密码学随机 `{{uuid}}`、`{{timestamp}}`、`{{user}}`），并在弹窗内置带光标落点指示的实时展开预览。
+- **3. 问题反馈高密度最新日志直嵌 + 剪贴板预置 `.zip`/截图一键 `Ctrl+V` 上传 (`src/core/diagnostics/FeedbackDiagnosticService.{h,cpp}`, `src/main.cpp`, `ui/src/components/FeedbackModal.{tsx,css}`)**:
+  - 废除旧版 `truncateUtf8Head(2600)` 砍掉尾部最新发病日志与代码块闭合符的做法；补齐 `effectiveLocale` 与热键冲突摘要，独立置顶最近 `[warning]`/`[error]` 告警，从最后一行倒序浓缩最新运行轨迹（控制在总编码 URL `<= 7000` 字符内完整闭合 `<details>` 代码块）；
+  - 导出本地脱敏 `.zip`（及独立截图文件）后立即以隐私免录 `CF_HDROP` 写入系统剪贴板（点击打开 GitHub 时再次保鲜），并在弹窗与预填 Issue 底部以用户生效的 8 国母语引导直接按一次 `Ctrl+V` 完成 GitHub 附件自动上传。
+
 ### [2026-11-24] 五项用户体验与系统稳定性深层根治：搜索打开前台移交、剪贴板跨权限终端/无边框拖放直贴、长时运行截图丝滑度、快捷键四域重排与 Issue #25 弹窗失焦修复
 - **1. 搜索界面打开文件/目录前台激活与单实例焦点移交 (`src/core/utils/WinUtils.{h,cpp}`)**:
   - *根因*：`SearchWindow` 采用标准独立桌面窗口（失焦不自动隐藏），通过 `Desktop Explorer` COM 代理启动已运行的单实例应用（如 Win11 多标签 `Notepad.exe`、Office、VS Code、已打开的 `CabinetWClass`）时，仅靠 `ShellExecuteEx` 无法将 `Tools3000` 持有的前台令牌传递给既有进程，Windows 防抢焦机制阻断 `SetForegroundWindow` 并退化为任务栏橙色闪烁；

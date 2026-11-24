@@ -35,6 +35,8 @@ struct TextExpanderRule {
     TriggerMode mode = TriggerMode::Immediate;
     bool caseSensitive = false;
     uint32_t hitCount = 0;
+    bool fullwidthSensitive = false;  // false = 自动兼容中日韩全角/半角字母数字与同键位标点
+    bool keepDelimiter = true;        // Delimiter 模式下是否保留输入的边界字符（空格/Tab/回车）
 };
 
 /// 文本扩展器模块配置（默认开启开箱即用；关闭后即刻卸载钩子，零常驻内存）
@@ -75,6 +77,8 @@ inline std::vector<TextExpanderRule> defaultSampleRules() {
             TriggerMode::Immediate,
             false,
             0,
+            false,
+            true,
         },
         TextExpanderRule{
             "sample_now",
@@ -85,6 +89,8 @@ inline std::vector<TextExpanderRule> defaultSampleRules() {
             TriggerMode::Immediate,
             false,
             0,
+            false,
+            true,
         },
         TextExpanderRule{
             "sample_thx",
@@ -95,6 +101,8 @@ inline std::vector<TextExpanderRule> defaultSampleRules() {
             TriggerMode::Immediate,
             false,
             0,
+            false,
+            true,
         },
     };
 }
@@ -149,6 +157,8 @@ inline nlohmann::json ruleToJson(const TextExpanderRule& rule) {
         {"enabled", rule.enabled},
         {"mode", triggerModeToString(rule.mode)},
         {"caseSensitive", rule.caseSensitive},
+        {"fullwidthSensitive", rule.fullwidthSensitive},
+        {"keepDelimiter", rule.keepDelimiter},
         {"hitCount", rule.hitCount},
     };
 }
@@ -166,6 +176,8 @@ inline bool ruleFromJson(const nlohmann::json& j, TextExpanderRule& out) {
     parsed.enabled = j.value("enabled", true);
     parsed.mode = j.contains("mode") ? parseTriggerMode(j["mode"]) : TriggerMode::Immediate;
     parsed.caseSensitive = j.value("caseSensitive", false);
+    parsed.fullwidthSensitive = j.value("fullwidthSensitive", false);
+    parsed.keepDelimiter = j.value("keepDelimiter", true);
     if (j.contains("hitCount") && j["hitCount"].is_number_unsigned()) {
         parsed.hitCount = j["hitCount"].get<uint32_t>();
     } else if (j.contains("hitCount") && j["hitCount"].is_number_integer()) {

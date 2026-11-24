@@ -76,12 +76,20 @@ describe('FeedbackModal', () => {
     expect(toastErrorMock).toHaveBeenCalledTimes(1);
   });
 
-  it('shows success card and toast when local diagnostic bundle export succeeds', async () => {
-    bridgeRequestMock.mockResolvedValue({
-      ok: true,
-      mode: 'fallback_local',
-      exportedBundlePath: 'C:\\Users\\test\\Desktop\\Tools3000-feedback.zip',
-      totalRedactions: 7,
+  it('shows success card, Ctrl+V paste guide, and forwards bundlePath when opening GitHub Issue', async () => {
+    bridgeRequestMock.mockImplementation((method: string) => {
+      if (method === 'feedback.submit') {
+        return Promise.resolve({
+          ok: true,
+          mode: 'fallback_local',
+          issueUrl: 'https://github.com/yuan278501381/Tools3000/issues/new?title=Test',
+          exportedBundlePath: 'C:\\Users\\test\\Desktop\\Tools3000-feedback.zip',
+          exportedScreenshotPath: 'C:\\Users\\test\\AppData\\Local\\Tools3000\\feedback\\shot.png',
+          copiedToClipboard: true,
+          totalRedactions: 7,
+        });
+      }
+      return Promise.resolve({ success: true });
     });
 
     render(<FeedbackModal open onClose={vi.fn()} />);
@@ -91,8 +99,18 @@ describe('FeedbackModal', () => {
     await waitFor(() => {
       expect(screen.getByText('Redacted Diagnostic Bundle Ready')).toBeTruthy();
       expect(screen.getByText('C:\\Users\\test\\Desktop\\Tools3000-feedback.zip')).toBeTruthy();
+      expect(screen.getByText(/press Ctrl\+V inside the GitHub Issue editor/i)).toBeTruthy();
     });
     expect(toastSuccessMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open GitHub Issue (Bundle Copied)' }));
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('feedback.openExternalUrl', {
+        url: 'https://github.com/yuan278501381/Tools3000/issues/new?title=Test',
+        bundlePath: 'C:\\Users\\test\\Desktop\\Tools3000-feedback.zip',
+        screenshotPath: 'C:\\Users\\test\\AppData\\Local\\Tools3000\\feedback\\shot.png',
+      });
+    });
   });
 
   it('notifies user when an attached screenshot exceeds 6 MB', () => {

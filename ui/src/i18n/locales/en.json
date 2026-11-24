@@ -3328,7 +3328,11 @@
     "typeLabel": "Feedback Type",
     "typeOther": "General Feedback",
     "typePerformance": "Performance & Memory Issue",
-    "viewIssue": "View Issue"
+    "viewIssue": "View Issue",
+    "pasteBundleBanner": "The redacted diagnostic .zip (and screenshot) has been copied to your clipboard - just press Ctrl+V inside the GitHub Issue editor to upload them in one keystroke!",
+    "openGitHubAndCopyBundle": "Open GitHub Issue (Bundle Copied)",
+    "copyBundleFiles": "Copy Bundle File",
+    "bundleFilesCopiedToast": "Diagnostic bundle copied to clipboard - press Ctrl+V in GitHub to upload"
   },
   "fileLocksmith": {
     "heroTitle": "File Locksmith (Zero-Resident)",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "Disabled (Zero Hooks)",
     "tryTriggersLabel": "Try typing:",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "Distinguish Fullwidth & Halfwidth",
+    "fullwidthSensitiveDesc": "When off, fullwidth letters and CJK punctuation on the same key (e.g. ;sig) match seamlessly.",
+    "fullwidthBadge": "Strict Width",
+    "keepDelimiterTitle": "Keep Boundary Key After Expansion",
+    "keepDelimiterDesc": "Preserve the trailing Space, Tab, or Enter that triggered expansion for natural continuous typing.",
+    "macroGroupDate": "Date & Time",
+    "macroGroupClip": "Clipboard & Cursor",
+    "macroGroupSystem": "Dev & System",
+    "macroDateCompact": "Compact Date",
+    "macroDateSlash": "Slash Date",
+    "macroTimeSec": "Time (Sec)",
+    "macroWeekday": "Weekday",
+    "macroDateTomorrow": "Tomorrow",
+    "macroDateYesterday": "Yesterday",
+    "macroClipboardTrim": "Trimmed Clipboard",
+    "macroUuid": "UUID v4",
+    "macroTimestamp": "Unix Timestamp",
+    "macroUser": "System User",
+    "livePreviewLabel": "Live Expansion Preview",
+    "livePreviewOffsetHint": "Tip: arbitrary day offsets like {{example}} are also supported"
   },
   "backup": {
     "title": "Cloud & Sync Folder Backup",

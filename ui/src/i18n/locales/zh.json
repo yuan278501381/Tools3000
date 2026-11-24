@@ -3328,7 +3328,11 @@
     "typeLabel": "反馈类型",
     "typeOther": "其他综合建议",
     "typePerformance": "性能与内存问题",
-    "viewIssue": "查看已提交的 Issue"
+    "viewIssue": "查看已提交的 Issue",
+    "pasteBundleBanner": "脱敏诊断包（及截图）已自动复制到剪贴板：打开 GitHub 页面后，直接在编辑框末尾按一次 Ctrl+V 即可一键上传附件！",
+    "openGitHubAndCopyBundle": "打开 GitHub 提交（已复制诊断包）",
+    "copyBundleFiles": "复制诊断包文件",
+    "bundleFilesCopiedToast": "诊断包文件已复制到剪贴板，可在 GitHub 输入框直接按 Ctrl+V 上传"
   },
   "fileLocksmith": {
     "heroTitle": "文件占用解锁（零常驻）",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "已关闭（零钩子）",
     "tryTriggersLabel": "试试输入：",
     "toggleSandboxBtn": "测试沙盒",
-    "hideSandboxBtn": "收起测试沙盒"
+    "hideSandboxBtn": "收起测试沙盒",
+    "fullwidthSensitiveTitle": "区分全角与半角",
+    "fullwidthSensitiveDesc": "关闭时自动兼容中日韩输入法下的全角字母与同键位标点（如 ；sig 与 ;sig 等价）。",
+    "fullwidthBadge": "全半角严格",
+    "keepDelimiterTitle": "保留输入的边界键",
+    "keepDelimiterDesc": "展开后自动保留触发时按下的空格、制表符或回车，连续打字不断词。",
+    "macroGroupDate": "日期与时间",
+    "macroGroupClip": "剪贴板与光标",
+    "macroGroupSystem": "开发与系统",
+    "macroDateCompact": "紧凑日期",
+    "macroDateSlash": "斜杠日期",
+    "macroTimeSec": "精确到秒",
+    "macroWeekday": "本地星期",
+    "macroDateTomorrow": "明天日期",
+    "macroDateYesterday": "昨天日期",
+    "macroClipboardTrim": "剪贴板净值",
+    "macroUuid": "随机标识码",
+    "macroTimestamp": "秒级时间戳",
+    "macroUser": "系统用户名",
+    "livePreviewLabel": "实时展开预览",
+    "livePreviewOffsetHint": "支持手写任意天数偏移，例如 {{example}}"
   },
   "backup": {
     "title": "云端与同步盘配置备份",

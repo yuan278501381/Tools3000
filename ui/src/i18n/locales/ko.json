@@ -3328,7 +3328,11 @@
     "typeLabel": "피드백 유형",
     "typeOther": "일반 피드백",
     "typePerformance": "성능 및 메모리 문제",
-    "viewIssue": "Issue 보기"
+    "viewIssue": "Issue 보기",
+    "pasteBundleBanner": "비식별화된 진단 패키지(및 스크린샷)가 클립보드에 복사되었습니다. GitHub 페이지가 열리면 입력창에서 Ctrl+V만 누르면 바로 첨부됩니다!",
+    "openGitHubAndCopyBundle": "GitHub 열기 (진단 패키지 복사됨)",
+    "copyBundleFiles": "진단 파일 복사",
+    "bundleFilesCopiedToast": "진단 패키지가 클립보드에 복사되었습니다 (GitHub에서 Ctrl+V로 업로드)"
   },
   "fileLocksmith": {
     "heroTitle": "파일 잠금 해제 (상주 없음)",
@@ -3420,7 +3424,27 @@
     "statusDisabled": "꺼짐 (훅 없음)",
     "tryTriggersLabel": "입력해 보기:",
     "toggleSandboxBtn": "Test Sandbox",
-    "hideSandboxBtn": "Hide Sandbox"
+    "hideSandboxBtn": "Hide Sandbox",
+    "fullwidthSensitiveTitle": "전각 및 반각 구분",
+    "fullwidthSensitiveDesc": "끄면 전각 영숫자 및 한중일 입력기 문장부호(예: ；sig와 ;sig)를 자동으로 호환하여 인식합니다.",
+    "fullwidthBadge": "전반각 엄격",
+    "keepDelimiterTitle": "입력한 구분 키 유지",
+    "keepDelimiterDesc": "확장을 트리거한 공백, 탭 또는 엔터 키를 끝에 유지하여 자연스럽게 이어서 입력합니다.",
+    "macroGroupDate": "날짜 및 시간",
+    "macroGroupClip": "클립보드 및 커서",
+    "macroGroupSystem": "개발 및 시스템",
+    "macroDateCompact": "압축 날짜",
+    "macroDateSlash": "슬래시 날짜",
+    "macroTimeSec": "초 단위 시간",
+    "macroWeekday": "요일",
+    "macroDateTomorrow": "내일 날짜",
+    "macroDateYesterday": "어제 날짜",
+    "macroClipboardTrim": "공백 제거 클립보드",
+    "macroUuid": "무작위 UUID",
+    "macroTimestamp": "타임스탬프",
+    "macroUser": "시스템 사용자",
+    "livePreviewLabel": "실시간 확장 미리보기",
+    "livePreviewOffsetHint": "팁: {{example}}처럼 임의 일수 오프셋도 지원합니다"
   },
   "backup": {
     "title": "클라우드 및 동기화 폴더 설정 백업",
