@@ -83,7 +83,11 @@ void PinWindow::clearTranslationState() {
     }
     m_translationInFlight.store(false, std::memory_order_release);
     m_showingTranslation = false;
-    m_translatedImage.release();
+    {
+        std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+        m_translatedImage.release();
+        m_translatedVault.clear();
+    }
     m_translatedTargetLang.clear();
     m_translatedProviderUsed.clear();
     m_translatedParagraphs.clear();
@@ -93,6 +97,7 @@ void PinWindow::clearTranslationState() {
 
 void PinWindow::toggleTranslationOverlay() {
     if (m_folded || !m_hwnd || !IsWindow(m_hwnd)) return;
+    ensureImagesMaterialized();
     if (m_translatedImage.empty()) {
         translateInPlace(/*selectedOnly=*/false, /*forceRetranslate=*/false);
         return;
@@ -134,6 +139,7 @@ void PinWindow::copyTranslatedText() {
 }
 
 void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
+    ensureImagesMaterialized();
     if (m_sourceImage.empty() || !m_hwnd || !IsWindow(m_hwnd)) return;
     if (m_folded) {
         toggleFold();
@@ -365,7 +371,12 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
                         return;
                     }
 
-                    self->m_translatedImage = std::move(renderRes.translatedCanvas);
+                    {
+                        std::lock_guard<std::mutex> vLock(self->m_imageVaultMutex);
+                        self->m_translatedVault.clear();
+                        self->m_translatedImage = std::move(renderRes.translatedCanvas);
+                    }
+                    enforceGlobalPinMemoryBudget(self.get());
                     self->m_translatedParagraphs = std::move(renderRes.paragraphs);
                     self->m_translatedTargetLang = batchRes.effectiveTargetLang;
                     self->m_translatedProviderUsed = batchRes.providerUsed;

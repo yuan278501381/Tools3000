@@ -366,14 +366,33 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
         m_renderTarget->Resize(D2D1::SizeU((std::min)(targetW, maxRt), (std::min)(targetH, maxRt)));
     }
 
+    // 针对被大幅缩小的巨幅参考贴图（如 4K 大图缩至 <=65% 挂在角落），自动上传匹配窗口物理分辨率的高质量抗锯齿 LOD 纹理，
+    // 削减 80%+ D2D/GPU 共享显存且消除大幅缩小采样摩尔纹；放大时由 setScale / applyScaleAtAnchor 自动重建全清纹理
+    cv::Mat uploadSource = image;
+    const uint64_t origPixels = static_cast<uint64_t>(image.cols) * static_cast<uint64_t>(image.rows);
+    if (!m_folded &&
+        origPixels >= PinMemoryConstants::kLodTextureMinOrigPixels &&
+        m_scale > 0.05f &&
+        m_scale <= PinMemoryConstants::kLodTextureScaleThreshold) {
+        const float lodFactor = std::clamp(
+            m_scale * PinMemoryConstants::kLodTextureSupersampleFactor, 0.12f, 1.0f);
+        const int lodW = std::clamp(
+            static_cast<int>(std::lround(static_cast<float>(image.cols) * lodFactor)), 128, image.cols);
+        const int lodH = std::clamp(
+            static_cast<int>(std::lround(static_cast<float>(image.rows) * lodFactor)), 128, image.rows);
+        if (lodW < image.cols && lodH < image.rows) {
+            cv::resize(image, uploadSource, cv::Size(lodW, lodH), 0.0, 0.0, cv::INTER_AREA);
+        }
+    }
+
     // 转为 BGRA 并构建单块或二维分块 D2D Bitmap 列表（支持 >16384px 超长截图贴图）
     cv::Mat bgra;
-    if (image.channels() == 3) {
-        cv::cvtColor(image, bgra, cv::COLOR_BGR2BGRA);
-    } else if (image.channels() == 1) {
-        cv::cvtColor(image, bgra, cv::COLOR_GRAY2BGRA);
-    } else if (image.channels() == 4) {
-        bgra = image.clone();
+    if (uploadSource.channels() == 3) {
+        cv::cvtColor(uploadSource, bgra, cv::COLOR_BGR2BGRA);
+    } else if (uploadSource.channels() == 1) {
+        cv::cvtColor(uploadSource, bgra, cv::COLOR_GRAY2BGRA);
+    } else if (uploadSource.channels() == 4) {
+        bgra = uploadSource.clone();
         for (int r = 0; r < bgra.rows; ++r) {
             auto* p = reinterpret_cast<cv::Vec4b*>(bgra.data + static_cast<size_t>(r) * bgra.step[0]);
             for (int c = 0; c < bgra.cols; ++c) {
@@ -401,6 +420,8 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
 
     m_bitmap.Reset();
     m_bitmapTiles.clear();
+    m_uploadedBitmapWidth = 0;
+    m_uploadedBitmapHeight = 0;
 
     const UINT32 maxBmp = (std::max)(256u, m_renderTarget->GetMaximumBitmapSize());
     if (static_cast<UINT32>(bgra.cols) <= maxBmp && static_cast<UINT32>(bgra.rows) <= maxBmp) {
@@ -412,6 +433,8 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
             m_bitmap.GetAddressOf()
         );
         if (SUCCEEDED(hr) && m_bitmap) {
+            m_uploadedBitmapWidth = bgra.cols;
+            m_uploadedBitmapHeight = bgra.rows;
             return true;
         }
         m_bitmap.Reset();
@@ -447,15 +470,45 @@ bool PinWindow::createRenderResources(const cv::Mat& image) {
         }
     }
 
-    return !m_bitmapTiles.empty();
+    if (!m_bitmapTiles.empty()) {
+        m_uploadedBitmapWidth = bgra.cols;
+        m_uploadedBitmapHeight = bgra.rows;
+        return true;
+    }
+    return false;
 }
 
 void PinWindow::render() {
-    if ((!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) &&
-        !activeDisplayImage().empty() && m_hwnd && IsWindow(m_hwnd)) {
-        createRenderResources(activeDisplayImage());
+    if (m_folded) {
+        if (!m_renderTarget && m_hwnd && IsWindow(m_hwnd)) {
+            RECT rc{};
+            GetClientRect(m_hwnd, &rc);
+            const UINT targetW = static_cast<UINT>((std::max)(1L, rc.right - rc.left));
+            const UINT targetH = static_cast<UINT>((std::max)(1L, rc.bottom - rc.top));
+            if (!m_d2dFactory) {
+                (void)D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, m_d2dFactory.GetAddressOf());
+            }
+            if (m_d2dFactory) {
+                auto rtProps = D2D1::RenderTargetProperties(
+                    D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                    D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+                    96.0f, 96.0f);
+                auto hwndProps = D2D1::HwndRenderTargetProperties(
+                    m_hwnd, D2D1::SizeU(targetW, targetH), D2D1_PRESENT_OPTIONS_IMMEDIATELY);
+                if (SUCCEEDED(m_d2dFactory->CreateHwndRenderTarget(rtProps, hwndProps, m_renderTarget.GetAddressOf())) &&
+                    m_renderTarget) {
+                    m_renderTarget->SetDpi(96.0f, 96.0f);
+                }
+            }
+        }
+        if (!m_renderTarget) return;
+    } else {
+        if ((!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) &&
+            !activeDisplayImage().empty() && m_hwnd && IsWindow(m_hwnd)) {
+            createRenderResources(activeDisplayImage());
+        }
+        if (!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) return;
     }
-    if (!m_renderTarget || (!m_bitmap && m_bitmapTiles.empty())) return;
 
     m_renderTarget->BeginDraw();
     m_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));

@@ -6,7 +6,17 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
-### [2026-11-24] 三大交互与诊断体验终局闭环：剪贴板双通道防 AI 附件层空吞与网页动态框聚焦、文本扩展器 8 语种全半角/14 宏升维、问题反馈最新日志保真与剪贴板一键 Ctrl+V 传包
+### [2026-11-24] 贴图海量 4K 大图内存封顶五层架构：全局单飞三级优先级 OCR 调度器、超长图切片、冷热无损压缩池与 256MB 预算护栏
+- **1. 根因审计**：
+  - 旧版 `PinWindow::create()` 对每张上屏贴图立即执行 `m_sourceImage.clone()` + `std::thread::detach()`，并发冲入 `OcrEngine::extractPage` 同时拉起 N 路 `std::async(detectQrCodes)` 二维码图像金字塔，批量贴出 15~20 张 4K 大图时瞬时衍生 30+ 线程并冲高 `1.2~2.5 GB` 峰值内存；且每个线程结束均调 `WinUtils::trimWorkingSet()` 造成连续贴图软缺页抖动；
+  - 每张 4K 贴图即使折叠为迷你胶囊（`M`）、全局隐藏或长期闲置，仍永久常驻全尺寸未压缩 `cv::Mat`（`33MB`）+ 全尺寸 Direct2D `ID2D1Bitmap`（`33MB`）+ 窗口交换链（`33~66MB`），20 张静置贴图常驻 `~2GB`。
+- **2. 五层根治方案 (`src/capture/PinMemoryGovernor.{h,cpp}`, `PinWindow*.{h,cpp}`, `OcrEngine.cpp`, `CapturePage.tsx`)**：
+  - **全局单飞优先级调度器 `PinOcrScheduler`**：并发度严格锁定为 `1`，等待队列仅存轻量句柄实现 **0 像素预克隆**；支持 `Interactive (P0)`（用户点击识别/翻译或鼠标悬停原地插队提权）、`SilentWarmup (P1)`（`<= 3.8 MP` 且桌面 `<= 6` 张贴图时自动平滑预热保障 0ms 划词）、以及 **巨图/多图按需懒触发 `shouldDeferPinAutoWarmupOcr`**（4K 全屏巨图、超长截图或 `> 6` 张贴图推迟至首次鼠标悬停再按 `P0` 触发）；队列彻底排空防抖 `3s` 后仅执行 1 次工作集修剪；
+  - **超长截图重叠条带分片与先缩后灰二维码扫描**：`extractPinPageMemoryBounded` 对 `> 2800px` 长图按 `2048px`（`160px` 重叠去重）分片识别并还原全局坐标，单次 IPC 共享内存恒定 `<= ~16 MB` 且小字清晰不漏识；`detectQrCodes` 改为先 `INTER_AREA` 缩至 `1120px` 再转灰度，消灭大图全尺寸灰度缓冲分配；
+  - **比特级无损冷热压缩槽 `PinLosslessImageSlot` + 全局 `256 MB` LRU 预算 + 折叠/隐藏/缩小 LOD 纹理卸载**：超过 `256 MB` CPU 热像素预算时按 LRU 自动将后台非活跃贴图 CPU 矩阵以 Zlib Level-1 极速 PNG 无损冻结（单张 4K 由 `33.2 MB` 压至 `~1.8 MB`，节省 ~94%，同时保留屏幕 D2D 纹理零闪烁，访问时 `ensureImagesMaterialized()` 毫秒级比特级无损解冻）；折叠胶囊与隐藏态同步卸载全尺寸 D2D 纹理，缩小参考图（`<= 65%`）自动采用抗锯齿 LOD 轻量纹理；
+  - **双入口同源设置**：在「截图与录屏 -> 贴图与固定选区」补齐「贴图时自动识别文字」开关（初始默认开启 `true`，与「文本识别与翻译」共享 `/ocr/liveTextOnPin` 单一事实源，覆盖 8 国语言与全局设置搜索索引）。
+
+### [2026-11-24] 三大交互与诊断体验终局闭环：剪贴板双通道防 AI 附件层空吞与网页动态框聚焦、文本扩展器 8 语种全半角/14 宏升维、问题反馈最新日志直嵌与剪贴板一键 Ctrl+V 传包
 - **1. 剪贴板拖拽双通道精准协同与跨窗指针捕获 (`src/clipboard/ClipboardNativeDrag.{h,cpp}`, `ui/src/ClipboardApp.tsx`)**:
   - *根因*：① 同为管理员权限时，拖向 `Antigravity` / `Cursor` 等 AI IDE 走原生 OLE，其聊天区外层全局附件上传 DropZone 对 `http(s)://` 生成 `@Link` 卡片却将非 URL 普通纯文本 `e.preventDefault()` 后静默丢弃，且 Chromium 在 `DragEnter` 预读 `GetData` 绕过了假接收检测；② 现代浏览器（`Chrome` / `Edge` / `Firefox` 等）在 `IDropTarget::DragEnter` 阶段通过 `EnumFormatEtc` 构建 `e.dataTransfer.types`，只要枚举集非空就会弹出 Google「`将文件拖放到此处`」文件上传遮罩层盖住底层 `<input>`/`<textarea>` 并返回 `DROPEFFECT_COPY`；同时起拖第 1 帧鼠标仍在 `ClipboardWindow` 内部时，剪贴板自身的 WebView2 触发 `DragEnter -> GetData` 提前将 `m_anyDataRetrieved` 污染为 `true`，导致松手后误判为 OLE 已消费而跳过落点粘贴；③ 跨权限拖向网页动态展开搜索框时，原代码在激活后 0ms 瞬发合并点击且仅等 45ms 即发 `Ctrl+V`，早于跨进程 DOM 获焦；④ 卡片左边缘极速甩出窗口时未挂载 `PointerCapture` 偶发漏触发起拖；
   - *根治*：① 新增 `classifyCursorDropRelation`、`isSingleHttpUrlPayload` 与 `shouldBypassOleTextDropForHost`：对剪贴板自身及现代浏览器的所有纯文本/富文本载荷，在 `EnumFormatEtc` 直接返回空枚举集（0 格式，从源头阻止 Chromium 构建 `dataTransfer.types` 弹出「`将文件拖放到此处`」遮罩）并在 `validateFormatEtc` 返回 `DV_E_FORMATETC`，`GetData` 严格仅在允许 OLE 的外部窗口上标记 `m_anyDataRetrieved = true`，且松手后按落点进程实施 `forceBypassAtDrop` 二次兜底；拖动图片/文件时保留原生 OLE 支持以图搜图与网页上传，桌面 AI IDE 保留单条 `http(s)://` 原生 `@Link` 胶囊；② 重排五步聚焦管线（激活/DragLeave 静置 `28ms` -> 分步 `MOVE` `10ms` / `LEFTDOWN` `14ms` / `LEFTUP` -> Web 容器静置 `110ms` -> 硬件扫描码 `Ctrl+V`）；③ 前端卡片挂载 `setPointerCapture` 与 `5px` 灵敏阈值；④ `Alt+Space` 搜索界面顶栏、分类筛选栏与底栏空白区统一支持 `4px` 拖窗并呈现与剪贴板一致的 `cursor: grab / grabbing` 手型光标。

@@ -99,6 +99,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'cap-shortcut', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.shortcut', descKey: 'capture.shortcutDesc', keywords: 'f1 screenshot capture hotkey jietu' },
   { id: 'cap-savedir', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.saveDir', descKey: 'capture.saveDirDesc', keywords: 'save folder directory path png jpg webp baocun' },
   { id: 'cap-beauty', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.beautyShellTitle', descKey: 'capture.beautyShellDefaultDesc', keywords: 'beauty gradient shadow rounded padding meihua' },
+  { id: 'cap-pin-ocr', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinAutoOcrTitle', descKey: 'capture.pinAutoOcrDesc', keywords: 'pin auto ocr live text memory tietu zidong shibie wenzi' },
   { id: 'cap-pingroup', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinGroupsSectionTitle', descKey: 'capture.pinGroupsCardSubtitle', keywords: 'pin group desktop color tietu fenzu' },
   { id: 'rec-video', navId: 'capture', tabId: 'recording', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
   { id: 'rec-autozoom', navId: 'capture', tabId: 'studio', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },

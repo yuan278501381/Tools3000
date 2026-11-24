@@ -37,6 +37,7 @@ import {
   Mic,
   MousePointerClick,
   Monitor,
+  ScanText,
   VolumeX,
   Zap,
 } from 'lucide-react';
@@ -218,6 +219,7 @@ export const CapturePage: FC = () => {
   const [recordHotkey, setRecordHotkey] = useState('Ctrl+Shift+R');
   const [recordPauseHotkey, setRecordPauseHotkey] = useState('Ctrl+Shift+P');
   const [recordSnapshotHotkey, setRecordSnapshotHotkey] = useState('Ctrl+Shift+S');
+  const [liveTextOnPin, setLiveTextOnPin] = useState(true);
 
   useEffect(() => {
     const onDeepNavigate = (e: Event) => {
@@ -240,13 +242,17 @@ export const CapturePage: FC = () => {
     Promise.all([
       bridgeRequest<CaptureSettings>('capture.getSettings'),
       bridgeRequest<RecordingSettings>('recording.getSettings'),
-    ]).then(([capData, recData]) => {
+      bridgeRequest<{ liveTextOnPin?: boolean }>('ocr.getSettings').catch(() => ({ liveTextOnPin: undefined })),
+    ]).then(([capData, recData, ocrData]) => {
       setCapture(prev => ({
         ...prev,
         ...capData,
         beautyShellTheme: normalizeBeautyShellTheme(capData.beautyShellTheme ?? prev.beautyShellTheme),
       }));
       setRecording(prev => ({ ...prev, ...recData }));
+      if (typeof ocrData?.liveTextOnPin === 'boolean') {
+        setLiveTextOnPin(ocrData.liveTextOnPin);
+      }
     }).catch(() => { /* silent background sync */ });
   }, []);
 
@@ -257,13 +263,18 @@ export const CapturePage: FC = () => {
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
       bridgeRequest<RecordingCapabilities>('recording.getCapabilities')
         .catch(() => ({ audioDevices: [] })),
-    ]).then(([capData, recData, hotkeyData, capabilities]) => {
+      bridgeRequest<{ liveTextOnPin?: boolean }>('ocr.getSettings')
+        .catch(() => ({ liveTextOnPin: true })),
+    ]).then(([capData, recData, hotkeyData, capabilities, ocrData]) => {
       setCapture(prev => ({
         ...prev,
         ...capData,
         beautyShellTheme: normalizeBeautyShellTheme(capData.beautyShellTheme ?? prev.beautyShellTheme),
       }));
       setRecording(prev => ({ ...prev, ...recData }));
+      if (typeof ocrData?.liveTextOnPin === 'boolean') {
+        setLiveTextOnPin(ocrData.liveTextOnPin);
+      }
       const hkList = Array.isArray(hotkeyData) ? hotkeyData : [];
       setHotkeys(hkList);
       setScreenshotHotkey(hkList.find(item => item.name === 'Screenshot')?.shortcut ?? 'F1');
@@ -293,6 +304,21 @@ export const CapturePage: FC = () => {
       document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [syncSettingsSilently]);
+
+  const updateLiveTextOnPin = useCallback((enabled: boolean) => {
+    setLiveTextOnPin(enabled);
+    bridgeRequest<OperationResult>('ocr.updateSettings', { liveTextOnPin: enabled })
+      .then(result => { if (!result.success) throw new Error(result.error || 'update failed'); })
+      .catch(async (error) => {
+        toast.error(t('capture.saveFailed'), { description: String(error) });
+        try {
+          const latest = await bridgeRequest<{ liveTextOnPin?: boolean }>('ocr.getSettings');
+          if (typeof latest?.liveTextOnPin === 'boolean') {
+            setLiveTextOnPin(latest.liveTextOnPin);
+          }
+        } catch { /* keep usable */ }
+      });
+  }, [t]);
 
   const updateCapture = useCallback((key: keyof CaptureSettings, value: unknown) => {
     setCapture(prev => ({ ...prev, [key]: value }));
@@ -822,6 +848,18 @@ export const CapturePage: FC = () => {
         role="tabpanel"
         hidden={activeTab !== 'pin_region'}
       >
+        <SettingGroup title={t('capture.pinSmartOcrGroupTitle')} icon={<ScanText size={18} />}>
+          <Card>
+            <Toggle
+              id="capture-pin-auto-ocr"
+              label={t('capture.pinAutoOcrTitle')}
+              description={t('capture.pinAutoOcrDesc')}
+              checked={liveTextOnPin}
+              onChange={(v) => updateLiveTextOnPin(v)}
+            />
+          </Card>
+        </SettingGroup>
+
         <CaptureRegionManagerCard
           repeatCaptureHotkey={repeatCaptureHotkey}
           repeatCaptureHotkeyEntry={getHotkey('Repeat Last Capture')}

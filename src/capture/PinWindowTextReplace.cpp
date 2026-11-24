@@ -91,7 +91,9 @@ void PinWindow::updateImeCompositionAnchor() noexcept {
 }
 
 bool PinWindow::startInPlaceTextReplace() {
-    if (m_folded || !m_pinnedSourceText.empty() || m_cleanBaseImage.empty()) return false;
+    if (m_folded || !m_pinnedSourceText.empty()) return false;
+    ensureImagesMaterialized();
+    if (m_cleanBaseImage.empty()) return false;
     if (m_editingTextReplaceIdx >= 0) {
         commitInPlaceTextReplace(true);
     }
@@ -238,6 +240,7 @@ bool PinWindow::startInPlaceTextReplace() {
 }
 
 bool PinWindow::startInPlaceTextReplaceOnElement(size_t elementIdx) {
+    ensureImagesMaterialized();
     if (elementIdx >= m_markupElements.size()) return false;
     if (m_markupElements[elementIdx].tool != MarkupTool::TextReplace) return false;
     if (m_editingTextReplaceIdx >= 0 && m_editingTextReplaceIdx != static_cast<int>(elementIdx)) {

@@ -15967,6 +15967,167 @@ TEST(CaptureHistoryDiskBackedHydrationTest, DiskBackedZeroDuplicatePngAndLazyDec
     EXPECT_LE(history.totalMemoryBytes(), 32ull * 1024ull * 1024ull);
 }
 
+#include "capture/PinMemoryGovernor.h"
+
+TEST(PinMemoryGovernorTest, AutoWarmupPolicyDefers4KAndManyPins) {
+    using namespace tools3000::capture;
+
+    // 常规尺寸截图（1080p / 2K 局部）且桌面贴图数量 <= 6：允许上屏自动静默预热，保障 0ms 悬停划词体验
+    EXPECT_FALSE(shouldDeferPinAutoWarmupOcr(1280, 720, 1));
+    EXPECT_FALSE(shouldDeferPinAutoWarmupOcr(1920, 1080, 6));
+    EXPECT_FALSE(shouldDeferPinAutoWarmupOcr(2560, 1440, 4));
+
+    // 4K 全屏巨图（8.29 MP > 3.8 MP）、超长滚动截图（h > 2800）或多贴图并存（> 6 张）：推迟至首次悬停/点击按需触发
+    EXPECT_TRUE(shouldDeferPinAutoWarmupOcr(3840, 2160, 1));
+    EXPECT_TRUE(shouldDeferPinAutoWarmupOcr(1600, 3600, 1));
+    EXPECT_TRUE(shouldDeferPinAutoWarmupOcr(1200, 800, 7));
+}
+
+TEST(PinMemoryGovernorTest, LosslessColdCompressionBitExactRoundTrip4K) {
+    using namespace tools3000::capture;
+
+    // 构造 3840x2160 4K 4 通道贴图（未压缩 33.17 MB，模拟桌面 UI 窗口 + 文字线条 + 半透明圆角 Alpha）
+    cv::Mat orig4K(2160, 3840, CV_8UC4, cv::Scalar(246, 248, 252, 255));
+    cv::rectangle(orig4K, cv::Rect(120, 80, 2800, 1600), cv::Scalar(32, 36, 44, 255), cv::FILLED);
+    for (int y = 140; y < 1600; y += 36) {
+        cv::line(orig4K, cv::Point(180, y), cv::Point(2600, y), cv::Scalar(210, 220, 235, 255), 2);
+    }
+    // 写入非平凡 Alpha 边缘以验证第 4 通道比特级无损保留
+    orig4K.at<cv::Vec4b>(5, 5) = cv::Vec4b(12, 34, 56, 0);
+    orig4K.at<cv::Vec4b>(1080, 1920) = cv::Vec4b(99, 188, 244, 173);
+
+    PinLosslessImageSlot slot;
+    slot.assignHot(orig4K);
+    const uint64_t initialHot = slot.hotBytes();
+    EXPECT_GE(initialHot, 33'000'000ULL);
+    EXPECT_FALSE(slot.isColdCompressed());
+
+    const uint64_t savedBytes = slot.compressToCold();
+    EXPECT_GT(savedBytes, 28'000'000ULL);
+    EXPECT_TRUE(slot.isColdCompressed());
+    EXPECT_EQ(slot.hotBytes(), 0ULL);
+    EXPECT_LT(slot.compressedBytes(), 3'500'000ULL);
+    EXPECT_EQ(slot.width(), 3840);
+    EXPECT_EQ(slot.height(), 2160);
+    EXPECT_EQ(slot.channels(), 4);
+
+    const cv::Mat& restored = slot.materializeHot();
+    ASSERT_FALSE(restored.empty());
+    ASSERT_EQ(restored.size(), orig4K.size());
+    ASSERT_EQ(restored.type(), orig4K.type());
+    EXPECT_EQ(cv::norm(orig4K, restored, cv::NORM_INF), 0.0);
+    EXPECT_FALSE(slot.isColdCompressed());
+}
+
+TEST(PinMemoryGovernorTest, SingleFlightSchedulerCapsConcurrencyAndPromotesInteractiveHover) {
+    using namespace tools3000::capture;
+
+    auto& sched = PinOcrScheduler::instance();
+    (void)sched.shutdownAndDrain(1000);
+    sched.resetShutdownGate();
+    sched.resetObservedMetricsForTest();
+
+    std::mutex orderMutex;
+    std::vector<uint64_t> executionOrder;
+    std::atomic<uint32_t> cancelledPinAcquired{0};
+    std::atomic<uint32_t> completedCallbacks{0};
+    std::promise<void> firstTaskEntered;
+    std::shared_future<void> firstEnteredFuture = firstTaskEntered.get_future().share();
+    std::promise<void> releaseFirstTask;
+    std::shared_future<void> releaseFirstFuture = releaseFirstTask.get_future().share();
+    std::atomic<bool> signaledFirst{false};
+
+    sched.setCustomExtractorForTest(
+        [&](const cv::Mat& img, const std::string&) -> tools3000::ocr::OcrPageExtraction {
+            const uint64_t tag = static_cast<uint64_t>(img.at<uint8_t>(0, 0));
+            if (!signaledFirst.exchange(true)) {
+                firstTaskEntered.set_value();
+                releaseFirstFuture.wait_for(std::chrono::seconds(2));
+            } else {
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            }
+            {
+                std::lock_guard<std::mutex> lk(orderMutex);
+                executionOrder.push_back(tag);
+            }
+            tools3000::ocr::OcrPageExtraction page{};
+            page.activeEngine = "mock";
+            return page;
+        });
+
+    struct ResetGuard {
+        ~ResetGuard() {
+            auto& s = PinOcrScheduler::instance();
+            (void)s.shutdownAndDrain(1500);
+            s.setCustomExtractorForTest(nullptr);
+            s.resetShutdownGate();
+        }
+    } guard;
+
+    // 连续投递 20 张贴图静默预热任务
+    constexpr uint64_t kTotalPins = 20;
+    for (uint64_t id = 1; id <= kTotalPins; ++id) {
+        PinOcrScheduler::JobRequest req{};
+        req.pinId = id;
+        req.version = 1;
+        req.priority = PinOcrPriority::SilentWarmup;
+        req.acquireInput = [id, &cancelledPinAcquired]() -> PinOcrScheduler::AcquiredTaskInput {
+            if (id == 10) {
+                cancelledPinAcquired.fetch_add(1, std::memory_order_relaxed);
+            }
+            cv::Mat tiny(32, 32, CV_8UC3, cv::Scalar(static_cast<double>(id), 0, 0));
+            return {tiny, ""};
+        };
+        req.onComplete = [&](tools3000::ocr::OcrPageExtraction&&, bool) {
+            completedCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        };
+        sched.submit(std::move(req));
+    }
+
+    // 等待第 1 张进入单飞工作台，此时第 2..20 张均在队列中零克隆等待
+    ASSERT_EQ(firstEnteredFuture.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+
+    // 模拟中途关闭第 10 张贴图：必须零像素获取直接取消
+    sched.cancelPending(10);
+
+    // 模拟用户鼠标悬停到最后一张贴图 (#20)：原地升级为 Interactive (P0) 抢占到第 2..19 张之前！
+    {
+        PinOcrScheduler::JobRequest hoverPromote{};
+        hoverPromote.pinId = 20;
+        hoverPromote.version = 1;
+        hoverPromote.priority = PinOcrPriority::Interactive;
+        hoverPromote.acquireInput = []() -> PinOcrScheduler::AcquiredTaskInput {
+            cv::Mat tiny(32, 32, CV_8UC3, cv::Scalar(20, 0, 0));
+            return {tiny, ""};
+        };
+        hoverPromote.onComplete = [&](tools3000::ocr::OcrPageExtraction&&, bool) {
+            completedCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        };
+        sched.submit(std::move(hoverPromote));
+    }
+
+    releaseFirstTask.set_value();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while (sched.pendingAndActiveCount() > 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    EXPECT_EQ(sched.pendingAndActiveCount(), 0u);
+    // 铁律 1：无论瞬间涌入多少张大图，并发执行峰值必须严格 == 1
+    EXPECT_EQ(sched.observedPeakConcurrency(), 1u);
+    // 铁律 2：排队期间被关闭的第 10 张贴图，acquireInput 必须 0 次触发（零无效克隆）
+    EXPECT_EQ(cancelledPinAcquired.load(), 0u);
+    // 铁律 3：20 次初始提交 + 1 次提权合并 = 21 次回调精确闭环（零计数泄漏）
+    EXPECT_EQ(completedCallbacks.load(), 21u);
+
+    ASSERT_GE(executionOrder.size(), 3u);
+    EXPECT_EQ(executionOrder[0], 1u);
+    // 被用户悬停提权的 #20 必须在第 1 张完成后紧接着第 2 个执行，抢占所有后台静默任务
+    EXPECT_EQ(executionOrder[1], 20u);
+}
+
+
 
 
 

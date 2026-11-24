@@ -1130,10 +1130,22 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             if (!self->m_isHovering) {
                 self->m_isHovering = true;
                 self->m_hoverTime = GetTickCount64();
+                self->m_lastInteractionTick = self->m_hoverTime;
                 SetTimer(hwnd, 1, 16, nullptr);
                 
                 TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hwnd, HOVER_DEFAULT };
                 TrackMouseEvent(&tme);
+
+                // 4K 巨图 / 多贴图按需懒触发升格：用户鼠标首次移上贴图时立即以 Interactive (P0) 队首优先级启动实景识文，
+                // 若该贴图此前正在队尾 SilentWarmup 排队，同样自动插队提权至队首秒级响应！
+                if (!self->m_folded && self->m_pinnedSourceText.empty() &&
+                    !self->m_ocrReady.load(std::memory_order_acquire) && self->isLiveTextEnabled() &&
+                    !isAutomatedTestProcessMode()) {
+                    if (self->m_ocrDeferredUntilHover.exchange(false, std::memory_order_acq_rel) ||
+                        self->isOcrInFlight()) {
+                        self->ensureOcrExecutedAsync(true);
+                    }
+                }
             }
 
             // 悬停即获焦（仅在非拖拽/非划选状态下触发，严禁在拖拽移动文字或划选期间调用 focusWindow() 破坏 SetCapture）
@@ -2035,9 +2047,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (self->m_hwnd == hwnd) {
                     self->m_hwnd = nullptr;
                 }
+                if (self->m_pinInstanceId != 0) {
+                    PinOcrScheduler::instance().cancelPending(self->m_pinInstanceId);
+                }
                 self->clearTranslationState();
                 self->releaseGraphicsResources();
-                self->m_sourceImage.release();
+                {
+                    std::lock_guard<std::mutex> vLock(self->m_imageVaultMutex);
+                    self->m_sourceImage.release();
+                    self->m_cleanBaseImage.release();
+                    self->m_sourceVault.clear();
+                    self->m_cleanBaseVault.clear();
+                    self->m_vaultSharesCleanWithSource = false;
+                }
                 s_instances.erase(
                     std::remove_if(s_instances.begin(), s_instances.end(),
                                    [self](const auto& p) { return !p || p.get() == self || !p->isAlive(); }),

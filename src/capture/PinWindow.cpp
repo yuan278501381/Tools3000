@@ -77,8 +77,19 @@ std::atomic<bool> s_ocrShuttingDown{false};
 std::atomic<uint32_t> s_globalActiveOcrWorkers{0};
 } // namespace pin_detail
 
+namespace {
+std::atomic<uint64_t> s_nextPinInstanceId{1};
+std::atomic<uint64_t> s_hotPixelBudgetOverrideBytes{0};
+
+uint64_t effectiveHotPixelBudgetBytes() noexcept {
+    const uint64_t overrideVal = s_hotPixelBudgetOverrideBytes.load(std::memory_order_acquire);
+    return (overrideVal > 0) ? overrideVal : PinMemoryConstants::kHotPixelBudgetBytes;
+}
+} // namespace
+
 void PinWindow::resetModuleShutdown() noexcept {
     s_ocrShuttingDown.store(false, std::memory_order_release);
+    PinOcrScheduler::instance().resetShutdownGate();
 }
 
 void PinWindow::beginModuleShutdown() noexcept {
@@ -90,6 +101,7 @@ uint32_t PinWindow::globalActiveOcrWorkerCount() noexcept {
 }
 
 bool PinWindow::waitForPendingOcrWorkers(uint32_t timeoutMs) noexcept {
+    (void)PinOcrScheduler::instance().shutdownAndDrain(timeoutMs);
     const ULONGLONG deadline = GetTickCount64() + static_cast<ULONGLONG>(timeoutMs);
     while (s_globalActiveOcrWorkers.load(std::memory_order_acquire) > 0) {
         MSG msg{};
@@ -101,6 +113,176 @@ bool PinWindow::waitForPendingOcrWorkers(uint32_t timeoutMs) noexcept {
         Sleep(2);
     }
     return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 冷热分级无损压缩池与全局 256MB 热像素预算治理
+// ─────────────────────────────────────────────────────────────────────────────
+
+void PinWindow::setHotPixelBudgetForTest(uint64_t budgetBytes) noexcept {
+    s_hotPixelBudgetOverrideBytes.store(budgetBytes, std::memory_order_release);
+}
+
+bool PinWindow::isCpuImageColdCompressed() const noexcept {
+    std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+    return m_sourceImage.empty() && m_sourceVault.isColdCompressed();
+}
+
+uint64_t PinWindow::currentHotCpuImageBytes() const noexcept {
+    std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+    uint64_t total = 0;
+    if (!m_sourceImage.empty()) {
+        total += static_cast<uint64_t>(m_sourceImage.step[0]) * static_cast<uint64_t>(m_sourceImage.rows);
+    }
+    if (!m_cleanBaseImage.empty() && m_cleanBaseImage.data != m_sourceImage.data) {
+        total += static_cast<uint64_t>(m_cleanBaseImage.step[0]) * static_cast<uint64_t>(m_cleanBaseImage.rows);
+    }
+    if (!m_translatedImage.empty()) {
+        total += static_cast<uint64_t>(m_translatedImage.step[0]) * static_cast<uint64_t>(m_translatedImage.rows);
+    }
+    if (!m_colorBackup.empty()) {
+        total += static_cast<uint64_t>(m_colorBackup.step[0]) * static_cast<uint64_t>(m_colorBackup.rows);
+    }
+    return total;
+}
+
+uint64_t PinWindow::currentCompressedCpuBytes() const noexcept {
+    std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+    return m_sourceVault.compressedBytes() +
+           m_cleanBaseVault.compressedBytes() +
+           m_translatedVault.compressedBytes();
+}
+
+void PinWindow::ensureImagesMaterialized() const noexcept {
+    std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+    m_lastInteractionTick = GetTickCount64();
+    if (m_sourceImage.empty() && m_sourceVault.isColdCompressed()) {
+        const cv::Mat& restored = m_sourceVault.materializeHot();
+        if (!restored.empty()) {
+            m_sourceImage = restored;
+            m_sourceVault.clear();
+        }
+    }
+    if (m_cleanBaseImage.empty()) {
+        if (m_vaultSharesCleanWithSource && !m_sourceImage.empty()) {
+            m_cleanBaseImage = m_sourceImage;
+            m_vaultSharesCleanWithSource = false;
+        } else if (m_cleanBaseVault.isColdCompressed()) {
+            const cv::Mat& restoredClean = m_cleanBaseVault.materializeHot();
+            if (!restoredClean.empty()) {
+                m_cleanBaseImage = restoredClean;
+                m_cleanBaseVault.clear();
+            }
+        }
+    }
+    if (m_translatedImage.empty() && m_translatedVault.isColdCompressed()) {
+        const cv::Mat& restoredTrans = m_translatedVault.materializeHot();
+        if (!restoredTrans.empty()) {
+            m_translatedImage = restoredTrans;
+            m_translatedVault.clear();
+        }
+    }
+}
+
+bool PinWindow::compressCpuImagesToCold() {
+    if (!isAlive() || m_isDragging || m_zoomAnimating ||
+        m_editingTextReplaceIdx >= 0 || m_grayscale ||
+        isTranslationInFlight()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_imageVaultMutex);
+    if (m_sourceImage.empty()) {
+        return m_sourceVault.isColdCompressed();
+    }
+    const uint64_t srcBytes = static_cast<uint64_t>(m_sourceImage.step[0]) * static_cast<uint64_t>(m_sourceImage.rows);
+    if (srcBytes < 256ULL * 1024ULL) {
+        return false;
+    }
+
+    const bool sharedClean = (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data);
+    m_sourceVault.assignHot(m_sourceImage);
+    if (m_sourceVault.compressToCold() == 0 && !m_sourceVault.isColdCompressed()) {
+        m_sourceVault.clear();
+        return false;
+    }
+    m_sourceImage.release();
+    m_vaultSharesCleanWithSource = sharedClean;
+
+    if (sharedClean) {
+        m_cleanBaseImage.release();
+        m_cleanBaseVault.clear();
+    } else if (!m_cleanBaseImage.empty()) {
+        m_cleanBaseVault.assignHot(m_cleanBaseImage);
+        if (m_cleanBaseVault.compressToCold() > 0 || m_cleanBaseVault.isColdCompressed()) {
+            m_cleanBaseImage.release();
+        } else {
+            m_cleanBaseVault.clear();
+        }
+    }
+
+    if (!m_translatedImage.empty()) {
+        m_translatedVault.assignHot(m_translatedImage);
+        if (m_translatedVault.compressToCold() > 0 || m_translatedVault.isColdCompressed()) {
+            m_translatedImage.release();
+        } else {
+            m_translatedVault.clear();
+        }
+    }
+    return true;
+}
+
+void PinWindow::enterHiddenDormantState() {
+    stopZoomAnimation(false);
+    m_bitmap.Reset();
+    m_bitmapTiles.clear();
+    m_uploadedBitmapWidth = 0;
+    m_uploadedBitmapHeight = 0;
+    m_renderTarget.Reset();
+    (void)compressCpuImagesToCold();
+}
+
+uint64_t PinWindow::totalHotCpuImageBytesAcrossAllPins() noexcept {
+    uint64_t sum = 0;
+    for (const auto& pin : s_instances) {
+        if (pin && pin->isAlive()) {
+            sum += pin->currentHotCpuImageBytes();
+        }
+    }
+    return sum;
+}
+
+void PinWindow::enforceGlobalPinMemoryBudget(const PinWindow* protectedPin, uint64_t customBudgetBytes) {
+    const uint64_t budget = (customBudgetBytes > 0) ? customBudgetBytes : effectiveHotPixelBudgetBytes();
+    uint64_t currentTotal = totalHotCpuImageBytesAcrossAllPins();
+    if (currentTotal <= budget) {
+        return;
+    }
+
+    std::vector<std::shared_ptr<PinWindow>> candidates;
+    candidates.reserve(s_instances.size());
+    for (const auto& pin : s_instances) {
+        if (!pin || !pin->isAlive() || pin.get() == protectedPin) continue;
+        if (pin->m_isHovering || pin->m_isDragging || pin->m_editingTextReplaceIdx >= 0) continue;
+        if (pin->currentHotCpuImageBytes() < 256ULL * 1024ULL) continue;
+        candidates.push_back(pin);
+    }
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const std::shared_ptr<PinWindow>& a, const std::shared_ptr<PinWindow>& b) {
+                  return a->m_lastInteractionTick < b->m_lastInteractionTick;
+              });
+
+    for (auto& victim : candidates) {
+        if (currentTotal <= budget) break;
+        const uint64_t before = victim->currentHotCpuImageBytes();
+        if (victim->compressCpuImagesToCold()) {
+            const uint64_t after = victim->currentHotCpuImageBytes();
+            if (before > after) {
+                currentTotal -= (before - after);
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,6 +298,8 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
     if (image.empty()) return nullptr;
 
     auto pin = std::shared_ptr<PinWindow>(new PinWindow());
+    pin->m_pinInstanceId = s_nextPinInstanceId.fetch_add(1, std::memory_order_relaxed);
+    pin->m_lastInteractionTick = GetTickCount64();
     pin->m_origWidth = image.cols;
     pin->m_origHeight = image.rows;
     pin->m_sourceImage = image.clone();  // 保存原图，供右键"复制到剪贴板"
@@ -171,14 +355,22 @@ std::shared_ptr<PinWindow> PinWindow::create(const cv::Mat& image, int x, int y,
     s_instances.push_back(pin);
     s_allHidden = false;
     refreshGroupBar();
+    // 超过 256MB 全局热像素预算时，自动按 LRU 将后台非活跃贴图 CPU 矩阵转入无损压缩槽（保留其屏幕 D2D 纹理零闪烁）
+    enforceGlobalPinMemoryBudget(pin.get());
+
     if (autoStartLiveOcr && pin->m_pinnedSourceText.empty() && pin->isLiveTextEnabled()) {
         wchar_t testEnvBuf[8]{};
         const DWORD envLen = GetEnvironmentVariableW(
             L"TOOLS3000_TEST_MODE", testEnvBuf, static_cast<DWORD>(std::size(testEnvBuf)));
         const bool inTestMode = (envLen > 0 && testEnvBuf[0] == L'1');
         if (!inTestMode) {
-            // 真实用户贴图上屏后立即在后台静默预热极速 OCR，鼠标移上贴图时 0ms 瞬时响应选字
-            pin->ensureOcrExecutedAsync(true);
+            if (shouldDeferPinAutoWarmupOcr(image.cols, image.rows, s_instances.size())) {
+                // 4K 巨图 / 长截图 / 多贴图模式：标记为按需悬停触发（鼠标首次移入贴图或点击识别时立即 P0 队首插队）
+                pin->m_ocrDeferredUntilHover.store(true, std::memory_order_release);
+            } else {
+                // 普通尺寸贴图：送入全局单飞调度器平滑静默预热（排队 0 克隆，鼠标移上贴图 0ms 瞬时响应选字）
+                pin->ensureOcrExecutedAsync(true);
+            }
         }
     }
     LOG_INFO("贴图窗口已创建: {}x{} @ ({},{}), 总数={}", image.cols, image.rows, x, y, s_instances.size());
@@ -195,6 +387,8 @@ void PinWindow::releaseGraphicsResources() noexcept {
     }
     m_bitmapTiles.clear();
     m_bitmap.Reset();
+    m_uploadedBitmapWidth = 0;
+    m_uploadedBitmapHeight = 0;
     m_renderTarget.Reset();
     m_uiLeadTextFormat.Reset();
     m_uiCenterTextFormat.Reset();
@@ -214,6 +408,9 @@ void PinWindow::close() {
     }
 
     const int closedGroup = m_groupId;
+    if (m_pinInstanceId != 0) {
+        PinOcrScheduler::instance().cancelPending(m_pinInstanceId);
+    }
     stopZoomAnimation(false);
     if (m_editingTextReplaceIdx >= 0) {
         if (m_hwnd && IsWindow(m_hwnd)) {
@@ -228,8 +425,14 @@ void PinWindow::close() {
     clearTranslationState();
     releaseGraphicsResources();
     HWND hwndToDestroy = std::exchange(m_hwnd, nullptr);
-    m_sourceImage.release();
-    m_cleanBaseImage.release();
+    {
+        std::lock_guard<std::mutex> vLock(m_imageVaultMutex);
+        m_sourceImage.release();
+        m_cleanBaseImage.release();
+        m_sourceVault.clear();
+        m_cleanBaseVault.clear();
+        m_vaultSharesCleanWithSource = false;
+    }
     m_markupElements.clear();
     if (hwndToDestroy && IsWindow(hwndToDestroy)) {
         DestroyWindow(hwndToDestroy);
@@ -263,10 +466,19 @@ void PinWindow::closeAll() {
     s_instances.clear();
     for (auto& pin : targets) {
         if (pin) {
+            if (pin->m_pinInstanceId != 0) {
+                PinOcrScheduler::instance().cancelPending(pin->m_pinInstanceId);
+            }
             pin->stopZoomAnimation(false);
             pin->clearTranslationState();
-            pin->m_sourceImage.release();
-            pin->m_cleanBaseImage.release();
+            {
+                std::lock_guard<std::mutex> vLock(pin->m_imageVaultMutex);
+                pin->m_sourceImage.release();
+                pin->m_cleanBaseImage.release();
+                pin->m_sourceVault.clear();
+                pin->m_cleanBaseVault.clear();
+                pin->m_vaultSharesCleanWithSource = false;
+            }
             pin->m_markupElements.clear();
             pin->releaseGraphicsResources();
             HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
@@ -302,10 +514,19 @@ void PinWindow::closeAllExcept(const PinWindow* keepPin) {
     if (toClose.empty()) return;
 
     for (auto& pin : toClose) {
+        if (pin->m_pinInstanceId != 0) {
+            PinOcrScheduler::instance().cancelPending(pin->m_pinInstanceId);
+        }
         pin->stopZoomAnimation(false);
         pin->clearTranslationState();
-        pin->m_sourceImage.release();
-        pin->m_cleanBaseImage.release();
+        {
+            std::lock_guard<std::mutex> vLock(pin->m_imageVaultMutex);
+            pin->m_sourceImage.release();
+            pin->m_cleanBaseImage.release();
+            pin->m_sourceVault.clear();
+            pin->m_cleanBaseVault.clear();
+            pin->m_vaultSharesCleanWithSource = false;
+        }
         pin->m_markupElements.clear();
         pin->releaseGraphicsResources();
         HWND hwndToDestroy = std::exchange(pin->m_hwnd, nullptr);
@@ -346,11 +567,21 @@ void PinWindow::toggleHideAll() {
             const bool matchFilter = (s_activeGroupFilter == PinGroupConstants::kFilterAllGroups) ||
                                      (pin->m_groupId == s_activeGroupFilter);
             ShowWindow(pin->m_hwnd, matchFilter ? SW_SHOWNOACTIVATE : SW_HIDE);
+            if (matchFilter) {
+                pin->render();
+            }
         } else {
             ShowWindow(pin->m_hwnd, SW_HIDE);
+            pin->enterHiddenDormantState();
         }
     }
     s_allHidden = !show;
+    if (!show) {
+        // 一键隐藏全部贴图属于显式冷退场路径：卸载全部大尺寸 D2D 纹理与无损压缩 CPU 像素后归还系统工作集
+        tools3000::core::WinUtils::trimWorkingSet();
+    } else {
+        enforceGlobalPinMemoryBudget();
+    }
     refreshGroupBar();
     LOG_INFO("所有贴图已{}", show ? "显示" : "隐藏");
 }
@@ -665,10 +896,16 @@ void PinWindow::setActiveGroupFilter(int groupFilter) {
         }
         const bool visible = (norm == PinGroupConstants::kFilterAllGroups) || (pin->m_groupId == norm);
         ShowWindow(pin->m_hwnd, visible ? SW_SHOWNOACTIVATE : SW_HIDE);
-        if (visible && !firstVisible) {
-            firstVisible = pin;
+        if (visible) {
+            pin->render();
+            if (!firstVisible) {
+                firstVisible = pin;
+            }
+        } else {
+            pin->enterHiddenDormantState();
         }
     }
+    enforceGlobalPinMemoryBudget(firstVisible.get());
     if (firstVisible && !firstVisible->m_clickThrough) {
         firstVisible->focusWindow();
     }
@@ -1678,6 +1915,20 @@ void PinWindow::applyScaleAtAnchor(
             m_renderTarget->Resize(D2D1::SizeU(rtW, rtH));
         }
     }
+    if (finalFrame && m_uploadedBitmapWidth > 0 && m_origWidth > 0) {
+        const uint64_t origPixels = static_cast<uint64_t>(m_origWidth) * static_cast<uint64_t>(m_origHeight);
+        const bool needsHigherRes =
+            (m_uploadedBitmapWidth < m_origWidth) &&
+            (static_cast<float>(newW) > static_cast<float>(m_uploadedBitmapWidth) * 1.02f ||
+             m_scale > PinMemoryConstants::kLodTextureScaleThreshold);
+        const bool canShrinkToLod =
+            (m_uploadedBitmapWidth == m_origWidth) &&
+            (origPixels >= PinMemoryConstants::kLodTextureMinOrigPixels) &&
+            (m_scale <= PinMemoryConstants::kLodTextureScaleThreshold);
+        if (needsHigherRes || canShrinkToLod) {
+            createRenderResources(activeDisplayImage());
+        }
+    }
     // 消除双重重绘：triggerInvalidate=false，仅由下方单次 render() 呈现
     showTransientHudBadge(
         std::format(L"{}%", static_cast<int>(std::lround(m_scale * 100.0f))),
@@ -1766,6 +2017,20 @@ void PinWindow::setScale(float scale) {
         if (m_renderTarget) {
             m_renderTarget->Resize(D2D1::SizeU(w, h));
         }
+        if (m_uploadedBitmapWidth > 0 && m_origWidth > 0) {
+            const uint64_t origPixels = static_cast<uint64_t>(m_origWidth) * static_cast<uint64_t>(m_origHeight);
+            const bool needsHigherRes =
+                (m_uploadedBitmapWidth < m_origWidth) &&
+                (static_cast<float>(w) > static_cast<float>(m_uploadedBitmapWidth) * 1.02f ||
+                 m_scale > PinMemoryConstants::kLodTextureScaleThreshold);
+            const bool canShrinkToLod =
+                (m_uploadedBitmapWidth == m_origWidth) &&
+                (origPixels >= PinMemoryConstants::kLodTextureMinOrigPixels) &&
+                (m_scale <= PinMemoryConstants::kLodTextureScaleThreshold);
+            if (needsHigherRes || canShrinkToLod) {
+                createRenderResources(activeDisplayImage());
+            }
+        }
         if (changed && IsWindowVisible(m_hwnd)) {
             showTransientHudBadge(
                 std::format(L"{}%", static_cast<int>(std::lround(m_scale * 100.0f))),
@@ -1777,7 +2042,9 @@ void PinWindow::setScale(float scale) {
 }
 
 void PinWindow::rotate(int angleDeg) {
-    if (m_sourceImage.empty() || !m_hwnd) return;
+    if (!m_hwnd) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     if (PinInputController::normalizeRightAngleDegrees(angleDeg) == 0) return;
     stopZoomAnimation(false);
     clearTranslationState();
@@ -1866,7 +2133,9 @@ void PinWindow::rotate(int angleDeg) {
 }
 
 void PinWindow::flip(bool horizontal) {
-    if (m_sourceImage.empty() || !m_hwnd) return;
+    if (!m_hwnd) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     stopZoomAnimation(false);
     clearTranslationState();
     const bool sharedCleanBase = (!m_cleanBaseImage.empty() && m_cleanBaseImage.data == m_sourceImage.data);
@@ -1929,7 +2198,9 @@ void PinWindow::flip(bool horizontal) {
 }
 
 void PinWindow::invertColors() {
-    if (m_sourceImage.empty() || !m_hwnd) return;
+    if (!m_hwnd) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     stopZoomAnimation(false);
     clearTranslationState();
     // COW 写前分离：防止原地像素反色污染共享的纯净底图 m_cleanBaseImage
@@ -1958,7 +2229,9 @@ void PinWindow::invertColors() {
 }
 
 void PinWindow::toggleGrayscale() {
-    if (m_sourceImage.empty() || !m_hwnd) return;
+    if (!m_hwnd) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     stopZoomAnimation(false);
     clearTranslationState();
     if (!m_grayscale) {
@@ -2006,6 +2279,12 @@ void PinWindow::toggleFold() {
     if (!m_folded) {
         GetWindowRect(m_hwnd, &m_unfoldedRect);
         m_folded = true;
+        // 折叠为迷你胶囊瞬间：卸载全尺寸 D2D 纹理并将 CPU 原图无损压缩，单张 4K 贴图占用从 ~100MB 骤降至 <2MB
+        m_bitmap.Reset();
+        m_bitmapTiles.clear();
+        m_uploadedBitmapWidth = 0;
+        m_uploadedBitmapHeight = 0;
+        (void)compressCpuImagesToCold();
         const SIZE foldSz = computeFoldCapsuleSize(dpiScale);
         const int foldW = foldSz.cx;
         const int foldH = foldSz.cy;
@@ -2018,6 +2297,8 @@ void PinWindow::toggleFold() {
         render();
     } else {
         m_folded = false;
+        ensureImagesMaterialized();
+        enforceGlobalPinMemoryBudget(this);
         RECT curRc{};
         GetWindowRect(m_hwnd, &curRc);
         const int w = (std::max)(1, static_cast<int>(m_origWidth * m_scale));
@@ -2034,12 +2315,28 @@ void PinWindow::toggleFold() {
         if (m_renderTarget) {
             m_renderTarget->Resize(D2D1::SizeU(w, h));
         }
+        if (m_uploadedBitmapWidth > 0 && m_origWidth > 0) {
+            const uint64_t origPixels = static_cast<uint64_t>(m_origWidth) * static_cast<uint64_t>(m_origHeight);
+            const bool needsHigherRes =
+                (m_uploadedBitmapWidth < m_origWidth) &&
+                (static_cast<float>(w) > static_cast<float>(m_uploadedBitmapWidth) * 1.02f ||
+                 m_scale > PinMemoryConstants::kLodTextureScaleThreshold);
+            const bool canShrinkToLod =
+                (m_uploadedBitmapWidth == m_origWidth) &&
+                (origPixels >= PinMemoryConstants::kLodTextureMinOrigPixels) &&
+                (m_scale <= PinMemoryConstants::kLodTextureScaleThreshold);
+            if (needsHigherRes || canShrinkToLod) {
+                createRenderResources(activeDisplayImage());
+            }
+        }
         render();
     }
 }
 
 void PinWindow::editMarkup() {
-    if (!m_hwnd || m_sourceImage.empty()) return;
+    if (!m_hwnd) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     stopZoomAnimation(true);
     releaseZoomStage();
 
