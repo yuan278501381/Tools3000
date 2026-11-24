@@ -23,7 +23,12 @@
 
 <br />
 
-Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bookmark search (with Live Watch, 3 RAM tiers & CLI / MCP), document content search, persistent clipboard history, native Text Expander, inline File Dialog search, File Locksmith, scrolling capture, precision markup, grouped desktop pins, 8-language offline OCR & clean in-place translation, screen recording with auto-zoom Studio (exporting MP4, WeChat-ready GIF, and animated WebP), global mouse gestures, encrypted config backup, and a Rust Picasa photo viewer** into one native Windows app. Core features run 100% locally with full support for non-English install folders and Windows usernames, keep the resident main host around 2–6 MB of private working set (around a dozen MB across the full ready process tree, with optional 0 MB idle search sleep), and support personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bookmark search (with Live Watch, 3 RAM tiers & CLI / MCP), document content search, persistent clipboard history, native Text Expander, inline File Dialog search, File Locksmith, scrolling capture, precision markup, grouped desktop pins, 8-language offline OCR & clean in-place translation, screen recording with auto-zoom Studio (exporting MP4, Discord/Slack/GitHub-ready compact GIF, and animated WebP), global mouse gestures, encrypted config backup, and a Rust Picasa photo viewer** into one native Windows app. Core features run 100% locally with full support for non-English install folders and Windows usernames, keep the resident main host around **2–6 MB** of private working set (with optional 0 MB idle search sleep), and support personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+
+> **Quick Install** — Grab **[Installer `.exe` / Portable `.zip` (Latest Release)](https://github.com/yuan278501381/Tools3000/releases/latest)**, or install via **Scoop** (`winget install Yy1.Tools3000` PR `#487469` pending merge):
+> ```powershell
+> scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000/tools3000
+> ```
 
 ---
 
@@ -45,49 +50,35 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/ocr_live_text_demo.webp" alt="8-language offline OCR, Live Text selection, and in-place text replacement" width="100%" /><br />
-      <sub><b>8-Language Offline OCR &amp; Live Text</b> · Auto-detects CJK/JA/KO/RU/ES/PT locally; select, annotate, or edit in place</sub>
+      <sub><b>8-Language Offline OCR &amp; Live Text</b> · Auto-detects EN/CJK/JA/KO/RU/ES/PT locally; select, annotate, or edit in place</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/scroll_capture_demo.webp" alt="Scrolling capture with live preview and lossless trim" width="100%" /><br />
-      <sub><b>Scrolling Capture</b> · Auto-scroll seamless stitching with live sidebar preview and lossless head/tail trim</sub>
+      <img src="docs/images/en-US/translate_demo.webp" alt="Clean 1:1 in-place screenshot translation with code protection" width="100%" /><br />
+      <sub><b>In-Place 1:1 Screenshot Translation</b> · Zero-config dual free channels + BYOK LLMs, clean 1:1 overlay, code protection &amp; 0ms toggle</sub>
     </td>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/screen_recording_demo.webp" alt="Screen recording and auto-zoom Studio" width="100%" /><br />
-      <sub><b>Screen Recorder &amp; Auto-Zoom Studio</b> · Smart cursor-follow zoom, export MP4, WeChat-ready GIF, and animated WebP</sub>
+      <sub><b>Screen Recorder &amp; Auto-Zoom Studio</b> · Smart cursor-follow zoom, export MP4, Discord/Slack/GitHub compact GIF &amp; animated WebP</sub>
     </td>
   </tr>
   <tr>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/content_search_demo.webp" alt="Full-text document content search with one-click line copy" width="100%" /><br />
-      <sub><b>Document Content Search</b> · Search inside PDF, Word, Excel, and source code with highlighted context</sub>
+      <img src="docs/images/en-US/clipboard_demo.webp" alt="Persistent clipboard history with drag-paste and Shift/Ctrl ordered merge paste" width="100%" /><br />
+      <sub><b>Persistent Clipboard History (Alt + V)</b> · Survives reboots, color app icons, universal browser/CLI drag-paste &amp; ordered merge paste</sub>
     </td>
     <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/capture_markup_demo.webp" alt="Precision screenshot annotation and dashed magnifier" width="100%" /><br />
-      <sub><b>Precision Screenshot Markup</b> · Smart element snapping, dashed optical magnifier, privacy mosaic, and auto-healing steps</sub>
+      <img src="docs/images/en-US/text_expander_demo.webp" alt="System-wide Text Expander: instant snippet expansion, dynamic macros, and zero clipboard pollution" width="100%" /><br />
+      <sub><b>Native Text Expander</b> · Type <code>;date</code> or <code>;sig</code> anywhere for instant expansion with 15 dynamic macros &amp; password-manager guard</sub>
     </td>
   </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/pin_groups_demo.webp" alt="Grouped desktop pins with quick switching and snap tiling" width="100%" /><br />
-      <sub><b>Desktop Pins &amp; Pin Groups</b> · F3 always-on-top pins with color groups, top bar switching, and one-click tiling</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Global mouse gestures and screen-edge wheel volume control" width="100%" /><br />
-      <sub><b>Global Mouse Gestures</b> · Pause-to-cancel on by default, profile-aware window switching, instant trigger &amp; edge wheel</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/translate_demo.webp" alt="WeChat-grade 1:1 in-place screenshot translation with code protection" width="100%" /><br />
-      <sub><b>In-Place Screenshot Translation</b> · Zero-config dual free channels + BYOK LLMs, clean 1:1 overlay &amp; 0ms toggle</sub>
-    </td>
-    <td width="50%" align="center" valign="top">
-      <img src="docs/images/en-US/clipboard_demo.webp" alt="Persistent clipboard history with Shift/Ctrl ordered merge paste" width="100%" /><br />
-      <sub><b>Persistent Clipboard History (Alt + V)</b> · Survives reboots, Shift/Ctrl ordered merge paste &amp; tray toggle</sub>
-    </td>
-  </tr>
+</table>
+
+<details>
+<summary><b>View 7 more live demos</b> — File Dialog Inline Search, File Locksmith, Scrolling Capture, Precision Markup, 120Hz Pin Groups, Document Full-Text Search &amp; Global Mouse Gestures</summary>
+<br />
+<table>
   <tr>
     <td width="50%" align="center" valign="top">
       <img src="docs/images/en-US/dialog_enhancer_demo.webp" alt="File Dialog Assistant with Listary-style inline search and jump" width="100%" /><br />
@@ -99,12 +90,33 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
     </td>
   </tr>
   <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/scroll_capture_demo.webp" alt="Scrolling capture with live preview and lossless trim" width="100%" /><br />
+      <sub><b>Scrolling Capture</b> · Auto-scroll seamless stitching with live sidebar preview and lossless head/tail trim</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/capture_markup_demo.webp" alt="Precision screenshot annotation and dashed magnifier" width="100%" /><br />
+      <sub><b>Precision Screenshot Markup</b> · Smart element snapping, dashed optical magnifier, privacy mosaic &amp; saved region presets</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/pin_groups_demo.webp" alt="Grouped desktop pins with quick switching and snap tiling" width="100%" /><br />
+      <sub><b>Desktop Pins &amp; Pin Groups</b> · F3 always-on-top pins with color groups, 4K lossless RAM compression &amp; one-click tiling</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/content_search_demo.webp" alt="Full-text document content search with one-click line copy" width="100%" /><br />
+      <sub><b>Document Content Search</b> · Search inside PDF, Word, Excel, and source code with highlighted context</sub>
+    </td>
+  </tr>
+  <tr>
     <td colspan="2" align="center" valign="top">
-      <img src="docs/images/en-US/text_expander_demo.webp" alt="System-wide Text Expander: instant snippet expansion, dynamic macros, and zero clipboard pollution" width="68%" /><br />
-      <sub><b>Text Expander</b> · Type <code>;date</code> or <code>;sig</code> anywhere for instant expansion with dynamic macros, password-manager guard, and zero clipboard history pollution</sub>
+      <img src="docs/images/en-US/mouse_gesture_demo.webp" alt="Global mouse gestures and screen-edge wheel volume control" width="68%" /><br />
+      <sub><b>Global Mouse Gestures</b> · Pause-to-cancel on by default, profile-aware window switching, instant trigger &amp; edge wheel</sub>
     </td>
   </tr>
 </table>
+</details>
 
 | Module | Core Experience |
 | :--- | :--- |
@@ -118,7 +130,7 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
 | **Precision Screenshot Markup** | `F1` snaps directly to windows and UI elements with pixel color picker, default dashed optical magnifier, 6 arrow styles, self-healing step badges, mosaic, sharing frames, decoupled auto-copy / auto-save finish actions, plus `Shift + F1` / `R` to reuse saved & recent capture regions. |
 | **Desktop Pins & Pin Groups** | `F3` pins screenshots or clipboard content always-on-top with 120Hz GPU smooth zoom, opacity, click-through, color groups, and one-click snap-tiling; includes lossless cold compression & GPU texture unloading so even dozens of 4K or scrolling pins stay lightweight, with configurable auto Live Text recognition. |
 | **8-Language Offline OCR & In-Place Translation** | Pure local auto-detect OCR across 8 languages (Chinese, English, Japanese, Korean, Russian, Spanish, and Portuguese — on-demand lightweight language packs plus right-click per-image language switch); select/copy, highlight/underline, edit in place, extract tables/QR codes; plus **clean 1:1 in-place screenshot translation** (free dual channels + BYOK LLMs) with code protection and 0ms toggle. |
-| **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **WeChat-ready GIF**, and **animated WebP**. |
+| **Screen Recorder & Auto-Zoom Studio** | Screen recording with keystroke overlay flows directly into Studio — automatic click-focus zoom, curated wallpapers, audio waveform timeline, and one-click export to **MP4**, **Discord / Slack / GitHub-ready compact GIF**, and **animated WebP**. |
 | **Global Mouse Gestures** | Right-drag to switch tabs, navigate back, or close windows; pause-to-cancel enabled by default, smart app window switching without duplicate launches (even across Chrome profiles), instant trigger without releasing, screen-edge wheel volume/brightness, 8-second easter egg, fullscreen game bypass, and Lua scripting. |
 | **Presenter, Remote Boost & Feedback** | Crisp keystroke OSD and double-`Ctrl` spotlight; remote desktop (`mstsc`, RustDesk, ToDesk) hotkey passthrough and one-key stuck-modifier recovery; built-in sidebar **Feedback** button with automatic local privacy redaction before exporting diagnostics. |
 | **Picasa Photo Viewer (Rust Recreation · Optional)** | Lightweight Picasa-style image viewer recreated in Rust + Direct2D (**viewer only, not the full Google Picasa suite**). **Under 2 MB as a zero-dependency standalone executable** that works both inside Tools3000 and completely standalone on any Windows PC. Unchecked by default in the installer; enabling automatically associates all 41 supported image formats with classic Polaroid icons and a native dark/light Direct2D format manager. Alongside faithful cursor-anchored damped zoom, filmstrip wave, smooth close, and cross-dissolve slideshow animations, it **adds modern capabilities the original lacked**: native 4K High-DPI (100%–250%+) crispness, 60–240Hz VSync rendering, WebP / AVIF / HEIC / SVG / QOI / DDS / camera RAW decoding, animated GIF/WebP/APNG frame scrubbing, lossless horizontal/vertical flip, and 8-language UI. |
@@ -164,11 +176,11 @@ Tools3000 is built for complete zero-black-box transparency (full details in **[
 
 ## Why I Built Tools3000
 
-I have been a heavy **Everything** user for over ten years. For screenshots, I started with the built-in **QQ / WeChat** capture tools, moved to **FastStone Capture** for its convenient annotation tools, then switched to **Snipaste** for pinning screenshots on screen, and later migrated to **PixPin** for scrolling capture, magnifier annotations, and OCR. For mouse gestures, I went from **WGestures** to **WGestures 2**, and I cycled through plenty of screen recorders along the way — and even gave Microsoft **PowerToys** a try in between, yet it still missed several daily essentials, leaving me back with a row of separate apps.
+I have been a heavy **Everything** user for over ten years. For screenshots and desktop pins, I bounced across **Greenshot**, **FastStone Capture**, **ShareX**, and **Snipaste** as I needed element snapping, scrolling capture, magnifier callouts, and fast offline OCR. For clipboard history and snippets I ran **Ditto** and **AutoHotkey**, for mouse gestures I went from **WGestures** to **StrokesPlus**, and I cycled through plenty of screen recorders along the way — even giving Microsoft **PowerToys** a serious try in between, yet it still missed several daily essentials, leaving me back with a crowded row of separate background apps.
 
-Image viewers were another long-standing frustration: domestic viewers were packed with pop-up ads and bloatware, and after Google discontinued **Picasa**, I tried several alternatives online — including **FastStone Image Viewer** and even the official viewer from the Everything author (**Void Image Viewer**) — yet none felt as fluid and effortless as Picasa. Eventually I gave up and settled for the built-in Windows Photos app. While building Tools3000, I decided to recreate the lightweight Picasa Photo Viewer in Rust + Direct2D (under 2 MB, zero external dependencies, usable completely standalone) and fill in the modern formats and High-DPI capabilities the classic original never had.
+Image viewers were another long-standing frustration: third-party freeware viewers were increasingly packed with pop-up ads or heavy frameworks, and after Google discontinued **Picasa**, I tried **FastStone Image Viewer** and even **Void Image Viewer** (from the Everything author) — yet none felt quite as fluid and effortless as classic Picasa on modern 4K displays. While building Tools3000, I decided to recreate the lightweight Picasa Photo Viewer in Rust + Direct3D 11 (under 2 MB, zero external dependencies, usable completely standalone) and fill in the modern formats (AVIF, HEIC, WebP, SVG, RAW) and High-DPI capabilities the classic original never had.
 
-One day I looked at the row of icons sitting in my Windows system tray and thought: **what if all of these lived in a single app?** On top of tray clutter, a couple of daily annoyances kept nagging at me — PixPin's OCR still lagged behind WeChat in both accuracy and speed, and WGestures started leaving a stubborn tiny text box stuck on screen that only went away after restarting the app. With AI now making ambitious solo builds possible, I rolled up my sleeves and built **Tools3000** as an all-in-one replacement.
+One day I looked at the row of icons sitting in my Windows system tray and thought: **what if all of these lived in a single native app without Electron bloat?** On top of tray clutter and conflicting global hooks, small daily annoyances kept nagging at me — built-in Windows OCR struggled on mixed-language technical screenshots, and my gesture tool occasionally left stuck overlay artifacts on screen until restarted. With modern tooling making ambitious solo systems projects practical, I rolled up my sleeves and built **Tools3000** as one cohesive C++20 + Rust suite.
 
 To be completely transparent with new users: I have been **dogfooding Tools3000 daily for 4 months**, progressively adding features and fixing issues as they came up. Early on I kept the old apps running as fallbacks whenever something broke; **today, my system tray is finally clean — Tools3000 is the only one left running.**
 
@@ -184,9 +196,9 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 | :--- | :--- | :--- |
 | **Everything** | `Alt + Space` millisecond NTFS filename, phonetic, `bm:` browser bookmarks, and `content:` full-text document search, plus a 350 KB pure Rust CLI / MCP server — starting strictly on demand | When you need HTTP/ETP network file servers, full EXIF/media property column indexing, or legacy scripts tied to `es.exe` syntax |
 | **Ditto / Windows `Win + V` Clipboard** | `Alt + V` pure Rust atomic persistent clipboard history (survives reboots) with `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, custom groups, inline edit, and `Alt + 1..9` instant paste | When you need real-time LAN clipboard sync across multiple PCs or cloud-synced clipboard roaming |
-| **Snipaste / PixPin** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` 120Hz grouped desktop pins, 1:1 in-place screenshot translation, and fast local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
+| **Snipaste / Greenshot / PowerToys Text Extractor** | `F1` region capture & markup, dashed magnifier, scrolling capture, `F3` 120Hz grouped desktop pins (lossless 4K RAM cap), 1:1 in-place screenshot translation, and fast 8-language local offline OCR with in-place text replacement | When you rely on Snipaste's ultra-specialized legacy GUI element snapping or custom CLI screenshot chains |
 | **WGestures / StrokesPlus** | Right-drag gestures for tabs/back/close, instant trigger without release, screen-edge wheel volume, hot corners, fullscreen game bypass, and Lua scripting | When you need multi-button chord gestures (e.g., left-hold + right-gesture), intricate window-region conditions, or years of recorded macros |
-| **Screen Recorders (e.g. ShareX)** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, messenger-ready GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
+| **ShareX / Screen Studio** | Screen recording, keystroke overlay, instant auto-zoom Studio (waveform trimming & cursor auto-zoom), exporting MP4, Discord/Slack/GitHub compact GIF, and animated WebP | When you need 80+ cloud/S3/FTP/Webhook auto-upload workflows or heavily customized FFmpeg post-capture pipelines |
 | **Picasa Photo Viewer / FastStone / Windows Photos** | Optional under-2 MB zero-dependency Rust recreation of the classic lightweight Picasa viewer (also works completely standalone), bringing faithful animations plus 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, and lossless flip | When you need full Google Picasa album catalog management, face recognition, or dedicated batch RAW editing |
 | **Listary Dialog Jump / PowerToys File Locksmith** | Listary-style inline folder search in Windows Open/Save and internal dialogs (protecting Save-As filenames); zero-RAM File Locksmith via Explorer right-click or built-in page | Full Listary custom launcher action workflows or deep kernel handle forensics |
 | **Espanso / Beeftext / AutoHotkey Snippets** | Built-in native Text Expander (ready out of the box, zero hooks when off) with immediate/boundary triggers, date/clipboard/cursor macros, password-manager auto-skip, live sandbox, and JSON import/export | Complex YAML form dialogs, shell-command dynamic output, or cross-platform Linux/macOS config sync |
