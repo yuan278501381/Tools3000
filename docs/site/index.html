@@ -405,17 +405,17 @@
     const MODULES = [
       { kbd: 'Alt + Space', en: ['Instant File, App & Bookmark Search', 'Millisecond NTFS MFT + Live Watch, 3 RAM tiers (down to 0 MB sleep), and Spacebar QuickLook.'], zh: ['极速文件 / 应用 / 书签搜索', 'NTFS 毫秒级检索 + 实时刷新、3 档内存模式（含 0 MB 休眠）与空格快速预览。'] },
       { kbd: 'content:', en: ['Full-Text Document Search', 'Rust SIMD search across code, Markdown, Word, Excel, PowerPoint, PDF & OFD with line snippets.'], zh: ['多格式文档内容全文搜索', 'Rust SIMD 极速检索代码、Word、Excel、PPT、PDF 与 OFD 正文并高亮上下文。'] },
-      { kbd: 'Alt + V', en: ['Persistent Clipboard History', 'Survives reboots, supports drag-and-drop paste, smart active-window tracking & password manager exclusion.'], zh: ['重启不丢的剪贴板历史', '支持直接拖入输入框连贴、置顶切软件自动跟随、隐藏置顶与密码管理器自动避让。'] },
-      { kbd: ';trigger', en: ['Native Text Expander', 'Expand short abbreviations & date/clipboard/cursor macros anywhere with zero background bloat.'], zh: ['全局文本扩展器', '任意输入框敲短词秒出完整常用语与日期/光标动态宏，关闭即零占用。'] },
-      { kbd: 'F1 / Shift+F1', en: ['Precision Capture & Region Manager', 'Vector annotations, mosaic/blur, numbered steps, R region history cycling & pinned region presets.'], zh: ['精准截图与选区管理工作台', '丰富矢量标注、序号马赛克、R 键历史选区复用与置顶固定选区工作台。'] },
+      { kbd: 'Alt + V', en: ['Persistent Clipboard History', 'Color source app icons, universal drag-to-paste (browsers, terminals & AI IDEs), active-window tracking & reboot persistence.'], zh: ['重启不丢的剪贴板历史', '真实彩色来源应用图标，支持拖入浏览器搜索框/命令行终端/AI 编程工具直贴，置顶切窗自动跟随。'] },
+      { kbd: ';trigger', en: ['Native Text Expander', 'Expand triggers & 15 dynamic macros (date offsets, UUID, weekday, cursor) with CJK fullwidth compatibility & zero idle hooks.'], zh: ['全局文本扩展器', '任意输入框敲短词秒展长文与 15 类动态宏（支持全半角符号智能兼容与实时预览），关闭零占用。'] },
+      { kbd: 'F1 / Shift+F1', en: ['Precision Capture & Region Manager', 'Vector annotations, decoupled copy/save finish actions, R region history cycling & pinned region presets.'], zh: ['精准截图与选区管理工作台', '丰富矢量标注、独立控制自动保存与复制、R 键历史选区复用与置顶固定选区工作台。'] },
       { kbd: 'Scroll', en: ['Scrolling Long Screenshot', 'Auto-scrolls web pages, chat logs & code editors with real-time stitching preview.'], zh: ['智能滚动长截图', '自动平滑滚动网页、长聊天记录与代码编辑器，实时预览无缝拼接。'] },
-      { kbd: 'F3', en: ['120Hz+ Grouped Desktop Pins', 'Hardware-composited wheel zoom, multi-tab pin groups, and live selectable text on images.'], zh: ['120Hz 顺滑贴图与贴图组', 'GPU 硬件合成丝滑滚轮缩放、多标签合并贴图组，图片文字直接划选复制。'] },
+      { kbd: 'F3', en: ['120Hz+ Grouped Desktop Pins', 'Hardware-composited wheel zoom, lossless cold compression for 4K/long pins, and hover-priority Live Text.'], zh: ['120Hz 顺滑贴图与无损内存封顶', 'GPU 丝滑缩放、多标签贴图组，多张 4K/长图自动无损冷压缩省内存，文字直接划选复制。'] },
       { kbd: 'Ctrl+Shift+O', en: ['8-Lang Offline OCR & 1:1 Translate', 'Offline PP-OCR auto-detects CJK/JP/KR/RU/ES/PT/EN and renders clean in-place translations.'], zh: ['8 语种离线识字与原位翻译', '自动识别中英日韩俄西葡离线文字，无痕擦除原字并原位排版译文。'] },
       { kbd: 'Ctrl+Shift+R', en: ['Auto-Zoom Screen Studio', 'Records screen/audio with automatic cursor zoom, exporting MP4, GIF & animated WebP.'], zh: ['自动运镜录屏演播室', '自动跟随点击平滑推拉镜头，一键导出高清 MP4、微信 GIF 与动态 WebP。'] },
       { kbd: 'Right Drag', en: ['Global Mouse Gestures & Lua', '60fps trail, pause-to-cancel, run-or-activate window switching, hot corners & edge wheel.'], zh: ['全局鼠标手势与触发角', '停顿防误触取消、智能激活已有程序窗口、屏幕四角触发与边缘滚轮调节。'] },
       { kbd: 'Open / Save', en: ['File Dialog Enhancer', 'Listary-style inline directory search & recent Explorer folder jump inside Open/Save dialogs.'], zh: ['文件对话框内嵌快跳助手', '在打开/另存为弹窗内直接搜目录秒跳、一键切当前资源管理器目录。'] },
       { kbd: 'Right Click', en: ['File Locksmith & <2 MB Picasa Viewer', 'Zero-resident right-click file unlocker + ultra-fast standalone Rust photo viewer (41 formats).'], zh: ['文件占用解锁 & 轻量 Picasa 看图', '平时 0 内存常驻的一键查杀文件占用锁 + 不足 2 MB 秒开 41 种格式的独立看图器。'] },
-      { kbd: 'HUD / RDP', en: ['Keycast, Cursor Spotlight & Remote Boost', 'Tutorial keystroke HUD, presentation cursor spotlight, and stuck-modifier emergency flush for RDP.'], zh: ['按键回显、鼠标聚光灯与远控增强', '录课按键胶囊回显、会议演示聚光灯水波纹，以及远程桌面防卡键急救。'] }
+      { kbd: 'Cloud / HUD', en: ['Encrypted Backup, Keycast & Remote Boost', 'Optional E2E-encrypted OneDrive/WebDAV/S3 config backup, portable hot-update, keycast HUD, spotlight & RDP stuck-key flush.'], zh: ['加密配置云备份、演示特效与远控增强', '支持同步盘/WebDAV/S3 端到端加密配置备份、便携版原地热更新、按键回显聚光灯与远控防卡键。'] }
     ];
 
     const I18N = {

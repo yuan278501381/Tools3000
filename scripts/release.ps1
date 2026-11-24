@@ -362,9 +362,24 @@ if (Test-Path -LiteralPath $ViewerManifestPath) {
     Write-Host "[OK] src/viewer/viewer.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
 }
 
+$SiteIndexPath = Join-Path $ScriptDir "docs\site\index.html"
+if (Test-Path -LiteralPath $SiteIndexPath) {
+    $siteRaw = [System.IO.File]::ReadAllText($SiteIndexPath, [System.Text.Encoding]::UTF8)
+    $siteUpdated = $siteRaw
+    $siteUpdated = [regex]::Replace($siteUpdated, 'Tools3000-v\d+\.\d+\.\d+-Setup\.exe', "Tools3000-$TargetTag-Setup.exe")
+    $siteUpdated = [regex]::Replace($siteUpdated, 'Tools3000-v\d+\.\d+\.\d+-win-x64-portable\.zip', "Tools3000-$TargetTag-win-x64-portable.zip")
+    $siteUpdated = [regex]::Replace($siteUpdated, 'v\d+\.\d+\.\d+(?=\s+Released\b)', $TargetTag)
+    $siteUpdated = [regex]::Replace($siteUpdated, 'v\d+\.\d+\.\d+(?=\s+正式发布)', $TargetTag)
+    $siteUpdated = [regex]::Replace($siteUpdated, '(Download Installer \()v\d+\.\d+\.\d+(\))', "`${1}$TargetTag`${2}")
+    $siteUpdated = [regex]::Replace($siteUpdated, '(下载标准安装包 \()v\d+\.\d+\.\d+(\))', "`${1}$TargetTag`${2}")
+    Write-TextIfChanged -Path $SiteIndexPath -Original $siteRaw -Updated $siteUpdated -Encoding $Utf8NoBom
+    Write-Host "[OK] docs/site/index.html 下载直链与徽章版本已同步为: $TargetTag" -ForegroundColor Green
+}
+
 # 5. 提交版本升级 commit
 $FilesToStage = @("VERSION", "docs/RELEASE_NOTES_$TargetTag.md")
 if (Test-Path -LiteralPath (Join-Path $ScriptDir "CHANGELOG.md")) { $FilesToStage += "CHANGELOG.md" }
+if (Test-Path -LiteralPath $SiteIndexPath) { $FilesToStage += "docs/site/index.html" }
 if (Test-Path -LiteralPath $UiPackageJsonPath) { $FilesToStage += "ui/package.json" }
 if (Test-Path -LiteralPath $UiPackageLockPath) { $FilesToStage += "ui/package-lock.json" }
 if (Test-Path -LiteralPath $ViewerCargoTomlPath) { $FilesToStage += "src/viewer/Cargo.toml" }
