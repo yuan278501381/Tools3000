@@ -77,6 +77,7 @@ void WebViewEnvironmentManager::acquire(ReadyCallback callback) {
             m_callbacks.push_back(std::move(callback));
             if (m_state == State::Idle) {
                 m_state = State::Initializing;
+                m_initializing.store(true, std::memory_order_release);
                 shouldInitialize = true;
                 generation = ++m_generation;
             }
@@ -136,12 +137,17 @@ void WebViewEnvironmentManager::acquire(ReadyCallback callback) {
     if (FAILED(startResult)) completeInitialization(generation, startResult, nullptr);
 }
 
+bool WebViewEnvironmentManager::isInitializing() const noexcept {
+    return m_initializing.load(std::memory_order_acquire);
+}
+
 void WebViewEnvironmentManager::shutdown() {
     std::vector<ReadyCallback> pending;
     {
         std::lock_guard lock(m_mutex);
         ++m_generation;
         m_state = State::Idle;
+        m_initializing.store(false, std::memory_order_release);
         m_environment.Reset();
         m_profileSlotLease.release();
         pending.swap(m_callbacks);
@@ -168,6 +174,7 @@ void WebViewEnvironmentManager::completeInitialization(
             m_profileSlotLease.release();
             m_state = State::Idle;
         }
+        m_initializing.store(false, std::memory_order_release);
         callbacks.swap(m_callbacks);
     }
 

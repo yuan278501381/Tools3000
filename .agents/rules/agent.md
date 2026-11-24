@@ -120,18 +120,20 @@ trigger: always_on
 
 ---
 
-## 7. Git 协作、分支管理与自动化发版标准 (GitFlowReleasePipeline)
+## 7. Git 协作、分支管理与自动化发版标准 (Trunk-Based Short-Lived Branching & Release Pipeline)
 1. **Git 提交信息双重视角规范 (Dual-Perspective Commit Convention)**：
-   - 必须使用**中文**编写 Git 提交信息；
+   - 必须使用**中文**编写 Git 提交信息，且 **100% 严禁原生 Unicode Emoji**；
    - **首行原则**：第一行（第一句）永远是全局概览摘要，确保在查看 Git 日志时能一目了然；
    - **双重视角清单**：主体描述需以清单形式，从以下两个维度进行阐述：
-     - 💼 **业务角度**：清晰说明实现了什么功能、解决了什么业务痛点；
-     - 🔧 **技术角度**：清晰说明底层的技术路线、重构逻辑或架构模式。
-2. **一键 DevOps 发版总控 (`scripts/release.ps1`)**：
-   - 发版流水线由 `pwsh scripts/release.ps1`（或带参数 `-Bump Minor/Major`、`-Version X.Y.Z`）全自动统筹编排；
-   - 流水线严格按顺序执行：工作区纯净度检查 -> `VERSION` 单一事实源版本号递增 (+1) -> 自动提取生成 Release Notes -> 开发分支提交 -> 向 `main` 主干执行非快进合并（`--no-ff`） -> 全新洁净构建与打包（`deploy.ps1`） -> 全生命周期端到端门禁校验 -> 二进制 `ProductVersion` 强断言 -> 自动化 Authenticode 代码签名校验与安装包/便携包/SHA256SUMS 产物归档 -> 创建不可变带注释 Tag 与 GitHub Release -> 安全切回或创建下一阶段开发特性分支。
-3. **双圆环拓扑美学 (Visual Graph Integrity)**：
-   - 确保在 Git Graph 中直观呈现出独立的开发支线与清晰的双父节点汇聚圆环（`merge(dev)`）。
+     - `[业务角度]`：清晰说明实现了什么功能、解决了什么业务痛点；
+     - `[技术角度]`：清晰说明底层的技术路线、重构逻辑或架构模式。
+2. **主干开发 + 短期语义分支用完即删铁律 (Trunk-Based / GitHub Flow, 2026-11-24 确立)**：
+   - **唯一常驻主干 `main`**：全仓永久仅保留 `main` 作为唯一常驻主干分支（天然对接社区 PR、Dependabot 与 CI/CD，杜绝双主干漂移）；
+   - **一题一短分支（严禁复用已合入旧分支）**：开启新需求、缺陷修复或专项优化前，必须基于最新 `origin/main` 切出语义化短期分支，统一使用前缀 `feat/<topic>`、`fix/<topic>`、`perf/<topic>`、`refactor/<topic>`、`docs/<topic>`、`chore/<topic>`；**绝对严禁继续往已合入 `main` 的旧功能分支（如历史 `feature/*`）里堆叠无关提交**；
+   - **合入即清理 & 保留清晰圆环**：合并进 `main` 时采用非快进合并（`git merge --no-ff <branch>`）保留自文档化的双父节点圆环（`merge(fix/...)` / `merge(feat/...)`），合并发版完成后立即安全删除本地与远端已合并的短期分支（`git branch -d` + `git push origin --delete`），确保分支列表永久极简；**严禁对已发布公网 Tag 的 `main` 历史执行强推重写**。
+3. **一键 DevOps 发版总控 (`scripts/release.ps1`)**：
+   - 发版流水线由 `pwsh scripts/release.ps1`（或带参数 `-Bump Minor/Major`、`-Version X.Y.Z`、可选 `-NextFeatureBranch <name>` / `-KeepSourceBranch`）全自动统筹编排；
+   - 流水线严格按顺序执行：工作区纯净度检查 -> `VERSION` 单一事实源版本号递增 (+1) -> 自动提取生成 Release Notes -> 专题分支提交 -> 向 `main` 主干执行非快进合并（`--no-ff`） -> 全新洁净构建与打包（`deploy.ps1`） -> 全生命周期端到端门禁校验 -> 二进制 `ProductVersion` 强断言 -> 自动化 Authenticode 代码签名校验与安装包/便携包/SHA256SUMS 产物归档 -> 创建不可变带注释 Tag 与 GitHub Release -> **自动删除已完全合并的短期专题分支（本地 + 远端）并停留于干净 `main`（或按 `-NextFeatureBranch` 基于新 `main` 切出新专题分支）**。
 4. **发行版说明用户向基线与社区/Issue 反馈署名规范 (User-Facing Release Notes & Community Attribution)**：
    - **锚定上一个已发布的 GitHub Release**：编写或更新 `docs/RELEASE_NOTES_v*.md` 时，必须以 **上一个正式发布的 GitHub Release**（通过 `gh release list` 核实）为变更对比基线，绝不以上一个本地 Git 提交为基线，严禁把未发布过的新功能写成「修复」或暴露中间开发迭代细节；
    - **纯用户向文档风格**：发版说明必须完全面向终端用户撰写，聚焦真实可感知的新功能、痛点解决、使用入口与升级方式，不堆砌底层代码类名/实现细节，且 100% 严禁原生 Unicode Emoji；

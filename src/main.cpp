@@ -26,6 +26,7 @@
 #include "core/i18n/UiI18n.h"
 #include "core/backup/ConfigBackupService.h"
 #include <objbase.h>
+#include <psapi.h>
 #include <sddl.h>
 #include <shellapi.h>
 #include <shldisp.h>
@@ -121,10 +122,12 @@ static HPOWERNOTIFY g_powerNotify = nullptr;
 static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
 static HWINEVENTHOOK g_fullscreenMoveSizeHook = nullptr;
 static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
+static std::atomic<ULONGLONG> g_lastQuietIdleTrimTick{0};
+static uint32_t g_fullscreenGuardTickCounter = 0;
 
 namespace {
 
-void syncForegroundFullscreenState() {
+void syncForegroundFullscreenState(bool forceRefresh = false) {
     static HWND s_lastValidFg = nullptr;
     HWND fg = GetForegroundWindow();
     if (!fg && s_lastValidFg && IsWindow(s_lastValidFg) &&
@@ -135,6 +138,39 @@ void syncForegroundFullscreenState() {
     } else {
         s_lastValidFg = nullptr;
     }
+
+    // 零分配指纹短路守卫：周期兜底定时器触发时若前台窗口句柄、尺寸与样式均未变更，
+    // 跳过 ConfigManager 锁、JSON 查表与外壳进程路径查询，彻底消除闲置态高频唤醒与软缺页。
+    struct ForegroundFingerprint {
+        HWND hwnd = nullptr;
+        RECT rect{};
+        LONG_PTR style = 0;
+        LONG_PTR exStyle = 0;
+        bool iconic = false;
+        bool zoomed = false;
+        bool valid = false;
+    };
+    static ForegroundFingerprint s_lastFingerprint{};
+    ForegroundFingerprint cur{};
+    cur.hwnd = fg;
+    cur.valid = true;
+    if (fg) {
+        GetWindowRect(fg, &cur.rect);
+        cur.style = GetWindowLongPtrW(fg, GWL_STYLE);
+        cur.exStyle = GetWindowLongPtrW(fg, GWL_EXSTYLE);
+        cur.iconic = IsIconic(fg) != FALSE;
+        cur.zoomed = IsZoomed(fg) != FALSE;
+    }
+    if (!forceRefresh && s_lastFingerprint.valid &&
+        cur.hwnd == s_lastFingerprint.hwnd &&
+        cur.style == s_lastFingerprint.style &&
+        cur.exStyle == s_lastFingerprint.exStyle &&
+        cur.iconic == s_lastFingerprint.iconic &&
+        cur.zoomed == s_lastFingerprint.zoomed &&
+        EqualRect(&cur.rect, &s_lastFingerprint.rect)) {
+        return;
+    }
+    s_lastFingerprint = cur;
 
     const bool gestureBypassEnabled =
         tools3000::core::ConfigManager::instance().get<bool>("/gesture/autoBypassFullscreen", true);
@@ -209,7 +245,7 @@ void CALLBACK FullscreenGuardWinEventProc(
     if (tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible()) {
         return;
     }
-    syncForegroundFullscreenState();
+    syncForegroundFullscreenState(true);
 }
 
 bool writePerformanceBaselineSnapshot(const std::filesystem::path& outputPath) {
@@ -2473,8 +2509,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         0,
         0,
         WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    SetTimer(hwnd, TIMER_ID_FULLSCREEN_GUARD, 500, nullptr);
-    syncForegroundFullscreenState();
+    SetTimer(hwnd, TIMER_ID_FULLSCREEN_GUARD, 2000, nullptr);
+    syncForegroundFullscreenState(true);
 
     // 7. UI Overlay 初始化
     tools3000::ui::ToastOverlay::instance().initialize(GetModuleHandleW(nullptr));
@@ -2612,8 +2648,27 @@ void preloadSettingsWindow(HINSTANCE hInstance) {
     settingsWnd.preload(hInstance);
 }
 
+static bool isAnyHostSurfaceActive() noexcept {
+    const bool mousePressed =
+        ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0);
+    if (mousePressed) return true;
+    return tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible() ||
+           tools3000::core::KeyboardHook::instance().isRecordingMode() ||
+           tools3000::ui::SpotlightOverlay::instance().isActive() ||
+           tools3000::ui::SettingsWindow::instance().isVisible() ||
+           tools3000::ui::SearchWindow::instance().isVisible() ||
+           tools3000::ui::ClipboardWindow::instance().isVisible() ||
+           tools3000::ui::TrayWindow::instance().isVisible() ||
+           tools3000::ui::QuickLookWindow::instance().isVisible();
+}
+
 static void cleanupQuietIdleWorkingSet(HWND hwnd) {
-    // 活跃交互守卫：若截图/录屏选区遮罩可见、聚光灯活跃或任意鼠标键正处于按下/手势划动态，顺延至静默期再回收
+    // 活跃交互与 WebView2 初始化守卫：若截图/录屏选区遮罩可见、聚光灯活跃、鼠标键按下，
+    // 或共享 WebView2 环境尚在异步初始化中，顺延至静默期再回收，严禁并发干扰 COM 初始化。
     const bool mousePressed =
         ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
         ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
@@ -2623,16 +2678,76 @@ static void cleanupQuietIdleWorkingSet(HWND hwnd) {
     const bool overlayBusy =
         tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible() ||
         tools3000::core::KeyboardHook::instance().isRecordingMode() ||
-        tools3000::ui::SpotlightOverlay::instance().isActive();
+        tools3000::ui::SpotlightOverlay::instance().isActive() ||
+        tools3000::ui::WebViewEnvironmentManager::instance().isInitializing();
     if (mousePressed || overlayBusy) {
         if (hwnd && IsWindow(hwnd)) {
-            SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, 2500, nullptr);
+            SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, 3000, nullptr);
         }
         return;
     }
 
-    CoFreeUnusedLibrariesEx(0, 0);
+    // 严禁传入 dwUnloadDelay = 0：10 秒安全宽限期可杜绝慢速虚拟机上异步 COM 工厂被提前强拆。
+    CoFreeUnusedLibrariesEx(10000, 0);
     tools3000::core::WinUtils::trimWorkingSet(true);
+    g_lastQuietIdleTrimTick.store(GetTickCount64(), std::memory_order_release);
+}
+
+static void maybeRunIdleMemoryWatermarkTrim(HWND hwnd) {
+    // 温和静默水位守卫：仅当全部本应用界面/浮层均已隐藏、距上次静默回收满 60 秒、
+    // 且主进程私有工作集自然漂移超过 14 MB（或总工作集超 24 MB）时执行单次回收，
+    // 既根治后台长时间飘在 30~40 MB，又彻底杜绝高频反复修剪引发的软缺页锯齿。
+    constexpr ULONGLONG kWatermarkCooldownMs = 60'000;
+    constexpr SIZE_T kPrivateWsWatermarkBytes = 14ull * 1024ull * 1024ull;
+    constexpr SIZE_T kTotalWsWatermarkBytes = 24ull * 1024ull * 1024ull;
+
+    const ULONGLONG now = GetTickCount64();
+    const ULONGLONG lastTrim = g_lastQuietIdleTrimTick.load(std::memory_order_acquire);
+    if (lastTrim != 0 && now >= lastTrim && (now - lastTrim) < kWatermarkCooldownMs) {
+        return;
+    }
+    if (tools3000::ui::WebViewEnvironmentManager::instance().isInitializing() ||
+        isAnyHostSurfaceActive()) {
+        return;
+    }
+
+    struct ProcessMemoryCountersEx2Abi {
+        DWORD cb;
+        DWORD PageFaultCount;
+        SIZE_T PeakWorkingSetSize;
+        SIZE_T WorkingSetSize;
+        SIZE_T QuotaPeakPagedPoolUsage;
+        SIZE_T QuotaPagedPoolUsage;
+        SIZE_T QuotaPeakNonPagedPoolUsage;
+        SIZE_T QuotaNonPagedPoolUsage;
+        SIZE_T PagefileUsage;
+        SIZE_T PeakPagefileUsage;
+        SIZE_T PrivateUsage;
+        SIZE_T PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    };
+
+    bool overWatermark = false;
+    ProcessMemoryCountersEx2Abi pmc2{};
+    pmc2.cb = sizeof(pmc2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(),
+                             reinterpret_cast<PPROCESS_MEMORY_COUNTERS>(&pmc2),
+                             pmc2.cb)) {
+        overWatermark = (pmc2.PrivateWorkingSetSize >= kPrivateWsWatermarkBytes) ||
+                        (pmc2.WorkingSetSize >= kTotalWsWatermarkBytes);
+    } else {
+        PROCESS_MEMORY_COUNTERS_EX pmc{};
+        pmc.cb = sizeof(pmc);
+        if (GetProcessMemoryInfo(GetCurrentProcess(),
+                                 reinterpret_cast<PPROCESS_MEMORY_COUNTERS>(&pmc),
+                                 pmc.cb)) {
+            overWatermark = (pmc.WorkingSetSize >= kTotalWsWatermarkBytes);
+        }
+    }
+
+    if (overWatermark) {
+        cleanupQuietIdleWorkingSet(hwnd);
+    }
 }
 
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2678,7 +2793,10 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             return 0;
         }
         if (wParam == TIMER_ID_FULLSCREEN_GUARD) {
-            syncForegroundFullscreenState();
+            syncForegroundFullscreenState(false);
+            if ((++g_fullscreenGuardTickCounter % 5u) == 0u) {
+                maybeRunIdleMemoryWatermarkTrim(hwnd);
+            }
             return 0;
         }
         if (wParam == TIMER_ID_QUIET_IDLE_CLEANUP) {

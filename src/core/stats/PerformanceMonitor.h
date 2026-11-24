@@ -120,6 +120,9 @@ public:
     /// 获取历史指标（最近 N 条采样）
     std::vector<PerfMetrics> getHistory(int count = 30) const;
 
+    /// 获取当前自适应采样间隔（毫秒）：有观察者/ETW 监听时按配置高频采样，静默闲置时退避至 30s
+    int currentSamplingIntervalMs() const noexcept;
+
 private:
     PerformanceMonitor() = default;
     ~PerformanceMonitor();
@@ -128,6 +131,7 @@ private:
 
     void sampleLoop();
     void sampleOnce();
+    void markObserverActive() const noexcept;
 
     /// 读取当前进程内存使用
     void sampleMemory(PerfMetrics& metrics);
@@ -144,15 +148,18 @@ private:
     // ETW is optional and event writes are skipped completely unless provider
     // registration succeeded and a consumer enabled it.
     std::atomic<bool> m_etwRegistered{false};
+    mutable std::atomic<uint64_t> m_lastObserverTick{0};
     std::thread m_sampleThread;
     int m_intervalMs = 2000;
-    std::condition_variable m_wakeCv;
-    std::mutex m_wakeMutex;
+    mutable std::condition_variable m_wakeCv;
+    mutable std::mutex m_wakeMutex;
 
     mutable std::mutex m_mutex;
     PerfMetrics m_currentMetrics;
-    std::vector<PerfMetrics> m_history;
+    std::deque<PerfMetrics> m_history;
     static constexpr int MAX_HISTORY = 120;  // 最多保留 120 条（4 分钟 @ 2秒间隔）
+    static constexpr int IDLE_BACKOFF_INTERVAL_MS = 30'000;  // 无 UI 观察者时自动退避至 30s，减少 93% 后台页错误唤醒
+    static constexpr uint64_t OBSERVER_ACTIVE_WINDOW_MS = 15'000;
     static constexpr std::size_t MAX_LATENCY_SAMPLES = 256;
     // Metric names can originate in optional plugins. Bound the number of
     // distinct series as well as each series' sample count so diagnostics do

@@ -6,6 +6,27 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 永久 Git 分支治理铁律：主干开发 + 短期语义分支用完即删（Trunk-Based / GitHub Flow，已固化至 `.agents/rules/agent.md` 第 7 节与 `scripts/release.ps1`）
+- **1. 问题复盘**：早期 `scripts/release.ps1` 发版合并 `main` 后默认切回原分支并推送，导致历史专题分支 `feature/rust-picasa-viewer` 在 Picasa 模块结束后被长期当作通用开发分支复用，持续产生名不副实的 `merge(feature/rust-picasa-viewer)` 记录。
+- **2. 确立的工程铁律（方案 B · 业界世界级标准）**：
+  - **唯一常驻主干 `main`**：不再维护长期 `dev` 分支，天然零漂移对接 GitHub 社区 PR、Dependabot（如 PR `#27`）与 CI/CD；
+  - **一题一语义短分支，严禁复用已合入旧分支**：每次开启新需求/缺陷修复/专项优化，必须基于最新 `main` 切出短期语义分支（`feat/*`、`fix/*`、`perf/*`、`refactor/*`、`docs/*`、`chore/*`）；
+  - **保留 `--no-ff` 自文档圆环 + 发版后自动销毁**：向 `main` 合入时保留 `--no-ff` 双父节点圆环（如 `merge(fix/stability-memory-and-drag)`）；`scripts/release.ps1` 发版并打 Tag 后默认不再回推或复活源分支，自动通过安全删除（`git branch -d` + `git push origin --delete`）清理本地与远端已合并短分支并停留在干净 `main`（支持可选 `-NextFeatureBranch` 或 `-KeepSourceBranch`）；
+  - **严禁重写已发布公网历史**：已锚定公网 Release Tag（`v1.4.4 ~ v1.4.6`）与公开 Fork 的历史提交绝不 `filter-repo` / `push --force`；已审计确认 100% 合并进 `main` 的历史分支 `feature/rust-picasa-viewer` 与 `feature/industry-preview-ocr-studio` 本地及远端全部安全清理。
+
+### [2026-11-24] Windows Server 2019 启动闪退 (`ntdll!RtlCompactHeap`) 根治、闲置内存锯齿四层治理与 Dependabot `#42` 闭环
+- **1. Windows Server 2019 (`Build 17763`) 启动约 5 秒闪退根因与根治 (`WinUtils.cpp`, `main.cpp`, `WebViewEnvironmentManager.{h,cpp}`, `TrayWindow.cpp`)**:
+  - *PDB 符号化精确调用链*：通过本机 `v1.4.6` PDB 符号化 `Tools3000_crash_20261124_222912.dmp` 确凿定位：`Tools3000Core.dll!WinUtils::trimWorkingSet+0x7D` -> `Tools3000Core.dll!WinUtils::compactProcessHeaps+0x79` -> `ntdll.dll+0x9A9D` (`RtlCompactHeap`, `0xC0000005 ACCESS_VIOLATION`)；
+  - *触发机理*：Server 2019 虚拟机中 `TrayWindow` WebView2 控制器初始化耗时 `5.04s`（`22:29:07.001` -> `22:29:12.038`），恰与 `5.5s` 的 `TIMER_ID_QUIET_IDLE_CLEANUP` 碰撞；旧逻辑先执行 `CoFreeUnusedLibrariesEx(0, 0)`（0 宽限期瞬间卸载 COM DLL `resourcepolicyclient.dll` / `taskschd.dll` / `XmlLite.dll`），随即调用 `compactProcessHeaps()` 枚举 `GetProcessHeaps()` 并对第三方私有堆执行 `HeapCompact(heaps[i], 0)`，撞上 `HEAP_NO_SERIALIZE` 或并发销毁中的第三方堆触发访问违例；
+  - *根治方案*：① `WinUtils::compactProcessHeaps()` 严禁遍历 `GetProcessHeaps()` 触碰进程内未知第三方私有堆，仅安全紧缩 `_heapmin()` + `HeapCompact(GetProcessHeap(), 0)`；② `WebViewEnvironmentManager` 增加无锁 `isInitializing()` 状态，`cleanupQuietIdleWorkingSet()` 在任一 WebView2 环境初始化期间自动顺延，并将 `CoFreeUnusedLibrariesEx(0, 0)` 改为安全 `10s` 宽限期 `CoFreeUnusedLibrariesEx(10000, 0)`；③ `TrayWindow` 补齐 `m_webView` 显式空指针守卫；配套 `QuietIdleHygieneTest.CompactProcessHeapsSurvivesConcurrentPrivateNoSerializeHeaps` 并发压力防回退单测。
+- **2. 闲置内存锯齿 (`3 MB <-> 40+ MB`) 四层根治 (`GestureTrailOverlay.{h,cpp}`, `MouseFeedbackOverlayBase.cpp`, `PerformanceMonitor.{h,cpp}`, `main.cpp`)**:
+  - *实机 `QueryWorkingSet` + `VirtualQueryEx` 取证根因*：① `GestureTrailOverlay` 冷启动即预分配且在首次手势后永久常驻 `3455x2159` 全屏 `IDCompositionSurface`（`~29–58 MB` 私有提交）永不回收；② `PerformanceMonitor` 无人打开性能页时仍每 2s 分配 `std::ostringstream` 与 `vector::erase(begin())`，`TIMER_ID_FULLSCREEN_GUARD` 每 500ms 唤醒读配置/查壳层，引发后台持续软缺页回涨；③ 任务管理器「工作集(内存)」显示的是 `PrivateWS + SharedWS`（含输入法 IME 等注入模块共享代码页），仅在事件触发的旧回收后一旦外部消息/IME 注入唤醒便飙升至 30–40 MB；
+  - *四层世界级根治*：① `GestureTrailOverlay` 废除冷启动全屏表面预占（保持 D3D11/D2D/DComp 合成器与 Visual 树热就绪，首次手势懒分配，闲置 `30s` 自动释放大表面 + `IDXGIDevice3::Trim()`，并同步修复 `applyHideOverlayState` 跨代 epoch 竞态）；`MouseFeedbackOverlayBase` 释放合成器时同步执行 `Commit() + IDXGIDevice3::Trim()`；② `PerformanceMonitor` 改为 `std::deque` + 栈上零分配 `snprintf` + 观察者按需自适应降频（活跃 `2s` / 无人观测 `30s`）；③ `main.cpp` `TIMER_ID_FULLSCREEN_GUARD` 降频至 `2000ms` 并引入前景 HWND/RECT/Style 零分配指纹缓存；④ 主循环新增 `10s` 温和闲置水位巡检 `maybeRunIdleMemoryWatermarkTrim`（全浮层隐藏且距上次回收 `>= 60s` 且 `PrivateWS >= 14 MB` 或 `TotalWS >= 24 MB` 时才触发 1 次，防抖抗颠簸，0 额外线程）；同机实测稳态 **`TotalWS = 2.71~5.43 MB` / `PrivWS = 1.61~2.60 MB` / `Commit = 63.71 MB` / 5s 缺页增量 `dPF = +0~+1`**。
+- **3. 供应链安全清理**：合并 Dependabot PR `#27`（`ui/package-lock.json` `i18next` `26.3.1 -> 26.7.2`），消除 Moderate DoS Alert `#42`（开放 Dependabot 告警归 `0`），前端 `tsc -b` + `43/43` Vitest 测试文件（`274/274` 用例）与 `vite build` 全绿。
+- **4. 剪贴板图片/文件拖入 AI IDE / 浏览器双图重复粘贴修复 (`ClipboardNativeDrag.{h,cpp}`)**:
+  - *根因*：`ClipboardDragDataObject::classifyCursorDropRelation()` 在判断 `shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl)` 时未区分 `m_isPureTextPayload`，导致拖入图片/文件到 `antigravity.exe`、`chrome.exe`、`cursor.exe` 等宿主时，`EnumFormatEtc` / `validateFormatEtc` 正常放行原生 OLE 交付（插入第 1 张图，返回 `DROPEFFECT_COPY`），但 `GetData()` 却因返回 `OverTextBypassHost` 而漏标记 `m_anyDataRetrieved = true`（`oleRead=false`），触发第二引擎补发 `Ctrl+V` 造成同一张图片出现两份；
+  - *根治*：抽离单一事实源 `NativeDragPayload::isPureTextPayload()` 与 `shouldRecordOleDataRetrieval(...)`；非纯文本载荷（图片/文件）仅在鼠标位于剪贴板面板自身上方（`OverSourceSelf`）时忽略首帧自读，面向一切外部宿主调用 `GetData` 均归类为 `NormalExternal` 并准确记入 `oleRead=true`，彻底消灭双图/双文件重复插入（配套回归单测 `ClipboardNativeDragHostPolicyTest`）。
+
 ### [2026-11-24] 永久全球化铁律：8 国语言 README、13 核常青总览海报与社区文案的跨地域本地化（Localization vs Translation）规范
 - **1. 背景与数据依据**：
   - 跨国软件转化研究（CSA Research `26%–48%` 视觉本地化转化提升）与本仓首轮全球投放实测对照表明：将中文语境专属参照物（如 `WeChat-ready GIF`、`QQ / WeChat`、`PixPin`）字面硬译至英文/日韩/拉美文档会造成明显的异国陌生感（Foreignness Friction）；同时在 `feature_bento_overview.png` 角标写死旧版本号（如 `v1.4.2`）会导致版本升级后首屏图文失真，13 张动图同屏并发循环播放及下载入口深埋第 130 行亦拖累欧美及移动端 5 秒首屏留存。

@@ -290,7 +290,12 @@ void TrayWindow::initializeWebView2() {
                                 return E_ABORT;
                             }
                             m_controller = controller;
-                            m_controller->get_CoreWebView2(&m_webView);
+                            const HRESULT hrGetWeb = m_controller->get_CoreWebView2(&m_webView);
+                            if (FAILED(hrGetWeb) || !m_webView) {
+                                LOG_WARN("TrayWindow: get_CoreWebView2 failed, hr=0x{:08X}",
+                                         static_cast<unsigned>(hrGetWeb));
+                                return E_FAIL;
+                            }
                             
                             if (m_visible.load()) {
                                 m_controller->put_IsVisible(TRUE);

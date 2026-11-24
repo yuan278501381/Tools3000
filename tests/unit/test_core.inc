@@ -6492,6 +6492,42 @@ TEST(QuietIdleHygieneTest, HeapCompactAndScheduleQuietIdleTrimCallback) {
     EXPECT_GE(observedDelays[1], 250u);
 }
 
+TEST(QuietIdleHygieneTest, CompactProcessHeapsSurvivesConcurrentPrivateNoSerializeHeaps) {
+    using tools3000::core::WinUtils;
+
+    // 防回退回归测试（Windows Server 2019 崩溃根因）：
+    // 并发线程持续创建/读写/销毁 HEAP_NO_SERIALIZE 私有堆时，compactProcessHeaps() 绝不得
+    // 越界触碰第三方私有堆（否则在 ntdll!RtlCompactHeap 中触发 0xC0000005）。
+    std::atomic<bool> stop{false};
+    auto churnPrivateNoSerializeHeap = [&stop]() {
+        while (!stop.load(std::memory_order_relaxed)) {
+            HANDLE h = HeapCreate(HEAP_NO_SERIALIZE, 4096, 0);
+            if (!h) continue;
+            for (int i = 0; i < 8; ++i) {
+                void* p = HeapAlloc(h, HEAP_NO_SERIALIZE, 256);
+                if (p) HeapFree(h, HEAP_NO_SERIALIZE, p);
+            }
+            HeapDestroy(h);
+        }
+    };
+
+    std::thread t1(churnPrivateNoSerializeHeap);
+    std::thread t2(churnPrivateNoSerializeHeap);
+    for (int i = 0; i < 150; ++i) {
+        WinUtils::compactProcessHeaps();
+    }
+    stop.store(true, std::memory_order_relaxed);
+    t1.join();
+    t2.join();
+
+    // 验证 PerformanceMonitor 观察者按需采样模式：显式 2000ms 启动且被观测后处于实时档
+    auto& monitor = tools3000::core::PerformanceMonitor::instance();
+    monitor.start(2000);
+    (void)monitor.getMetrics();
+    EXPECT_EQ(monitor.currentSamplingIntervalMs(), 2000);
+    monitor.stop();
+}
+
 TEST(ShellForegroundLaunchTest, ExtractsTitleHintAndResolvesAssociatedExecutable) {
     using tools3000::core::WinUtils;
 
@@ -6581,6 +6617,30 @@ TEST(ClipboardNativeDragHostPolicyTest, DistinguishesHttpUrlFromPlainTextAndAiId
     EXPECT_TRUE(shouldBypassOlePlainTextDropForHost(L"Clash Party.exe"));
     EXPECT_FALSE(shouldBypassOlePlainTextDropForHost(L"notepad.exe"));
     EXPECT_FALSE(shouldBypassOlePlainTextDropForHost(L"explorer.exe"));
+
+    // 防回退回归测试（图片/文件拖入 Antigravity / 浏览器双图重复粘贴）：
+    // 图片与文件载荷（isPureTextPayload == false）落入 AI IDE 或现代浏览器时，
+    // 外部目标通过原生 OLE GetData 消费后必须计入 oleRead，严禁再触发第二引擎 Ctrl+V 导致插入两张相同图片
+    NativeDragPayload imagePayload;
+    imagePayload.filePaths.push_back(L"C:\\Temp\\demo.png");
+    imagePayload.pngBytes = {0x89, 0x50, 0x4E, 0x47};
+    EXPECT_FALSE(imagePayload.isPureTextPayload());
+    EXPECT_TRUE(plainPayload.isPureTextPayload());
+    EXPECT_TRUE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/false, L"antigravity.exe", false));
+    EXPECT_TRUE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/false, L"chrome.exe", false));
+    EXPECT_TRUE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/false, L"cursor.exe", false));
+    // 剪贴板面板自身首帧 DragEnter 预读绝不可污染 oleRead（无论图片还是纯文本）
+    EXPECT_FALSE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/true, /*isPureTextPayload=*/false, L"antigravity.exe", false));
+    EXPECT_FALSE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/true, /*isPureTextPayload=*/true, L"notepad.exe", false));
+    // 纯文本拖向 AI IDE / 浏览器仍不计入 OLE 已消费，由第二引擎落点直贴接管；单条 HTTP(S) URL 拖向 AI IDE 仍计入 OLE（保留 @Link 卡片）
+    EXPECT_FALSE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/true, L"antigravity.exe", false));
+    EXPECT_TRUE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/true, L"antigravity.exe", true));
+    EXPECT_FALSE(shouldRecordOleDataRetrieval(/*overSourceClipboard=*/false, /*isPureTextPayload=*/true, L"chrome.exe", true));
+    // 当图片 OLE 返回 DROPEFFECT_COPY 且已记录 oleRead=true 时，绝不触发智能回退粘贴
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(
+        DRAGDROP_S_DROP, DROPEFFECT_COPY, /*cancelledByUser=*/false,
+        /*releasedLeftButton=*/true, /*hasValidExternalClientTarget=*/true,
+        /*oleDataActuallyRetrieved=*/true));
 }
 
 TEST(FeedbackTailPreservationTest, KeepsUrlWithinSafeLimitWithEffectiveLocaleAndCtrlVGuide) {
