@@ -6420,3 +6420,56 @@ TEST(ConfigBackupServiceTest, CryptoFolderWebDavAndS3SigV4LoopbackE2E) {
         s3Server.stop();
     }
 }
+
+TEST(OutOfProcessFileDialogTest, WorkerRoundTripUnicodePathAndZeroClrInHost) {
+    using namespace tools3000::core;
+
+    const std::filesystem::path expectedPath =
+        WinUtils::getAppDataDirectory() / L"oop_dialog_test_简体_日本語" / L"导出配置_2026.jpg";
+
+    FileDialogRequest req{};
+    req.mode = FileDialogMode::SaveFile;
+    req.title = L"进程外对话框隔离验证";
+    req.defaultExtension = L"jpg";
+    req.defaultFileName = L"导出配置_2026.jpg";
+    req.initialFilterIndex = 2;
+    req.filters = {
+        {L"PNG (*.png)", L"*.png"},
+        {L"JPEG (*.jpg)", L"*.jpg"},
+    };
+    req.autoSelectPathForTest = expectedPath;
+
+    const FileDialogResult res = OutOfProcessFileDialog::show(req);
+    EXPECT_TRUE(res.ranOutOfProcess);
+    EXPECT_TRUE(res.accepted);
+    EXPECT_FALSE(res.cancelled);
+    EXPECT_EQ(res.selectedFilterIndex, 2u);
+    EXPECT_EQ(WinUtils::pathToUtf8(res.selectedPath), WinUtils::pathToUtf8(expectedPath));
+
+    // 核心架构红线断言：宿主进程严禁因文件对话框调用被注入 .NET CLR 运行时
+    EXPECT_EQ(GetModuleHandleW(L"clr.dll"), nullptr);
+    EXPECT_EQ(GetModuleHandleW(L"mscorlib.ni.dll"), nullptr);
+}
+
+TEST(QuietIdleHygieneTest, HeapCompactAndScheduleQuietIdleTrimCallback) {
+    using tools3000::core::WinUtils;
+
+    {
+        std::vector<uint8_t> transientBuffer(16ull * 1024ull * 1024ull, 0x5Au);
+        ASSERT_EQ(transientBuffer.size(), 16ull * 1024ull * 1024ull);
+    }
+    WinUtils::compactProcessHeaps();
+
+    std::vector<uint32_t> observedDelays;
+    WinUtils::setQuietIdleTrimTrigger([&observedDelays](uint32_t delayMs) {
+        observedDelays.push_back(delayMs);
+    });
+    WinUtils::scheduleQuietIdleTrim(2800);
+    WinUtils::scheduleQuietIdleTrim(0); // 0 应被下限保护夹紧至 >= 250ms
+    WinUtils::setQuietIdleTrimTrigger(nullptr);
+    WinUtils::scheduleQuietIdleTrim(1500); // 解绑后静默无副作用
+
+    ASSERT_EQ(observedDelays.size(), 2u);
+    EXPECT_EQ(observedDelays[0], 2800u);
+    EXPECT_GE(observedDelays[1], 250u);
+}

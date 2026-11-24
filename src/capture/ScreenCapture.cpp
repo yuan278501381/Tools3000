@@ -20,6 +20,7 @@
 #include "core/logger/Logger.h"
 #include "core/stats/PerformanceMonitor.h"
 #include "core/utils/TraceId.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/config/ConfigManager.h"
@@ -460,28 +461,29 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
         const ImageFormat defFmt = m_activeOptions.format;
         const int quality = m_activeOptions.quality;
         tools3000::core::MainThreadDispatcher::instance().post([this, imgToSave, defFmt, quality]() {
-            std::array<wchar_t, 32768> fileBuffer{};
             const wchar_t* defExt = (defFmt == ImageFormat::JPEG) ? L"jpg"
                                   : (defFmt == ImageFormat::BMP)  ? L"bmp"
                                   : (defFmt == ImageFormat::WebP) ? L"webp" : L"png";
-            const std::wstring defaultName = std::wstring(L"Tools3000_LongCapture.") + defExt;
-            wcsncpy_s(fileBuffer.data(), fileBuffer.size(), defaultName.c_str(), _TRUNCATE);
-            OPENFILENAMEW ofn{};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.lpstrFile = fileBuffer.data();
-            ofn.nMaxFile = static_cast<DWORD>(fileBuffer.size());
-            ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0Bitmap (*.bmp)\0*.bmp\0WebP Image (*.webp)\0*.webp\0";
-            ofn.nFilterIndex = (defFmt == ImageFormat::JPEG) ? 2
-                             : (defFmt == ImageFormat::BMP)  ? 3
-                             : (defFmt == ImageFormat::WebP) ? 4 : 1;
-            ofn.lpstrDefExt = defExt;
-            ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-            if (GetSaveFileNameW(&ofn)) {
-                std::filesystem::path selected(fileBuffer.data());
+            tools3000::core::FileDialogRequest req;
+            req.mode = tools3000::core::FileDialogMode::SaveFile;
+            req.defaultExtension = defExt;
+            req.defaultFileName = std::wstring(L"Tools3000_LongCapture.") + defExt;
+            req.initialFilterIndex = (defFmt == ImageFormat::JPEG) ? 2u
+                                   : (defFmt == ImageFormat::BMP)  ? 3u
+                                   : (defFmt == ImageFormat::WebP) ? 4u : 1u;
+            req.filters = {
+                {L"PNG Image (*.png)", L"*.png"},
+                {L"JPEG Image (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
+                {L"Bitmap (*.bmp)", L"*.bmp"},
+                {L"WebP Image (*.webp)", L"*.webp"},
+            };
+            const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+            if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
+                std::filesystem::path selected = dlgRes.selectedPath;
                 ImageFormat chosenFmt = ImageFormat::PNG;
-                if (ofn.nFilterIndex == 2) chosenFmt = ImageFormat::JPEG;
-                else if (ofn.nFilterIndex == 3) chosenFmt = ImageFormat::BMP;
-                else if (ofn.nFilterIndex == 4) chosenFmt = ImageFormat::WebP;
+                if (dlgRes.selectedFilterIndex == 2) chosenFmt = ImageFormat::JPEG;
+                else if (dlgRes.selectedFilterIndex == 3) chosenFmt = ImageFormat::BMP;
+                else if (dlgRes.selectedFilterIndex == 4) chosenFmt = ImageFormat::WebP;
                 if (!selected.has_extension()) {
                     selected += (chosenFmt == ImageFormat::JPEG) ? L".jpg"
                               : (chosenFmt == ImageFormat::BMP)  ? L".bmp"

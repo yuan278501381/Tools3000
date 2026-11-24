@@ -6,6 +6,23 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] MECE 四维无损内存与进程外文件对话框隔离治理：常驻专用工作集 42.02 MB -> 1.61 MB (-96.2%)，3 张 2K 大图后 57.00 MB -> 2.20 MB 且 0 .NET CLR 污染
+- **1. 真机内存膨胀四大正交病灶（MECE 取证复盘）**：
+  - *病灶 A（第三方外壳扩展与 `.NET 4.0 CLR` 进程内永久寄生）*：在主进程内直接调用 `IFileOpenDialog` / `IFileSaveDialog` / `GetSaveFileNameW` 时，Windows Shell 会将本机安装的网盘同步图标扩展（如百度网盘 `YunShellExtV164.dll`）连同整套 `.NET 4.0 CLR`（`clr.dll` 9.64 MB、`mscorlib.ni.dll` 22.36 MB、`System.ni.dll` 12.47 MB、`System.Core.ni.dll` 10.45 MB）永久加载进 `Tools3000.exe` 且无法卸载，造成 60+ MB 提交内存与 20+ 个后台线程常驻；
+  - *病灶 B（截图完成回收时序倒挂与异步剪贴板二次脏页）*：`CaptureOverlay::confirmSelection` 先调用 `cleanupAfterDelivery(true)` 触发 `trimWorkingSet()`，此时栈上数 MB 的 `cropped` 尚未析构；且 50~200ms 后 `ClipboardManager` 异步读取系统剪贴板 `2560x1440` `CF_DIB`（14.75 MB）并编码 PNG、`ToastOverlay` 播放 2.5s 动画，恰处于 `trimWorkingSet` 2000ms 节流锁定期内，导致每次截图后稳定残留 ~17 MB 脏页（任务管理器显示 `24.28 MB`）；
+  - *病灶 C（已落盘截图历史 RAM 双重驻留）*：`CaptureHistory` 上限设为 `128 MiB` 且即使截图已写入磁盘仍把数 MB `compressedPng` 全量常驻内存；
+  - *病灶 D（UCRT / Win32 堆空闲大块不归还 + 冷启动预热后无静默紧缩）*：大位图/PNG 缓冲 `free` 后未执行 `_heapmin()` 与 `HeapCompact()`，导致连续采集 3 张 2K 大图后 `PrivateCommit` 涨至 `86.68 MB`（长跑达 `517.73 MB`），冷启动预热后亦停留在 `42.02 MB`。
+- **2. 世界级无损四维根治方案（严格遵循 0 功能降级、0 热路径延迟损耗铁律）**：
+  - **维度一：短命子进程文件对话框隔离 (`src/core/utils/OutOfProcessFileDialog.{h,cpp}`, `main.cpp` `--worker=file-dialog`)**：全库全部 10 处文件/目录选择入口（`MessageBridge` 配置导入导出、`main.cpp` 日志导出与占用检测选文件、`CaptureInputCommands` 选区另存为、`ScreenCapture` 长图另存为、`PinWindow` 贴图保存、`capture/PluginEntry` 水印图与历史另存为、`StudioPreviewWindowExport` 三处异步选择器、`dialog/PluginEntry` 常用目录选择）100% 收归 `OutOfProcessFileDialog::show` 单一事实源；父窗 UI 线程通过 `MsgWaitForMultipleObjects(..., QS_SENDMESSAGE | QS_PAINT)` 安全响应模态跨进程同步消息防互锁，选完即退，子进程异常时无感回退进程内执行；`collect-performance-baseline.ps1` 的 `CheckColdModules` 门禁新增 `clr.dll` / `mscorlib.ni.dll` / `coreclr.dll` 零污染强断言。
+  - **维度二：堆紧缩 + 主消息循环零线程冷态防抖回收 (`WinUtils::compactProcessHeaps`, `WinUtils::scheduleQuietIdleTrim`, `main.cpp` `TIMER_ID_QUIET_IDLE_CLEANUP`)**：`trimWorkingSet` 前自动执行 `_heapmin()` 与全进程 `GetProcessHeaps` + `HeapCompact` 归还空闲大块；通过主消息窗口单一定时器（0 额外线程）在冷启动预热后、截图与剪贴板大图队列排空后、各 WebView2 宿主挂起后延迟 `2.8s~4.5s` 执行 `CoFreeUnusedLibrariesEx(0, 0)` + `trimWorkingSet(true)`，并内置鼠标按键/手势/截图遮罩/录屏/聚光灯活跃态自动顺延守卫，100% 不触碰 1000Hz 钩子、`timeBeginPeriod(1)` 与 `Alt+Space` 瞬开热挂起。
+  - **维度三：截图历史磁盘惰性水合 (`src/capture/CaptureHistory.{h,cpp}`)**：已落盘截图在内存中仅保留 `~15 KB` 的 `160px` 缩略图与 UTF-8 路径（`compressedPng` 0 字节重复驻留），调用 `get`/`getById` 时从 Unicode 磁盘路径无损惰性解码还原；纯内存未落盘截图上限收敛至 `32 MiB`；`CaptureOverlay::confirmSelection` 修正为先显式 `release()` 局部 `cv::Mat` 再触发回收。
+  - **维度四：剪贴板大图即时释放与面板闲置超时收敛 (`ClipboardManager.cpp`, `ClipboardWindow.h`)**：`ClipboardManager::workerLoop` 处理完单任务立即销毁 `PendingCaptureTask` 大块缓冲并在大图/富文本批次排空后调度静默回收；`ClipboardWindow` 后台闲置销毁周期由 `300s` 收敛至 `90s`。
+- **3. 同机同口径实测前后对比 (`scripts/test_mece_all_features_memory_e2e.ps1` + MECE 7 域全绿)**：
+  - **S1 冷启动静默稳态**：`PrivWS` 由 `42.02 MB` 降至 **`1.61 MB`**（**-96.2%**），`TotalWS` 由 `105.10 MB` 降至 **`4.36 MB`**；
+  - **S2 设置中心 WebView2 开合后稳态**：`PrivWS` 由 `42.07 MB` 降至 **`1.62 MB`**；
+  - **S3 连续采集 3 张 `2560x1440` (2K) 大图入库后稳态**：`PrivWS` 由 `57.00 MB` 降至 **`2.20 MB`**（**-96.1%**），`PrivCommit` 保持 `70.55 MB -> 70.55 MB`（**+0.00 MB 零堆残留膨胀**）；
+  - **S4 执行 `--worker=file-dialog` 与 `--worker=media-probe` 后稳态**：`PrivWS = 2.21 MB`，宿主加载模块恒定 `137` 个，`.NET CLR` 污染 **`False`**。
+
 ### [2026-11-24] 四项社区高优先级能力落地：截图收尾解耦、剪贴板彩色应用图标、便携版原地热更新与配置云端/同步盘安全备份
 - **1. 截图完成动作解耦 + 动态「完成」提示 + 双关兜底复制 (`src/capture/CaptureState.h`, `ScreenCapture.cpp`, `CaptureToolbarLayout.{h,cpp}`, `CaptureRendererToolbar.cpp`, `ShortcutHintOverlay.cpp`, `resources/locales/native/*.json`, 感谢 LINUX DO `@longqiuyu`)**：
   - `resolveCaptureDeliveryDecision` 移除默认完成下的强制另存为弹窗兜底；开启「自动保存到文件」且关闭「自动复制到剪贴板」时严格仅保存文件不污染剪贴板；当两项同时关闭（且非 OCR 等纯内存直达回调）时，点击「完成」/ `Enter` / 双击无打扰兜底复制到剪贴板（绝不弹另存为框，并与 `Esc` 取消形成清晰区分），长截图同步对齐；

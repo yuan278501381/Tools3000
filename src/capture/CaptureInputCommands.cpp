@@ -34,6 +34,7 @@
 #include "core/logger/Logger.h"
 #include "core/utils/DWriteFontUtils.h"
 #include "core/utils/DpiUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
 #include <windows.h>
@@ -1420,31 +1421,32 @@ void CaptureInput::triggerSaveSelectionAs(HWND hwnd) {
         }
         return;
     }
-    std::array<wchar_t, 32768> fileBuffer{};
     const auto defaultExtension = extensionForFormat(m_state->options.format);
-    const auto defaultName = std::wstring(L"Tools3000_Screenshot.") + defaultExtension;
-    wcsncpy_s(fileBuffer.data(), fileBuffer.size(), defaultName.c_str(), _TRUNCATE);
-    OPENFILENAMEW ofn{};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner = hwnd;
-    ofn.lpstrFile = fileBuffer.data();
-    ofn.nMaxFile = static_cast<DWORD>(fileBuffer.size());
-    ofn.lpstrFilter = L"PNG Image (*.png)\0*.png\0JPEG Image (*.jpg;*.jpeg)\0*.jpg;*.jpeg\0Bitmap (*.bmp)\0*.bmp\0WebP Image (*.webp)\0*.webp\0";
-    ofn.nFilterIndex = filterIndexForFormat(m_state->options.format);
-    ofn.lpstrDefExt = defaultExtension;
-    ofn.Flags = OFN_EXPLORER | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+    tools3000::core::FileDialogRequest req;
+    req.mode = tools3000::core::FileDialogMode::SaveFile;
+    req.ownerHwnd = hwnd;
+    req.defaultExtension = defaultExtension;
+    req.defaultFileName = std::wstring(L"Tools3000_Screenshot.") + defaultExtension;
+    req.initialFilterIndex = filterIndexForFormat(m_state->options.format);
+    req.filters = {
+        {L"PNG Image (*.png)", L"*.png"},
+        {L"JPEG Image (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
+        {L"Bitmap (*.bmp)", L"*.bmp"},
+        {L"WebP Image (*.webp)", L"*.webp"},
+    };
     ReleaseCapture();
-    if (GetSaveFileNameW(&ofn)) {
-        std::filesystem::path selected(fileBuffer.data());
+    const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+    if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
+        std::filesystem::path selected = dlgRes.selectedPath;
         if (!selected.has_extension()) {
             selected += L".";
-            selected += extensionForFormat(formatForSavePath(selected, ofn.nFilterIndex));
+            selected += extensionForFormat(formatForSavePath(selected, dlgRes.selectedFilterIndex));
         }
         if (m_confirmCb) {
             m_confirmCb({
                 CaptureCompletionAction::SaveAs,
                 tools3000::core::WinUtils::wstringToUtf8(selected.wstring()),
-                formatForSavePath(selected, ofn.nFilterIndex)});
+                formatForSavePath(selected, dlgRes.selectedFilterIndex)});
         }
     } else if (hwnd && IsWindow(hwnd)) {
         SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,

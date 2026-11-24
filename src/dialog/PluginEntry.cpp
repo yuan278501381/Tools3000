@@ -13,6 +13,7 @@
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
 #include "core/i18n/UiI18n.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "DialogEngine.h"
 #include "DialogRibbonOverlay.h"
@@ -36,49 +37,16 @@ namespace tools3000::dialog {
 
 namespace {
 
-// 独立文件夹选择器（彻底消除前端跨插件调用 capture.browseDirectory 的耦合）
+// 独立文件夹选择器（通过短命子进程隔离打开，避免外壳扩展与 .NET CLR 常驻宿主进程）
 std::optional<std::string> browseDirectoryDialogUtf8() {
-    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool needUninit = SUCCEEDED(comHr);
-    struct ScopedCom {
-        bool active;
-        ~ScopedCom() noexcept {
-            if (active) CoUninitialize();
-        }
-    } comGuard{needUninit};
-    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
+    tools3000::core::FileDialogRequest req;
+    req.mode = tools3000::core::FileDialogMode::PickFolder;
+    req.title = tools3000::core::trW(L"选择常用文件夹", L"Select Favorite Folder");
+    const auto res = tools3000::core::OutOfProcessFileDialog::show(req);
+    if (!res.accepted || res.selectedPath.empty()) {
         return std::nullopt;
     }
-
-    ComPtr<IFileOpenDialog> dialog;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(dialog.GetAddressOf()))) || !dialog) {
-        return std::nullopt;
-    }
-
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
-    const std::wstring title = tools3000::core::trW(L"选择常用文件夹", L"Select Favorite Folder");
-    dialog->SetTitle(title.c_str());
-
-    // 后台 STA 线程严禁绑定主 UI 线程窗口句柄作为 owner，杜绝隐式 AttachThreadInput 死锁
-    if (FAILED(dialog->Show(nullptr))) {
-        return std::nullopt;
-    }
-
-    ComPtr<IShellItem> item;
-    if (FAILED(dialog->GetResult(item.GetAddressOf())) || !item) {
-        return std::nullopt;
-    }
-
-    PWSTR rawPath = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) || !rawPath) {
-        return std::nullopt;
-    }
-    const std::filesystem::path fsPath(rawPath);
-    CoTaskMemFree(rawPath);
-    return tools3000::core::WinUtils::pathToUtf8(fsPath);
+    return tools3000::core::WinUtils::pathToUtf8(res.selectedPath);
 }
 
 }  // namespace

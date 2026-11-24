@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -56,6 +57,15 @@ public:
 
     /// 获取配置目录
     static std::filesystem::path getConfigDirectory();
+
+    /// 紧缩当前进程的 UCRT 堆与所有 Win32 堆（将已释放的大块位图/缓冲空闲段归还操作系统）
+    static void compactProcessHeaps() noexcept;
+
+    /// 注册主消息循环的冷态防抖回收触发器（0 额外线程开销，由宿主在启动/停机时绑定/解绑）
+    static void setQuietIdleTrimTrigger(std::function<void(uint32_t)> trigger);
+
+    /// 请求在静默冷态防抖延迟后执行一次堆紧缩与物理工作集修剪（自动合并高频连续请求）
+    static void scheduleQuietIdleTrim(uint32_t delayMs = 3500);
 
     /// 进程级工作集修剪。仅允许在真正的冷路径调用（插件停用、长截图管线关闭、全部贴图关闭）。
     /// 支持原子时间戳节流（2000ms 内至多修剪一次）以消除高频快照 I/O 抖动。

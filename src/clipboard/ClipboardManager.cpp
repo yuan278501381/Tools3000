@@ -1272,12 +1272,31 @@ void ClipboardManager::workerLoop(std::stop_token st) {
             task = std::move(m_queue.front());
             m_queue.pop_front();
         }
+        const bool heavyTask =
+            (task.kind == 1) ||
+            (task.rawDibBytes.capacity() >= 65536u) ||
+            (task.rawPngBytes.capacity() >= 65536u) ||
+            (task.rawHtmlBytes.capacity() >= 65536u) ||
+            (task.rawRtfBytes.capacity() >= 65536u) ||
+            (task.textUtf8.capacity() >= 65536u);
         try {
             processTask(task);
         } catch (const std::exception& e) {
             LOG_WARN("ClipboardManager: worker task failed: {}", e.what());
         } catch (...) {
             LOG_WARN("ClipboardManager: worker task unknown error");
+        }
+        // 立即析构释放大块位图/富文本缓冲，并在队列排空后预约静默冷态堆紧缩与工作集回收
+        task = PendingCaptureTask{};
+        if (heavyTask) {
+            bool queueEmpty = false;
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                queueEmpty = m_queue.empty();
+            }
+            if (queueEmpty) {
+                tools3000::core::WinUtils::scheduleQuietIdleTrim(2800);
+            }
         }
     }
 

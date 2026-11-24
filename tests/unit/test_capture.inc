@@ -15885,6 +15885,88 @@ TEST(PinZoomStageTest, ComputeSafeStageBoundsAvoidsFocusAssistAndRespectsBudget)
     }
 }
 
+TEST(CaptureHistoryDiskBackedHydrationTest, DiskBackedZeroDuplicatePngAndLazyDecodeWithMissingFileFallback) {
+    using namespace tools3000::capture;
+    using tools3000::core::WinUtils;
+
+    auto& history = CaptureHistory::instance();
+    const int prevMaxSize = history.maxSize();
+    history.clear();
+    history.setMaxSize(20);
+
+    const std::filesystem::path tempDir =
+        WinUtils::getAppDataDirectory() / L"test_history_hydration_日本語_Русский";
+    std::error_code ec;
+    std::filesystem::create_directories(tempDir, ec);
+    const std::filesystem::path savedPngPath = tempDir / L"高分屏截图_2026.png";
+
+    struct CleanupGuard {
+        CaptureHistory& hist;
+        int restoreMax;
+        std::filesystem::path dir;
+        ~CleanupGuard() {
+            hist.clear();
+            hist.setMaxSize(restoreMax);
+            std::error_code ignoreEc;
+            std::filesystem::remove_all(dir, ignoreEc);
+        }
+    } guard{history, prevMaxSize, tempDir};
+
+    // 构造带高频纹理的 1200x900 图像（PNG 压缩后体积远大于 200KB）
+    cv::Mat richImg(900, 1200, CV_8UC3);
+    for (int y = 0; y < richImg.rows; ++y) {
+        auto* row = richImg.ptr<cv::Vec3b>(y);
+        for (int x = 0; x < richImg.cols; ++x) {
+            row[x] = cv::Vec3b(
+                static_cast<uint8_t>((x * 37 + y * 13) & 0xFF),
+                static_cast<uint8_t>((x * 19 ^ y * 53) & 0xFF),
+                static_cast<uint8_t>((x * 71 + y * 29) & 0xFF));
+        }
+    }
+    std::vector<uint8_t> encodedPng;
+    ASSERT_TRUE(cv::imencode(".png", richImg, encodedPng));
+    ASSERT_GT(encodedPng.size(), 200u * 1024u);
+    {
+        std::ofstream ofs(savedPngPath, std::ios::binary | std::ios::trunc);
+        ASSERT_TRUE(ofs.is_open());
+        ofs.write(reinterpret_cast<const char*>(encodedPng.data()),
+                  static_cast<std::streamsize>(encodedPng.size()));
+    }
+
+    // 1. 已落盘截图推入历史：内存仅保留 160px 缩略图（< 96 KB），compressedPng 必须为空（0 重复驻留）
+    const std::string savedUtf8 = WinUtils::pathToUtf8(savedPngPath);
+    history.push(richImg, CaptureRegion{10, 20, 1200, 900}, savedUtf8);
+    ASSERT_EQ(history.count(), 1);
+    EXPECT_LT(history.totalMemoryBytes(), 96u * 1024u);
+
+    // 2. 按索引与按 ID 读取时从 Unicode 磁盘路径无损惰性解码还原
+    const auto hydrated = history.get(0);
+    ASSERT_TRUE(hydrated.has_value());
+    EXPECT_TRUE(hydrated->compressedPng.empty());
+    ASSERT_EQ(hydrated->image.cols, 1200);
+    ASSERT_EQ(hydrated->image.rows, 900);
+    EXPECT_EQ(hydrated->image.at<cv::Vec3b>(432, 789), richImg.at<cv::Vec3b>(432, 789));
+
+    const auto byId = history.getById(hydrated->id);
+    ASSERT_TRUE(byId.has_value());
+    EXPECT_EQ(byId->image.at<cv::Vec3b>(123, 456), richImg.at<cv::Vec3b>(123, 456));
+
+    // 3. 若磁盘原文件被用户在外部删除，惰性读取优雅返回空原图且保留有效缩略图，绝不崩溃
+    std::filesystem::remove(savedPngPath, ec);
+    const auto afterDelete = history.get(0);
+    ASSERT_TRUE(afterDelete.has_value());
+    EXPECT_TRUE(afterDelete->image.empty());
+    EXPECT_FALSE(afterDelete->thumbnail.empty());
+
+    // 4. 未落盘纯内存截图（filePath 为空）依然保留内存 PNG 流可完整还原，且总驻留严格 <= 32 MiB
+    history.push(richImg, CaptureRegion{0, 0, 1200, 900}, "");
+    const auto inMem = history.get(0);
+    ASSERT_TRUE(inMem.has_value());
+    EXPECT_FALSE(inMem->image.empty());
+    EXPECT_EQ(inMem->image.cols, 1200);
+    EXPECT_LE(history.totalMemoryBytes(), 32ull * 1024ull * 1024ull);
+}
+
 
 
 

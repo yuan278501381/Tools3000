@@ -268,6 +268,11 @@ function Get-Tools3000ProcessTreeSnapshot {
         }
     }
 
+    $perfMap = @{}
+    foreach ($perf in @(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process -Filter "Name LIKE 'Tools3000%' OR Name LIKE 'msedgewebview2%'" -ErrorAction SilentlyContinue)) {
+        $perfMap[[int]$perf.IDProcess] = [double]$perf.WorkingSetPrivate
+    }
+
     $entries = @()
     foreach ($p in $cimProcs) {
         $pidInt = [int]$p.ProcessId
@@ -285,11 +290,13 @@ function Get-Tools3000ProcessTreeSnapshot {
         } else {
             if ($cmd -match '--type=([a-zA-Z0-9_-]+)') { "wv2:$($Matches[1])" } else { 'wv2:browser' }
         }
+        $privWsBytes = if ($perfMap.ContainsKey($pidInt)) { $perfMap[$pidInt] } else { [double]$procObj.WorkingSet64 }
         $entries += [pscustomobject]@{
             pid = $pidInt
             parentPid = [int]$p.ParentProcessId
             name = $p.Name
             role = $role
+            privateWorkingSetMB = [math]::Round($privWsBytes / 1MB, 2)
             workingSetMB = [math]::Round($procObj.WorkingSet64 / 1MB, 2)
             privateMB = [math]::Round($procObj.PrivateMemorySize64 / 1MB, 2)
             cpuSec = [math]::Round($(try { $procObj.TotalProcessorTime.TotalSeconds } catch { 0 }), 3)
@@ -301,6 +308,7 @@ function Get-Tools3000ProcessTreeSnapshot {
         [pscustomobject]@{
             role = $_.Name
             count = $_.Count
+            privateWorkingSetMB = [math]::Round(($_.Group | Measure-Object privateWorkingSetMB -Sum).Sum, 2)
             workingSetMB = [math]::Round(($_.Group | Measure-Object workingSetMB -Sum).Sum, 2)
             privateMB = [math]::Round(($_.Group | Measure-Object privateMB -Sum).Sum, 2)
             cpuSec = [math]::Round(($_.Group | Measure-Object cpuSec -Sum).Sum, 3)
@@ -314,6 +322,7 @@ function Get-Tools3000ProcessTreeSnapshot {
         groups = $groups
         totalWithoutService = [pscustomobject]@{
             count = @($entries | Where-Object { $_.role -ne 'search-service' }).Count
+            privateWorkingSetMB = [math]::Round((($entries | Where-Object { $_.role -ne 'search-service' }) | Measure-Object privateWorkingSetMB -Sum).Sum, 2)
             workingSetMB = [math]::Round((($entries | Where-Object { $_.role -ne 'search-service' }) | Measure-Object workingSetMB -Sum).Sum, 2)
             privateMB = [math]::Round((($entries | Where-Object { $_.role -ne 'search-service' }) | Measure-Object privateMB -Sum).Sum, 2)
         }
@@ -336,7 +345,8 @@ function Invoke-ColdModuleGateCheck {
         'avcodec-62.dll', 'avformat-62.dll', 'avutil-60.dll', 'swscale-9.dll', 'swresample-6.dll',
         'libwebp.dll', 'libwebpmux.dll',
         'opencv_imgproc4.dll', 'opencv_imgcodecs4.dll', 'opencv_photo4.dll', 'opencv_dnn4.dll', 'opencv_objdetect4.dll',
-        'libprotobuf.dll', 'directml.dll'
+        'libprotobuf.dll', 'directml.dll',
+        'clr.dll', 'mscorlib.ni.dll', 'coreclr.dll'
     )
     $loadedNames = @($target.Modules | ForEach-Object { $_.ModuleName })
     $loadedSet = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)

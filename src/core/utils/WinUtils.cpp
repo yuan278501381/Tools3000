@@ -20,7 +20,9 @@
 #include <gdiplus.h>
 #include <wrl/client.h>
 #include <tlhelp32.h>
+#include <malloc.h>
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <condition_variable>
@@ -170,11 +172,49 @@ std::filesystem::path WinUtils::getConfigDirectory() {
 namespace {
 std::atomic<ULONGLONG> g_lastTrimTick{0};
 constexpr ULONGLONG kTrimThrottleIntervalMs = 2000;
+std::mutex g_quietTrimMutex;
+std::function<void(uint32_t)> g_quietTrimTrigger;
 
 inline bool equalsIgnoreCase(std::wstring_view a, std::wstring_view b) noexcept {
     return a.size() == b.size() && _wcsnicmp(a.data(), b.data(), a.size()) == 0;
 }
 } // namespace
+
+void WinUtils::compactProcessHeaps() noexcept {
+    // 1. 通知 UCRT 将空闲大块归还底层操作系统堆
+    _heapmin();
+
+    // 2. 紧缩默认进程堆与各模块私有 Win32 堆
+    const HANDLE defaultHeap = GetProcessHeap();
+    if (defaultHeap) {
+        HeapCompact(defaultHeap, 0);
+    }
+    std::array<HANDLE, 64> heaps{};
+    const DWORD count = GetProcessHeaps(static_cast<DWORD>(heaps.size()), heaps.data());
+    const DWORD limit = (std::min)(count, static_cast<DWORD>(heaps.size()));
+    for (DWORD i = 0; i < limit; ++i) {
+        if (heaps[i] && heaps[i] != defaultHeap) {
+            HeapCompact(heaps[i], 0);
+        }
+    }
+}
+
+void WinUtils::setQuietIdleTrimTrigger(std::function<void(uint32_t)> trigger) {
+    std::lock_guard<std::mutex> lock(g_quietTrimMutex);
+    g_quietTrimTrigger = std::move(trigger);
+}
+
+void WinUtils::scheduleQuietIdleTrim(uint32_t delayMs) {
+    std::function<void(uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lock(g_quietTrimMutex);
+        cb = g_quietTrimTrigger;
+    }
+    if (cb) {
+        const uint32_t clampedMs = std::clamp<uint32_t>(delayMs, 250u, 60000u);
+        cb(clampedMs);
+    }
+}
 
 bool WinUtils::shouldTrimProcess(std::wstring_view exeName) {
     if (exeName.empty()) return false;
@@ -215,7 +255,8 @@ bool WinUtils::trimWorkingSet(bool force) {
         g_lastTrimTick.store(now, std::memory_order_release);
     }
 
-    // 1. 修剪 Tools3000 宿主主进程自身物理工作集
+    // 1. 先紧缩 UCRT 与全部 Win32 进程堆，再修剪 Tools3000 宿主主进程自身物理工作集
+    compactProcessHeaps();
     SetProcessWorkingSetSize(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1));
 
     // 2. 级联深度修剪所有子进程与孙子进程 (仅限 WebView2 浏览器进程及其派生的 GPU/Network/Renderer 渲染管线)

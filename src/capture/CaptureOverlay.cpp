@@ -1080,8 +1080,9 @@ void CaptureOverlay::cleanupAfterDelivery(bool trimMemory) {
     if (m_closedCallback) m_closedCallback();
 
     if (trimMemory) {
-        // 冷路径退场：主动修剪物理内存，将大图/D2D/DirectX 缓存归还系统（进入录屏热路径时禁止修剪）
+        // 冷路径退场：主动修剪物理内存，将大图/D2D/DirectX 缓存归还系统，并预约静默冷态二次紧缩（覆盖异步剪贴板入库与 Toast 淡出）
         tools3000::core::WinUtils::trimWorkingSet();
+        tools3000::core::WinUtils::scheduleQuietIdleTrim(3800);
     }
 }
 
@@ -1260,53 +1261,60 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     // - 常规截图模式：同步执行剪贴板/落盘交付后，在冷路径销毁覆盖层并主动修剪物理工作集。
     if (mode == OverlayMode::RecordRegion) {
         const RecordSetupOptions recordSetupSnapshot = m_state.recordSetup;
+        cropped.release();
+        cleanBaseDelivered.release();
         cleanupAfterDelivery(false);
         if (rcb) rcb(region, recordSetupSnapshot);
     } else {
         if (!editPinnedCb && !editPinnedMarkupCb && !editLongCb) {
             if (cb) cb(region, cropped, completion);
         }
-        cleanupAfterDelivery(true);
-    }
-    if (editPinnedCb && !cropped.empty()) {
-        editPinnedCb(cropped);
-    }
-    if (editPinnedMarkupCb && !cropped.empty()) {
-        editPinnedMarkupCb(true, cleanBaseDelivered, cropped, std::move(updatedElements));
-    }
-    if ((editPinnedCb || editPinnedMarkupCb) && !cropped.empty() &&
-        (completion.action == CaptureCompletionAction::QuickSave ||
-         (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty()))) {
-        auto& cfg = tools3000::core::ConfigManager::instance();
-        const std::string fmtStr = cfg.get<std::string>("/capture/format", "png");
-        ImageFormat cfgFmt = ImageFormat::PNG;
-        if (fmtStr == "jpg" || fmtStr == "jpeg") cfgFmt = ImageFormat::JPEG;
-        else if (fmtStr == "webp") cfgFmt = ImageFormat::WebP;
-        else if (fmtStr == "bmp") cfgFmt = ImageFormat::BMP;
-        const int cfgQuality = std::clamp(cfg.get<int>("/capture/quality", 90), 1, 100);
-        const bool isExplicitSave =
-            (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty());
-        const ImageFormat targetFmt = isExplicitSave ? completion.format : cfgFmt;
-        const std::string targetPath = isExplicitSave ? completion.filePath : std::string{};
-        const std::string savedPath = ScreenCapture::instance().saveCapturedImage(
-            cropped, targetFmt, cfgQuality, targetPath, true);
-        const bool isZh = tools3000::core::isUiLanguageChinese();
-        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            savedPath.empty()
-                ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
-                : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
-    }
-    if (editLongCb) {
-        ScrollFinishAction finishAct = ScrollFinishAction::Confirm;
-        switch (completion.action) {
-            case CaptureCompletionAction::Copy:      finishAct = ScrollFinishAction::Copy; break;
-            case CaptureCompletionAction::Pin:       finishAct = ScrollFinishAction::Pin; break;
-            case CaptureCompletionAction::SaveAs:    finishAct = ScrollFinishAction::SaveAs; break;
-            case CaptureCompletionAction::QuickSave: finishAct = ScrollFinishAction::QuickSave; break;
-            case CaptureCompletionAction::Default:
-            default:                                 finishAct = ScrollFinishAction::Confirm; break;
+        if (editPinnedCb && !cropped.empty()) {
+            editPinnedCb(cropped);
         }
-        editLongCb(cropped, finishAct, savedLongFrames);
+        if (editPinnedMarkupCb && !cropped.empty()) {
+            editPinnedMarkupCb(true, cleanBaseDelivered, cropped, std::move(updatedElements));
+        }
+        if ((editPinnedCb || editPinnedMarkupCb) && !cropped.empty() &&
+            (completion.action == CaptureCompletionAction::QuickSave ||
+             (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty()))) {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            const std::string fmtStr = cfg.get<std::string>("/capture/format", "png");
+            ImageFormat cfgFmt = ImageFormat::PNG;
+            if (fmtStr == "jpg" || fmtStr == "jpeg") cfgFmt = ImageFormat::JPEG;
+            else if (fmtStr == "webp") cfgFmt = ImageFormat::WebP;
+            else if (fmtStr == "bmp") cfgFmt = ImageFormat::BMP;
+            const int cfgQuality = std::clamp(cfg.get<int>("/capture/quality", 90), 1, 100);
+            const bool isExplicitSave =
+                (completion.action == CaptureCompletionAction::SaveAs && !completion.filePath.empty());
+            const ImageFormat targetFmt = isExplicitSave ? completion.format : cfgFmt;
+            const std::string targetPath = isExplicitSave ? completion.filePath : std::string{};
+            const std::string savedPath = ScreenCapture::instance().saveCapturedImage(
+                cropped, targetFmt, cfgQuality, targetPath, true);
+            const bool isZh = tools3000::core::isUiLanguageChinese();
+            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
+                savedPath.empty()
+                    ? (tools3000::core::trWCstrFor(isZh, L"截图保存失败", L"Failed to save screenshot"))
+                    : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
+        }
+        if (editLongCb) {
+            ScrollFinishAction finishAct = ScrollFinishAction::Confirm;
+            switch (completion.action) {
+                case CaptureCompletionAction::Copy:      finishAct = ScrollFinishAction::Copy; break;
+                case CaptureCompletionAction::Pin:       finishAct = ScrollFinishAction::Pin; break;
+                case CaptureCompletionAction::SaveAs:    finishAct = ScrollFinishAction::SaveAs; break;
+                case CaptureCompletionAction::QuickSave: finishAct = ScrollFinishAction::QuickSave; break;
+                case CaptureCompletionAction::Default:
+                default:                                 finishAct = ScrollFinishAction::Confirm; break;
+            }
+            editLongCb(cropped, finishAct, savedLongFrames);
+        }
+        // 先彻底释放局部全尺寸 cv::Mat 缓冲，再执行窗口销毁、堆紧缩与工作集修剪（杜绝先修剪后析构的时序倒置）
+        cropped.release();
+        cleanBaseDelivered.release();
+        updatedElements.clear();
+        updatedElements.shrink_to_fit();
+        cleanupAfterDelivery(true);
     }
     if (mode != OverlayMode::RecordRegion) {
         ShortcutHintOverlay::instance().hide();

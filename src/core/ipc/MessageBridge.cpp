@@ -15,6 +15,7 @@
 #include "core/hotkey/KeyboardHook.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/FileLocksmithEngine.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
@@ -290,60 +291,31 @@ bool tryFastExtractJsonRpcHeader(std::string_view text, int& outId, std::string&
 }
 
 std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) {
-    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool needUninit = SUCCEEDED(comHr);
-    struct ScopedCom {
-        bool active;
-        ~ScopedCom() noexcept {
-            if (active) CoUninitialize();
-        }
-    } comScope{needUninit};
-    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
-        return std::nullopt;
-    }
-
-    IFileDialog* dialog = nullptr;
-    const CLSID clsid = save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
-    HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&dialog));
-    if (FAILED(hr) || !dialog) return std::nullopt;
-
     const bool isZh = tools3000::core::isUiLanguageChinese();
+    tools3000::core::FileDialogRequest req{};
+    req.ownerHwnd = nullptr;
     if (folder) {
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择保存目录", L"Select Save Directory"));
+        req.mode = tools3000::core::FileDialogMode::PickFolder;
+        req.title = tools3000::core::trWCstrFor(isZh, L"选择保存目录", L"Select Save Directory");
     } else {
-        const COMDLG_FILTERSPEC filters[] = {
+        req.mode = save ? tools3000::core::FileDialogMode::SaveFile : tools3000::core::FileDialogMode::OpenFile;
+        req.filters = {
             {tools3000::core::trWCstrFor(isZh, L"Tools3000 配置 (*.json)", L"Tools3000 Configuration (*.json)"), L"*.json"},
             {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
         };
-        dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-        dialog->SetDefaultExtension(L"json");
-        dialog->SetFileName(save ? L"Tools3000-config.json" : L"");
-        dialog->SetTitle(save
-            ? (tools3000::core::trWCstrFor(isZh, L"导出 Tools3000 配置", L"Export Tools3000 Configuration"))
-            : (tools3000::core::trWCstrFor(isZh, L"导入 Tools3000 配置", L"Import Tools3000 Configuration")));
-    }
-
-    std::optional<std::filesystem::path> result;
-    // HIGH-03: 严禁在后台 STA 线程池中将主 UI 线程窗口句柄作为模态 owner 硬挂接，
-    // 否则 Win32 隐式跨线程输入队列耦合（AttachThreadInput）极易引发互锁死锁。
-    hr = dialog->Show(nullptr);
-    if (SUCCEEDED(hr)) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-            PWSTR rawPath = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                result = std::filesystem::path(rawPath);
-                CoTaskMemFree(rawPath);
-            }
-            item->Release();
+        req.defaultExtension = L"json";
+        if (save) {
+            req.defaultFileName = L"Tools3000-config.json";
         }
+        req.title = save
+            ? tools3000::core::trWCstrFor(isZh, L"导出 Tools3000 配置", L"Export Tools3000 Configuration")
+            : tools3000::core::trWCstrFor(isZh, L"导入 Tools3000 配置", L"Import Tools3000 Configuration");
     }
-    dialog->Release();
-    return result;
+    const auto res = tools3000::core::OutOfProcessFileDialog::show(req);
+    if (!res.accepted || res.selectedPath.empty()) {
+        return std::nullopt;
+    }
+    return res.selectedPath;
 }
 
 bool isPathWithin(const std::filesystem::path& candidate,

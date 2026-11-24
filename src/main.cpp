@@ -86,6 +86,7 @@
 #include "ui/SpotlightOverlay.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "core/remote/RemoteMasterEngine.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 static constexpr const wchar_t* WINDOW_CLASS_NAME = L"Tools3000_MessageWindow";
@@ -97,6 +98,7 @@ static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
 static constexpr UINT_PTR TIMER_ID_PERFORMANCE_BASELINE = 0x4552;
 static constexpr UINT_PTR TIMER_ID_FULLSCREEN_GUARD = 0x4553;
 static constexpr UINT_PTR TIMER_ID_EXIT_FOR_UPDATE = 0x4554;
+static constexpr UINT_PTR TIMER_ID_QUIET_IDLE_CLEANUP = 0x4558;
 
 // ── 前向声明 ─────────────────────────────────────────────────────────────────
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -428,11 +430,25 @@ bool launchUnelevatedSuccessor(bool includeWindowPos) {
 // ─────────────────────────────────────────────────────────────────────────────
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
                     LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
-    // 独立短命重型任务 Worker 子进程模式 (--worker=ocr|studio-export|record-encode)
+    // 独立短命重型任务 Worker 子进程模式 (--worker=file-dialog|ocr|studio-export|record-encode|media-probe)
     // 跳过单实例互斥锁、全局钩子、托盘、WebView2 与主日志锁，由 OS 在退场后 100% 物理+虚拟双归零。
     if (const auto workerMode = commandLineStringValue(L"--worker="); workerMode.has_value() && !workerMode->empty()) {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+
+        if (*workerMode == L"file-dialog") {
+            // 系统 IFileOpenDialog / IFileSaveDialog 与第三方外壳扩展必须在 STA 套间执行
+            const HRESULT staHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            int dlgExitCode = 1;
+            if (const auto jobPath = commandLinePathValue(L"--job="); jobPath.has_value()) {
+                dlgExitCode = tools3000::core::OutOfProcessFileDialog::runWorkerFromJobFile(*jobPath);
+            }
+            if (SUCCEEDED(staHr)) {
+                CoUninitialize();
+            }
+            return dlgExitCode;
+        }
+
         const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         int exitCode = 1;
 
@@ -1404,48 +1420,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
     tools3000::core::MessageBridge::instance().registerAsyncHostHandler("system.browseFileLocksmithTarget", [](const nlohmann::json& params) -> nlohmann::json {
         const bool pickFolder = params.value("folder", false);
-        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        const bool needUninit = SUCCEEDED(comHr);
-        struct ScopedCom {
-            bool active;
-            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
-        } comScope{needUninit};
-        if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
-            return {{"success", false}};
-        }
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                    IID_PPV_ARGS(&dialog))) || !dialog) {
-            return {{"success", false}};
-        }
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        if (pickFolder) {
-            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        } else {
-            dialog->SetOptions(options | FOS_FORCEFILESYSTEM);
-        }
         const bool isZh = tools3000::core::isUiLanguageChinese();
-        dialog->SetTitle(pickFolder
+        tools3000::core::FileDialogRequest req;
+        req.mode = pickFolder ? tools3000::core::FileDialogMode::PickFolder
+                              : tools3000::core::FileDialogMode::OpenFile;
+        req.title = pickFolder
             ? tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件夹", L"Select Folder to Inspect Locks")
-            : tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件", L"Select File to Inspect Locks"));
-        std::string selectedUtf8;
-        if (SUCCEEDED(dialog->Show(nullptr))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                PWSTR rawPath = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                    selectedUtf8 = tools3000::core::WinUtils::wstringToUtf8(rawPath);
-                    CoTaskMemFree(rawPath);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
-        if (selectedUtf8.empty()) {
+            : tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件", L"Select File to Inspect Locks");
+        const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+        if (!dlgRes.accepted || dlgRes.selectedPath.empty()) {
             return {{"success", false}, {"cancelled", true}};
         }
-        return {{"success", true}, {"path", selectedUtf8}};
+        return {{"success", true}, {"path", tools3000::core::WinUtils::pathToUtf8(dlgRes.selectedPath)}};
     });
 
     // 方案 C 双轨应用内问题反馈与 10 维隐私脱敏诊断通道（全异步执行，绝不阻塞 UI 消息泵）
@@ -1535,53 +1521,29 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (!supplied.empty()) {
             savePath = tools3000::core::WinUtils::utf8ToWstring(supplied);
         } else {
-            struct ScopedComSta {
-                HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-                ~ScopedComSta() {
-                    if (SUCCEEDED(hr)) {
-                        CoUninitialize();
-                    }
-                }
-                bool ready() const noexcept { return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE; }
-            } comGuard;
+            auto now = std::chrono::system_clock::now();
+            auto in_time_t = std::chrono::system_clock::to_time_t(now);
+            std::tm tmBuffer{};
+            localtime_s(&tmBuffer, &in_time_t);
+            std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(tools3000::version::String);
+            wchar_t defaultName[128];
+            swprintf_s(defaultName, L"Tools3000_Logs_v%ls_%04d%02d%02d_%02d%02d%02d.log",
+                       verW.c_str(),
+                       tmBuffer.tm_year + 1900, tmBuffer.tm_mon + 1, tmBuffer.tm_mday,
+                       tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
 
-            if (comGuard.ready()) {
-                Microsoft::WRL::ComPtr<IFileDialog> dialog;
-                HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
-                if (SUCCEEDED(hr) && dialog) {
-                    const COMDLG_FILTERSPEC filters[] = {
-                        {tools3000::core::trWCstr(L"日志文件 (*.log;*.txt)", L"Log Files (*.log;*.txt)"), L"*.log;*.txt"},
-                        {tools3000::core::trWCstr(L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
-                    };
-                    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-                    dialog->SetDefaultExtension(L"log");
-
-                    auto now = std::chrono::system_clock::now();
-                    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-                    std::tm tmBuffer{};
-                    localtime_s(&tmBuffer, &in_time_t);
-                    std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(tools3000::version::String);
-                    wchar_t defaultName[128];
-                    swprintf_s(defaultName, L"Tools3000_Logs_v%ls_%04d%02d%02d_%02d%02d%02d.log",
-                               verW.c_str(),
-                               tmBuffer.tm_year + 1900, tmBuffer.tm_mon + 1, tmBuffer.tm_mday,
-                               tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
-
-                    dialog->SetFileName(defaultName);
-                    dialog->SetTitle(tools3000::core::trWCstr(L"导出 Tools3000 诊断日志", L"Export Tools3000 Diagnostic Logs"));
-
-                    // 后台 STA 工作线程严禁将主 UI 线程窗口作为模态 owner 硬挂接，防止跨线程输入队列互锁
-                    if (SUCCEEDED(dialog->Show(nullptr))) {
-                        Microsoft::WRL::ComPtr<IShellItem> item;
-                        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                            PWSTR rawPath = nullptr;
-                            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                                savePath = std::filesystem::path(rawPath);
-                                CoTaskMemFree(rawPath);
-                            }
-                        }
-                    }
-                }
+            tools3000::core::FileDialogRequest req;
+            req.mode = tools3000::core::FileDialogMode::SaveFile;
+            req.title = tools3000::core::trWCstr(L"导出 Tools3000 诊断日志", L"Export Tools3000 Diagnostic Logs");
+            req.defaultExtension = L"log";
+            req.defaultFileName = defaultName;
+            req.filters = {
+                {tools3000::core::trWCstr(L"日志文件 (*.log;*.txt)", L"Log Files (*.log;*.txt)"), L"*.log;*.txt"},
+                {tools3000::core::trWCstr(L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
+            };
+            const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+            if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
+                savePath = dlgRes.selectedPath;
             }
         }
 
@@ -2505,9 +2467,20 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 重新锚定宿主崩溃处理器，防止 WebView2 Crashpad 在预热期间覆盖全局异常过滤器
     tools3000::core::CrashHandler::reinstallFilter();
+
+    // 10. 绑定零额外线程的静默冷态防抖回收触发器，并在启动预热落地后预约首次冷态紧缩（清除启动期 ~35MB 一次性初始化脏页）
+    tools3000::core::WinUtils::setQuietIdleTrimTrigger([hwnd](uint32_t delayMs) {
+        tools3000::core::MainThreadDispatcher::instance().post([hwnd, delayMs]() {
+            if (hwnd && IsWindow(hwnd)) {
+                SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, delayMs, nullptr);
+            }
+        });
+    });
+    tools3000::core::WinUtils::scheduleQuietIdleTrim(5500);
 }
 
 void shutdownSubsystems() {
+    tools3000::core::WinUtils::setQuietIdleTrimTrigger(nullptr);
     if (g_hostThemeSubId != 0) {
         tools3000::core::EventBus::instance().unsubscribeAndWait(g_hostThemeSubId);
         g_hostThemeSubId = 0;
@@ -2585,6 +2558,29 @@ void preloadSettingsWindow(HINSTANCE hInstance) {
     settingsWnd.preload(hInstance);
 }
 
+static void cleanupQuietIdleWorkingSet(HWND hwnd) {
+    // 活跃交互守卫：若截图/录屏选区遮罩可见、聚光灯活跃或任意鼠标键正处于按下/手势划动态，顺延至静默期再回收
+    const bool mousePressed =
+        ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0);
+    const bool overlayBusy =
+        tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible() ||
+        tools3000::core::KeyboardHook::instance().isRecordingMode() ||
+        tools3000::ui::SpotlightOverlay::instance().isActive();
+    if (mousePressed || overlayBusy) {
+        if (hwnd && IsWindow(hwnd)) {
+            SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, 2500, nullptr);
+        }
+        return;
+    }
+
+    CoFreeUnusedLibrariesEx(0, 0);
+    tools3000::core::WinUtils::trimWorkingSet(true);
+}
+
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     if (msg == tools3000::core::MainThreadDispatcher::MessageId) {
         tools3000::core::MainThreadDispatcher::instance().drain();
@@ -2629,6 +2625,11 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == TIMER_ID_FULLSCREEN_GUARD) {
             syncForegroundFullscreenState();
+            return 0;
+        }
+        if (wParam == TIMER_ID_QUIET_IDLE_CLEANUP) {
+            KillTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP);
+            cleanupQuietIdleWorkingSet(hwnd);
             return 0;
         }
         if (wParam == TIMER_ID_EXIT_FOR_UPDATE) {

@@ -96,7 +96,7 @@ private:
     uint64_t m_nextId = 1;
     int m_maxSize = 20;
     size_t m_totalBytes = 0;
-    static constexpr size_t MAX_MEMORY_BYTES = 128ull * 1024ull * 1024ull;
+    static constexpr size_t MAX_MEMORY_BYTES = 32ull * 1024ull * 1024ull;
     mutable std::mutex m_mutex;
 };
 

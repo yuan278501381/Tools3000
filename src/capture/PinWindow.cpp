@@ -34,6 +34,7 @@
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/DWriteFontUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/utils/TraceId.h"
@@ -1096,52 +1097,42 @@ bool savePinnedImage(HWND owner, const cv::Mat& image) {
     if (image.empty()) return false;
     const bool zh = tools3000::core::isUiLanguageChinese();
 
-    ComPtr<IFileSaveDialog> dialog;
-    HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(dialog.GetAddressOf()));
-    if (FAILED(hr)) {
-        LOG_ERROR("贴图保存对话框创建失败: hr=0x{:08X}", static_cast<unsigned>(hr));
-        tools3000::core::EventBus::instance().publish(
-            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"无法打开保存对话框", L"Unable to open save dialog")});
-        return false;
-    }
-
-    const COMDLG_FILTERSPEC filters[] = {
-        {tools3000::core::trWCstrFor(zh, L"PNG 图片 (*.png)", L"PNG Image (*.png)"), L"*.png"},
-        {tools3000::core::trWCstrFor(zh, L"JPEG 图片 (*.jpg;*.jpeg)", L"JPEG Image (*.jpg;*.jpeg)"), L"*.jpg;*.jpeg"},
-        {tools3000::core::trWCstrFor(zh, L"WebP 图片 (*.webp)", L"WebP Image (*.webp)"), L"*.webp"},
-        {tools3000::core::trWCstrFor(zh, L"BMP 图片 (*.bmp)", L"BMP Image (*.bmp)"), L"*.bmp"},
-    };
-    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-    dialog->SetDefaultExtension(L"png");
-
     SYSTEMTIME now{};
     GetLocalTime(&now);
     wchar_t defaultName[80]{};
     swprintf_s(defaultName, L"Tools3000_%04u%02u%02u_%02u%02u%02u.png",
                now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
-    dialog->SetFileName(defaultName);
 
-    hr = dialog->Show(owner);
-    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) return false;
-    if (FAILED(hr)) {
-        LOG_ERROR("贴图保存对话框失败: hr=0x{:08X}", static_cast<unsigned>(hr));
+    tools3000::core::FileDialogRequest req;
+    req.mode = tools3000::core::FileDialogMode::SaveFile;
+    req.ownerHwnd = owner;
+    req.defaultExtension = L"png";
+    req.defaultFileName = defaultName;
+    req.filters = {
+        {tools3000::core::trWCstrFor(zh, L"PNG 图片 (*.png)", L"PNG Image (*.png)"), L"*.png"},
+        {tools3000::core::trWCstrFor(zh, L"JPEG 图片 (*.jpg;*.jpeg)", L"JPEG Image (*.jpg;*.jpeg)"), L"*.jpg;*.jpeg"},
+        {tools3000::core::trWCstrFor(zh, L"WebP 图片 (*.webp)", L"WebP Image (*.webp)"), L"*.webp"},
+        {tools3000::core::trWCstrFor(zh, L"BMP 图片 (*.bmp)", L"BMP Image (*.bmp)"), L"*.bmp"},
+    };
+    const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+    if (dlgRes.cancelled) return false;
+    if (!dlgRes.accepted || dlgRes.selectedPath.empty()) {
+        tools3000::core::EventBus::instance().publish(
+            tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(zh, L"无法打开保存对话框", L"Unable to open save dialog")});
         return false;
     }
 
-    ComPtr<IShellItem> item;
-    if (FAILED(dialog->GetResult(item.GetAddressOf()))) return false;
-    PWSTR rawPath = nullptr;
-    if (FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) || !rawPath) return false;
-    std::filesystem::path path(rawPath);
-    CoTaskMemFree(rawPath);
+    std::filesystem::path path = dlgRes.selectedPath;
 
     std::wstring ext = path.extension().wstring();
     std::transform(ext.begin(), ext.end(), ext.begin(),
                    [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
     if (ext.empty()) {
-        path += L".png";
-        ext = L".png";
+        const wchar_t* chosenExt = (dlgRes.selectedFilterIndex == 2) ? L".jpg"
+                                 : (dlgRes.selectedFilterIndex == 3) ? L".webp"
+                                 : (dlgRes.selectedFilterIndex == 4) ? L".bmp" : L".png";
+        path += chosenExt;
+        ext = chosenExt;
     }
     if (ext == L".jpeg") ext = L".jpg";
     const std::string encodeExt = tools3000::core::WinUtils::wstringToUtf8(ext);

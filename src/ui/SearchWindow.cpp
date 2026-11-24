@@ -993,6 +993,7 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                 KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
                 if (inst.m_controller) inst.m_controller->put_IsVisible(FALSE);
                 if (inst.m_webView) inst.m_suspendController.requestSuspend(inst.m_webView.Get(), "search");
+                tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
                 return 0;
             }
             break;

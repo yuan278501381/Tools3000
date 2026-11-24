@@ -110,6 +110,7 @@
 #include "core/update/UpdateChecker.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/SessionIsolation.h"
 #include "core/utils/TextFilePreviewDecoder.h"
