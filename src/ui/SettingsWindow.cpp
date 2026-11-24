@@ -206,6 +206,7 @@ void SettingsWindow::hide() {
 
         // 挂起 Chromium 渲染管线以释放 GPU/DOM 显存与工作集
         if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "settings");
+        tools3000::core::WinUtils::scheduleQuietIdleTrim(3000);
 
         const bool autoRelease = tools3000::core::ConfigManager::instance().get<bool>(
             "/general/autoReleaseSettingsMemory", true);

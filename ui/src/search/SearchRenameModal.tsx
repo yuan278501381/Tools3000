@@ -46,6 +46,11 @@ export const SearchRenameModal: React.FC<SearchRenameModalProps> = ({
     }
   }, [renameTarget.result, renameTarget.visible, resolvedInputRef]);
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!renameTarget.visible) return;
     const handleWindowKeyDown = (e: KeyboardEvent) => {
@@ -53,12 +58,12 @@ export const SearchRenameModal: React.FC<SearchRenameModalProps> = ({
       if (e.key === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
-        onClose();
+        onCloseRef.current();
       }
     };
     window.addEventListener('keydown', handleWindowKeyDown);
     return () => window.removeEventListener('keydown', handleWindowKeyDown);
-  }, [renameTarget.visible, onClose]);
+  }, [renameTarget.visible]);
 
   if (!renameTarget.visible || !renameTarget.result) {
     return null;

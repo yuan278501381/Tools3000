@@ -24,6 +24,7 @@
 
 #include <windows.h>
 #include "core/i18n/UiI18n.h"
+#include "core/backup/ConfigBackupService.h"
 #include <objbase.h>
 #include <sddl.h>
 #include <shellapi.h>
@@ -85,6 +86,7 @@
 #include "ui/SpotlightOverlay.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "core/remote/RemoteMasterEngine.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 
 // ── 常量 ─────────────────────────────────────────────────────────────────────
 static constexpr const wchar_t* WINDOW_CLASS_NAME = L"Tools3000_MessageWindow";
@@ -96,6 +98,7 @@ static constexpr UINT_PTR TIMER_ID_QUICKLOOK_REFRESH = 0x4551;
 static constexpr UINT_PTR TIMER_ID_PERFORMANCE_BASELINE = 0x4552;
 static constexpr UINT_PTR TIMER_ID_FULLSCREEN_GUARD = 0x4553;
 static constexpr UINT_PTR TIMER_ID_EXIT_FOR_UPDATE = 0x4554;
+static constexpr UINT_PTR TIMER_ID_QUIET_IDLE_CLEANUP = 0x4558;
 
 // ── 前向声明 ─────────────────────────────────────────────────────────────────
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -116,6 +119,7 @@ static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
 static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
+static HWINEVENTHOOK g_fullscreenMoveSizeHook = nullptr;
 static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 
 namespace {
@@ -187,12 +191,24 @@ void releaseHostHotkeysAndMessageWindow(HWND& msgHwnd) {
 
 void CALLBACK FullscreenGuardWinEventProc(
     HWINEVENTHOOK /*hWinEventHook*/,
-    DWORD /*event*/,
+    DWORD event,
     HWND /*hwnd*/,
-    LONG /*idObject*/,
+    LONG idObject,
     LONG /*idChild*/,
     DWORD /*dwEventThread*/,
     DWORD /*dwmsEventTime*/) {
+    if (idObject != OBJID_WINDOW) {
+        return;
+    }
+    if (event != EVENT_SYSTEM_FOREGROUND &&
+        event != EVENT_SYSTEM_MOVESIZEEND &&
+        event != EVENT_SYSTEM_MINIMIZESTART &&
+        event != EVENT_SYSTEM_MINIMIZEEND) {
+        return;
+    }
+    if (tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible()) {
+        return;
+    }
     syncForegroundFullscreenState();
 }
 
@@ -427,11 +443,25 @@ bool launchUnelevatedSuccessor(bool includeWindowPos) {
 // ─────────────────────────────────────────────────────────────────────────────
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
                     LPWSTR /*lpCmdLine*/, int /*nCmdShow*/) {
-    // 独立短命重型任务 Worker 子进程模式 (--worker=ocr|studio-export|record-encode)
+    // 独立短命重型任务 Worker 子进程模式 (--worker=file-dialog|ocr|studio-export|record-encode|media-probe)
     // 跳过单实例互斥锁、全局钩子、托盘、WebView2 与主日志锁，由 OS 在退场后 100% 物理+虚拟双归零。
     if (const auto workerMode = commandLineStringValue(L"--worker="); workerMode.has_value() && !workerMode->empty()) {
         SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
         SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+
+        if (*workerMode == L"file-dialog") {
+            // 系统 IFileOpenDialog / IFileSaveDialog 与第三方外壳扩展必须在 STA 套间执行
+            const HRESULT staHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+            int dlgExitCode = 1;
+            if (const auto jobPath = commandLinePathValue(L"--job="); jobPath.has_value()) {
+                dlgExitCode = tools3000::core::OutOfProcessFileDialog::runWorkerFromJobFile(*jobPath);
+            }
+            if (SUCCEEDED(staHr)) {
+                CoUninitialize();
+            }
+            return dlgExitCode;
+        }
+
         const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         int exitCode = 1;
 
@@ -827,7 +857,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     releaseHostHotkeysAndMessageWindow(hwndMessage);
     releaseSingleInstanceMutex();
     CoUninitialize();
-    return messageResult == -1 ? 1 : static_cast<int>(msg.wParam);
+
+    const int finalExitCode = (messageResult == -1) ? 1 : static_cast<int>(msg.wParam);
+    // 防僵尸退场守护：已完成全部配置落盘、云端备份、钩子卸载与日志刷盘，若 CRT 静态析构或底层图形驱动在
+    // ExitProcess 阶段偶发锁竞争超时 (>1200ms)，自动强制终结进程，杜绝后台残留单线程僵尸实例。
+    std::thread([finalExitCode]() {
+        Sleep(1200);
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
+    }).detach();
+    return finalExitCode;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1403,48 +1441,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     });
     tools3000::core::MessageBridge::instance().registerAsyncHostHandler("system.browseFileLocksmithTarget", [](const nlohmann::json& params) -> nlohmann::json {
         const bool pickFolder = params.value("folder", false);
-        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        const bool needUninit = SUCCEEDED(comHr);
-        struct ScopedCom {
-            bool active;
-            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
-        } comScope{needUninit};
-        if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
-            return {{"success", false}};
-        }
-        IFileDialog* dialog = nullptr;
-        if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                    IID_PPV_ARGS(&dialog))) || !dialog) {
-            return {{"success", false}};
-        }
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        if (pickFolder) {
-            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        } else {
-            dialog->SetOptions(options | FOS_FORCEFILESYSTEM);
-        }
         const bool isZh = tools3000::core::isUiLanguageChinese();
-        dialog->SetTitle(pickFolder
+        tools3000::core::FileDialogRequest req;
+        req.mode = pickFolder ? tools3000::core::FileDialogMode::PickFolder
+                              : tools3000::core::FileDialogMode::OpenFile;
+        req.title = pickFolder
             ? tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件夹", L"Select Folder to Inspect Locks")
-            : tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件", L"Select File to Inspect Locks"));
-        std::string selectedUtf8;
-        if (SUCCEEDED(dialog->Show(nullptr))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                PWSTR rawPath = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                    selectedUtf8 = tools3000::core::WinUtils::wstringToUtf8(rawPath);
-                    CoTaskMemFree(rawPath);
-                }
-                item->Release();
-            }
-        }
-        dialog->Release();
-        if (selectedUtf8.empty()) {
+            : tools3000::core::trWCstrFor(isZh, L"选择要检测占用的文件", L"Select File to Inspect Locks");
+        const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+        if (!dlgRes.accepted || dlgRes.selectedPath.empty()) {
             return {{"success", false}, {"cancelled", true}};
         }
-        return {{"success", true}, {"path", selectedUtf8}};
+        return {{"success", true}, {"path", tools3000::core::WinUtils::pathToUtf8(dlgRes.selectedPath)}};
     });
 
     // 方案 C 双轨应用内问题反馈与 10 维隐私脱敏诊断通道（全异步执行，绝不阻塞 UI 消息泵）
@@ -1505,6 +1513,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             {"trackingId", res.trackingId},
             {"issueUrl", res.issueUrl},
             {"exportedBundlePath", res.exportedBundlePath},
+            {"exportedScreenshotPath", res.exportedScreenshotPath},
+            {"copiedToClipboard", res.copiedToClipboard},
             {"markdownReport", res.markdownReport},
             {"errorMessage", res.errorMessage},
             {"totalRedactions", res.totalRedactions}
@@ -1517,10 +1527,28 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             tools3000::core::WinUtils::utf8ToWstring(pathUtf8));
         return {{"success", ok}};
     });
+    tools3000::core::MessageBridge::instance().registerHostHandler("feedback.copyBundleFiles", [](const nlohmann::json& params) -> nlohmann::json {
+        const std::string bundleUtf8 = jsonStringOr(params, "bundlePath");
+        const std::string shotUtf8 = jsonStringOr(params, "screenshotPath");
+        if (bundleUtf8.empty()) return {{"success", false}};
+        const bool ok = tools3000::core::FeedbackDiagnosticService::copyDiagnosticFilesToClipboard(
+            tools3000::core::WinUtils::utf8ToPath(bundleUtf8),
+            shotUtf8.empty() ? std::filesystem::path{} : tools3000::core::WinUtils::utf8ToPath(shotUtf8));
+        return {{"success", ok}};
+    });
     tools3000::core::MessageBridge::instance().registerHostHandler("feedback.openExternalUrl", [](const nlohmann::json& params) -> nlohmann::json {
         const std::string url = jsonStringOr(params, "url");
-        if (url.rfind("https://github.com/yuan278501381/tools3000/", 0) != 0) {
+        const std::string urlLower = tools3000::core::WinUtils::toLower(url);
+        if (urlLower.rfind("https://github.com/yuan278501381/tools3000/", 0) != 0) {
             return {{"success", false}, {"error", "untrusted_url"}};
+        }
+        // 打开预填 GitHub Issue 页面前自动重刷剪贴板中的诊断包 (.zip + 可选截图)，确保用户过去按一次 Ctrl+V 必中
+        const std::string bundleUtf8 = jsonStringOr(params, "bundlePath");
+        const std::string shotUtf8 = jsonStringOr(params, "screenshotPath");
+        if (!bundleUtf8.empty()) {
+            (void)tools3000::core::FeedbackDiagnosticService::copyDiagnosticFilesToClipboard(
+                tools3000::core::WinUtils::utf8ToPath(bundleUtf8),
+                shotUtf8.empty() ? std::filesystem::path{} : tools3000::core::WinUtils::utf8ToPath(shotUtf8));
         }
         tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
         return {{"success", true}};
@@ -1534,53 +1562,29 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (!supplied.empty()) {
             savePath = tools3000::core::WinUtils::utf8ToWstring(supplied);
         } else {
-            struct ScopedComSta {
-                HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-                ~ScopedComSta() {
-                    if (SUCCEEDED(hr)) {
-                        CoUninitialize();
-                    }
-                }
-                bool ready() const noexcept { return SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE; }
-            } comGuard;
+            auto now = std::chrono::system_clock::now();
+            auto in_time_t = std::chrono::system_clock::to_time_t(now);
+            std::tm tmBuffer{};
+            localtime_s(&tmBuffer, &in_time_t);
+            std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(tools3000::version::String);
+            wchar_t defaultName[128];
+            swprintf_s(defaultName, L"Tools3000_Logs_v%ls_%04d%02d%02d_%02d%02d%02d.log",
+                       verW.c_str(),
+                       tmBuffer.tm_year + 1900, tmBuffer.tm_mon + 1, tmBuffer.tm_mday,
+                       tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
 
-            if (comGuard.ready()) {
-                Microsoft::WRL::ComPtr<IFileDialog> dialog;
-                HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
-                if (SUCCEEDED(hr) && dialog) {
-                    const COMDLG_FILTERSPEC filters[] = {
-                        {tools3000::core::trWCstr(L"日志文件 (*.log;*.txt)", L"Log Files (*.log;*.txt)"), L"*.log;*.txt"},
-                        {tools3000::core::trWCstr(L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
-                    };
-                    dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-                    dialog->SetDefaultExtension(L"log");
-
-                    auto now = std::chrono::system_clock::now();
-                    auto in_time_t = std::chrono::system_clock::to_time_t(now);
-                    std::tm tmBuffer{};
-                    localtime_s(&tmBuffer, &in_time_t);
-                    std::wstring verW = tools3000::core::WinUtils::utf8ToWstring(tools3000::version::String);
-                    wchar_t defaultName[128];
-                    swprintf_s(defaultName, L"Tools3000_Logs_v%ls_%04d%02d%02d_%02d%02d%02d.log",
-                               verW.c_str(),
-                               tmBuffer.tm_year + 1900, tmBuffer.tm_mon + 1, tmBuffer.tm_mday,
-                               tmBuffer.tm_hour, tmBuffer.tm_min, tmBuffer.tm_sec);
-
-                    dialog->SetFileName(defaultName);
-                    dialog->SetTitle(tools3000::core::trWCstr(L"导出 Tools3000 诊断日志", L"Export Tools3000 Diagnostic Logs"));
-
-                    // 后台 STA 工作线程严禁将主 UI 线程窗口作为模态 owner 硬挂接，防止跨线程输入队列互锁
-                    if (SUCCEEDED(dialog->Show(nullptr))) {
-                        Microsoft::WRL::ComPtr<IShellItem> item;
-                        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                            PWSTR rawPath = nullptr;
-                            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                                savePath = std::filesystem::path(rawPath);
-                                CoTaskMemFree(rawPath);
-                            }
-                        }
-                    }
-                }
+            tools3000::core::FileDialogRequest req;
+            req.mode = tools3000::core::FileDialogMode::SaveFile;
+            req.title = tools3000::core::trWCstr(L"导出 Tools3000 诊断日志", L"Export Tools3000 Diagnostic Logs");
+            req.defaultExtension = L"log";
+            req.defaultFileName = defaultName;
+            req.filters = {
+                {tools3000::core::trWCstr(L"日志文件 (*.log;*.txt)", L"Log Files (*.log;*.txt)"), L"*.log;*.txt"},
+                {tools3000::core::trWCstr(L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
+            };
+            const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+            if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
+                savePath = dlgRes.selectedPath;
             }
         }
 
@@ -2451,9 +2455,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     // 6. 初始化本次启动获准加载的插件
     pm.initializePlugins();
 
-    // 6.5. 启动前台窗口全屏/游戏感知守护（WinEventHook + 500ms 几何巡检双保险）
+    // 6.5. 启动前台窗口全屏/游戏感知守护（精准订阅 FOREGROUND 与 MOVESIZEEND..MINIMIZEEND，
+    // 彻底避开 SCROLLINGSTART / CAPTURESTART / MENUSTART 等高频系统噪声污染 UI 主线程消息队列）
     g_fullscreenWinEventHook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        nullptr,
+        FullscreenGuardWinEventProc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    g_fullscreenMoveSizeHook = SetWinEventHook(
+        EVENT_SYSTEM_MOVESIZEEND,
         EVENT_SYSTEM_MINIMIZEEND,
         nullptr,
         FullscreenGuardWinEventProc,
@@ -2504,9 +2517,20 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 重新锚定宿主崩溃处理器，防止 WebView2 Crashpad 在预热期间覆盖全局异常过滤器
     tools3000::core::CrashHandler::reinstallFilter();
+
+    // 10. 绑定零额外线程的静默冷态防抖回收触发器，并在启动预热落地后预约首次冷态紧缩（清除启动期 ~35MB 一次性初始化脏页）
+    tools3000::core::WinUtils::setQuietIdleTrimTrigger([hwnd](uint32_t delayMs) {
+        tools3000::core::MainThreadDispatcher::instance().post([hwnd, delayMs]() {
+            if (hwnd && IsWindow(hwnd)) {
+                SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, delayMs, nullptr);
+            }
+        });
+    });
+    tools3000::core::WinUtils::scheduleQuietIdleTrim(5500);
 }
 
 void shutdownSubsystems() {
+    tools3000::core::WinUtils::setQuietIdleTrimTrigger(nullptr);
     if (g_hostThemeSubId != 0) {
         tools3000::core::EventBus::instance().unsubscribeAndWait(g_hostThemeSubId);
         g_hostThemeSubId = 0;
@@ -2514,6 +2538,10 @@ void shutdownSubsystems() {
     if (g_fullscreenWinEventHook) {
         UnhookWinEvent(g_fullscreenWinEventHook);
         g_fullscreenWinEventHook = nullptr;
+    }
+    if (g_fullscreenMoveSizeHook) {
+        UnhookWinEvent(g_fullscreenMoveSizeHook);
+        g_fullscreenMoveSizeHook = nullptr;
     }
     tools3000::core::HotkeyManager::instance().setFullscreenSuspended(false);
     tools3000::core::MouseHook::instance().setFullscreenSuspended(false);
@@ -2542,6 +2570,7 @@ void shutdownSubsystems() {
     tools3000::core::RemoteMasterEngine::instance().shutdown();
     tools3000::core::WinUtils::emergencyFlushInputState();
     tools3000::core::StatsManager::instance().shutdown();
+    tools3000::core::backup::ConfigBackupService::instance().runAutoBackupOnExitIfEnabled();
     tools3000::core::PerformanceMonitor::instance().stop();
     tools3000::core::MainThreadDispatcher::instance().shutdown();
     tools3000::core::ConfigManager::instance().shutdown();
@@ -2581,6 +2610,29 @@ void preloadSettingsWindow(HINSTANCE hInstance) {
     config.devServerUrl = "http://localhost:5173";
     settingsWnd.setConfig(config);
     settingsWnd.preload(hInstance);
+}
+
+static void cleanupQuietIdleWorkingSet(HWND hwnd) {
+    // 活跃交互守卫：若截图/录屏选区遮罩可见、聚光灯活跃或任意鼠标键正处于按下/手势划动态，顺延至静默期再回收
+    const bool mousePressed =
+        ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON1) & 0x8000) != 0) ||
+        ((GetAsyncKeyState(VK_XBUTTON2) & 0x8000) != 0);
+    const bool overlayBusy =
+        tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible() ||
+        tools3000::core::KeyboardHook::instance().isRecordingMode() ||
+        tools3000::ui::SpotlightOverlay::instance().isActive();
+    if (mousePressed || overlayBusy) {
+        if (hwnd && IsWindow(hwnd)) {
+            SetTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP, 2500, nullptr);
+        }
+        return;
+    }
+
+    CoFreeUnusedLibrariesEx(0, 0);
+    tools3000::core::WinUtils::trimWorkingSet(true);
 }
 
 LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
@@ -2627,6 +2679,11 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == TIMER_ID_FULLSCREEN_GUARD) {
             syncForegroundFullscreenState();
+            return 0;
+        }
+        if (wParam == TIMER_ID_QUIET_IDLE_CLEANUP) {
+            KillTimer(hwnd, TIMER_ID_QUIET_IDLE_CLEANUP);
+            cleanupQuietIdleWorkingSet(hwnd);
             return 0;
         }
         if (wParam == TIMER_ID_EXIT_FOR_UPDATE) {

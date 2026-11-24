@@ -63,6 +63,7 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   remote_boost: 'sidebar.kw_remote_boost',
   picasa_viewer: 'sidebar.kw_picasa_viewer',
   stats: 'sidebar.kw_stats',
+  performance: 'sidebar.kw_performance',
   about: 'sidebar.kw_about',
 };
 

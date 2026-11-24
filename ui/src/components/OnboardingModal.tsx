@@ -105,15 +105,21 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
     titleRefs.current[step]?.focus();
   }, [step]);
 
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => {
+    onCompleteRef.current = onComplete;
+  }, [onComplete]);
+
   useEffect(() => {
     const previousFocus = document.activeElement instanceof HTMLElement
       ? document.activeElement : null;
     const initialFocusFrame = requestAnimationFrame(() => titleRefs.current[0]?.focus());
     const focusableSelector = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.isComposing || event.keyCode === 229 || event.key === 'Process') return;
       if (event.key === 'Escape') {
         event.preventDefault();
-        onComplete();
+        onCompleteRef.current();
       } else if (event.key === 'ArrowRight') {
         const isTab = document.activeElement?.getAttribute('role') === 'tab';
         if (isTab) {
@@ -164,7 +170,7 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
       window.removeEventListener('keydown', onKeyDown);
       previousFocus?.focus();
     };
-  }, [onComplete]);
+  }, []);
 
   const next = () => {
     if (step < TOTAL_STEPS - 1) setStep(step + 1);

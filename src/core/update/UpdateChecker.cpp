@@ -139,15 +139,88 @@ void writeDismissedVersion(const std::string& versionTag) {
     ConfigManager::instance().set(DismissedVersionConfigKey, versionTag);
 }
 
-bool isRunningPortableMode() noexcept {
+bool hasInnoInstallerMarkerInRegistry(const std::filesystem::path& exeDir) noexcept {
     try {
-        const auto exeDir = WinUtils::getExeDirectory();
         std::error_code ec;
-        if (std::filesystem::exists(exeDir / L"portable.flag", ec)) return true;
-        if (std::filesystem::exists(exeDir / L"data" / L"config" / L"config.json", ec)) return true;
+        std::wstring normExe = std::filesystem::weakly_canonical(exeDir, ec).wstring();
+        if (normExe.empty()) normExe = exeDir.wstring();
+        while (!normExe.empty() && (normExe.back() == L'\\' || normExe.back() == L'/')) {
+            normExe.pop_back();
+        }
+        if (normExe.empty()) return false;
+
+        static constexpr const wchar_t* kUninstallKeys[] = {
+            L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{8B6A3F14-7D2E-4E91-B5C3-300000000001}_is1",
+            L"SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{8B6A3F14-7D2E-4E91-B5C3-300000000001}_is1"
+        };
+        const HKEY roots[] = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+        for (HKEY root : roots) {
+            for (const wchar_t* subKey : kUninstallKeys) {
+                HKEY hKey = nullptr;
+                if (RegOpenKeyExW(root, subKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+                    continue;
+                }
+                wchar_t buf[MAX_PATH * 2]{};
+                DWORD bytes = sizeof(buf) - sizeof(wchar_t);
+                DWORD type = 0;
+                const LONG rc = RegQueryValueExW(hKey, L"InstallLocation", nullptr, &type,
+                                                 reinterpret_cast<LPBYTE>(buf), &bytes);
+                RegCloseKey(hKey);
+                if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+                    continue;
+                }
+                std::wstring regLoc(buf);
+                while (!regLoc.empty() && (regLoc.back() == L'\\' || regLoc.back() == L'/')) {
+                    regLoc.pop_back();
+                }
+                std::wstring normReg = std::filesystem::weakly_canonical(std::filesystem::path(regLoc), ec).wstring();
+                if (normReg.empty()) normReg = regLoc;
+                while (!normReg.empty() && (normReg.back() == L'\\' || normReg.back() == L'/')) {
+                    normReg.pop_back();
+                }
+                if (!normReg.empty() && _wcsicmp(normExe.c_str(), normReg.c_str()) == 0) {
+                    return true;
+                }
+            }
+        }
     } catch (...) {
     }
     return false;
+}
+
+bool isRunningPortableMode() noexcept {
+    try {
+        return UpdateChecker::isPortableDirectory(WinUtils::getExeDirectory());
+    } catch (...) {
+    }
+    return false;
+}
+
+std::wstring escapePowerShellSingleQuoted(const std::wstring& value) {
+    std::wstring out;
+    out.reserve(value.size() + 8);
+    for (wchar_t ch : value) {
+        if (ch == L'\'') {
+            out += L"''";
+        } else {
+            out.push_back(ch);
+        }
+    }
+    return out;
+}
+
+std::wstring resolvePowerShellExecutable() {
+    wchar_t sysDir[MAX_PATH]{};
+    const UINT len = GetSystemDirectoryW(sysDir, static_cast<UINT>(std::size(sysDir)));
+    if (len > 0 && len < std::size(sysDir)) {
+        const std::filesystem::path winPs =
+            std::filesystem::path(std::wstring(sysDir, len)) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
+        std::error_code ec;
+        if (std::filesystem::exists(winPs, ec)) {
+            return winPs.wstring();
+        }
+    }
+    return L"powershell.exe";
 }
 
 std::filesystem::path getUpdatesDirectory() {
@@ -653,8 +726,274 @@ bool UpdateChecker::downloadUpdateAsync() {
     return true;
 }
 
+bool UpdateChecker::isPortableDirectory(const std::filesystem::path& exeDir) noexcept {
+    try {
+        if (exeDir.empty()) return false;
+        std::error_code ec;
+        // 1. 显式便携标记或便携数据目录（与 WinUtils::isPortableMode 单一事实源完全对齐）
+        if (std::filesystem::exists(exeDir / L"portable.flag", ec)) return true;
+        if (std::filesystem::is_directory(exeDir / L".tools3000", ec)) return true;
+        if (std::filesystem::is_directory(exeDir / L"data", ec)) return true;
+        if (std::filesystem::is_directory(exeDir / L"portable_data", ec)) return true;
+
+        // 2. Inno Setup 正式安装目录必然包含 unins000.exe/unins000.dat 或在卸载注册表中精确匹配 InstallLocation
+        if (std::filesystem::exists(exeDir / L"unins000.exe", ec) ||
+            std::filesystem::exists(exeDir / L"unins000.dat", ec)) {
+            return false;
+        }
+        if (hasInnoInstallerMarkerInRegistry(exeDir)) {
+            return false;
+        }
+
+        // 3. 既非 Inno Setup 安装目录也无卸载器：判定为绿色解压便携版，杜绝自动更新误走 Setup.exe 安装出重复副本
+        return true;
+    } catch (...) {
+    }
+    return false;
+}
+
 std::wstring UpdateChecker::buildInstallerParameters() {
     return L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /AUTOUPDATE";
+}
+
+std::wstring UpdateChecker::buildInstallerParametersForDir(const std::filesystem::path& installDir) {
+    std::wstring params = buildInstallerParameters();
+    if (installDir.empty()) return params;
+    std::wstring dirW = installDir.wstring();
+    while (dirW.size() > 3 && (dirW.back() == L'\\' || dirW.back() == L'/')) {
+        dirW.pop_back();
+    }
+    if (dirW.empty()) return params;
+    std::wstring sanitized;
+    sanitized.reserve(dirW.size());
+    for (wchar_t ch : dirW) {
+        if (ch != L'"' && ch != L'\r' && ch != L'\n') {
+            sanitized.push_back(ch);
+        }
+    }
+    if (!sanitized.empty()) {
+        params += L" /DIR=\"" + sanitized + L"\"";
+    }
+    return params;
+}
+
+std::wstring UpdateChecker::buildPortableUpdaterScript(
+    const std::filesystem::path& zipPath,
+    const std::filesystem::path& targetDir,
+    const std::filesystem::path& logFilePath,
+    uint32_t parentPid,
+    bool relaunchAfterUpdate) {
+    const std::wstring zipEsc = escapePowerShellSingleQuoted(zipPath.wstring());
+    const std::wstring targetEsc = escapePowerShellSingleQuoted(targetDir.wstring());
+    const std::wstring logEsc = escapePowerShellSingleQuoted(logFilePath.wstring());
+    const std::wstring relaunchLit = relaunchAfterUpdate ? L"$true" : L"$false";
+
+    std::wstring script;
+    script.reserve(4096);
+    script += L"$ErrorActionPreference = 'Stop'\r\n";
+    script += L"$zipPath = '" + zipEsc + L"'\r\n";
+    script += L"$targetDir = '" + targetEsc + L"'\r\n";
+    script += L"$logPath = '" + logEsc + L"'\r\n";
+    script += L"$parentPid = " + std::to_wstring(parentPid) + L"\r\n";
+    script += L"$relaunch = " + relaunchLit + L"\r\n";
+    script += LR"PS(
+function Write-UpdLog([string]$msg) {
+    try {
+        $ts = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss.fff')
+        $line = "[$ts] $msg"
+        $dir = Split-Path -Parent $logPath
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+    } catch {}
+}
+
+$stageDir = Join-Path ([System.IO.Path]::GetTempPath()) ("Tools3000_PortableStage_" + $PID + "_" + [DateTime]::UtcNow.Ticks)
+try {
+    Write-UpdLog "[INFO] Portable in-place update started: zip=$zipPath target=$targetDir parentPid=$parentPid"
+    if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+        throw "Portable ZIP not found: $zipPath"
+    }
+    if (-not (Test-Path -LiteralPath $targetDir -PathType Container)) {
+        throw "Target directory not found: $targetDir"
+    }
+
+    # 1. Wait gracefully for parent Tools3000.exe process to exit
+    if ($parentPid -gt 0) {
+        $deadline = [DateTime]::UtcNow.AddSeconds(20)
+        while ([DateTime]::UtcNow -lt $deadline) {
+            $proc = Get-Process -Id $parentPid -ErrorAction SilentlyContinue
+            if (-not $proc) { break }
+            Start-Sleep -Milliseconds 150
+        }
+        Write-UpdLog "[INFO] Parent process exited or wait finished."
+    }
+
+    # 2. Stop portable isolated service running strictly inside targetDir (never touch SCM service elsewhere)
+    $normTarget = [System.IO.Path]::GetFullPath($targetDir).TrimEnd('\') + '\'
+    foreach ($svcProc in @(Get-Process -Name 'Tools3000_Service' -ErrorAction SilentlyContinue)) {
+        try {
+            $svcPath = $svcProc.MainModule.FileName
+            if ($svcPath -and $svcPath.StartsWith($normTarget, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-UpdLog "[INFO] Stopping portable service inside targetDir: pid=$($svcProc.Id)"
+                Stop-Process -Id $svcProc.Id -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 200
+            }
+        } catch {}
+    }
+
+    # 3. Extract verified portable ZIP to isolated staging folder and validate payload
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $stageDir)
+    $payloadRoot = $stageDir
+    if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot 'Tools3000.exe') -PathType Leaf)) {
+        $subDirs = @(Get-ChildItem -LiteralPath $stageDir -Directory)
+        if ($subDirs.Count -eq 1 -and (Test-Path -LiteralPath (Join-Path $subDirs[0].FullName 'Tools3000.exe') -PathType Leaf)) {
+            $payloadRoot = $subDirs[0].FullName
+        }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot 'Tools3000.exe') -PathType Leaf)) {
+        throw "Invalid portable package: Tools3000.exe missing in extracted archive"
+    }
+
+    # 4. In-place atomic-style copy while strictly preserving all user portable data directories
+    $protectedTopDirs = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($d in @('.tools3000', 'data', 'portable_data', 'config', 'logs', 'screenshots', 'recordings', 'clipboard', 'updates')) {
+        [void]$protectedTopDirs.Add($d)
+    }
+
+    $rootFull = [System.IO.Path]::GetFullPath($payloadRoot).TrimEnd('\') + '\'
+    $allFiles = @(Get-ChildItem -LiteralPath $payloadRoot -Recurse -File)
+    $copiedCount = 0
+    foreach ($f in $allFiles) {
+        $rel = $f.FullName.Substring($rootFull.Length)
+        $firstSeg = ($rel -split '[\\/]')[0]
+        if ($protectedTopDirs.Contains($firstSeg)) {
+            continue
+        }
+        $destFile = Join-Path $targetDir $rel
+        $destParent = Split-Path -Parent $destFile
+        if ($destParent -and -not (Test-Path -LiteralPath $destParent)) {
+            New-Item -ItemType Directory -Path $destParent -Force | Out-Null
+        }
+        $copied = $false
+        for ($attempt = 1; $attempt -le 8; $attempt++) {
+            try {
+                Copy-Item -LiteralPath $f.FullName -Destination $destFile -Force
+                $copied = $true
+                break
+            } catch {
+                if ($attempt -eq 8) { throw }
+                Start-Sleep -Milliseconds 300
+            }
+        }
+        if ($copied) { $copiedCount++ }
+    }
+
+    # 5. Guarantee portable.flag stays present so subsequent updates always stay in portable mode
+    $flagPath = Join-Path $targetDir 'portable.flag'
+    if (-not (Test-Path -LiteralPath $flagPath -PathType Leaf)) {
+        [System.IO.File]::WriteAllText($flagPath, "Tools3000 Portable Edition", (New-Object System.Text.UTF8Encoding($false)))
+    }
+    Write-UpdLog "[OK] Portable update copied $copiedCount files into $targetDir"
+
+    # 6. Relaunch updated Tools3000.exe from the exact original portable path
+    if ($relaunch) {
+        $exePath = Join-Path $targetDir 'Tools3000.exe'
+        if (Test-Path -LiteralPath $exePath -PathType Leaf) {
+            Start-Process -FilePath $exePath -WorkingDirectory $targetDir
+            Write-UpdLog "[OK] Relaunched updated portable binary: $exePath"
+        }
+    }
+} catch {
+    Write-UpdLog "[ERROR] Portable update failed: $($_.Exception.Message)"
+    if ($relaunch -and (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+        try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"' + $zipPath + '"') } catch {}
+    }
+    exit 1
+} finally {
+    if (Test-Path -LiteralPath $stageDir) {
+        Remove-Item -LiteralPath $stageDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    try {
+        $selfPath = $MyInvocation.MyCommand.Path
+        if ($selfPath -and (Test-Path -LiteralPath $selfPath -PathType Leaf)) {
+            Remove-Item -LiteralPath $selfPath -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+}
+)PS";
+    return script;
+}
+
+bool UpdateChecker::launchPortableInPlaceUpdater(
+    const std::filesystem::path& zipPath,
+    const std::filesystem::path& targetDir,
+    uint32_t parentPid,
+    std::string& outError,
+    bool relaunchAfterUpdate,
+    std::filesystem::path* outScriptPath) {
+    std::error_code ec;
+    if (!std::filesystem::exists(zipPath, ec) || !std::filesystem::is_directory(targetDir, ec)) {
+        outError = "file_missing";
+        return false;
+    }
+
+    const std::filesystem::path scriptDir = zipPath.parent_path();
+    const std::wstring stamp = std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64());
+    const std::filesystem::path scriptPath = scriptDir / (L"apply-portable-update-" + stamp + L".ps1");
+    const std::filesystem::path logPath = scriptDir / L"portable-update.log";
+
+    const std::wstring scriptW =
+        buildPortableUpdaterScript(zipPath, targetDir, logPath, parentPid, relaunchAfterUpdate);
+    const std::string scriptUtf8 = WinUtils::wstringToUtf8(scriptW);
+    {
+        std::ofstream ofs(scriptPath, std::ios::binary | std::ios::trunc);
+        if (!ofs) {
+            outError = "write_script_failed";
+            return false;
+        }
+        // UTF-8 BOM guarantees Windows PowerShell 5.1 parses Chinese / 8-language paths cleanly
+        static constexpr unsigned char kUtf8Bom[3] = {0xEF, 0xBB, 0xBF};
+        ofs.write(reinterpret_cast<const char*>(kUtf8Bom), 3);
+        ofs.write(scriptUtf8.data(), static_cast<std::streamsize>(scriptUtf8.size()));
+    }
+    if (outScriptPath) {
+        *outScriptPath = scriptPath;
+    }
+
+    const std::wstring psExe = resolvePowerShellExecutable();
+    std::wstring cmdLine =
+        L"\"" + psExe + L"\" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File \"" +
+        scriptPath.wstring() + L"\"";
+
+    STARTUPINFOW si{};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESHOWWINDOW;
+    si.wShowWindow = SW_HIDE;
+    PROCESS_INFORMATION pi{};
+
+    DWORD flags = CREATE_BREAKAWAY_FROM_JOB | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+    BOOL ok = CreateProcessW(
+        nullptr, cmdLine.data(), nullptr, nullptr, FALSE, flags,
+        nullptr, scriptDir.wstring().c_str(), &si, &pi);
+    if (!ok) {
+        // 某些受限嵌套 Job 环境禁止 BREAKAWAY 时，降级为标准独立进程组启动
+        flags = CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW;
+        ok = CreateProcessW(
+            nullptr, cmdLine.data(), nullptr, nullptr, FALSE, flags,
+            nullptr, scriptDir.wstring().c_str(), &si, &pi);
+    }
+    if (!ok) {
+        outError = "launch_failed";
+        std::filesystem::remove(scriptPath, ec);
+        return false;
+    }
+
+    if (pi.hThread) CloseHandle(pi.hThread);
+    if (pi.hProcess) CloseHandle(pi.hProcess);
+    return true;
 }
 
 void UpdateChecker::setExitForUpdateCallback(std::function<void()> callback) {
@@ -715,11 +1054,22 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
     const bool isZipExt = (_wcsicmp(extW.c_str(), L".zip") == 0);
     const bool isExeExt = (_wcsicmp(extW.c_str(), L".exe") == 0);
     if (portableMode || isZipExt) {
-        const std::wstring params = L"/select,\"" + targetW + L"\"";
-        HINSTANCE hi = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
-        if (reinterpret_cast<intptr_t>(hi) <= 32) {
-            outError = "launch_failed";
-            return false;
+        const auto currentExeDir = WinUtils::getExeDirectory();
+        if (!launchPortableInPlaceUpdater(
+                canonTarget, currentExeDir, static_cast<uint32_t>(GetCurrentProcessId()),
+                outError, /*relaunchAfterUpdate=*/true)) {
+            LOG_WARN("UpdateChecker: portable in-place updater launch failed (err={}), opening folder fallback", outError);
+            const std::wstring params = L"/select,\"" + targetW + L"\"";
+            HINSTANCE hi = ShellExecuteW(nullptr, L"open", L"explorer.exe", params.c_str(), nullptr, SW_SHOWNORMAL);
+            if (reinterpret_cast<intptr_t>(hi) <= 32) {
+                return false;
+            }
+            return true;
+        }
+        guard.release = false;
+        LOG_INFO("UpdateChecker: launched portable in-place updater for targetDir");
+        if (exitCallback) {
+            exitCallback();
         }
         return true;
     }
@@ -729,7 +1079,7 @@ bool UpdateChecker::installDownloadedUpdate(std::string& outError) {
         return false;
     }
 
-    const std::wstring installerParams = buildInstallerParameters();
+    const std::wstring installerParams = buildInstallerParametersForDir(WinUtils::getExeDirectory());
     const std::wstring workDir = canonTarget.parent_path().wstring();
     bool launched = false;
     DWORD launchErr = ERROR_SUCCESS;

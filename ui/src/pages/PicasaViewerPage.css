@@ -132,7 +132,14 @@
 .picasa-viewer-status-right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.picasa-viewer-cascade {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
 }
 
 .picasa-viewer-count-pill {

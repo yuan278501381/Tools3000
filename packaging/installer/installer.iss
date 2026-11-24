@@ -17,7 +17,7 @@
 
 [Setup]
 SourceDir=..\..
-OutputDir=..\..\Output
+OutputDir=Output
 AppName=Tools3000
 AppVersion={#Tools3000Version}
 UninstallDisplayName=Tools3000

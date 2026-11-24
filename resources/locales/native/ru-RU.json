@@ -959,5 +959,13 @@
   "鼠标自动运镜||Auto Zoom": "Автозум мыши",
   "Recent Region ": "Недавняя область ",
   "No recent capture regions": "Нет недавних областей захвата",
-  "Reuse recent capture region": "Повторить недавнюю область"
+  "Reuse recent capture region": "Повторить недавнюю область",
+  "Screenshot completed (saved to history)": "Снимок завершён (сохранён в истории)",
+  "Screenshot completed": "Снимок завершён",
+  "Done · Copy & Save (Enter)": "Готово · Копировать и сохранить (Enter)",
+  "Done & Save (Enter)": "Готово и сохранить (Enter)",
+  "Copy & save": "Копировать и сохранить",
+  "Save & finish": "Сохранить и завершить",
+  "Done & Copy (Enter)": "Готово и копировать (Enter)",
+  "Copy & finish": "Копировать и завершить"
 }

@@ -14,6 +14,7 @@
 #define TOOLS3000_CAPTURE_PINWINDOW_H
 
 #include "capture/PinGroupManager.h"
+#include "capture/PinMemoryGovernor.h"
 #include "capture/PinOcrTypes.h"
 #include "capture/MarkupEngine.h"
 #include "capture/InPlaceTranslateEngine.h"
@@ -123,10 +124,13 @@ public:
     /// 清除过期译图并取消在途翻译请求
     void clearTranslationState();
 
-    bool isShowingTranslation() const noexcept { return m_showingTranslation && !m_translatedImage.empty(); }
+    bool isShowingTranslation() const noexcept {
+        return m_showingTranslation && (!m_translatedImage.empty() || !m_translatedVault.empty());
+    }
     bool isTranslationInFlight() const noexcept { return m_translationInFlight.load(std::memory_order_acquire); }
-    bool hasTranslationResult() const noexcept { return !m_translatedImage.empty(); }
+    bool hasTranslationResult() const noexcept { return !m_translatedImage.empty() || !m_translatedVault.empty(); }
     const cv::Mat& activeDisplayImage() const noexcept {
+        ensureImagesMaterialized();
         return (m_showingTranslation && !m_translatedImage.empty()) ? m_translatedImage : m_sourceImage;
     }
 
@@ -225,7 +229,10 @@ public:
                            const std::vector<MarkupElement>& elements,
                            const cv::Mat& precomposited = {});
 
-    const cv::Mat& cleanBaseImage() const noexcept { return m_cleanBaseImage; }
+    const cv::Mat& cleanBaseImage() const noexcept {
+        ensureImagesMaterialized();
+        return m_cleanBaseImage;
+    }
     const std::vector<MarkupElement>& markupElements() const noexcept { return m_markupElements; }
 
     /// 是否为生成式微晶字签/色卡签
@@ -233,8 +240,26 @@ public:
     float cardCornerRadius() const { return m_cardCornerRadius; }
     const std::wstring& pinnedSourceText() const { return m_pinnedSourceText; }
 
-    /// 获取当前展示图像
-    const cv::Mat& sourceImage() const { return m_sourceImage; }
+    /// 获取当前展示图像（若处于冷压缩态则自动透明无损还原）
+    const cv::Mat& sourceImage() const {
+        ensureImagesMaterialized();
+        return m_sourceImage;
+    }
+
+    /// ── 贴图冷热分级无损压缩与全局内存预算治理 API ──────────────────────────
+    uint64_t pinInstanceId() const noexcept { return m_pinInstanceId; }
+    bool isOcrDeferredUntilHover() const noexcept { return m_ocrDeferredUntilHover.load(std::memory_order_acquire); }
+    bool isCpuImageColdCompressed() const noexcept;
+    uint64_t currentHotCpuImageBytes() const noexcept;
+    uint64_t currentCompressedCpuBytes() const noexcept;
+    int uploadedBitmapWidth() const noexcept { return m_uploadedBitmapWidth; }
+    int uploadedBitmapHeight() const noexcept { return m_uploadedBitmapHeight; }
+    bool compressCpuImagesToCold();
+    void ensureImagesMaterialized() const noexcept;
+    void enterHiddenDormantState();
+    static uint64_t totalHotCpuImageBytesAcrossAllPins() noexcept;
+    static void enforceGlobalPinMemoryBudget(const PinWindow* protectedPin = nullptr, uint64_t customBudgetBytes = 0);
+    static void setHotPixelBudgetForTest(uint64_t budgetBytes) noexcept;
     /// 获取当前缩放比与不透明度
     float scale() const { return m_scale; }
     float opacity() const { return m_opacity; }
@@ -524,9 +549,19 @@ private:
     bool isInteractiveButtonHitWithSlop(int btnId, int x, int y, float slopPx) const noexcept;
     void executeInteractiveButton(int btnId, int clientX, int clientY, bool shiftHeld);
 
-    cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"
-    cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
-    cv::Mat m_translatedImage; // 非破坏原位翻译译图副本（与 m_sourceImage 独立存放，0ms 瞬切对照）
+    uint64_t m_pinInstanceId = 0;
+    mutable uint64_t m_lastInteractionTick = 0;
+    std::atomic<bool> m_ocrDeferredUntilHover{false};
+    mutable std::mutex m_imageVaultMutex;
+    mutable cv::Mat m_sourceImage;  // 原图副本，供"复制到剪贴板"（支持冷热无损双向迁移）
+    mutable cv::Mat m_cleanBaseImage;  // 1:1 原始物理分辨率无损纯净底图（与矢量标注分离存储）
+    mutable cv::Mat m_translatedImage; // 非破坏原位翻译译图副本（与 m_sourceImage 独立存放，0ms 瞬切对照）
+    mutable PinLosslessImageSlot m_sourceVault;
+    mutable PinLosslessImageSlot m_cleanBaseVault;
+    mutable PinLosslessImageSlot m_translatedVault;
+    mutable bool m_vaultSharesCleanWithSource = false;
+    int m_uploadedBitmapWidth = 0;
+    int m_uploadedBitmapHeight = 0;
     bool m_showingTranslation = false;
     std::atomic<bool> m_translationInFlight{false};
     std::atomic<uint64_t> m_translationVersion{0};

@@ -1210,7 +1210,9 @@ try {
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $FastZipScript,
             "-DestinationPath", $PortableArchivePath,
             "-SourceDirectory", $DeployDir,
-            "-CompressionLevel", "Optimal"
+            "-CompressionLevel", "Optimal",
+            "-ExtraMarkerEntryName", "portable.flag",
+            "-ExtraMarkerContent", "Tools3000 Portable Edition"
         )
         $PortableZipTask = Start-BackgroundPwshTask -Name "Portable-ZIP" -Arguments $portableZipArgs -WorkingDir $ScriptDir
     }

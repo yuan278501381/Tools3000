@@ -959,5 +959,13 @@
   "鼠标自动运镜||Auto Zoom": "마우스 자동 줌",
   "Recent Region ": "최근 영역 ",
   "No recent capture regions": "최근 캡처 영역이 없습니다",
-  "Reuse recent capture region": "최근 캡처 영역 재사용"
+  "Reuse recent capture region": "최근 캡처 영역 재사용",
+  "Screenshot completed (saved to history)": "스크린샷이 완료되었습니다 (기록에 저장됨)",
+  "Screenshot completed": "스크린샷이 완료되었습니다",
+  "Done · Copy & Save (Enter)": "완료 · 복사 및 저장 (Enter)",
+  "Done & Save (Enter)": "완료 후 저장 (Enter)",
+  "Copy & save": "복사 및 저장",
+  "Save & finish": "저장 후 완료",
+  "Done & Copy (Enter)": "완료 및 복사 (Enter)",
+  "Copy & finish": "복사 후 완료"
 }

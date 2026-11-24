@@ -6,6 +6,7 @@
 #include "clipboard/ClipboardManager.h"
 
 #include "core/logger/Logger.h"
+#include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
 
 #include <ole2.h>
@@ -153,8 +154,57 @@ bool isDesktopShellWindow(HWND rootHwnd) noexcept {
            sv == L"TopLevelWindowForOverflowXamlIsland";
 }
 
-HWND resolveSafeExternalDropTarget(POINT screenPt, HWND sourceClipboardHwnd, bool& outInClientArea) noexcept {
+bool equalsIgnoreCaseAsciiW(std::wstring_view a, std::wstring_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const wchar_t ca = (a[i] >= L'A' && a[i] <= L'Z') ? static_cast<wchar_t>(a[i] - L'A' + L'a') : a[i];
+        const wchar_t cb = (b[i] >= L'A' && b[i] <= L'Z') ? static_cast<wchar_t>(b[i] - L'A' + L'a') : b[i];
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+bool sourceWindowMatches(HWND fgHwnd, HWND sourceClipboardHwnd) noexcept {
+    if (!fgHwnd) return false;
+    if (sourceClipboardHwnd && (fgHwnd == sourceClipboardHwnd || IsChild(sourceClipboardHwnd, fgHwnd))) {
+        return true;
+    }
+    wchar_t cls[64]{};
+    if (GetClassNameW(fgHwnd, cls, static_cast<int>(std::size(cls))) > 0 &&
+        std::wstring_view(cls) == L"Tools3000_ClipboardWindow") {
+        return true;
+    }
+    return false;
+}
+
+LPARAM packScreenPointLParam(POINT pt) noexcept {
+    const uint32_t ux = static_cast<uint16_t>(static_cast<int16_t>(std::clamp(pt.x, -32768L, 32767L)));
+    const uint32_t uy = static_cast<uint16_t>(static_cast<int16_t>(std::clamp(pt.y, -32768L, 32767L)));
+    return static_cast<LPARAM>(ux | (uy << 16));
+}
+
+bool isBrowserProcessName(std::wstring_view exeLower) noexcept {
+    return equalsIgnoreCaseAsciiW(exeLower, L"chrome.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"msedge.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"brave.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"vivaldi.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"arc.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"opera.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"firefox.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"zen.exe") ||
+           equalsIgnoreCaseAsciiW(exeLower, L"waterfox.exe");
+}
+
+HWND resolveSafeExternalDropTarget(
+    POINT screenPt,
+    HWND sourceClipboardHwnd,
+    bool& outInClientArea,
+    TerminalPasteKind& outTerminalKind,
+    bool& outIsMultiProcessWebHost) noexcept {
     outInClientArea = false;
+    outTerminalKind = TerminalPasteKind::NotTerminal;
+    outIsMultiProcessWebHost = false;
+
     HWND hitHwnd = WindowFromPoint(screenPt);
     if (!hitHwnd || !IsWindow(hitHwnd)) return nullptr;
 
@@ -163,30 +213,97 @@ HWND resolveSafeExternalDropTarget(POINT screenPt, HWND sourceClipboardHwnd, boo
         return nullptr;
     }
 
-    // 校验非客户区命中：严禁对标题栏、关闭/最小化按钮、菜单栏或窗口拖拽边框触发落点单击
+    wchar_t rootCls[96]{};
+    const int rootClsLen = GetClassNameW(rootHwnd, rootCls, static_cast<int>(std::size(rootCls)));
+    const std::wstring_view rootClsView(rootCls, rootClsLen > 0 ? static_cast<size_t>(rootClsLen) : 0u);
+
+    const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(rootHwnd);
+    std::wstring exeLower;
+    if (!procPath.empty()) {
+        exeLower = tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+    }
+    outTerminalKind = classifyTerminalPasteTarget(rootClsView, exeLower);
+
+    const bool isChromiumWidget = equalsIgnoreCaseAsciiW(rootClsView, L"Chrome_WidgetWin_1");
+    const bool isMozillaWidget = equalsIgnoreCaseAsciiW(rootClsView, L"MozillaWindowClass");
+    outIsMultiProcessWebHost = isChromiumWidget || isMozillaWidget || isBrowserProcessName(exeLower);
+
+    RECT rc{};
+    if (!GetWindowRect(rootHwnd, &rc)) {
+        return rootHwnd;
+    }
+
+    const float dpi = std::clamp(tools3000::core::dpi::scaleForWindow(rootHwnd), 1.0f, 4.0f);
+    const LONG edgeMargin = static_cast<LONG>(std::lround(7.0f * dpi));
+    const LONG topBarGuard = static_cast<LONG>(std::lround((isBrowserProcessName(exeLower) ? 40.0f : 38.0f) * dpi));
+    const LONG winBtnsWidth = static_cast<LONG>(std::lround(150.0f * dpi));
+    const LONG winBtnsHeight = static_cast<LONG>(std::lround(42.0f * dpi));
+
+    // 硬几何安全红线：严禁在窗口四周拉伸窄边或右上角系统最小化/最大化/关闭按钮区触发落点单击
+    const bool insideOuterSafeBounds =
+        (screenPt.x > rc.left + edgeMargin && screenPt.x < rc.right - edgeMargin &&
+         screenPt.y > rc.top + edgeMargin && screenPt.y < rc.bottom - edgeMargin);
+    const bool inTopRightWindowControls =
+        (screenPt.x >= rc.right - winBtnsWidth && screenPt.y <= rc.top + winBtnsHeight);
+
+    if (!insideOuterSafeBounds || inTopRightWindowControls) {
+        outInClientArea = false;
+        return rootHwnd;
+    }
+
+    const bool deepInsideBody = (screenPt.y > rc.top + topBarGuard);
+
+    // Chromium / Firefox 顶层单窗口架构：只要已深入标签栏/标题栏下方（含浏览器地址栏与整个网页内容区），
+    // 直接确认为有效客户区，彻底免疫跨进程 DComp 合成窗 WM_NCHITTEST 超时或自定义拖拽区误杀
+    if ((isChromiumWidget || isMozillaWidget) && deepInsideBody) {
+        outInClientArea = true;
+        return rootHwnd;
+    }
+
+    const LPARAM hitLParam = packScreenPointLParam(screenPt);
+
+    // 若 WindowFromPoint 直接命中了真实子内容渲染窗（如 Windows Terminal 的 InputSiteWindowClass），
+    // 排除标题栏拖拽子窗后即确认为有效客户区
+    if (hitHwnd != rootHwnd) {
+        wchar_t hitCls[96]{};
+        const int hitClsLen = GetClassNameW(hitHwnd, hitCls, static_cast<int>(std::size(hitCls)));
+        const std::wstring_view hitClsView(hitCls, hitClsLen > 0 ? static_cast<size_t>(hitClsLen) : 0u);
+        if (!equalsIgnoreCaseAsciiW(hitClsView, L"DRAG_BAR_WINDOW_CLASS") &&
+            !equalsIgnoreCaseAsciiW(hitClsView, L"NonClientIslandWindow")) {
+            DWORD_PTR childHit = HTCLIENT;
+            if (SendMessageTimeoutW(
+                    hitHwnd,
+                    WM_NCHITTEST,
+                    0,
+                    hitLParam,
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    45,
+                    &childHit) != 0) {
+                outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(childHit), deepInsideBody);
+            } else {
+                outInClientArea = true;
+            }
+            return rootHwnd;
+        }
+    }
+
     DWORD_PTR hitTest = HTCLIENT;
     if (SendMessageTimeoutW(
             rootHwnd,
             WM_NCHITTEST,
             0,
-            MAKELPARAM(screenPt.x, screenPt.y),
+            hitLParam,
             SMTO_ABORTIFHUNG | SMTO_BLOCK,
             60,
             &hitTest) != 0) {
-        outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(hitTest));
+        outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(hitTest), deepInsideBody);
     } else {
-        // 目标线程短暂繁忙时，保守仅在矩形严格位于窗口内部（避开顶部 34px 标题区与 8px 边缘）才放行
-        RECT rc{};
-        if (GetWindowRect(rootHwnd, &rc)) {
-            outInClientArea =
-                (screenPt.x > rc.left + 8 && screenPt.x < rc.right - 8 &&
-                 screenPt.y > rc.top + 34 && screenPt.y < rc.bottom - 8);
-        }
+        outInClientArea = deepInsideBody;
     }
     return rootHwnd;
 }
 
-void sendVirtualDesktopClickAt(POINT screenPt) noexcept {
+void sendSegmentedDesktopClickAt(POINT screenPt) noexcept {
     const int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
     const int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
     const int vw = (std::max)(1, GetSystemMetrics(SM_CXVIRTUALSCREEN));
@@ -197,65 +314,90 @@ void sendVirtualDesktopClickAt(POINT screenPt) noexcept {
     const LONG absX = std::clamp(static_cast<LONG>(std::lround(normX)), 0L, 65535L);
     const LONG absY = std::clamp(static_cast<LONG>(std::lround(normY)), 0L, 65535L);
 
-    INPUT mouseInputs[3]{};
-    mouseInputs[0].type = INPUT_MOUSE;
-    mouseInputs[0].mi.dx = absX;
-    mouseInputs[0].mi.dy = absY;
-    mouseInputs[0].mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+    auto emitMouseFlag = [absX, absY](DWORD flag) {
+        INPUT in{};
+        in.type = INPUT_MOUSE;
+        in.mi.dx = absX;
+        in.mi.dy = absY;
+        in.mi.dwFlags = flag | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+        SendInput(1u, &in, sizeof(INPUT));
+    };
 
-    mouseInputs[1].type = INPUT_MOUSE;
-    mouseInputs[1].mi.dx = absX;
-    mouseInputs[1].mi.dy = absY;
-    mouseInputs[1].mi.dwFlags = MOUSEEVENTF_LEFTDOWN | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-
-    mouseInputs[2].type = INPUT_MOUSE;
-    mouseInputs[2].mi.dx = absX;
-    mouseInputs[2].mi.dy = absY;
-    mouseInputs[2].mi.dwFlags = MOUSEEVENTF_LEFTUP | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-
-    SendInput(3u, mouseInputs, sizeof(INPUT));
+    // 分步物理点击节奏：先刷新 Chromium InputRouter 跨进程悬停命中测试，再触发完整 pointerdown -> mouseup -> click 状态机，
+    // 确保 Chrome 新标签页 Fakebox、「问问 Google」动态展开搜索框及各类富文本编辑器 100% 挂载 DOM 焦点
+    emitMouseFlag(MOUSEEVENTF_MOVE);
+    Sleep(10);
+    emitMouseFlag(MOUSEEVENTF_LEFTDOWN);
+    Sleep(14);
+    emitMouseFlag(MOUSEEVENTF_LEFTUP);
 }
 
 void dispatchSmartDropPasteAsync(
     HWND targetRootHwnd,
     POINT dropScreenPt,
-    HWND keepVisibleClipboardHwnd) {
-    // 异步线程内完成：激活目标窗 -> 精准单击落点定位光标（并解除 Sublime 等编辑器选区） -> Ctrl+V -> 无激活浮顶保持剪贴板可见
-    std::thread([targetRootHwnd, dropScreenPt, keepVisibleClipboardHwnd]() {
+    HWND keepVisibleClipboardHwnd,
+    TerminalPasteKind terminalKind,
+    bool isMultiProcessWebHost) {
+    // 五步确定性聚焦与粘贴管线：
+    //   1. 等待物理左键完全抬起；
+    //   2. 先激活目标窗口并等待前台交接完成 + 消化 WM_ACTIVATE 默认旧焦点恢复（杜绝激活反吞点击焦点）；
+    //   3. 非终端窗口执行分步物理单击，精准唤醒网页/编辑器动态输入框焦点；
+    //   4. 多进程 Web 宿主留出 95ms 跨进程 DOM 聚焦窗口（原生控件 45ms）；
+    //   5. 发送硬件扫描码粘贴热键并无激活保活剪贴板面板。
+    std::thread([targetRootHwnd, dropScreenPt, keepVisibleClipboardHwnd, terminalKind, isMultiProcessWebHost]() {
         constexpr DWORD kPollStepMs = 10;
-        constexpr DWORD kMaxFgWaitMs = 180;
+        constexpr DWORD kMaxFgWaitMs = 190;
 
-        // 1. 等待物理左键完全松开（防止极少数驱动上行抖动）
         for (int i = 0; i < 8 && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; ++i) {
             Sleep(8);
         }
 
-        // 2. 激活目标窗口并精准单击落点（AGY/Electron 输入框获焦 + Sublime 取消高亮选区并落位光标）
-        if (targetRootHwnd && IsWindow(targetRootHwnd)) {
+        const bool wasAlreadyForeground =
+            targetRootHwnd && IsWindow(targetRootHwnd) &&
+            ClipboardManager::isTargetForegroundActive(targetRootHwnd);
+
+        if (targetRootHwnd && IsWindow(targetRootHwnd) && !wasAlreadyForeground) {
             AllowSetForegroundWindow(ASFW_ANY);
             (void)tools3000::core::WinUtils::activateWindowForeground(targetRootHwnd);
-        }
-        sendVirtualDesktopClickAt(dropScreenPt);
-
-        // 3. 确认目标窗口真正位于前台，并留出短暂焦点稳定期
-        if (targetRootHwnd && IsWindow(targetRootHwnd)) {
             for (DWORD waited = 0; waited < kMaxFgWaitMs; waited += kPollStepMs) {
                 if (ClipboardManager::isTargetForegroundActive(targetRootHwnd)) {
                     break;
                 }
                 Sleep(kPollStepMs);
             }
+            // 让目标窗口（特别是 Chrome / Electron）先完成 WM_ACTIVATE 记住的上次控件焦点恢复，
+            // 随后我们的物理点击才能稳稳将最终焦点落到目标输入框上而不被覆盖
+            Sleep(28);
+        } else if (wasAlreadyForeground && isMultiProcessWebHost) {
+            // 若多进程 Web 宿主已在前台，仍留出 28ms 让渲染进程彻底消化完 OLE DragLeave 状态
+            Sleep(28);
         }
-        Sleep(45);
 
-        // 4. 释放残留修饰键并发送 Ctrl+V 粘贴（数据已带 m_suppressedSeq 写入系统剪贴板，0 历史污染）
+        if (terminalKind == TerminalPasteKind::NotTerminal) {
+            sendSegmentedDesktopClickAt(dropScreenPt);
+        }
+
+        Sleep(isMultiProcessWebHost ? 110 : 45);
+
+        // 安全守卫：若前台意外仍停留在剪贴板窗自身，中止按键投递防止误贴回自身搜索框
+        const HWND fgNow = GetForegroundWindow();
+        if (fgNow && sourceWindowMatches(fgNow, keepVisibleClipboardHwnd)) {
+            return;
+        }
+
+        // 4. 释放残留修饰键，附带真实硬件扫描码发送对应粘贴组合键
         std::vector<INPUT> inputs;
-        inputs.reserve(10);
+        inputs.reserve(12);
         auto appendKey = [&inputs](WORD vk, DWORD flags) {
             INPUT in{};
             in.type = INPUT_KEYBOARD;
             in.ki.wVk = vk;
-            in.ki.dwFlags = flags;
+            in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+            if (vk == VK_INSERT || vk == VK_RCONTROL || vk == VK_RMENU) {
+                in.ki.dwFlags = flags | KEYEVENTF_EXTENDEDKEY;
+            } else {
+                in.ki.dwFlags = flags;
+            }
             inputs.push_back(in);
         };
 
@@ -264,15 +406,35 @@ void dispatchSmartDropPasteAsync(
         if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) appendKey(VK_LWIN, KEYEVENTF_KEYUP);
         if ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) appendKey(VK_RWIN, KEYEVENTF_KEYUP);
 
-        appendKey(VK_CONTROL, 0);
-        appendKey('V', 0);
-        appendKey('V', KEYEVENTF_KEYUP);
-        appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+        switch (terminalKind) {
+            case TerminalPasteKind::ModernCtrlShiftV:
+                appendKey(VK_CONTROL, 0);
+                appendKey(VK_SHIFT, 0);
+                appendKey('V', 0);
+                appendKey('V', KEYEVENTF_KEYUP);
+                appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+                appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+                break;
+            case TerminalPasteKind::ShiftInsert:
+                appendKey(VK_SHIFT, 0);
+                appendKey(VK_INSERT, 0);
+                appendKey(VK_INSERT, KEYEVENTF_KEYUP);
+                appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+                break;
+            case TerminalPasteKind::LegacyCtrlV:
+            case TerminalPasteKind::NotTerminal:
+            default:
+                appendKey(VK_CONTROL, 0);
+                appendKey('V', 0);
+                appendKey('V', KEYEVENTF_KEYUP);
+                appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+                break;
+        }
         SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 
-        // 5. 粘贴完成后确保剪贴板窗口无激活浮于目标窗之上（不抢 AGY/Sublime/Chrome 焦点，但也不被盖住）
+        // 5. 粘贴完成后确保剪贴板窗口无激活浮于目标窗之上（不抢焦点，也不被盖住）
         if (keepVisibleClipboardHwnd && IsWindow(keepVisibleClipboardHwnd) && IsWindowVisible(keepVisibleClipboardHwnd)) {
-            Sleep(40);
+            Sleep(45);
             SetWindowPos(
                 keepVisibleClipboardHwnd,
                 HWND_TOPMOST,
@@ -457,13 +619,28 @@ public:
         if (!m_payload.pngBytes.empty()) {
             addFormat(static_cast<CLIPFORMAT>(getPngClipboardFormat()));
         }
-        if (!m_payload.htmlBytes.empty()) {
-            addFormat(static_cast<CLIPFORMAT>(getHtmlClipboardFormat()));
-        }
+        // 纯文本格式优先排在 HTML Format 之前，确保 WinRT DataPackageView / 终端 / 代码编辑器优先消费纯净文本
         if (!m_payload.unicodeText.empty()) {
             addFormat(CF_UNICODETEXT);
             addFormat(CF_TEXT);
         }
+        if (!m_payload.htmlBytes.empty()) {
+            addFormat(static_cast<CLIPFORMAT>(getHtmlClipboardFormat()));
+        }
+    }
+
+    void enableDynamicPlainTextHostGuard(HWND sourceClipboardHwnd) noexcept {
+        m_sourceClipboardHwnd = sourceClipboardHwnd;
+        m_isPureTextPayload =
+            m_payload.filePaths.empty() &&
+            m_payload.dibBytes.empty() &&
+            m_payload.pngBytes.empty() &&
+            !m_payload.unicodeText.empty();
+        m_isSingleHttpUrl = m_isPureTextPayload && isSingleHttpUrlPayload(m_payload);
+    }
+
+    bool wasAnyDataRetrieved() const noexcept {
+        return m_anyDataRetrieved.load(std::memory_order_acquire);
     }
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -518,6 +695,11 @@ public:
         pmedium->tymed = TYMED_HGLOBAL;
         pmedium->hGlobal = hMem;
         pmedium->pUnkForRelease = nullptr;
+        // 仅当真正面向允许原生 OLE 的外部目标窗返回数据时才标记已消费，
+        // 严禁剪贴板面板自身 WebView2 的首帧 DragEnter 预读污染该状态
+        if (classifyCursorDropRelation() == CursorDropZoneRelation::NormalExternal) {
+            m_anyDataRetrieved.store(true, std::memory_order_release);
+        }
         return S_OK;
     }
 
@@ -547,6 +729,14 @@ public:
         if (dwDirection != DATADIR_GET) {
             return E_NOTIMPL;
         }
+        // 关键防遮罩机制：当拖动纯文本进入现代浏览器（Chrome/Edge/Firefox）或剪贴板自身时，
+        // EnumFormatEtc 直接返回空枚举集，阻止 Chromium 在 DragEnter 构建非空 dataTransfer.types，
+        // 从源头抑制 Google 搜索框弹出「将文件拖放到此处」文件遮罩层，让底层真实 <input>/<textarea> 全程裸露可点击
+        if (m_sourceClipboardHwnd != nullptr && m_isPureTextPayload &&
+            classifyCursorDropRelation() != CursorDropZoneRelation::NormalExternal) {
+            *ppenumFormatEtc = new (std::nothrow) FormatEtcEnumerator({}, 0);
+            return (*ppenumFormatEtc != nullptr) ? S_OK : E_OUTOFMEMORY;
+        }
         *ppenumFormatEtc = new (std::nothrow) FormatEtcEnumerator(m_formats, 0);
         return (*ppenumFormatEtc != nullptr) ? S_OK : E_OUTOFMEMORY;
     }
@@ -564,6 +754,12 @@ public:
     }
 
 private:
+    enum class CursorDropZoneRelation : uint8_t {
+        NormalExternal = 0,
+        OverSourceSelf = 1,
+        OverTextBypassHost = 2,
+    };
+
     ~ClipboardDragDataObject() = default;
 
     HRESULT validateFormatEtc(const FORMATETC* fe) const noexcept {
@@ -577,6 +773,10 @@ private:
         if ((fe->tymed & TYMED_HGLOBAL) == 0) {
             return DV_E_TYMED;
         }
+        if (m_sourceClipboardHwnd != nullptr && m_isPureTextPayload &&
+            classifyCursorDropRelation() != CursorDropZoneRelation::NormalExternal) {
+            return DV_E_FORMATETC;
+        }
         for (const auto& supported : m_formats) {
             if (supported.cfFormat == fe->cfFormat) {
                 return S_OK;
@@ -585,13 +785,43 @@ private:
         return DV_E_FORMATETC;
     }
 
+    CursorDropZoneRelation classifyCursorDropRelation() const noexcept {
+        if (!m_sourceClipboardHwnd) return CursorDropZoneRelation::NormalExternal;
+        POINT pt{};
+        if (!GetCursorPos(&pt)) return CursorDropZoneRelation::NormalExternal;
+        HWND hit = WindowFromPoint(pt);
+        if (!hit || !IsWindow(hit)) return CursorDropZoneRelation::NormalExternal;
+        HWND rawRoot = GetAncestor(hit, GA_ROOT);
+        if (!rawRoot) rawRoot = hit;
+        if (sourceWindowMatches(rawRoot, m_sourceClipboardHwnd)) {
+            return CursorDropZoneRelation::OverSourceSelf;
+        }
+        HWND root = ClipboardManager::normalizeValidTargetHwnd(hit, m_sourceClipboardHwnd);
+        if (!root || isDesktopShellWindow(root)) return CursorDropZoneRelation::NormalExternal;
+        const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(root);
+        if (procPath.empty()) return CursorDropZoneRelation::NormalExternal;
+        const std::wstring exeLower =
+            tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+        if (shouldBypassOleTextDropForHost(exeLower, m_isSingleHttpUrl)) {
+            return CursorDropZoneRelation::OverTextBypassHost;
+        }
+        return CursorDropZoneRelation::NormalExternal;
+    }
+
     std::atomic<ULONG> m_refCount{1};
+    std::atomic<bool> m_anyDataRetrieved{false};
+    bool m_isPureTextPayload = false;
+    bool m_isSingleHttpUrl = false;
+    HWND m_sourceClipboardHwnd = nullptr;
     NativeDragPayload m_payload;
     std::vector<FORMATETC> m_formats;
 };
 
 class ClipboardDropSource final : public IDropSource {
 public:
+    explicit ClipboardDropSource(HWND sourceClipboardHwnd = nullptr) noexcept
+        : m_sourceClipboardHwnd(sourceClipboardHwnd) {}
+
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
         if (!ppv) return E_POINTER;
         if (riid == IID_IUnknown || riid == IID_IDropSource) {
@@ -627,7 +857,25 @@ public:
         return S_OK;
     }
 
-    STDMETHODIMP GiveFeedback(DWORD) override {
+    STDMETHODIMP GiveFeedback(DWORD dwEffect) override {
+        if (dwEffect == DROPEFFECT_NONE && m_sourceClipboardHwnd != nullptr) {
+            // 当处于跨 UIPI（如拖向普通权限 Chrome/微信）或主动绕过 AI IDE 附件层时，
+            // 若光标已位于合法外部应用客户区，展示直观的手型/十字准星而非刺眼的红色禁止圈
+            POINT pt{};
+            if (GetCursorPos(&pt)) {
+                bool inClient = false;
+                TerminalPasteKind termKind = TerminalPasteKind::NotTerminal;
+                bool isWeb = false;
+                if (resolveSafeExternalDropTarget(pt, m_sourceClipboardHwnd, inClient, termKind, isWeb) != nullptr &&
+                    inClient) {
+                    static HCURSOR s_copyLikeCursor = LoadCursorW(nullptr, IDC_ARROW);
+                    if (s_copyLikeCursor) {
+                        SetCursor(s_copyLikeCursor);
+                        return S_OK;
+                    }
+                }
+            }
+        }
         return DRAGDROP_S_USEDEFAULTCURSORS;
     }
 
@@ -645,9 +893,113 @@ private:
     std::atomic<ULONG> m_refCount{1};
     std::atomic<bool> m_cancelledByUser{false};
     std::atomic<bool> m_releasedLeftButton{false};
+    HWND m_sourceClipboardHwnd = nullptr;
 };
 
 }  // namespace
+
+bool isSingleHttpUrlPayload(const NativeDragPayload& payload) noexcept {
+    if (!payload.filePaths.empty() || !payload.dibBytes.empty() || !payload.pngBytes.empty()) {
+        return false;
+    }
+    std::wstring_view sv(payload.unicodeText);
+    while (!sv.empty() && (sv.front() == L' ' || sv.front() == L'\t' || sv.front() == L'\r' || sv.front() == L'\n')) {
+        sv.remove_prefix(1);
+    }
+    while (!sv.empty() && (sv.back() == L' ' || sv.back() == L'\t' || sv.back() == L'\r' || sv.back() == L'\n')) {
+        sv.remove_suffix(1);
+    }
+    if (sv.size() < 10u || sv.size() > 2048u) {
+        return false;
+    }
+    for (wchar_t ch : sv) {
+        if (ch <= 0x20 || ch == L'"' || ch == L'<' || ch == L'>') {
+            return false;
+        }
+    }
+    const bool isHttp = sv.size() > 7u && equalsIgnoreCaseAsciiW(sv.substr(0, 7), L"http://");
+    const bool isHttps = sv.size() > 8u && equalsIgnoreCaseAsciiW(sv.substr(0, 8), L"https://");
+    return isHttp || isHttps;
+}
+
+bool shouldBypassOleTextDropForHost(
+    std::wstring_view processExeLower,
+    bool payloadIsSingleHttpUrl) noexcept {
+    // 现代网页浏览器：图片/文件走原生 OLE 以支持网页上传（如 Google 以图搜图「将文件拖放到此处」）；
+    // 所有文本（含 URL）一律绕过网页文件 DropZone 遮罩层，松手后通过落点单击聚焦直接贴入网页搜索框或地址栏
+    if (isBrowserProcessName(processExeLower)) {
+        return true;
+    }
+    // 桌面 AI IDE / 客户端：单条 http(s):// 链接保留原生 OLE 以生成 @Link 上下文卡片，普通非 URL 文本走落点粘贴
+    if (payloadIsSingleHttpUrl) {
+        return false;
+    }
+    return equalsIgnoreCaseAsciiW(processExeLower, L"antigravity.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"cursor.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"windsurf.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"trae.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"zed.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"claude.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"chatgpt.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"doubao.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"kimi.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"yuanbao.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"cherry-studio.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"chatbox.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"clash party.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"clash-verge.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"flclash.exe") ||
+           equalsIgnoreCaseAsciiW(processExeLower, L"mihomo-party.exe");
+}
+
+TerminalPasteKind classifyTerminalPasteTarget(
+    std::wstring_view rootClassName,
+    std::wstring_view processExeLower) noexcept {
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"CASCADIA_HOSTING_WINDOW_CLASS") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"org.wezfurlong.wezterm") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"WarpTerminal")) {
+        return TerminalPasteKind::ModernCtrlShiftV;
+    }
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"ConsoleWindowClass") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"VirtualConsoleClass")) {
+        return TerminalPasteKind::LegacyCtrlV;
+    }
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"mintty") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"PuTTY")) {
+        return TerminalPasteKind::ShiftInsert;
+    }
+
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"windowsterminal.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"wt.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"openconsole.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"wezterm-gui.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"alacritty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"kitty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"warp.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"tabby.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"hyper.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"rio.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"ghostty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"windterm.exe")) {
+        return TerminalPasteKind::ModernCtrlShiftV;
+    }
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"conhost.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"cmd.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"powershell.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"pwsh.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"conemu64.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"conemu.exe")) {
+        return TerminalPasteKind::LegacyCtrlV;
+    }
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"mintty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"putty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"xshell.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"mobaxterm.exe")) {
+        return TerminalPasteKind::ShiftInsert;
+    }
+
+    return TerminalPasteKind::NotTerminal;
+}
 
 bool buildNativeDragPayloadForItem(uint64_t itemId, NativeDragPayload& outPayload) {
     outPayload = NativeDragPayload{};
@@ -751,18 +1103,20 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
         ~OleGuard() { OleUninitialize(); }
     } oleGuard;
 
-    ComPtr<IDataObject> dataObj = createNativeDragDataObject(payload);
+    ComPtr<ClipboardDragDataObject> concreteDataObj;
+    concreteDataObj.Attach(new (std::nothrow) ClipboardDragDataObject(payload));
     ComPtr<ClipboardDropSource> dropSource;
-    dropSource.Attach(new (std::nothrow) ClipboardDropSource());
-    if (!dataObj || !dropSource) {
+    dropSource.Attach(new (std::nothrow) ClipboardDropSource(sourceClipboardHwnd));
+    if (!concreteDataObj || !dropSource) {
         return outcome;
     }
+    concreteDataObj->enableDynamicPlainTextHostGuard(sourceClipboardHwnd);
 
     ReleaseCapture();
 
     DWORD dwEffect = DROPEFFECT_NONE;
     const HRESULT dragHr = DoDragDrop(
-        dataObj.Get(),
+        concreteDataObj.Get(),
         dropSource.Get(),
         DROPEFFECT_COPY | DROPEFFECT_LINK,
         &dwEffect);
@@ -772,48 +1126,79 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
     outcome.dropScreenPt = dropPt;
 
     bool inClientArea = false;
-    HWND targetRoot = resolveSafeExternalDropTarget(dropPt, sourceClipboardHwnd, inClientArea);
+    TerminalPasteKind terminalKind = TerminalPasteKind::NotTerminal;
+    bool isMultiProcessWebHost = false;
+    HWND targetRoot = resolveSafeExternalDropTarget(
+        dropPt, sourceClipboardHwnd, inClientArea, terminalKind, isMultiProcessWebHost);
     outcome.targetRootHwnd = targetRoot;
 
-    LOG_DEBUG("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, userCancel={}, relLBtn={}, targetInClient={})",
-              itemId,
-              static_cast<unsigned>(dragHr),
-              static_cast<unsigned>(dwEffect),
-              dropSource->wasCancelledByUser(),
-              dropSource->wasReleasedLeftButton(),
-              inClientArea);
+    const bool oleRetrieved = concreteDataObj->wasAnyDataRetrieved();
+    const bool isPureTextPayload =
+        payload.filePaths.empty() &&
+        payload.dibBytes.empty() &&
+        payload.pngBytes.empty() &&
+        !payload.unicodeText.empty();
+    const bool isSingleHttpUrl = isPureTextPayload && isSingleHttpUrlPayload(payload);
 
-    if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE) {
-        outcome.status = NativeDragStatus::DroppedByOle;
-        return outcome;
+    std::wstring dropTargetExeLower;
+    if (targetRoot) {
+        const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(targetRoot);
+        if (!procPath.empty()) {
+            dropTargetExeLower =
+                tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+        }
     }
+    const bool forceBypassAtDrop =
+        isPureTextPayload &&
+        !dropTargetExeLower.empty() &&
+        shouldBypassOleTextDropForHost(dropTargetExeLower, isSingleHttpUrl);
+    const bool effectiveOleRetrieved = forceBypassAtDrop ? false : oleRetrieved;
 
-    if (dropSource->wasCancelledByUser() || !dropSource->wasReleasedLeftButton() || !targetRoot || !inClientArea) {
-        outcome.status = NativeDragStatus::Cancelled;
-        return outcome;
-    }
+    LOG_INFO("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, oleRead={}, forceBypass={}, userCancel={}, relLBtn={}, targetInClient={}, termKind={}, webHost={}, exe={})",
+             itemId,
+             static_cast<unsigned>(dragHr),
+             static_cast<unsigned>(dwEffect),
+             oleRetrieved,
+             forceBypassAtDrop,
+             dropSource->wasCancelledByUser(),
+             dropSource->wasReleasedLeftButton(),
+             inClientArea,
+             static_cast<unsigned>(terminalKind),
+             isMultiProcessWebHost,
+             tools3000::core::WinUtils::wstringToUtf8(dropTargetExeLower));
 
-    // 第二引擎：跨 UIPI 权限隔离（如管理员 Tools3000 拖入普通权限 Antigravity/Electron）
-    // 或代码编辑器选中态拒收（如 Sublime 选中刚拖入文本后在末尾续拖）自动落点智能直贴
-    if (shouldFallbackToSmartDropPaste(
+    if (!shouldFallbackToSmartDropPaste(
             dragHr,
             dwEffect,
             dropSource->wasCancelledByUser(),
             dropSource->wasReleasedLeftButton(),
-            targetRoot != nullptr && inClientArea)) {
-        const auto settings = ClipboardManager::instance().getSettings();
-        const bool written = ClipboardManager::instance().activateItem(
-            itemId,
-            settings.plainTextByDefault,
-            /*autoPaste=*/false,
-            nullptr);
-        if (written) {
-            LOG_INFO("ClipboardNativeDrag: OLE returned NONE; engaging smart drop-paste at ({}, {}) for item {}",
-                     dropPt.x, dropPt.y, itemId);
-            dispatchSmartDropPasteAsync(targetRoot, dropPt, sourceClipboardHwnd);
-            outcome.status = NativeDragStatus::DroppedBySmartPaste;
-            return outcome;
+            targetRoot != nullptr && inClientArea,
+            effectiveOleRetrieved)) {
+        if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE && effectiveOleRetrieved) {
+            outcome.status = NativeDragStatus::DroppedByOle;
+        } else {
+            outcome.status = NativeDragStatus::Cancelled;
         }
+        return outcome;
+    }
+
+    // 第二引擎：跨 UIPI 权限隔离（如管理员 Tools3000 拖入普通权限 Chrome / 微信 / Clash Party / Windows Terminal）、
+    // AI IDE 外层附件层纯文本防空吞、或代码编辑器选中态拒收时，自动执行确定性落点聚焦粘贴；对终端强制剥离富文本包装
+    const auto settings = ClipboardManager::instance().getSettings();
+    const bool forcePlainText =
+        settings.plainTextByDefault || (terminalKind != TerminalPasteKind::NotTerminal);
+    const bool written = ClipboardManager::instance().activateItem(
+        itemId,
+        forcePlainText,
+        /*autoPaste=*/false,
+        nullptr);
+    if (written) {
+        LOG_INFO("ClipboardNativeDrag: engaging smart drop-paste at ({}, {}) for item {} (termKind={}, webHost={})",
+                 dropPt.x, dropPt.y, itemId, static_cast<unsigned>(terminalKind), isMultiProcessWebHost);
+        dispatchSmartDropPasteAsync(
+            targetRoot, dropPt, sourceClipboardHwnd, terminalKind, isMultiProcessWebHost);
+        outcome.status = NativeDragStatus::DroppedBySmartPaste;
+        return outcome;
     }
 
     outcome.status = NativeDragStatus::FailedOrSkipped;

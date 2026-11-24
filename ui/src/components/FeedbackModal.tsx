@@ -47,6 +47,8 @@ interface FeedbackSubmitResponse {
   trackingId?: string;
   issueUrl?: string;
   exportedBundlePath?: string;
+  exportedScreenshotPath?: string;
+  copiedToClipboard?: boolean;
   markdownReport?: string;
   errorMessage?: string;
   totalRedactions?: number;
@@ -100,10 +102,15 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const lastPasteHandledAtRef = useRef<number>(0);
 
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   const handleClose = useCallback(() => {
     setErrorMessage('');
-    onClose();
-  }, [onClose]);
+    onCloseRef.current();
+  }, []);
 
   const attachImageBlob = useCallback((blob: Blob, preferredName: string, showToast: boolean) => {
     if (blob.size > MAX_FEEDBACK_SCREENSHOT_BYTES) {
@@ -154,10 +161,19 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
 
   useEffect(() => {
     if (!open) return;
-    panelRef.current?.focus();
+    const frame = requestAnimationFrame(() => {
+      const titleEl = document.getElementById('fb-title-input') as HTMLElement | null;
+      (titleEl ?? panelRef.current)?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
 
     let nativePasteTimer: number | null = null;
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
       if (e.key === 'Escape') {
         e.preventDefault();
         handleClose();
@@ -373,16 +389,53 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
               </div>
 
               {submitResult.exportedBundlePath && (
+                <div className="fb-paste-guide-banner" role="status">
+                  <Paperclip size={15} strokeWidth={2.2} aria-hidden="true" />
+                  <span>
+                    {t(
+                      'feedback.pasteBundleBanner',
+                      'The redacted diagnostic .zip (and screenshot) has been copied to your clipboard - just press Ctrl+V inside the GitHub Issue editor to upload them in one keystroke!',
+                    )}
+                  </span>
+                </div>
+              )}
+
+              {submitResult.exportedBundlePath && (
                 <div className="fb-bundle-path-box">
                   <span className="fb-bundle-path-text">{submitResult.exportedBundlePath}</span>
-                  <button
-                    type="button"
-                    className="fb-btn fb-btn-secondary"
-                    onClick={() => void bridgeRequest('feedback.revealBundle', { path: submitResult.exportedBundlePath })}
-                  >
-                    <FolderOpen size={14} aria-hidden="true" />
-                    <span>{t('feedback.revealZip', 'Show Bundle')}</span>
-                  </button>
+                  <div className="fb-bundle-path-btns">
+                    <button
+                      type="button"
+                      className="fb-btn fb-btn-secondary"
+                      onClick={async () => {
+                        await bridgeRequest(
+                          'feedback.copyBundleFiles',
+                          {
+                            bundlePath: submitResult.exportedBundlePath,
+                            screenshotPath: submitResult.exportedScreenshotPath || '',
+                          },
+                          { silent: true },
+                        );
+                        toast.success(
+                          t(
+                            'feedback.bundleFilesCopiedToast',
+                            'Diagnostic bundle copied to clipboard - press Ctrl+V in GitHub to upload',
+                          ),
+                        );
+                      }}
+                    >
+                      <Copy size={14} aria-hidden="true" />
+                      <span>{t('feedback.copyBundleFiles', 'Copy Bundle File')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="fb-btn fb-btn-secondary"
+                      onClick={() => void bridgeRequest('feedback.revealBundle', { path: submitResult.exportedBundlePath })}
+                    >
+                      <FolderOpen size={14} aria-hidden="true" />
+                      <span>{t('feedback.revealZip', 'Show Bundle')}</span>
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -391,13 +444,21 @@ export const FeedbackModal: FC<FeedbackModalProps> = ({ open, onClose }) => {
                   <button
                     type="button"
                     className="fb-btn fb-btn-primary"
-                    onClick={() => void bridgeRequest('feedback.openExternalUrl', { url: submitResult.issueUrl })}
+                    onClick={() =>
+                      void bridgeRequest('feedback.openExternalUrl', {
+                        url: submitResult.issueUrl,
+                        bundlePath: submitResult.exportedBundlePath || '',
+                        screenshotPath: submitResult.exportedScreenshotPath || '',
+                      })
+                    }
                   >
                     <ExternalLink size={14} aria-hidden="true" />
                     <span>
                       {submitResult.mode === 'relay_submitted'
                         ? t('feedback.viewIssue', 'View Issue')
-                        : t('feedback.openPrefilledGitHub', 'Open Prefilled GitHub Issue')}
+                        : submitResult.exportedBundlePath
+                          ? t('feedback.openGitHubAndCopyBundle', 'Open GitHub Issue (Bundle Copied)')
+                          : t('feedback.openPrefilledGitHub', 'Open Prefilled GitHub Issue')}
                     </span>
                   </button>
                 )}

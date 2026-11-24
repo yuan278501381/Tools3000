@@ -1577,28 +1577,28 @@ std::vector<OcrQrResult> OcrEngine::detectQrCodes(const cv::Mat& image) {
     }
 
     try {
-        cv::Mat gray;
-        if (image.channels() == 1) {
-            gray = image;
-        } else if (image.channels() == 3) {
-            cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-        } else if (image.channels() == 4) {
-            cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
-        } else {
-            return qrResults;
-        }
-
         float invScale = 1.0f;
-        cv::Mat work = gray;
-        const int maxSide = (std::max)(gray.cols, gray.rows);
-        const int minSide = (std::min)(gray.cols, gray.rows);
+        cv::Mat scaledSrc = image;
+        const int maxSide = (std::max)(image.cols, image.rows);
+        const int minSide = (std::min)(image.cols, image.rows);
         if (maxSide > 1280) {
             const float sc = 1120.0f / static_cast<float>(maxSide);
-            cv::resize(gray, work, cv::Size(), sc, sc, cv::INTER_AREA);
+            cv::resize(image, scaledSrc, cv::Size(), sc, sc, cv::INTER_AREA);
             invScale = 1.0f / sc;
         } else if (minSide < 140) {
-            cv::resize(gray, work, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
+            cv::resize(image, scaledSrc, cv::Size(), 2.0, 2.0, cv::INTER_CUBIC);
             invScale = 0.5f;
+        }
+
+        cv::Mat work;
+        if (scaledSrc.channels() == 1) {
+            work = scaledSrc;
+        } else if (scaledSrc.channels() == 3) {
+            cv::cvtColor(scaledSrc, work, cv::COLOR_BGR2GRAY);
+        } else if (scaledSrc.channels() == 4) {
+            cv::cvtColor(scaledSrc, work, cv::COLOR_BGRA2GRAY);
+        } else {
+            return qrResults;
         }
 
         cv::QRCodeDetector detector;

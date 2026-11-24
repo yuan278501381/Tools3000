@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -56,6 +57,15 @@ public:
 
     /// 获取配置目录
     static std::filesystem::path getConfigDirectory();
+
+    /// 紧缩当前进程的 UCRT 堆与所有 Win32 堆（将已释放的大块位图/缓冲空闲段归还操作系统）
+    static void compactProcessHeaps() noexcept;
+
+    /// 注册主消息循环的冷态防抖回收触发器（0 额外线程开销，由宿主在启动/停机时绑定/解绑）
+    static void setQuietIdleTrimTrigger(std::function<void(uint32_t)> trigger);
+
+    /// 请求在静默冷态防抖延迟后执行一次堆紧缩与物理工作集修剪（自动合并高频连续请求）
+    static void scheduleQuietIdleTrim(uint32_t delayMs = 3500);
 
     /// 进程级工作集修剪。仅允许在真正的冷路径调用（插件停用、长截图管线关闭、全部贴图关闭）。
     /// 支持原子时间戳节流（2000ms 内至多修剪一次）以消除高频快照 I/O 抖动。
@@ -364,6 +374,14 @@ public:
 
     /// 非阻塞弹出 Windows 原生文件属性对话框
     static bool showFileProperties(const std::wstring& filePath);
+
+    /// 解析 Shell 打开目标关联的默认可执行程序名（小写，如 "notepad.exe" / "explorer.exe" / "msedge.exe"）
+    static std::wstring resolveShellTargetAssociatedExe(const std::wstring& target,
+                                                        const std::wstring& args = L"");
+
+    /// 提取 Shell 打开目标对应的窗口标题匹配提示词（如 "D:\\docs\\账号密码.txt" -> "账号密码"）
+    static std::wstring extractShellTargetTitleHint(const std::wstring& target,
+                                                    const std::wstring& args = L"");
 
     /// 判断 Windows 系统任务栏是否为深色模式 (用于自适应托盘图标与浮层明暗)
     static bool isSystemTaskbarDark();

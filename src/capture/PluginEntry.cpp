@@ -3,6 +3,7 @@
 #include "Tools3000Version.h"
 #include "core/logger/Logger.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/HotkeyManager.h"
@@ -1297,45 +1298,21 @@ public:
         });
 
         mb.registerHandler("capture.pickWatermarkImage", [](const nlohmann::json&) -> nlohmann::json {
-            struct ComStaGuard {
-                HRESULT hr;
-                ComStaGuard() : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)) {}
-                ~ComStaGuard() { if (hr == S_OK || hr == S_FALSE) CoUninitialize(); }
-            } comGuard;
-
-            IFileOpenDialog* dlg = nullptr;
-            if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg))) || !dlg) {
-                return {{"success", false}, {"error", "failed to open file dialog"}};
-            }
             const bool isZh = tools3000::core::isUiLanguageChinese();
-            const COMDLG_FILTERSPEC spec[] = {
+            tools3000::core::FileDialogRequest req;
+            req.mode = tools3000::core::FileDialogMode::OpenFile;
+            req.ownerHwnd = GetForegroundWindow();
+            req.title = tools3000::core::trWCstrFor(isZh, L"选择水印图片 / 企业 Logo", L"Select Watermark Logo Image");
+            req.filters = {
                 {tools3000::core::trWCstrFor(isZh, L"图片文件 (*.png;*.webp;*.jpg;*.jpeg;*.bmp)", L"Image Files (*.png;*.webp;*.jpg;*.jpeg;*.bmp)"),
                  L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
-                {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
+                {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
             };
-            dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-            dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择水印图片 / 企业 Logo", L"Select Watermark Logo Image"));
-            DWORD fos = 0;
-            if (SUCCEEDED(dlg->GetOptions(&fos))) {
-                dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
-            }
-            std::string chosenUtf8;
-            const HRESULT showHr = dlg->Show(GetForegroundWindow());
-            if (SUCCEEDED(showHr)) {
-                IShellItem* item = nullptr;
-                if (SUCCEEDED(dlg->GetResult(&item)) && item) {
-                    PWSTR rawPath = nullptr;
-                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                        chosenUtf8 = tools3000::core::WinUtils::wstringToUtf8(rawPath);
-                        CoTaskMemFree(rawPath);
-                    }
-                    item->Release();
-                }
-            }
-            dlg->Release();
-            if (chosenUtf8.empty()) {
+            const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+            if (!dlgRes.accepted || dlgRes.selectedPath.empty()) {
                 return {{"success", false}, {"cancelled", true}};
             }
+            const std::string chosenUtf8 = tools3000::core::WinUtils::pathToUtf8(dlgRes.selectedPath);
             tools3000::capture::WatermarkRenderer::pushStudioRecentLogoPath(chosenUtf8);
             return {{"success", true}, {"path", chosenUtf8}};
         });
@@ -2374,29 +2351,6 @@ public:
                 };
             }
 
-            struct ComStaGuard {
-                HRESULT hr;
-                ComStaGuard() : hr(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
-                ~ComStaGuard() { if (hr == S_OK || hr == S_FALSE) CoUninitialize(); }
-            } comGuard;
-
-            IFileSaveDialog* dialog = nullptr;
-            HRESULT hr = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                          IID_PPV_ARGS(&dialog));
-            if (FAILED(hr) || !dialog) {
-                return {{"success", false}, {"error", "failed to open file save dialog"}};
-            }
-
-            static const COMDLG_FILTERSPEC filters[] = {
-                {L"PNG Image (*.png)", L"*.png"},
-                {L"JPEG Image (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
-                {L"WebP Image (*.webp)", L"*.webp"},
-                {L"Bitmap (*.bmp)", L"*.bmp"}
-            };
-            dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-            dialog->SetFileTypeIndex(1);
-            dialog->SetDefaultExtension(L"png");
-
             std::wstring defaultFileName = L"Tools3000_Export.png";
             if (!resolvedPath.empty()) {
                 const std::filesystem::path src(tools3000::core::WinUtils::utf8ToWstring(resolvedPath));
@@ -2404,28 +2358,25 @@ public:
                     defaultFileName = src.filename().wstring();
                 }
             }
-            dialog->SetFileName(defaultFileName.c_str());
 
-            std::filesystem::path chosenPath;
-            UINT chosenTypeIndex = 1;
-            const HRESULT showHr = dialog->Show(GetForegroundWindow());
-            if (SUCCEEDED(showHr)) {
-                dialog->GetFileTypeIndex(&chosenTypeIndex);
-                IShellItem* item = nullptr;
-                if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-                    PWSTR rawPath = nullptr;
-                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                        chosenPath = std::filesystem::path(rawPath);
-                        CoTaskMemFree(rawPath);
-                    }
-                    item->Release();
-                }
-            }
-            dialog->Release();
-
-            if (chosenPath.empty()) {
+            tools3000::core::FileDialogRequest req;
+            req.mode = tools3000::core::FileDialogMode::SaveFile;
+            req.ownerHwnd = GetForegroundWindow();
+            req.defaultExtension = L"png";
+            req.defaultFileName = defaultFileName;
+            req.initialFilterIndex = 1;
+            req.filters = {
+                {L"PNG Image (*.png)", L"*.png"},
+                {L"JPEG Image (*.jpg;*.jpeg)", L"*.jpg;*.jpeg"},
+                {L"WebP Image (*.webp)", L"*.webp"},
+                {L"Bitmap (*.bmp)", L"*.bmp"},
+            };
+            const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+            if (!dlgRes.accepted || dlgRes.selectedPath.empty()) {
                 return {{"success", true}, {"saved", false}, {"cancelled", true}};
             }
+            std::filesystem::path chosenPath = dlgRes.selectedPath;
+            const UINT chosenTypeIndex = dlgRes.selectedFilterIndex;
             if (!chosenPath.has_extension()) {
                 chosenPath += (chosenTypeIndex == 2) ? L".jpg"
                             : (chosenTypeIndex == 3) ? L".webp"

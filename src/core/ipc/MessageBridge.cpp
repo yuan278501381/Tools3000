@@ -15,10 +15,12 @@
 #include "core/hotkey/KeyboardHook.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/WinUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/FileLocksmithEngine.h"
 #include "core/stats/StatsManager.h"
 #include "core/stats/PerformanceMonitor.h"
 #include "core/update/UpdateChecker.h"
+#include "core/backup/ConfigBackupService.h"
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/remote/RemoteMasterEngine.h"
@@ -289,60 +291,31 @@ bool tryFastExtractJsonRpcHeader(std::string_view text, int& outId, std::string&
 }
 
 std::optional<std::filesystem::path> choosePath(bool save, bool folder = false) {
-    const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    const bool needUninit = SUCCEEDED(comHr);
-    struct ScopedCom {
-        bool active;
-        ~ScopedCom() noexcept {
-            if (active) CoUninitialize();
-        }
-    } comScope{needUninit};
-    if (FAILED(comHr) && comHr != RPC_E_CHANGED_MODE) {
-        return std::nullopt;
-    }
-
-    IFileDialog* dialog = nullptr;
-    const CLSID clsid = save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog;
-    HRESULT hr = CoCreateInstance(clsid, nullptr, CLSCTX_INPROC_SERVER,
-                                  IID_PPV_ARGS(&dialog));
-    if (FAILED(hr) || !dialog) return std::nullopt;
-
     const bool isZh = tools3000::core::isUiLanguageChinese();
+    tools3000::core::FileDialogRequest req{};
+    req.ownerHwnd = nullptr;
     if (folder) {
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择保存目录", L"Select Save Directory"));
+        req.mode = tools3000::core::FileDialogMode::PickFolder;
+        req.title = tools3000::core::trWCstrFor(isZh, L"选择保存目录", L"Select Save Directory");
     } else {
-        const COMDLG_FILTERSPEC filters[] = {
+        req.mode = save ? tools3000::core::FileDialogMode::SaveFile : tools3000::core::FileDialogMode::OpenFile;
+        req.filters = {
             {tools3000::core::trWCstrFor(isZh, L"Tools3000 配置 (*.json)", L"Tools3000 Configuration (*.json)"), L"*.json"},
             {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
         };
-        dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-        dialog->SetDefaultExtension(L"json");
-        dialog->SetFileName(save ? L"Tools3000-config.json" : L"");
-        dialog->SetTitle(save
-            ? (tools3000::core::trWCstrFor(isZh, L"导出 Tools3000 配置", L"Export Tools3000 Configuration"))
-            : (tools3000::core::trWCstrFor(isZh, L"导入 Tools3000 配置", L"Import Tools3000 Configuration")));
-    }
-
-    std::optional<std::filesystem::path> result;
-    // HIGH-03: 严禁在后台 STA 线程池中将主 UI 线程窗口句柄作为模态 owner 硬挂接，
-    // 否则 Win32 隐式跨线程输入队列耦合（AttachThreadInput）极易引发互锁死锁。
-    hr = dialog->Show(nullptr);
-    if (SUCCEEDED(hr)) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item)) && item) {
-            PWSTR rawPath = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                result = std::filesystem::path(rawPath);
-                CoTaskMemFree(rawPath);
-            }
-            item->Release();
+        req.defaultExtension = L"json";
+        if (save) {
+            req.defaultFileName = L"Tools3000-config.json";
         }
+        req.title = save
+            ? tools3000::core::trWCstrFor(isZh, L"导出 Tools3000 配置", L"Export Tools3000 Configuration")
+            : tools3000::core::trWCstrFor(isZh, L"导入 Tools3000 配置", L"Import Tools3000 Configuration");
     }
-    dialog->Release();
-    return result;
+    const auto res = tools3000::core::OutOfProcessFileDialog::show(req);
+    if (!res.accepted || res.selectedPath.empty()) {
+        return std::nullopt;
+    }
+    return res.selectedPath;
 }
 
 bool isPathWithin(const std::filesystem::path& candidate,
@@ -1218,6 +1191,7 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
     if (method == "config.export" ||
         method == "config.import" ||
         method == "capture.browseDirectory" ||
+        method == "backup.browseDirectory" ||
         method == "system.browseFileLocksmithTarget" ||
         method == "app.exportLogs" ||
         method == "capture.saveHistoryItemAs" ||
@@ -2623,6 +2597,10 @@ void MessageBridge::registerBuiltinHandlers() {
         }
         return arr;
     });
+    registerHandler("perf.trimMemory", [](const json&) -> json {
+        WinUtils::scheduleQuietIdleTrim(250);
+        return {{"success", true}};
+    });
 
     // ── 配置管理（导入/导出/重置）────────────────────────────────────────
     registerHandler("config.export", [](const json& params) -> json {
@@ -2696,8 +2674,39 @@ void MessageBridge::registerBuiltinHandlers() {
                 {"conflictWith", entry.conflictWith}
             });
         }
-        std::sort(hotkeys.begin(), hotkeys.end(), [](const json& a, const json& b) {
-            return a.value("name", "") < b.value("name", "");
+        auto hotkeyPriorityRank = [](std::string_view name) noexcept -> int {
+            static constexpr std::array<std::string_view, 16> kPriorityOrder = {
+                "Screenshot",
+                "Repeat Last Capture",
+                "Toggle Clipboard",
+                "Toggle Search",
+                "Pin Paste",
+                "Pin Toggle",
+                "Pin Hide All",
+                "Pin Arrange",
+                "OCR",
+                "Translate Selection",
+                "Record",
+                "Record Pause",
+                "Record Snapshot",
+                "Mute System Audio",
+                "Mute Microphone",
+                "Pause Gestures",
+            };
+            for (size_t i = 0; i < kPriorityOrder.size(); ++i) {
+                if (kPriorityOrder[i] == name) {
+                    return static_cast<int>(i);
+                }
+            }
+            return 10000;
+        };
+        std::sort(hotkeys.begin(), hotkeys.end(), [&](const json& a, const json& b) {
+            const std::string na = a.value("name", "");
+            const std::string nb = b.value("name", "");
+            const int ra = hotkeyPriorityRank(na);
+            const int rb = hotkeyPriorityRank(nb);
+            if (ra != rb) return ra < rb;
+            return na < nb;
         });
         return hotkeys;
     });
@@ -3054,6 +3063,138 @@ void MessageBridge::registerBuiltinHandlers() {
         state["success"] = true;
         state["dismissedAction"] = dismissed;
         return state;
+    });
+
+    // ── 配置云备份与恢复 (同步盘 OneDrive/Google Drive · WebDAV · S3 SigV4) ───
+    registerAsyncHostHandler("backup.browseDirectory", [](const json&) -> json {
+        const auto selected = choosePath(false, true);
+        return selected ? json(WinUtils::wstringToUtf8(selected->wstring())) : json(nullptr);
+    });
+
+    registerAsyncHostHandler("backup.getSettings", [](const json&) -> json {
+        using tools3000::core::backup::ConfigBackupService;
+        const auto s = ConfigBackupService::instance().getSettings();
+        const auto folders = ConfigBackupService::detectLocalSyncFolders();
+        return {
+            {"success", true},
+            {"settings", ConfigBackupService::settingsToJson(s)},
+            {"detectedFolders", ConfigBackupService::detectedFoldersToJson(folders)},
+        };
+    });
+
+    registerAsyncHostHandler("backup.saveSettings", [](const json& params) -> json {
+        using namespace tools3000::core::backup;
+        if (!params.is_object()) {
+            return {{"success", false}, {"errorCode", "invalid_params"}};
+        }
+        auto current = ConfigBackupService::instance().getSettings();
+        CloudBackupSecretUpdates secrets{};
+
+        if (params.contains("enabled") && params["enabled"].is_boolean()) current.enabled = params["enabled"].get<bool>();
+        if (params.contains("provider") && params["provider"].is_string()) {
+            const auto p = ConfigBackupService::providerFromString(params["provider"].get<std::string>());
+            if (p != BackupProviderType::None) current.provider = p;
+        }
+        if (params.contains("autoBackupOnExit") && params["autoBackupOnExit"].is_boolean()) {
+            current.autoBackupOnExit = params["autoBackupOnExit"].get<bool>();
+        }
+        if (params.contains("keepCount") && params["keepCount"].is_number_integer()) {
+            current.keepCount = params["keepCount"].get<int>();
+        }
+        if (params.contains("encryptionEnabled") && params["encryptionEnabled"].is_boolean()) {
+            current.encryptionEnabled = params["encryptionEnabled"].get<bool>();
+        }
+        if (params.contains("folderPath") && params["folderPath"].is_string()) {
+            current.folderPath = params["folderPath"].get<std::string>();
+        }
+        if (params.contains("webdavUrl") && params["webdavUrl"].is_string()) {
+            current.webdavUrl = params["webdavUrl"].get<std::string>();
+        }
+        if (params.contains("webdavUsername") && params["webdavUsername"].is_string()) {
+            current.webdavUsername = params["webdavUsername"].get<std::string>();
+        }
+        if (params.value("clearWebdavPassword", false)) {
+            secrets.updateWebdavPassword = true;
+            secrets.webdavPassword.clear();
+        } else if (params.contains("webdavPassword") && params["webdavPassword"].is_string() &&
+                   !params["webdavPassword"].get<std::string>().empty()) {
+            secrets.updateWebdavPassword = true;
+            secrets.webdavPassword = params["webdavPassword"].get<std::string>();
+        }
+        if (params.contains("s3Endpoint") && params["s3Endpoint"].is_string()) {
+            current.s3Endpoint = params["s3Endpoint"].get<std::string>();
+        }
+        if (params.contains("s3Region") && params["s3Region"].is_string()) {
+            current.s3Region = params["s3Region"].get<std::string>();
+        }
+        if (params.contains("s3Bucket") && params["s3Bucket"].is_string()) {
+            current.s3Bucket = params["s3Bucket"].get<std::string>();
+        }
+        if (params.contains("s3Prefix") && params["s3Prefix"].is_string()) {
+            current.s3Prefix = params["s3Prefix"].get<std::string>();
+        }
+        if (params.contains("s3AccessKeyId") && params["s3AccessKeyId"].is_string()) {
+            current.s3AccessKeyId = params["s3AccessKeyId"].get<std::string>();
+        }
+        if (params.contains("s3ForcePathStyle") && params["s3ForcePathStyle"].is_boolean()) {
+            current.s3ForcePathStyle = params["s3ForcePathStyle"].get<bool>();
+        }
+        if (params.value("clearS3SecretKey", false)) {
+            secrets.updateS3SecretKey = true;
+            secrets.s3SecretKey.clear();
+        } else if (params.contains("s3SecretKey") && params["s3SecretKey"].is_string() &&
+                   !params["s3SecretKey"].get<std::string>().empty()) {
+            secrets.updateS3SecretKey = true;
+            secrets.s3SecretKey = params["s3SecretKey"].get<std::string>();
+        }
+        if (params.value("clearEncryptionPassphrase", false)) {
+            secrets.updateEncryptionPassphrase = true;
+            secrets.encryptionPassphrase.clear();
+        } else if (params.contains("encryptionPassphrase") && params["encryptionPassphrase"].is_string() &&
+                   !params["encryptionPassphrase"].get<std::string>().empty()) {
+            secrets.updateEncryptionPassphrase = true;
+            secrets.encryptionPassphrase = params["encryptionPassphrase"].get<std::string>();
+        }
+
+        const bool ok = ConfigBackupService::instance().saveSettings(current, secrets);
+        const auto updated = ConfigBackupService::instance().getSettings();
+        return {
+            {"success", ok},
+            {"settings", ConfigBackupService::settingsToJson(updated)},
+        };
+    });
+
+    registerAsyncHostHandler("backup.testConnection", [](const json& params) -> json {
+        using tools3000::core::backup::ConfigBackupService;
+        const json* draft = params.is_object() && !params.empty() ? &params : nullptr;
+        const auto res = ConfigBackupService::instance().testConnection(draft);
+        return ConfigBackupService::resultToJson(res);
+    });
+
+    registerAsyncHostHandler("backup.backupNow", [](const json&) -> json {
+        using tools3000::core::backup::ConfigBackupService;
+        const auto res = ConfigBackupService::instance().backupNow();
+        json out = ConfigBackupService::resultToJson(res);
+        out["settings"] = ConfigBackupService::settingsToJson(ConfigBackupService::instance().getSettings());
+        return out;
+    });
+
+    registerAsyncHostHandler("backup.listSnapshots", [](const json& params) -> json {
+        using tools3000::core::backup::ConfigBackupService;
+        const json* draft = params.is_object() && !params.empty() ? &params : nullptr;
+        const auto res = ConfigBackupService::instance().listSnapshots(draft);
+        return ConfigBackupService::resultToJson(res);
+    });
+
+    registerAsyncHostHandler("backup.restoreSnapshot", [](const json& params) -> json {
+        using tools3000::core::backup::ConfigBackupService;
+        const std::string snapshotId = params.is_object() ? params.value("snapshotId", "") : "";
+        const std::string passphrase = params.is_object() ? params.value("passphrase", "") : "";
+        if (snapshotId.empty()) {
+            return {{"success", false}, {"errorCode", "invalid_snapshot_id"}};
+        }
+        const auto res = ConfigBackupService::instance().restoreSnapshot(snapshotId, passphrase);
+        return ConfigBackupService::resultToJson(res);
     });
     // ── 应用系统信息 ─────────────────────────────────────────────────────
     registerHostHandler("app.getSystemInfo", [](const json&) -> json {

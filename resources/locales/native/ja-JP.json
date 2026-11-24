@@ -959,5 +959,13 @@
   "鼠标自动运镜||Auto Zoom": "マウス自動ズーム",
   "Recent Region ": "履歴領域 ",
   "No recent capture regions": "履歴キャプチャ領域がありません",
-  "Reuse recent capture region": "履歴キャプチャ領域を再利用"
+  "Reuse recent capture region": "履歴キャプチャ領域を再利用",
+  "Screenshot completed (saved to history)": "スクリーンショットが完了しました（履歴に保存済み）",
+  "Screenshot completed": "スクリーンショットが完了しました",
+  "Done · Copy & Save (Enter)": "完了・コピーして保存 (Enter)",
+  "Done & Save (Enter)": "完了して保存 (Enter)",
+  "Copy & save": "コピーして保存",
+  "Save & finish": "保存して完了",
+  "Done & Copy (Enter)": "完了してコピー (Enter)",
+  "Copy & finish": "コピーして完了"
 }

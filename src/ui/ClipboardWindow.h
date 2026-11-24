@@ -115,7 +115,7 @@ private:
     // 高频热保活宽限期 (25s)：隐藏后 25 秒内保留 GPU 合成帧不立刻 TrySuspend/trimWorkingSet，
     // 连续呼出 <16ms 零黑屏瞬开；超 25s 软挂起降内存，超 5 分钟彻底销毁归还全部物理内存。
     static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
-    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 300000;
+    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 90000;
     static constexpr UINT REVEAL_FALLBACK_WARM_MS = 450;
     static constexpr UINT REVEAL_FALLBACK_COLD_MS = 1200;
     static constexpr uint64_t NATIVE_DRAG_HIDE_GRACE_MS = 1200;

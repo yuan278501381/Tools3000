@@ -5,11 +5,14 @@
 #include "capture/CaptureHistory.h"
 #include "core/logger/Logger.h"
 #include "core/utils/TraceId.h"
+#include "core/utils/WinUtils.h"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -24,6 +27,38 @@ size_t computeResidentEntryBytes(const HistoryEntry& e) noexcept {
            e.thumbnail.total() * e.thumbnail.elemSize();
 }
 
+bool hasReadableBackingFile(const std::string& filePathUtf8) noexcept {
+    if (filePathUtf8.empty()) return false;
+    std::error_code ec;
+    const auto diskPath = tools3000::core::WinUtils::utf8ToPath(filePathUtf8);
+    if (!std::filesystem::is_regular_file(diskPath, ec) || ec) {
+        return false;
+    }
+    const auto sz = std::filesystem::file_size(diskPath, ec);
+    return !ec && sz > 24u && sz <= (128ull * 1024ull * 1024ull);
+}
+
+cv::Mat decodeImageFromDiskPathUtf8(const std::string& filePathUtf8) {
+    if (filePathUtf8.empty()) return {};
+    std::error_code ec;
+    const auto diskPath = tools3000::core::WinUtils::utf8ToPath(filePathUtf8);
+    const auto sz = std::filesystem::file_size(diskPath, ec);
+    if (ec || sz == 0 || sz > (128ull * 1024ull * 1024ull)) {
+        return {};
+    }
+    std::ifstream ifs(diskPath, std::ios::binary);
+    if (!ifs) return {};
+    std::vector<uint8_t> bytes(static_cast<size_t>(sz));
+    if (!ifs.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(sz))) {
+        return {};
+    }
+    try {
+        return cv::imdecode(bytes, cv::IMREAD_UNCHANGED);
+    } catch (const cv::Exception&) {
+        return {};
+    }
+}
+
 HistoryEntry materializeEntryCopy(const HistoryEntry& stored) {
     HistoryEntry out;
     out.id = stored.id;
@@ -35,6 +70,8 @@ HistoryEntry materializeEntryCopy(const HistoryEntry& stored) {
         out.image = stored.image.clone();
     } else if (!stored.compressedPng.empty()) {
         out.image = cv::imdecode(stored.compressedPng, cv::IMREAD_UNCHANGED);
+    } else if (!stored.filePath.empty()) {
+        out.image = decodeImageFromDiskPathUtf8(stored.filePath);
     }
     return out;
 }
@@ -79,17 +116,23 @@ void CaptureHistory::push(const cv::Mat& image, const CaptureRegion& region,
     if (entry.region.width <= 0) entry.region.width = image.cols;
     if (entry.region.height <= 0) entry.region.height = image.rows;
 
-    // 仅常驻轻量 PNG 压缩字节流 + 160px 缩略图，告别常驻最多 20 张未压缩全尺寸原图（128MB+）
-    bool encodedOk = false;
-    try {
-        encodedOk = cv::imencode(".png", image, entry.compressedPng,
-                                 {cv::IMWRITE_PNG_COMPRESSION, 3});
-    } catch (const cv::Exception&) {
-        encodedOk = false;
-    }
-    if (!encodedOk || entry.compressedPng.empty()) {
-        entry.compressedPng.clear();
-        entry.image = image.clone();
+    // 磁盘联动按需水合（Disk-Backed Lazy Hydration）：
+    // 若本次截图已落盘保存且文件可读，内存仅常驻 ~15KB 的 160px 缩略图与路径，按需从磁盘无损解码；
+    // 仅对未落盘的纯剪贴板截图常驻轻量 PNG 压缩字节流，彻底消除 20 张高分屏截图双份驻留堆内存。
+    if (!hasReadableBackingFile(entry.filePath)) {
+        bool encodedOk = false;
+        try {
+            encodedOk = cv::imencode(".png", image, entry.compressedPng,
+                                     {cv::IMWRITE_PNG_COMPRESSION, 3});
+        } catch (const cv::Exception&) {
+            encodedOk = false;
+        }
+        if (!encodedOk || entry.compressedPng.empty()) {
+            entry.compressedPng.clear();
+            entry.image = image.clone();
+        } else {
+            entry.compressedPng.shrink_to_fit();
+        }
     }
 
     // 生成 ISO 8601 时间戳

@@ -36,6 +36,8 @@ const INITIAL_RULES: TextExpanderRuleItem[] = [
     enabled: true,
     mode: 'immediate',
     caseSensitive: false,
+    fullwidthSensitive: false,
+    keepDelimiter: true,
     hitCount: 5,
   },
   {
@@ -46,6 +48,8 @@ const INITIAL_RULES: TextExpanderRuleItem[] = [
     enabled: true,
     mode: 'immediate',
     caseSensitive: false,
+    fullwidthSensitive: false,
+    keepDelimiter: true,
     hitCount: 2,
   },
   {
@@ -56,6 +60,8 @@ const INITIAL_RULES: TextExpanderRuleItem[] = [
     enabled: true,
     mode: 'delimiter',
     caseSensitive: false,
+    fullwidthSensitive: false,
+    keepDelimiter: true,
     hitCount: 0,
   },
 ];
@@ -99,6 +105,8 @@ describe('TextExpanderPage', () => {
           enabled: params?.enabled !== false,
           mode: params?.mode === 'delimiter' ? 'delimiter' : 'immediate',
           caseSensitive: Boolean(params?.caseSensitive),
+          fullwidthSensitive: Boolean(params?.fullwidthSensitive),
+          keepDelimiter: params?.keepDelimiter !== false,
           hitCount: 0,
         };
         const exists = rulesStore.some((r) => r.id === next.id);
@@ -195,6 +203,8 @@ describe('TextExpanderPage', () => {
           enabled: true,
           mode: 'delimiter',
           caseSensitive: false,
+          fullwidthSensitive: false,
+          keepDelimiter: true,
         },
         { silent: true },
       );
@@ -226,5 +236,58 @@ describe('TextExpanderPage', () => {
         { silent: true },
       );
     });
+  });
+
+  it('keeps focus inside trigger and replacement inputs while typing character by character (#25)', async () => {
+    render(<TextExpanderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Current Date')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Snippet' }));
+
+    const triggerInput = document.getElementById('te-rule-trigger') as HTMLInputElement;
+    const replacementArea = document.getElementById('te-rule-replacement') as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(triggerInput);
+    });
+
+    for (const partial of [';', ';s', ';si', ';sig']) {
+      fireEvent.change(triggerInput, { target: { value: partial } });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(document.activeElement).toBe(triggerInput);
+    }
+
+    replacementArea.focus();
+    for (const partial of ['H', 'Hi', 'Hi!']) {
+      fireEvent.change(replacementArea, { target: { value: partial } });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(document.activeElement).toBe(replacementArea);
+    }
+  });
+
+  it('detects fullwidth equivalent duplicates by default and renders live preview with 14+ macros', async () => {
+    render(<TextExpanderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Current Date')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Snippet' }));
+
+    const triggerInput = document.getElementById('te-rule-trigger') as HTMLInputElement;
+    const replacementArea = document.getElementById('te-rule-replacement') as HTMLTextAreaElement;
+
+    // 默认不区分全半角时，输入全角 "；ｄａｔｅ" 应自动拦截为与 ";date" 冲突
+    fireEvent.change(triggerInput, { target: { value: '；ｄａｔｅ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save Snippet' }));
+    expect(screen.getByText('A snippet with this trigger keyword already exists')).toBeTruthy();
+
+    // 插入新增动态变量并验证实时展开预览（含光标落点指示）
+    fireEvent.change(replacementArea, { target: { value: 'ID={{uuid}} {{weekday}} [{{cursor}}]' } });
+    expect(screen.getByText('Live Expansion Preview')).toBeTruthy();
+    expect(screen.getByText(/f47ac10b-58cc-4372-a567-0e02b2c3d479/)).toBeTruthy();
   });
 });

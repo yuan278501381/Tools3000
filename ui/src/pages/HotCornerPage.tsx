@@ -10,7 +10,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, useRef, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, PageSkeleton } from '../components/UIKit';
+import { Card, Toggle, SettingRow, SettingGroup, DisabledCascade, Select, PageSkeleton } from '../components/UIKit';
 import { bridgeRequest } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -159,106 +159,112 @@ export const HotCornerPage: FC = () => {
             checked={settings.enabled}
             onChange={(v) => updateSetting('enabled', v)}
           />
-          <Toggle
-            id="hotcorner-auto-bypass"
-            label={t('hotcorner.autoBypassFullscreen')}
-            description={t('hotcorner.autoBypassFullscreenDesc')}
-            checked={settings.autoBypassFullscreen ?? true}
-            onChange={(v) => updateSetting('autoBypassFullscreen', v)}
-          />
+          <DisabledCascade disabled={!settings.enabled}>
+            <Toggle
+              id="hotcorner-auto-bypass"
+              label={t('hotcorner.autoBypassFullscreen')}
+              description={t('hotcorner.autoBypassFullscreenDesc')}
+              checked={settings.autoBypassFullscreen ?? true}
+              onChange={(v) => updateSetting('autoBypassFullscreen', v)}
+            />
+          </DisabledCascade>
         </Card>
       </SettingGroup>
 
-      {/* ── 屏幕示意图 ────────────────────────────────────────────────── */}
-      <SettingGroup title={t('hotcorner.corners')} icon={<MonitorUp size={20} strokeWidth={2.5} />}>
-        <Card>
-          <div className="hotcorner-page__monitor-wrapper">
-            <div className="hotcorner-page__monitor-assembly">
-              <div className="hotcorner-page__monitor">
-                {/* 屏幕中央标签 */}
-                <div className="hotcorner-page__monitor-label">
-                  <MonitorUp size={32} className="hotcorner-page__monitor-label-icon" />
-                  <span className="hotcorner-page__monitor-label-text">
-                    {t('hotcorner.screenHint')}
-                  </span>
-                </div>
+      <DisabledCascade disabled={!settings.enabled}>
+        {/* ── 屏幕示意图 ────────────────────────────────────────────────── */}
+        <SettingGroup title={t('hotcorner.corners')} icon={<MonitorUp size={20} strokeWidth={2.5} />}>
+          <Card>
+            <div className="hotcorner-page__monitor-wrapper">
+              <div className="hotcorner-page__monitor-assembly">
+                <div className="hotcorner-page__monitor">
+                  {/* 屏幕中央标签 */}
+                  <div className="hotcorner-page__monitor-label">
+                    <MonitorUp size={32} className="hotcorner-page__monitor-label-icon" />
+                    <span className="hotcorner-page__monitor-label-text">
+                      {t('hotcorner.screenHint')}
+                    </span>
+                  </div>
 
-                {/* 四角装饰连接线 */}
-                <div className="hotcorner-page__connector hotcorner-page__connector--tl" />
-                <div className="hotcorner-page__connector hotcorner-page__connector--tr" />
-                <div className="hotcorner-page__connector hotcorner-page__connector--bl" />
-                <div className="hotcorner-page__connector hotcorner-page__connector--br" />
+                  {/* 四角装饰连接线 */}
+                  <div className="hotcorner-page__connector hotcorner-page__connector--tl" />
+                  <div className="hotcorner-page__connector hotcorner-page__connector--tr" />
+                  <div className="hotcorner-page__connector hotcorner-page__connector--bl" />
+                  <div className="hotcorner-page__connector hotcorner-page__connector--br" />
 
-                {/* 四角卡片 */}
-                {CORNER_POSITIONS.map(({ key, cssClass, labelKey }) => {
-                  const action = settings.corners[key];
-                  const hasAction = action.commandIndex >= 0;
-                  const isBottom = key === 'bottomLeft' || key === 'bottomRight';
+                  {/* 四角卡片 */}
+                  {CORNER_POSITIONS.map(({ key, cssClass, labelKey }) => {
+                    const action = settings.corners[key];
+                    const hasAction = action.commandIndex >= 0;
+                    const isBottom = key === 'bottomLeft' || key === 'bottomRight';
 
-                  return (
-                    <div
-                      key={key}
-                      className={`hotcorner-page__corner hotcorner-page__corner--${cssClass}`}
-                    >
-                      <div className="hotcorner-page__corner-header">
-                        <div className="hotcorner-page__corner-label">
-                          {t(labelKey)}
+                    return (
+                      <div
+                        key={key}
+                        className={`hotcorner-page__corner hotcorner-page__corner--${cssClass}`}
+                      >
+                        <div className="hotcorner-page__corner-header">
+                          <div className="hotcorner-page__corner-label">
+                            {t(labelKey)}
+                          </div>
+                          <span
+                            className={`hotcorner-page__corner-indicator ${!hasAction ? 'hotcorner-page__corner-indicator--empty' : ''}`}
+                          />
                         </div>
-                        <span
-                          className={`hotcorner-page__corner-indicator ${!hasAction ? 'hotcorner-page__corner-indicator--empty' : ''}`}
-                        />
+                        <div className="hotcorner-page__corner-select">
+                          <Select
+                            id={`corner-${key}`}
+                            value={String(action.commandIndex)}
+                            options={actionOptions}
+                            onChange={(v) => updateCorner(key, parseInt(v))}
+                            placement={isBottom ? 'top' : 'bottom'}
+                            portal
+                          />
+                        </div>
                       </div>
-                      <div className="hotcorner-page__corner-select">
-                        <Select
-                          id={`corner-${key}`}
-                          value={String(action.commandIndex)}
-                          options={actionOptions}
-                          onChange={(v) => updateCorner(key, parseInt(v))}
-                          placement={isBottom ? 'top' : 'bottom'}
-                          portal
-                        />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
+                <div className="hotcorner-page__monitor-stand" />
+                <div className="hotcorner-page__monitor-base" />
               </div>
-              <div className="hotcorner-page__monitor-stand" />
-              <div className="hotcorner-page__monitor-base" />
             </div>
-          </div>
-        </Card>
-      </SettingGroup>
+          </Card>
+        </SettingGroup>
+      </DisabledCascade>
 
-      {/* ── 触发延迟 ──────────────────────────────────────────────────── */}
-      <SettingGroup title={t('hotcorner.advanced')} icon={<Timer size={18} strokeWidth={2.2} />}>
-        <Card>
-          <SettingRow
-            label={t('hotcorner.delay')}
-            description={t('hotcorner.delayDesc')}
-          >
-            <div className="hotcorner-page__slider-wrapper">
-              <input
-                type="range"
-                className="hotcorner-page__slider"
-                min={100}
-                max={1000}
-                step={50}
-                value={settings.delay}
-                onChange={(e) => setSettings(prev => ({ ...prev, delay: parseInt(e.target.value, 10) }))}
-                onPointerUp={(e) => {
-                  const committed = parseInt(e.currentTarget.value, 10);
-                  void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
-                }}
-                onKeyUp={(e) => {
-                  const committed = parseInt(e.currentTarget.value, 10);
-                  void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
-                }}
-              />
-              <span className="hotcorner-page__slider-value">{settings.delay}ms</span>
-            </div>
-          </SettingRow>
-        </Card>
-      </SettingGroup>
+      <DisabledCascade disabled={!settings.enabled}>
+        {/* ── 触发延迟 ──────────────────────────────────────────────────── */}
+        <SettingGroup title={t('hotcorner.advanced')} icon={<Timer size={18} strokeWidth={2.2} />}>
+          <Card>
+            <SettingRow
+              label={t('hotcorner.delay')}
+              description={t('hotcorner.delayDesc')}
+            >
+              <div className="hotcorner-page__slider-wrapper">
+                <input
+                  type="range"
+                  className="hotcorner-page__slider"
+                  min={100}
+                  max={1000}
+                  step={50}
+                  value={settings.delay}
+                  onChange={(e) => setSettings(prev => ({ ...prev, delay: parseInt(e.target.value, 10) }))}
+                  onPointerUp={(e) => {
+                    const committed = parseInt(e.currentTarget.value, 10);
+                    void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
+                  }}
+                  onKeyUp={(e) => {
+                    const committed = parseInt(e.currentTarget.value, 10);
+                    void persistPatch({ delay: committed }, { ...settings, delay: committedDelayRef.current });
+                  }}
+                />
+                <span className="hotcorner-page__slider-value">{settings.delay}ms</span>
+              </div>
+            </SettingRow>
+          </Card>
+        </SettingGroup>
+      </DisabledCascade>
     </div>
   );
 };

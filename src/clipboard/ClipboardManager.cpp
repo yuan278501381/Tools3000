@@ -22,7 +22,9 @@ extern "C" char* t3k_clip_query_json_v2(
 #include <objbase.h>
 #include <shellapi.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include <wincodec.h>
+#include <winver.h>
 #include <wrl/client.h>
 
 #include <algorithm>
@@ -30,6 +32,7 @@ extern "C" char* t3k_clip_query_json_v2(
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cwctype>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -59,22 +62,313 @@ std::string trimAscii(std::string_view sv) {
     return std::string(sv.substr(s, e - s));
 }
 
-std::string queryProcessExeNameFromHwnd(HWND hwnd) {
-    if (!hwnd || !IsWindow(hwnd)) return {};
+struct ProcessIdentity {
+    std::string exeName;
+    std::wstring exePath;
+};
+
+ProcessIdentity queryProcessInfoFromHwnd(HWND hwnd) {
+    ProcessIdentity info{};
+    if (!hwnd || !IsWindow(hwnd)) return info;
     DWORD pid = 0;
     GetWindowThreadProcessId(hwnd, &pid);
-    if (pid == 0) return {};
+    if (pid == 0) return info;
     HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-    if (!hProc) return {};
+    if (!hProc) return info;
     wchar_t pathBuf[MAX_PATH * 2]{};
     DWORD len = static_cast<DWORD>(std::size(pathBuf));
-    std::string exeName;
     if (QueryFullProcessImageNameW(hProc, 0, pathBuf, &len) && len > 0) {
-        const std::filesystem::path p(std::wstring(pathBuf, len));
-        exeName = tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring());
+        info.exePath.assign(pathBuf, len);
+        const std::filesystem::path p(info.exePath);
+        info.exeName = tools3000::core::WinUtils::wstringToUtf8(p.filename().wstring());
     }
     CloseHandle(hProc);
-    return exeName;
+    return info;
+}
+
+std::string queryProcessExeNameFromHwnd(HWND hwnd) {
+    return queryProcessInfoFromHwnd(hwnd).exeName;
+}
+
+std::string stripExeExtension(std::string_view raw) {
+    std::string s = trimAscii(raw);
+    if (s.size() > 4) {
+        const std::string tail = toLowerAscii(std::string_view(s).substr(s.size() - 4));
+        if (tail == ".exe") {
+            s.resize(s.size() - 4);
+        }
+    }
+    return s;
+}
+
+bool isGenericPlaceholderAppName(std::string_view lowerName) {
+    static constexpr std::array<std::string_view, 21> kPlaceholders = {
+        "application", "launcher", "executable", "windows executable",
+        "host process", "host process for windows services", "client",
+        "main", "app", "program", "bootstrap", "bootstrapper", "stub",
+        "installer", "setup", "service", "runtime", "utility",
+        "console", "(null)", "todo"
+    };
+    for (const auto item : kPlaceholders) {
+        if (lowerName == item) return true;
+    }
+    return false;
+}
+
+bool isGenericWindowsOsProductName(std::string_view lowerName) {
+    return lowerName.find("windows") != std::string_view::npos &&
+           lowerName.find("operating system") != std::string_view::npos;
+}
+
+std::string cleanVersionAppName(std::string_view raw, std::string_view exeName) {
+    std::string s = trimAscii(raw);
+    if (s.empty() || s.size() > 64) return {};
+
+    // 剥离尾部常见架构冗余标记，如 " (64-bit)" / " (32-bit)" / " x64"
+    static constexpr std::array<std::string_view, 4> kArchSuffixes = {
+        " (64-bit)", " (32-bit)", " x64", " x86"
+    };
+    const std::string lowerInit = toLowerAscii(s);
+    for (const auto suf : kArchSuffixes) {
+        if (lowerInit.size() > suf.size() &&
+            lowerInit.compare(lowerInit.size() - suf.size(), suf.size(), suf) == 0) {
+            s.resize(s.size() - suf.size());
+            s = trimAscii(s);
+            break;
+        }
+    }
+    if (s.empty()) return {};
+
+    const std::string lower = toLowerAscii(s);
+    if (isGenericPlaceholderAppName(lower)) return {};
+
+    // 若版本串与原 .exe 文件名完全一致，则去掉 .exe 保持整洁
+    if (!exeName.empty() && lower == toLowerAscii(trimAscii(exeName))) {
+        return stripExeExtension(s);
+    }
+    return s;
+}
+
+void extractExeVersionNames(
+    const std::wstring& exePath,
+    std::string& outFileDesc,
+    std::string& outProdName) {
+    outFileDesc.clear();
+    outProdName.clear();
+    if (exePath.empty()) return;
+    const DWORD attrs = GetFileAttributesW(exePath.c_str());
+    if (attrs == INVALID_FILE_ATTRIBUTES || (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return;
+    }
+
+    DWORD dummyHandle = 0;
+    const DWORD infoSize = GetFileVersionInfoSizeW(exePath.c_str(), &dummyHandle);
+    if (infoSize == 0 || infoSize > 4u * 1024u * 1024u) {
+        return;
+    }
+
+    std::vector<BYTE> buffer(infoSize);
+    if (!GetFileVersionInfoW(exePath.c_str(), 0, infoSize, buffer.data())) {
+        return;
+    }
+
+    struct LangCodePage {
+        WORD language;
+        WORD codePage;
+    };
+    std::vector<std::wstring> prefixes;
+    auto addPrefix = [&](WORD lang, WORD cp) {
+        wchar_t buf[64]{};
+        std::swprintf(buf, std::size(buf), L"\\StringFileInfo\\%04x%04x\\", lang, cp);
+        const std::wstring p(buf);
+        if (std::find(prefixes.begin(), prefixes.end(), p) == prefixes.end()) {
+            prefixes.push_back(p);
+        }
+    };
+
+    // 优先系统当前 UI 语言，再依次尝试 PE 自带 Translation 表与通用中英文代码页
+    const LANGID uiLang = GetUserDefaultUILanguage();
+    if (uiLang != 0) {
+        addPrefix(uiLang, 0x04B0);
+    }
+
+    LangCodePage* translations = nullptr;
+    UINT transBytes = 0;
+    if (VerQueryValueW(buffer.data(), L"\\VarFileInfo\\Translation",
+                       reinterpret_cast<LPVOID*>(&translations), &transBytes) &&
+        translations != nullptr && transBytes >= sizeof(LangCodePage)) {
+        const size_t count = (std::min<size_t>)(transBytes / sizeof(LangCodePage), 6u);
+        for (size_t i = 0; i < count; ++i) {
+            addPrefix(translations[i].language, translations[i].codePage);
+        }
+    }
+    addPrefix(0x0804, 0x04B0);
+    addPrefix(0x0409, 0x04B0);
+    addPrefix(0x0409, 0x04E4);
+
+    auto queryString = [&](const wchar_t* field) -> std::string {
+        for (const auto& prefix : prefixes) {
+            const std::wstring query = prefix + field;
+            wchar_t* strPtr = nullptr;
+            UINT strLen = 0;
+            if (VerQueryValueW(buffer.data(), query.c_str(),
+                               reinterpret_cast<LPVOID*>(&strPtr), &strLen) &&
+                strPtr != nullptr && strLen > 0) {
+                std::wstring val(strPtr);
+                while (!val.empty() && std::iswspace(val.back())) val.pop_back();
+                if (!val.empty()) {
+                    return tools3000::core::WinUtils::wstringToUtf8(val);
+                }
+            }
+        }
+        return {};
+    };
+
+    outFileDesc = queryString(L"FileDescription");
+    outProdName = queryString(L"ProductName");
+}
+
+bool isExistingRegularFile(const std::wstring& path) {
+    if (path.empty()) return false;
+    const DWORD attrs = GetFileAttributesW(path.c_str());
+    return attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) == 0;
+}
+
+std::wstring queryAppPathsRegistry(const std::wstring& exeNameW) {
+    if (exeNameW.empty()) return {};
+    const std::wstring subKey = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + exeNameW;
+    const std::array<HKEY, 2> kRoots = {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+    for (HKEY root : kRoots) {
+        HKEY hKey = nullptr;
+        if (RegOpenKeyExW(root, subKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS) {
+            continue;
+        }
+        wchar_t rawBuf[MAX_PATH * 2]{};
+        DWORD bytes = sizeof(rawBuf) - sizeof(wchar_t);
+        DWORD type = 0;
+        const LONG rc = RegQueryValueExW(hKey, nullptr, nullptr, &type,
+                                         reinterpret_cast<LPBYTE>(rawBuf), &bytes);
+        RegCloseKey(hKey);
+        if (rc != ERROR_SUCCESS || (type != REG_SZ && type != REG_EXPAND_SZ)) {
+            continue;
+        }
+        std::wstring candidate(rawBuf);
+        while (!candidate.empty() && std::iswspace(candidate.front())) candidate.erase(candidate.begin());
+        while (!candidate.empty() && std::iswspace(candidate.back())) candidate.pop_back();
+        if (candidate.size() >= 2 && candidate.front() == L'"' && candidate.back() == L'"') {
+            candidate = candidate.substr(1, candidate.size() - 2);
+        }
+        if (type == REG_EXPAND_SZ || candidate.find(L'%') != std::wstring::npos) {
+            wchar_t expanded[MAX_PATH * 2]{};
+            const DWORD expLen = ExpandEnvironmentStringsW(candidate.c_str(), expanded, static_cast<DWORD>(std::size(expanded)));
+            if (expLen > 0 && expLen < std::size(expanded)) {
+                candidate.assign(expanded);
+            }
+        }
+        if (isExistingRegularFile(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+/// 批量为历史记录中尚未缓存的进程名查找真实可执行路径（单次进程快照共享复用，零重复系统调用）
+std::unordered_map<std::string, std::wstring> resolveProcessPathsBatch(
+    const std::vector<std::string>& missingKeys) {
+    std::unordered_map<std::string, std::wstring> resolved;
+    if (missingKeys.empty()) return resolved;
+
+    std::unordered_set<std::string> pending(missingKeys.begin(), missingKeys.end());
+
+    // 1. 先检查自身主程序路径
+    wchar_t selfBuf[MAX_PATH * 2]{};
+    const DWORD selfLen = GetModuleFileNameW(nullptr, selfBuf, static_cast<DWORD>(std::size(selfBuf)));
+    if (selfLen > 0 && selfLen < std::size(selfBuf)) {
+        const std::wstring selfPath(selfBuf, selfLen);
+        const std::string selfKey = toLowerAscii(
+            tools3000::core::WinUtils::wstringToUtf8(std::filesystem::path(selfPath).filename().wstring()));
+        if (pending.erase(selfKey) > 0 && isExistingRegularFile(selfPath)) {
+            resolved[selfKey] = selfPath;
+        }
+    }
+
+    // 2. 单次扫描当前活动进程快照，快速命中微信、Edge、Chrome、VS Code 等常见运行中来源应用
+    if (!pending.empty()) {
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (snap != INVALID_HANDLE_VALUE) {
+            PROCESSENTRY32W pe{};
+            pe.dwSize = sizeof(pe);
+            if (Process32FirstW(snap, &pe)) {
+                do {
+                    const std::string procKey = toLowerAscii(
+                        tools3000::core::WinUtils::wstringToUtf8(pe.szExeFile));
+                    if (pending.find(procKey) == pending.end()) {
+                        continue;
+                    }
+                    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+                    if (!hProc) continue;
+                    wchar_t imgBuf[MAX_PATH * 2]{};
+                    DWORD imgLen = static_cast<DWORD>(std::size(imgBuf));
+                    if (QueryFullProcessImageNameW(hProc, 0, imgBuf, &imgLen) && imgLen > 0) {
+                        const std::wstring imgPath(imgBuf, imgLen);
+                        if (isExistingRegularFile(imgPath)) {
+                            resolved[procKey] = imgPath;
+                            pending.erase(procKey);
+                        }
+                    }
+                    CloseHandle(hProc);
+                } while (!pending.empty() && Process32NextW(snap, &pe));
+            }
+            CloseHandle(snap);
+        }
+    }
+
+    // 3. 回退查 App Paths 注册表与 Windows / System32 标准目录
+    if (!pending.empty()) {
+        wchar_t sysDirBuf[MAX_PATH]{};
+        wchar_t winDirBuf[MAX_PATH]{};
+        const UINT sysLen = GetSystemDirectoryW(sysDirBuf, static_cast<UINT>(std::size(sysDirBuf)));
+        const UINT winLen = GetWindowsDirectoryW(winDirBuf, static_cast<UINT>(std::size(winDirBuf)));
+        const std::filesystem::path sysDir(sysLen > 0 ? std::wstring(sysDirBuf, sysLen) : L"");
+        const std::filesystem::path winDir(winLen > 0 ? std::wstring(winDirBuf, winLen) : L"");
+
+        for (const auto& key : pending) {
+            const std::wstring exeW = tools3000::core::WinUtils::utf8ToWstring(key);
+            if (exeW.empty() || exeW.find(L'\\') != std::wstring::npos || exeW.find(L'/') != std::wstring::npos) {
+                continue;
+            }
+            std::wstring found = queryAppPathsRegistry(exeW);
+            if (found.empty() && !sysDir.empty()) {
+                const auto p = (sysDir / exeW).wstring();
+                if (isExistingRegularFile(p)) found = p;
+            }
+            if (found.empty() && !winDir.empty()) {
+                const auto p = (winDir / exeW).wstring();
+                if (isExistingRegularFile(p)) found = p;
+            }
+            if (!found.empty()) {
+                resolved[key] = std::move(found);
+            }
+        }
+    }
+
+    return resolved;
+}
+
+SourceAppMetadata extractSourceAppMetadataFromPath(
+    const std::string& processExeName,
+    const std::wstring& exePath) {
+    SourceAppMetadata meta{};
+    if (!isExistingRegularFile(exePath)) {
+        return meta;
+    }
+    std::string fileDesc;
+    std::string prodName;
+    extractExeVersionNames(exePath, fileDesc, prodName);
+    meta.displayName = ClipboardManager::normalizeFriendlyAppName(fileDesc, prodName, processExeName);
+    meta.iconDataUrl = tools3000::core::WinUtils::getFileTypeIconBase64(L".exe", false, exePath);
+    meta.exePath = tools3000::core::WinUtils::wstringToUtf8(exePath);
+    return meta;
 }
 
 std::string consumeRustJsonString(char* raw) {
@@ -321,6 +615,216 @@ std::string ClipboardManager::fnv1a128Hex(const uint8_t* data, size_t len) {
     return std::string(buf);
 }
 
+std::string ClipboardManager::normalizeProcessKey(std::string_view processExeName) {
+    return toLowerAscii(trimAscii(processExeName));
+}
+
+std::string ClipboardManager::normalizeFriendlyAppName(
+    std::string_view fileDescription,
+    std::string_view productName,
+    std::string_view processExeName) {
+    const std::string fallback = stripExeExtension(processExeName);
+    const std::string cleanDesc = cleanVersionAppName(fileDescription, processExeName);
+    const std::string cleanProd = cleanVersionAppName(productName, processExeName);
+    const bool prodIsOsShell = !cleanProd.empty() && isGenericWindowsOsProductName(toLowerAscii(cleanProd));
+
+    // 若 ProductName 简洁且非 "Microsoft Windows Operating System" 泛化壳名，
+    // 而 FileDescription 为空或明显是冗长副标题（如 "Tools3000 Desktop Productivity Toolkit"），优先取 ProductName
+    if (!cleanProd.empty() && !prodIsOsShell) {
+        if (cleanDesc.empty()) {
+            return cleanProd;
+        }
+        if (cleanDesc.size() > cleanProd.size() + 8 && cleanProd.size() <= 32) {
+            return cleanProd;
+        }
+    }
+    if (!cleanDesc.empty()) {
+        return cleanDesc;
+    }
+    if (!cleanProd.empty() && !prodIsOsShell) {
+        return cleanProd;
+    }
+    return fallback.empty() ? trimAscii(processExeName) : fallback;
+}
+
+void ClipboardManager::loadAppMetadataCacheLocked() {
+    m_appMetaCache.clear();
+    m_unresolvedAppKeys.clear();
+    const std::filesystem::path dataDir = getDataDir();
+    if (dataDir.empty()) return;
+
+    const std::filesystem::path metaFile = dataDir / L"app_meta.json";
+    std::error_code ec;
+    if (!std::filesystem::exists(metaFile, ec)) return;
+
+    try {
+        std::ifstream ifs(metaFile, std::ios::binary);
+        if (!ifs) return;
+        const auto parsed = nlohmann::json::parse(ifs);
+        if (!parsed.is_object()) return;
+
+        for (auto it = parsed.begin(); it != parsed.end(); ++it) {
+            if (m_appMetaCache.size() >= kMaxCachedSourceApps) break;
+            if (!it.value().is_object()) continue;
+            const std::string key = normalizeProcessKey(it.key());
+            if (key.empty()) continue;
+
+            SourceAppMetadata meta{};
+            meta.displayName = it.value().value("name", "");
+            meta.iconDataUrl = it.value().value("icon", "");
+            meta.exePath = it.value().value("exePath", "");
+            if (!meta.displayName.empty() || !meta.iconDataUrl.empty()) {
+                m_appMetaCache[key] = std::move(meta);
+            }
+        }
+    } catch (...) {
+        // 忽略损坏缓存文件，后续采集与查询时自动重建
+    }
+}
+
+void ClipboardManager::persistAppMetadataCacheLocked() const {
+    const std::filesystem::path dataDir = getDataDir();
+    if (dataDir.empty()) return;
+
+    nlohmann::json root = nlohmann::json::object();
+    for (const auto& [key, meta] : m_appMetaCache) {
+        root[key] = {
+            {"name", meta.displayName},
+            {"icon", meta.iconDataUrl},
+            {"exePath", meta.exePath},
+        };
+    }
+
+    const std::filesystem::path metaFile = dataDir / L"app_meta.json";
+    const std::filesystem::path tmpFile = dataDir / L"app_meta.json.tmp";
+    std::error_code ec;
+    std::filesystem::create_directories(dataDir, ec);
+    {
+        std::ofstream ofs(tmpFile, std::ios::binary | std::ios::trunc);
+        if (!ofs) return;
+        const std::string serialized = root.dump();
+        ofs.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+    }
+    std::filesystem::rename(tmpFile, metaFile, ec);
+    if (ec) {
+        std::filesystem::remove(metaFile, ec);
+        ec.clear();
+        std::filesystem::rename(tmpFile, metaFile, ec);
+        if (ec) {
+            std::filesystem::remove(tmpFile, ec);
+        }
+    }
+}
+
+bool ClipboardManager::recordSourceAppMetadataForPath(
+    const std::string& processExeName,
+    const std::wstring& exePath) {
+    const std::string key = normalizeProcessKey(processExeName);
+    if (key.empty() || exePath.empty()) return false;
+
+    const std::string exePathUtf8 = tools3000::core::WinUtils::wstringToUtf8(exePath);
+    {
+        std::lock_guard<std::mutex> lock(m_appMetaMutex);
+        const auto it = m_appMetaCache.find(key);
+        if (it != m_appMetaCache.end() &&
+            !it->second.iconDataUrl.empty() &&
+            !it->second.displayName.empty() &&
+            toLowerAscii(it->second.exePath) == toLowerAscii(exePathUtf8)) {
+            return true;
+        }
+    }
+
+    SourceAppMetadata extracted = extractSourceAppMetadataFromPath(processExeName, exePath);
+    if (extracted.displayName.empty() && extracted.iconDataUrl.empty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_appMetaMutex);
+    m_unresolvedAppKeys.erase(key);
+    if (m_appMetaCache.size() >= kMaxCachedSourceApps &&
+        m_appMetaCache.find(key) == m_appMetaCache.end()) {
+        m_appMetaCache.erase(m_appMetaCache.begin());
+    }
+    m_appMetaCache[key] = std::move(extracted);
+    persistAppMetadataCacheLocked();
+    return true;
+}
+
+nlohmann::json ClipboardManager::buildAppMetadataForItems(const nlohmann::json& items) const {
+    nlohmann::json out = nlohmann::json::object();
+    if (!items.is_array() || items.empty()) return out;
+
+    std::vector<std::string> uniqueKeys;
+    std::unordered_map<std::string, std::string> rawExeByKey;
+    for (const auto& item : items) {
+        if (!item.is_object()) continue;
+        const std::string rawApp = item.value("sourceApp", "");
+        const std::string key = normalizeProcessKey(rawApp);
+        if (key.empty()) continue;
+        if (rawExeByKey.emplace(key, rawApp).second) {
+            uniqueKeys.push_back(key);
+        }
+    }
+    if (uniqueKeys.empty()) return out;
+
+    std::vector<std::string> missingKeys;
+    {
+        std::lock_guard<std::mutex> lock(m_appMetaMutex);
+        for (const auto& key : uniqueKeys) {
+            const auto it = m_appMetaCache.find(key);
+            if (it != m_appMetaCache.end() && (!it->second.iconDataUrl.empty() || !it->second.displayName.empty())) {
+                out[key] = {
+                    {"name", it->second.displayName},
+                    {"icon", it->second.iconDataUrl},
+                };
+            } else if (m_unresolvedAppKeys.find(key) == m_unresolvedAppKeys.end()) {
+                missingKeys.push_back(key);
+            }
+        }
+    }
+
+    // 针对升级前遗留的历史条目（尚未在 app_meta.json 登记），单次快照批量补齐真实图标与友好名
+    if (!missingKeys.empty()) {
+        const auto resolvedPaths = resolveProcessPathsBatch(missingKeys);
+        std::vector<std::pair<std::string, SourceAppMetadata>> newlyExtracted;
+        newlyExtracted.reserve(resolvedPaths.size());
+        for (const auto& [key, path] : resolvedPaths) {
+            const auto rawIt = rawExeByKey.find(key);
+            const std::string rawExe = (rawIt != rawExeByKey.end()) ? rawIt->second : key;
+            SourceAppMetadata meta = extractSourceAppMetadataFromPath(rawExe, path);
+            if (!meta.displayName.empty() || !meta.iconDataUrl.empty()) {
+                newlyExtracted.emplace_back(key, std::move(meta));
+            }
+        }
+
+        std::lock_guard<std::mutex> lock(m_appMetaMutex);
+        bool dirty = false;
+        for (auto& [key, meta] : newlyExtracted) {
+            m_unresolvedAppKeys.erase(key);
+            out[key] = {
+                {"name", meta.displayName},
+                {"icon", meta.iconDataUrl},
+            };
+            if (m_appMetaCache.size() >= kMaxCachedSourceApps &&
+                m_appMetaCache.find(key) == m_appMetaCache.end()) {
+                m_appMetaCache.erase(m_appMetaCache.begin());
+            }
+            m_appMetaCache[key] = std::move(meta);
+            dirty = true;
+        }
+        for (const auto& key : missingKeys) {
+            if (m_appMetaCache.find(key) == m_appMetaCache.end()) {
+                m_unresolvedAppKeys.insert(key);
+            }
+        }
+        if (dirty) {
+            persistAppMetadataCacheLocked();
+        }
+    }
+
+    return out;
+}
+
 bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::path& customDataDir) {
     if (m_initialized.load(std::memory_order_acquire)) {
         return true;
@@ -354,11 +858,15 @@ bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::pa
     std::error_code ec;
     std::filesystem::create_directories(m_blobsDir, ec);
 
-    // 2. 启动 Rust 持久化存储内核
+    // 2. 启动 Rust 持久化存储内核并加载来源应用元信息缓存
     const std::string dataDirUtf8 = tools3000::core::WinUtils::wstringToUtf8(m_dataDir.wstring());
     if (t3k_clip_init(dataDirUtf8.c_str()) == 0) {
         LOG_ERROR("ClipboardManager: Rust persistent store init failed for {}", dataDirUtf8);
         return false;
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_appMetaMutex);
+        loadAppMetadataCacheLocked();
     }
 
     // 3. 注册 Windows 标准隐私、图片与富文本 (HTML/RTF) 剪贴板格式
@@ -416,6 +924,11 @@ void ClipboardManager::shutdown() {
     {
         std::lock_guard<std::mutex> qlock(m_queueMutex);
         m_queue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> mlock(m_appMetaMutex);
+        m_appMetaCache.clear();
+        m_unresolvedAppKeys.clear();
     }
 
     t3k_clip_shutdown();
@@ -567,12 +1080,12 @@ void ClipboardManager::handleClipboardUpdateDebounced() {
 
     const ClipboardSettings snap = getSettings();
 
-    // 1. 来源进程隐私黑名单过滤（先查剪贴板拥有者，回退查当前前台窗口）
-    std::string sourceApp = queryProcessExeNameFromHwnd(GetClipboardOwner());
-    if (sourceApp.empty()) {
-        sourceApp = queryProcessExeNameFromHwnd(GetForegroundWindow());
+    // 1. 来源进程隐私黑名单过滤（先查剪贴板拥有者，回退查当前前台窗口；同时记录真实 exe 路径供后台提取图标）
+    ProcessIdentity sourceProc = queryProcessInfoFromHwnd(GetClipboardOwner());
+    if (sourceProc.exeName.empty()) {
+        sourceProc = queryProcessInfoFromHwnd(GetForegroundWindow());
     }
-    if (isExcludedProcessName(sourceApp, snap.excludedApps)) {
+    if (isExcludedProcessName(sourceProc.exeName, snap.excludedApps)) {
         m_lastProcessedSeq = seq;
         m_openRetryCount = 0;
         return;
@@ -625,7 +1138,8 @@ void ClipboardManager::handleClipboardUpdateDebounced() {
     }
 
     PendingCaptureTask task{};
-    task.sourceApp = std::move(sourceApp);
+    task.sourceApp = std::move(sourceProc.exeName);
+    task.sourceExePath = std::move(sourceProc.exePath);
 
     // 4. 优先级抓取：图片 (PNG / CF_DIBV5 / CF_DIB) -> 文件列表 (CF_HDROP) -> 文本 (CF_UNICODETEXT)
     // 注意：截图工具（Tools3000 / 微信 / QQ / 浏览器「复制图像」）常同时写入 CF_DIB 与临时 PNG 的 CF_HDROP；
@@ -758,12 +1272,31 @@ void ClipboardManager::workerLoop(std::stop_token st) {
             task = std::move(m_queue.front());
             m_queue.pop_front();
         }
+        const bool heavyTask =
+            (task.kind == 1) ||
+            (task.rawDibBytes.capacity() >= 65536u) ||
+            (task.rawPngBytes.capacity() >= 65536u) ||
+            (task.rawHtmlBytes.capacity() >= 65536u) ||
+            (task.rawRtfBytes.capacity() >= 65536u) ||
+            (task.textUtf8.capacity() >= 65536u);
         try {
             processTask(task);
         } catch (const std::exception& e) {
             LOG_WARN("ClipboardManager: worker task failed: {}", e.what());
         } catch (...) {
             LOG_WARN("ClipboardManager: worker task unknown error");
+        }
+        // 立即析构释放大块位图/富文本缓冲，并在队列排空后预约静默冷态堆紧缩与工作集回收
+        task = PendingCaptureTask{};
+        if (heavyTask) {
+            bool queueEmpty = false;
+            {
+                std::lock_guard<std::mutex> lock(m_queueMutex);
+                queueEmpty = m_queue.empty();
+            }
+            if (queueEmpty) {
+                tools3000::core::WinUtils::scheduleQuietIdleTrim(2800);
+            }
         }
     }
 
@@ -871,6 +1404,9 @@ void ClipboardManager::processTask(PendingCaptureTask& task) {
     }
 
     if (addedId > 0) {
+        if (!task.sourceApp.empty() && !task.sourceExePath.empty()) {
+            recordSourceAppMetadataForPath(task.sourceApp, task.sourceExePath);
+        }
         notifyChanged({{"id", addedId}, {"kind", task.kind}});
     }
 }
@@ -1003,9 +1539,13 @@ nlohmann::json ClipboardManager::queryItems(
     const std::string raw = consumeRustJsonString(
         t3k_clip_query_json_v2(query.c_str(), kind.c_str(), groupId.c_str(), limit, offset, excludePinned ? 1 : 0));
     try {
-        return nlohmann::json::parse(raw);
+        auto parsed = nlohmann::json::parse(raw);
+        if (parsed.is_object() && parsed.contains("items")) {
+            parsed["appMeta"] = buildAppMetadataForItems(parsed["items"]);
+        }
+        return parsed;
     } catch (...) {
-        return {{"total", 0}, {"matched", 0}, {"pinnedCount", 0}, {"hiddenPinnedCount", 0}, {"items", nlohmann::json::array()}};
+        return {{"total", 0}, {"matched", 0}, {"pinnedCount", 0}, {"hiddenPinnedCount", 0}, {"items", nlohmann::json::array()}, {"appMeta", nlohmann::json::object()}};
     }
 }
 

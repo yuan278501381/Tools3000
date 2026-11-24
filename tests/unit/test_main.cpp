@@ -14,6 +14,8 @@
 
 #include <gtest/gtest.h>
 #include <gmock/gmock.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <psapi.h>
 #include <sddl.h>
@@ -108,6 +110,7 @@
 #include "core/update/UpdateChecker.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "core/utils/SessionIsolation.h"
 #include "core/utils/TextFilePreviewDecoder.h"

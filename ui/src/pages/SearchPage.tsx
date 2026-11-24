@@ -1,9 +1,22 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * SearchPage.tsx — 文件搜索配置与语法手册
+ * SearchPage.tsx — 文件搜索配置、服务观测、外部 CLI/MCP 接口与语法手册
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Button, Tabs, Select, PageSkeleton, type TabItem, CodeBadge } from '../components/UIKit';
+import {
+  Card,
+  Toggle,
+  SettingRow,
+  SettingGroup,
+  SubSettingGroup,
+  DisabledCascade,
+  Button,
+  Tabs,
+  Select,
+  PageSkeleton,
+  type TabItem,
+  CodeBadge,
+} from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { SearchExternalApiCard } from '../components/SearchExternalApiCard';
@@ -12,7 +25,7 @@ import type { SearchMemoryMode, SearchMode, SearchRankingProfile } from '../sear
 import { formatBytes } from '../search/searchUtils';
 import { safeStorageGetEnum, safeStorageSetItem } from '../search/storageUtils';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
-import { bridgeRequest } from '../hooks/useBridge';
+import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import {
@@ -30,8 +43,11 @@ import {
   Power,
   ShieldCheck,
   Sliders,
+  Terminal,
 } from 'lucide-react';
 import './SearchPage.css';
+
+type SearchTabId = 'settings' | 'status' | 'external' | 'syntax';
 
 interface SearchSettings {
   hotkey: string;
@@ -67,27 +83,44 @@ interface ServiceStatus {
   lastTrimmedAt?: number;
 }
 
+interface PluginListItem {
+  id: string;
+  enabled: boolean;
+  active?: boolean;
+  state?: string;
+}
+
 const IDLE_TRIM_MINUTE_OPTIONS = [2, 5, 10, 15, 30] as const;
 const IDLE_STOP_MINUTE_OPTIONS = [10, 15, 30, 60, 120] as const;
+
+const normalizeSearchTab = (raw?: string): SearchTabId => {
+  if (raw === 'status') return 'status';
+  if (raw === 'external') return 'external';
+  if (raw === 'syntax' || raw === 'regex') return 'syntax';
+  return 'settings';
+};
 
 export const SearchPage: FC = () => {
   const { t, i18n } = useTranslation();
   const isChineseUi = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
-  const [activeTab, setActiveTab] = useState<'settings' | 'syntax' | 'regex' | 'status'>(
-    () => consumePendingDeepNavigation('search')?.tabId ?? 'settings',
+  const [activeTab, setActiveTab] = useState<SearchTabId>(
+    () => normalizeSearchTab(consumePendingDeepNavigation('search')?.tabId),
   );
+  const [searchEnabled, setSearchEnabled] = useState(true);
+  const [savingMaster, setSavingMaster] = useState(false);
 
   useEffect(() => {
     const onDeepNavigate = (e: Event) => {
       const detail = (e as CustomEvent<DeepNavigationPayload>).detail;
       if (detail?.navId === 'search' && detail.tabId) {
         consumePendingDeepNavigation('search');
-        setActiveTab(detail.tabId);
+        setActiveTab(normalizeSearchTab(detail.tabId));
       }
     };
     window.addEventListener('tools3000:navigate-deep', onDeepNavigate);
     return () => window.removeEventListener('tools3000:navigate-deep', onDeepNavigate);
   }, []);
+
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [settings, setSettings] = useState<SearchSettings>({
     hotkey: 'Alt+Space',
@@ -130,18 +163,25 @@ export const SearchPage: FC = () => {
   const [trimming, setTrimming] = useState(false);
   const [stopping, setStopping] = useState(false);
 
-  const getHotkey = (name: string) => hotkeys.find(h => h.name === name);
+  const getHotkey = (name: string) => hotkeys.find((h) => h.name === name);
+
+  useBridgeEvent('plugins:changed', (raw: unknown) => {
+    const payload = raw && typeof raw === 'object' ? (raw as { id?: string; enabled?: boolean }) : null;
+    if (payload?.id === 'search' && typeof payload.enabled === 'boolean') {
+      setSearchEnabled(payload.enabled);
+    }
+  });
 
   useEffect(() => {
     let cancelled = false;
     let remoteHasMode = false;
     void Promise.allSettled([
       bridgeRequest<SearchSettings>('search.getSettings')
-        .then(res => {
+        .then((res) => {
           if (!cancelled && res && typeof res === 'object') {
             // 兼容老配置：若 defaultCategory 曾设为 'content'，自动迁移归一化为 searchMode='content' + defaultCategory='all'
             const normalizedCategory = res.defaultCategory === 'content' ? 'all' : (res.defaultCategory || 'all');
-            setSettings(prev => ({ ...prev, ...res, defaultCategory: normalizedCategory }));
+            setSettings((prev) => ({ ...prev, ...res, defaultCategory: normalizedCategory }));
             if (res.defaultCategory === 'content' && !remoteHasMode) {
               setSearchMode('content');
               safeStorageSetItem('tools3000_search_default_mode', 'content');
@@ -149,8 +189,18 @@ export const SearchPage: FC = () => {
           }
         })
         .catch(() => undefined),
+      bridgeRequest<PluginListItem[]>('plugins.getAll')
+        .then((list) => {
+          if (!cancelled && Array.isArray(list)) {
+            const searchPlugin = list.find((item) => item.id === 'search');
+            if (searchPlugin && typeof searchPlugin.enabled === 'boolean') {
+              setSearchEnabled(searchPlugin.enabled);
+            }
+          }
+        })
+        .catch(() => undefined),
       bridgeRequest<{ value?: unknown }>('config.get', { key: '/search/uiPreferences' })
-        .then(raw => {
+        .then((raw) => {
           if (cancelled || !raw || typeof raw !== 'object') return;
           const prefs = ('value' in raw && raw.value && typeof raw.value === 'object'
             ? raw.value
@@ -163,16 +213,16 @@ export const SearchPage: FC = () => {
         })
         .catch(() => undefined),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll')
-        .then(res => {
+        .then((res) => {
           if (!cancelled) {
             setHotkeys(Array.isArray(res) ? res : []);
           }
         })
         .catch(() => undefined),
       bridgeRequest<ServiceStatus>('search.getServiceStatus')
-        .then(res => {
+        .then((res) => {
           if (!cancelled && res && typeof res === 'object') {
-            setServiceStatus(prev => ({ ...prev, ...res }));
+            setServiceStatus((prev) => ({ ...prev, ...res }));
           }
         })
         .catch(() => undefined),
@@ -186,7 +236,7 @@ export const SearchPage: FC = () => {
       if (e.key === 'tools3000_search_default_mode' && (e.newValue === 'name' || e.newValue === 'both' || e.newValue === 'content')) {
         setSearchMode(e.newValue);
       } else if (e.key === 'tools3000_search_default_category' && e.newValue) {
-        setSettings(prev => ({ ...prev, defaultCategory: e.newValue === 'content' ? 'all' : e.newValue! }));
+        setSettings((prev) => ({ ...prev, defaultCategory: e.newValue === 'content' ? 'all' : e.newValue! }));
       }
     };
     window.addEventListener('storage', onStorage);
@@ -199,9 +249,9 @@ export const SearchPage: FC = () => {
   useEffect(() => {
     let cancelled = false;
     void bridgeRequest<SearchSettings>('search.getSettings')
-      .then(res => {
+      .then((res) => {
         if (!cancelled && res && typeof res === 'object' && typeof res.pinyinEnabled === 'boolean') {
-          setSettings(prev => (prev.pinyinEnabled === res.pinyinEnabled ? prev : { ...prev, pinyinEnabled: res.pinyinEnabled }));
+          setSettings((prev) => (prev.pinyinEnabled === res.pinyinEnabled ? prev : { ...prev, pinyinEnabled: res.pinyinEnabled }));
         }
       })
       .catch(() => undefined);
@@ -226,6 +276,40 @@ export const SearchPage: FC = () => {
     };
   }, [activeTab]);
 
+  const handleToggleSearchEnabled = async (nextEnabled: boolean) => {
+    if (savingMaster) return;
+    const prevEnabled = searchEnabled;
+    setSearchEnabled(nextEnabled);
+    setSavingMaster(true);
+    try {
+      const res = await bridgeRequest<{ success?: boolean; restartRequired?: boolean }>('plugins.setEnabled', {
+        id: 'search',
+        enabled: nextEnabled,
+      });
+      if (res && res.success === false) {
+        setSearchEnabled(prevEnabled);
+        toast.error(t('plugins.saveFailed', 'Failed to update plugin state'));
+        return;
+      }
+      const latestPlugins = await bridgeRequest<PluginListItem[]>('plugins.getAll').catch(() => null);
+      if (Array.isArray(latestPlugins)) {
+        window.dispatchEvent(new CustomEvent('tools3000:plugins-changed', { detail: latestPlugins }));
+      }
+      const refreshedHotkeys = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => null);
+      if (Array.isArray(refreshedHotkeys)) {
+        setHotkeys(refreshedHotkeys);
+      }
+      if (res?.restartRequired) {
+        toast.info(t('plugins.restartHint'));
+      }
+    } catch {
+      setSearchEnabled(prevEnabled);
+      toast.error(t('plugins.saveFailed', 'Failed to update plugin state'));
+    } finally {
+      setSavingMaster(false);
+    }
+  };
+
   const saveSearchMode = async (mode: SearchMode) => {
     setSearchMode(mode);
     safeStorageSetItem('tools3000_search_default_mode', mode);
@@ -247,7 +331,7 @@ export const SearchPage: FC = () => {
   };
 
   const saveSetting = async <K extends keyof SearchSettings>(key: K, value: SearchSettings[K]) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    setSettings((prev) => ({ ...prev, [key]: value }));
     if (key === 'defaultCategory') {
       safeStorageSetItem('tools3000_search_default_category', String(value));
     } else if (key === 'iconStyle' && value) {
@@ -257,7 +341,7 @@ export const SearchPage: FC = () => {
       await bridgeRequest('search.saveSettings', { [key]: value });
     } catch {
       void bridgeRequest<SearchSettings>('search.getSettings')
-        .then(res => setSettings(prev => ({ ...prev, ...res })))
+        .then((res) => setSettings((prev) => ({ ...prev, ...res })))
         .catch(() => {});
     }
   };
@@ -284,7 +368,7 @@ export const SearchPage: FC = () => {
     try {
       const res = await bridgeRequest<ServiceStatus>('search.getServiceStatus');
       if (res && typeof res === 'object') {
-        setServiceStatus(prev => ({ ...prev, ...res, running: res.running ?? res.available }));
+        setServiceStatus((prev) => ({ ...prev, ...res, running: res.running ?? res.available }));
       }
       if (res?.available) {
         toast.success(t('searchPage.serviceOk', 'Index daemon connected via local named pipe'));
@@ -307,7 +391,7 @@ export const SearchPage: FC = () => {
       const statusRes = await bridgeRequest<ServiceStatus>('search.getServiceStatus').catch(() => warmRes);
       const effective = statusRes && typeof statusRes === 'object' ? statusRes : warmRes;
       if (effective && typeof effective === 'object') {
-        setServiceStatus(prev => ({ ...prev, ...effective, running: effective.running ?? effective.available }));
+        setServiceStatus((prev) => ({ ...prev, ...effective, running: effective.running ?? effective.available }));
       }
       if (effective?.available) {
         toast.success(t('searchPage.serviceWoken', 'Indexing engine woken and ready'));
@@ -395,8 +479,8 @@ export const SearchPage: FC = () => {
 
   // 文件类型筛选与「搜索模式 (文件名/双搜/全文)」正交解耦：剔除 content，避免与「仅搜文件内容」重叠打架
   const categoryOptions = CATEGORY_DEFS
-    .filter(def => def.id !== 'content')
-    .map(def => ({
+    .filter((def) => def.id !== 'content')
+    .map((def) => ({
       value: def.id,
       label: t(def.labelKey, def.defaultLabel),
     }));
@@ -467,442 +551,240 @@ export const SearchPage: FC = () => {
     return <PageSkeleton cards={2} rowsPerCard={4} />;
   }
 
-  const tabs: TabItem<'settings' | 'syntax' | 'regex' | 'status'>[] = [
+  const tabs: TabItem<SearchTabId>[] = [
     { id: 'settings', label: t('searchPage.tabSettings', 'Settings & Hotkey'), icon: <Search size={16} /> },
-    { id: 'syntax', label: t('searchPage.tabSyntax', 'Search Syntax Manual'), icon: <BookOpen size={16} /> },
-    { id: 'regex', label: t('searchPage.tabRegex', 'Regular Expressions'), icon: <Code2 size={16} /> },
     { id: 'status', label: t('searchPage.tabStatus', 'Service & Index'), icon: <HardDrive size={16} /> },
+    { id: 'external', label: t('searchPage.tabExternal', 'CLI & AI Agent (MCP)'), icon: <Terminal size={16} /> },
+    { id: 'syntax', label: t('searchPage.tabSyntaxCombined', 'Search & Regex Syntax'), icon: <BookOpen size={16} /> },
   ];
 
   return (
     <div className="search-page">
-      {/* ── 顶部选项卡 ─────────────────────────────────────────────── */}
+      {/* ── 顶部 4 页签分流 ──────────────────────────────────────────── */}
       <Tabs
         tabs={tabs}
         activeId={activeTab}
-        onChange={(id) => setActiveTab(id as typeof activeTab)}
+        onChange={(id) => setActiveTab(id)}
         ariaLabel={t('search.title', 'Quick file search')}
       />
 
-      {/* ── 1. 基础设置 ────────────────────────────────────────────── */}
+      {/* ── 1. 基础与热键设置 ────────────────────────────────────────── */}
       {activeTab === 'settings' && (
         <div className="search-page__content">
           <SettingGroup title={t('searchPage.hotkeyConfig', 'Hotkey & Trigger')} icon={<Sparkles size={18} />}>
             <Card>
               <SettingRow
-                label={
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span>{t('searchPage.toggleHotkey', 'Toggle Search Bar Shortcut')}</span>
-                    <HotkeyStatusBadge entry={getHotkey('Toggle Search')} />
-                  </div>
-                }
-                description={t('searchPage.toggleHotkeyDesc', 'Default Alt + Space, instantly summons the Fluent search overlay')}
-              >
-                <HotkeyRecorder
-                  id="search-toggle-hotkey"
-                  value={settings.hotkey}
-                  onChange={handleHotkeyChange}
-                  placeholder="Alt+Space"
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.autoBypassFullscreen', 'Fullscreen Game/Video Bypass')}
-                description={t('searchPage.autoBypassFullscreenDesc', 'Automatically suppress search hotkey when foreground window is in exclusive fullscreen mode to prevent disrupting gaming or video playback')}
+                label={t('searchPage.enableSearchTitle', 'Enable Instant File Search')}
+                description={t(
+                  'searchPage.enableSearchDesc',
+                  'Instant NTFS filename, Pinyin, and content search; disabling unloads search entry points and hotkeys',
+                )}
               >
                 <Toggle
-                  id="search-auto-bypass-toggle"
-                  checked={settings.autoBypassFullscreen ?? true}
-                  onChange={v => saveSetting('autoBypassFullscreen', v)}
+                  id="search-master-enable-toggle"
+                  checked={searchEnabled}
+                  disabled={savingMaster}
+                  onChange={(v) => void handleToggleSearchEnabled(v)}
                 />
               </SettingRow>
 
-              <SettingRow
-                label={t('searchPage.quickTest', 'Test Search Bar')}
-                description={t('searchPage.quickTestDesc', 'Test the floating search overlay animation and latency')}
-              >
-                <Button variant="primary" onClick={launchSearch}>
-                  <Play size={14} style={{ marginRight: 6 }} />
-                  {t('searchPage.openNow', 'Summon Search Bar')}
-                </Button>
-              </SettingRow>
-            </Card>
-          </SettingGroup>
-
-          <SettingGroup title={t('searchPage.searchBehavior', 'Preferences & Behavior')} icon={<FolderSearch size={18} />}>
-            <Card>
-              <SettingRow
-                label={t('search.defaultSearchMode', 'Default Search Mode')}
-                description={searchModeDesc}
-              >
-                <Select
-                  id="search-default-mode"
-                  value={searchMode}
-                  onChange={v => void saveSearchMode(v as SearchMode)}
-                  options={searchModeOptions}
-                />
-              </SettingRow>
-
-              {/* 仅在非「纯全文模式」时展示文件类型筛选，从 UI 物理杜绝“全文模式 + 图片/视频/文件夹”逻辑冲突 */}
-              {searchMode !== 'content' && (
+              <DisabledCascade disabled={!searchEnabled}>
                 <SettingRow
-                  label={t('searchPage.defaultCategoryTitle', 'Default Filter Category')}
-                  description={t('searchPage.defaultCategoryDesc', 'Initial category pill activated when opening a blank search session')}
+                  label={
+                    <div className="search-page__row-label">
+                      <span>{t('searchPage.toggleHotkey', 'Toggle Search Bar Shortcut')}</span>
+                      <HotkeyStatusBadge entry={getHotkey('Toggle Search')} />
+                    </div>
+                  }
+                  description={t('searchPage.toggleHotkeyDesc', 'Default Alt + Space, instantly summons the Fluent search overlay')}
                 >
-                  <Select
-                    id="search-default-category"
-                    value={settings.defaultCategory && settings.defaultCategory !== 'content' ? settings.defaultCategory : 'all'}
-                    onChange={v => void saveSetting('defaultCategory', v)}
-                    options={categoryOptions}
+                  <HotkeyRecorder
+                    id="search-toggle-hotkey"
+                    value={settings.hotkey}
+                    onChange={handleHotkeyChange}
+                    placeholder="Alt+Space"
                   />
                 </SettingRow>
-              )}
 
-              <SettingRow
-                label={t('searchPage.pinyinTitle', 'Smart Pinyin Search')}
-                description={t('searchPage.pinyinDesc', 'Supports Chinese Pinyin initials (e.g. wx for WeChat) and full pinyin')}
-              >
-                <Toggle
-                  id="search-pinyin-toggle"
-                  checked={settings.pinyinEnabled}
-                  onChange={v => saveSetting('pinyinEnabled', v)}
-                />
-              </SettingRow>
+                <SettingRow
+                  label={t('searchPage.autoBypassFullscreen', 'Fullscreen Game/Video Bypass')}
+                  description={t('searchPage.autoBypassFullscreenDesc', 'Automatically suppress search hotkey when foreground window is in exclusive fullscreen mode to prevent disrupting gaming or video playback')}
+                >
+                  <Toggle
+                    id="search-auto-bypass-toggle"
+                    checked={settings.autoBypassFullscreen ?? true}
+                    onChange={(v) => void saveSetting('autoBypassFullscreen', v)}
+                  />
+                </SettingRow>
 
-              <SettingRow
-                label={t('searchPage.matchPathTitle', 'Match Full Path by Default')}
-                description={t('searchPage.matchPathDesc', 'Search within file paths in addition to file names')}
-              >
-                <Toggle
-                  id="search-matchpath-toggle"
-                  checked={settings.matchPath}
-                  onChange={v => saveSetting('matchPath', v)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.caseTitle', 'Case Sensitive')}
-                description={t('searchPage.caseDesc', 'Match exact case; can also be toggled with case: prefix in query')}
-              >
-                <Toggle
-                  id="search-case-toggle"
-                  checked={settings.caseSensitive}
-                  onChange={v => saveSetting('caseSensitive', v)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.bookmarksTitle', 'Include Browser Bookmarks in General Search')}
-                description={t('searchPage.bookmarksDesc', 'Mix matching local Edge, Chrome, and Brave bookmarks into regular search results. Dedicated b: / bm: prefixes (while keeping b:\\ as drive B) and the Bookmarks category always remain available offline.')}
-              >
-                <Toggle
-                  id="search-bookmarks-toggle"
-                  checked={settings.includeBookmarks ?? true}
-                  onChange={v => saveSetting('includeBookmarks', v)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.appsAndCommandsTitle', 'Quick Launch Apps & Windows System Commands')}
-                description={t('searchPage.appsAndCommandsDesc', 'Mix installed Start Menu apps and 35+ built-in geek commands (such as env, services, devmgmt, hosts) into general search offline. Explicit app: and cmd: prefixes always work without waking the index service.')}
-              >
-                <Toggle
-                  id="search-apps-commands-toggle"
-                  checked={settings.enableAppsAndCommands ?? true}
-                  onChange={v => saveSetting('enableAppsAndCommands', v)}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.liveRefreshTitle', 'Real-Time Result Updates for New & Changed Files')}
-                description={t('searchPage.liveRefreshDesc', 'Automatically refresh open search results in place when files are created, renamed, or deleted via NTFS USN monitoring. Zero background polling when the search window is hidden.')}
-              >
-                <Toggle
-                  id="search-live-refresh-toggle"
-                  checked={settings.liveRefreshEnabled ?? true}
-                  onChange={v => {
-                    safeStorageSetItem('tools3000_search_live_refresh', String(v));
-                    void saveSetting('liveRefreshEnabled', v);
-                  }}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.rankingProfileTitle', 'Result Priority Strategy')}
-                description={rankingProfileDesc}
-              >
-                <Select
-                  id="search-ranking-profile"
-                  value={activeRankingProfile}
-                  onChange={v => void saveSetting('rankingProfile', v as SearchRankingProfile)}
-                  options={rankingProfileOptions}
-                />
-              </SettingRow>
-
-              <SettingRow
-                label={t('searchPage.iconStyleTitle', 'Result Icon Style')}
-                description={t('searchPage.iconStyleDesc', 'Choose between Windows native associated file icons (familiar system look with 0 cognitive overhead) and minimalist vector icons')}
-              >
-                <div className="uikit-segmented" role="radiogroup" aria-label={t('searchPage.iconStyleTitle', 'Result Icon Style')}>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={(settings.iconStyle ?? 'native') === 'native'}
-                    className={`uikit-segmented__btn ${(settings.iconStyle ?? 'native') === 'native' ? 'uikit-segmented__btn--active' : ''}`}
-                    onClick={() => void saveSetting('iconStyle', 'native')}
-                  >
-                    {t('searchPage.iconStyleNative', 'Windows Native')}
-                  </button>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={settings.iconStyle === 'vector'}
-                    className={`uikit-segmented__btn ${settings.iconStyle === 'vector' ? 'uikit-segmented__btn--active' : ''}`}
-                    onClick={() => void saveSetting('iconStyle', 'vector')}
-                  >
-                    {t('searchPage.iconStyleVector', 'Vector Minimalist')}
-                  </button>
-                </div>
-              </SettingRow>
-
+                <SettingRow
+                  label={t('searchPage.quickTest', 'Test Search Bar')}
+                  description={t('searchPage.quickTestDesc', 'Test the floating search overlay animation and latency')}
+                >
+                  <Button variant="primary" disabled={!searchEnabled} onClick={launchSearch}>
+                    <Play size={14} aria-hidden="true" />
+                    <span>{t('searchPage.openNow', 'Summon Search Bar')}</span>
+                  </Button>
+                </SettingRow>
+              </DisabledCascade>
             </Card>
           </SettingGroup>
 
-          <SearchExternalApiCard
-            externalApiEnabled={settings.externalApiEnabled ?? false}
-            externalApiExcludePaths={settings.externalApiExcludePaths ?? ''}
-            externalApiAllowedRoots={settings.externalApiAllowedRoots ?? ''}
-            onSaveSettings={async (patch) => {
-              setSettings(prev => ({ ...prev, ...patch }));
-              try {
-                await bridgeRequest('search.saveSettings', patch);
-              } catch {
-                void bridgeRequest<SearchSettings>('search.getSettings')
-                  .then(res => setSettings(prev => ({ ...prev, ...res })))
-                  .catch(() => {});
-              }
-            }}
-          />
+          <DisabledCascade disabled={!searchEnabled} className="search-page__content">
+            <SettingGroup
+              title={t('searchPage.groupMatchBehavior', 'Query Matching & Defaults')}
+              icon={<FolderSearch size={18} />}
+            >
+              <Card>
+                <SettingRow
+                  label={t('search.defaultSearchMode', 'Default Search Mode')}
+                  description={searchModeDesc}
+                >
+                  <Select
+                    id="search-default-mode"
+                    value={searchMode}
+                    onChange={(v) => void saveSearchMode(v as SearchMode)}
+                    options={searchModeOptions}
+                  />
+                </SettingRow>
+
+                {/* 仅在非「纯全文模式」时展示文件类型筛选，并通过 SubSettingGroup 表达从属层级 */}
+                {searchMode !== 'content' && (
+                  <SubSettingGroup>
+                    <SettingRow
+                      label={t('searchPage.defaultCategoryTitle', 'Default Filter Category')}
+                      description={t('searchPage.defaultCategoryDesc', 'Initial category pill activated when opening a blank search session')}
+                    >
+                      <Select
+                        id="search-default-category"
+                        value={settings.defaultCategory && settings.defaultCategory !== 'content' ? settings.defaultCategory : 'all'}
+                        onChange={(v) => void saveSetting('defaultCategory', v)}
+                        options={categoryOptions}
+                      />
+                    </SettingRow>
+                  </SubSettingGroup>
+                )}
+
+                <SettingRow
+                  label={t('searchPage.pinyinTitle', 'Smart Pinyin Search')}
+                  description={t('searchPage.pinyinDesc', 'Supports Chinese Pinyin initials (e.g. wx for WeChat) and full pinyin')}
+                >
+                  <Toggle
+                    id="search-pinyin-toggle"
+                    checked={settings.pinyinEnabled}
+                    onChange={(v) => void saveSetting('pinyinEnabled', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.matchPathTitle', 'Match Full Path by Default')}
+                  description={t('searchPage.matchPathDesc', 'Search within file paths in addition to file names')}
+                >
+                  <Toggle
+                    id="search-matchpath-toggle"
+                    checked={settings.matchPath}
+                    onChange={(v) => void saveSetting('matchPath', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.caseTitle', 'Case Sensitive')}
+                  description={t('searchPage.caseDesc', 'Match exact case; can also be toggled with case: prefix in query')}
+                >
+                  <Toggle
+                    id="search-case-toggle"
+                    checked={settings.caseSensitive}
+                    onChange={(v) => void saveSetting('caseSensitive', v)}
+                  />
+                </SettingRow>
+              </Card>
+            </SettingGroup>
+
+            <SettingGroup
+              title={t('searchPage.groupMixAndDisplay', 'Cross-Source Ranking & Appearance')}
+              icon={<Sliders size={18} />}
+            >
+              <Card>
+                <SettingRow
+                  label={t('searchPage.rankingProfileTitle', 'Result Priority Strategy')}
+                  description={rankingProfileDesc}
+                >
+                  <Select
+                    id="search-ranking-profile"
+                    value={activeRankingProfile}
+                    onChange={(v) => void saveSetting('rankingProfile', v as SearchRankingProfile)}
+                    options={rankingProfileOptions}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.appsAndCommandsTitle', 'Quick Launch Apps & Windows System Commands')}
+                  description={t('searchPage.appsAndCommandsDesc', 'Mix installed Start Menu apps and 35+ built-in geek commands (such as env, services, devmgmt, hosts) into general search offline. Explicit app: and cmd: prefixes always work without waking the index service.')}
+                >
+                  <Toggle
+                    id="search-apps-commands-toggle"
+                    checked={settings.enableAppsAndCommands ?? true}
+                    onChange={(v) => void saveSetting('enableAppsAndCommands', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.bookmarksTitle', 'Include Browser Bookmarks in General Search')}
+                  description={t('searchPage.bookmarksDesc', 'Mix matching local Edge, Chrome, and Brave bookmarks into regular search results. Dedicated b: / bm: prefixes (while keeping b:\\ as drive B) and the Bookmarks category always remain available offline.')}
+                >
+                  <Toggle
+                    id="search-bookmarks-toggle"
+                    checked={settings.includeBookmarks ?? true}
+                    onChange={(v) => void saveSetting('includeBookmarks', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.iconStyleTitle', 'Result Icon Style')}
+                  description={t('searchPage.iconStyleDesc', 'Choose between Windows native associated file icons (familiar system look with 0 cognitive overhead) and minimalist vector icons')}
+                >
+                  <div className="uikit-segmented" role="radiogroup" aria-label={t('searchPage.iconStyleTitle', 'Result Icon Style')}>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={(settings.iconStyle ?? 'native') === 'native'}
+                      className={`uikit-segmented__btn ${(settings.iconStyle ?? 'native') === 'native' ? 'uikit-segmented__btn--active' : ''}`}
+                      onClick={() => void saveSetting('iconStyle', 'native')}
+                    >
+                      {t('searchPage.iconStyleNative', 'Windows Native')}
+                    </button>
+                    <button
+                      type="button"
+                      role="radio"
+                      aria-checked={settings.iconStyle === 'vector'}
+                      className={`uikit-segmented__btn ${settings.iconStyle === 'vector' ? 'uikit-segmented__btn--active' : ''}`}
+                      onClick={() => void saveSetting('iconStyle', 'vector')}
+                    >
+                      {t('searchPage.iconStyleVector', 'Vector Minimalist')}
+                    </button>
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.liveRefreshTitle', 'Real-Time Result Updates for New & Changed Files')}
+                  description={t('searchPage.liveRefreshDesc', 'Automatically refresh open search results in place when files are created, renamed, or deleted via NTFS USN monitoring. Zero background polling when the search window is hidden.')}
+                >
+                  <Toggle
+                    id="search-live-refresh-toggle"
+                    checked={settings.liveRefreshEnabled ?? true}
+                    onChange={(v) => {
+                      safeStorageSetItem('tools3000_search_live_refresh', String(v));
+                      void saveSetting('liveRefreshEnabled', v);
+                    }}
+                  />
+                </SettingRow>
+              </Card>
+            </SettingGroup>
+          </DisabledCascade>
         </div>
       )}
 
-      {/* ── 2. 搜索语法手册 ────────────────────────────────────────── */}
-      {activeTab === 'syntax' && (
-        <div className="search-page__content">
-          <Card title={t('searchPage.operatorsTitle', 'Operators & Combination')}>
-            <div className="syntax-table-wrapper">
-              <table className="syntax-table">
-                <thead>
-                  <tr>
-                    <th>{t('searchPage.thOpSyntax', 'Operator / Syntax')}</th>
-                    <th>{t('searchPage.thDesc', 'Description')}</th>
-                    <th>{t('searchPage.thExample', 'Example')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><CodeBadge>space</CodeBadge></td>
-                    <td>{t('searchPage.opSpaceDesc', 'Logical AND, matches all keywords simultaneously')}</td>
-                    <td><CodeBadge>report 2026</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>|</CodeBadge> / <CodeBadge>OR</CodeBadge></td>
-                    <td>{t('searchPage.opOrDesc', 'Logical OR, matches any condition')}</td>
-                    <td><CodeBadge>ext:jpg | ext:png</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>!</CodeBadge> / <CodeBadge>NOT</CodeBadge></td>
-                    <td>{t('searchPage.opNotDesc', 'Logical NOT, excludes files containing specific word')}</td>
-                    <td><CodeBadge>*.cpp !test</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>" "</CodeBadge></td>
-                    <td>{t('searchPage.opPhraseDesc', 'Quoted phrase, strictly matches exact text with spaces')}</td>
-                    <td><CodeBadge>"Program Files"</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>*</CodeBadge></td>
-                    <td>{t('searchPage.opWildcardMulti', 'Wildcard, matches 0 or more characters')}</td>
-                    <td><CodeBadge>*.pdf</CodeBadge>, <CodeBadge>report_*</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>?</CodeBadge></td>
-                    <td>{t('searchPage.opWildcardSingle', 'Wildcard, matches 1 character')}</td>
-                    <td><CodeBadge>img_??.png</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>\</CodeBadge> / <CodeBadge>/</CodeBadge></td>
-                    <td>{t('searchPage.opSlashPathPinyin', 'Cross-folder path segment search (supports Pinyin initials, full Pinyin and wildcards)')}</td>
-                    <td><CodeBadge>gzml\user</CodeBadge>, <CodeBadge>*gzml*\*user*</CodeBadge></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </Card>
-
-          <Card title={t('searchPage.modifiersTitle', 'Filters & Modifiers')}>
-            <div className="syntax-table-wrapper">
-              <table className="syntax-table">
-                <thead>
-                  <tr>
-                    <th>{t('searchPage.thModifier', 'Prefix / Modifier')}</th>
-                    <th>{t('searchPage.thDesc', 'Description')}</th>
-                    <th>{t('searchPage.thExample', 'Example')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><CodeBadge>ext:&lt;ext_list&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modExtDesc', 'Filter by file extensions, comma or semicolon separated')}</td>
-                    <td><CodeBadge>ext:jpg;png;webp</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>file:</CodeBadge></td>
-                    <td>{t('searchPage.modFileDesc', 'Match files only (exclude folders)')}</td>
-                    <td><CodeBadge>file: *.txt</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>folder:</CodeBadge> / <CodeBadge>dir:</CodeBadge></td>
-                    <td>{t('searchPage.modFolderDesc', 'Match folders / directories only')}</td>
-                    <td><CodeBadge>folder: project</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>path:&lt;path&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modPathDesc', 'Search within full absolute path')}</td>
-                    <td><CodeBadge>path:windows\system32</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>parent:&lt;dir&gt;</CodeBadge> / <CodeBadge>p:</CodeBadge></td>
-                    <td>{t('searchPage.modParentDesc', 'Match in direct parent directory name')}</td>
-                    <td><CodeBadge>parent:tools3000</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>c:</CodeBadge> / <CodeBadge>d:</CodeBadge></td>
-                    <td>{t('searchPage.modDriveDesc', 'Restrict search to specified drive')}</td>
-                    <td><CodeBadge>d: *.zip</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>exact:&lt;name&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modExactDesc', 'Strict exact filename match')}</td>
-                    <td><CodeBadge>exact:README.md</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>content:&lt;query&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modContentDesc', 'Full-text content search, supports code, Office documents, PSD/AI/CAD drawings')}</td>
-                    <td><CodeBadge>content:SELECT</CodeBadge>, <CodeBadge>ext:docx content:contract</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>case:&lt;text&gt;</CodeBadge> / <CodeBadge>cs:</CodeBadge></td>
-                    <td>{t('searchPage.modCaseDesc', 'Enforce case-sensitive matching')}</td>
-                    <td><CodeBadge>case:Tools3000</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>pinyin:&lt;pinyin&gt;</CodeBadge> / <CodeBadge>py:</CodeBadge></td>
-                    <td>{t('searchPage.modPinyinDesc', 'Explicit pinyin search (full spell or initials)')}</td>
-                    <td><CodeBadge>py:wx</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>nopy:&lt;text&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modNopyDesc', 'Disable pinyin, match plain text only')}</td>
-                    <td><CodeBadge>nopy:wx</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>b:&lt;kw&gt;</CodeBadge> / <CodeBadge>bm:&lt;kw&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modBookmarkDesc', 'Search local browser bookmarks offline without waking index service (b:\\ still targets drive B)')}</td>
-                    <td><CodeBadge>b:github</CodeBadge>, <CodeBadge>bm:docs</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>app:&lt;name&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modAppDesc', 'Search installed Start Menu, App Paths, and portable apps offline')}</td>
-                    <td><CodeBadge>app:code</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>cmd:&lt;alias&gt;</CodeBadge></td>
-                    <td>{t('searchPage.modCmdDesc', 'Launch 35+ built-in Windows system commands offline (supports English and Pinyin aliases)')}</td>
-                    <td><CodeBadge>cmd:env</CodeBadge>, <CodeBadge>cmd:services</CodeBadge></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* ── 3. 正则表达式手册 ──────────────────────────────────────── */}
-      {activeTab === 'regex' && (
-        <div className="search-page__content">
-          <Card title={t('searchPage.regexTitle', 'Regular Expression Query (regex: or r:)')}>
-            <p className="syntax-hint-p">
-              {t('searchPage.regexHint', 'Use regex:<expr> or r:<expr> prefix to enable standard C++ ECMAScript regular expression search.')}
-            </p>
-            <div className="syntax-table-wrapper">
-              <table className="syntax-table">
-                <thead>
-                  <tr>
-                    <th>{t('searchPage.thRegexSyntax', 'Regex Syntax')}</th>
-                    <th>{t('searchPage.thRegexRule', 'Matching Rule')}</th>
-                    <th>{t('searchPage.thRegexExample', 'Practical Example')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><CodeBadge>a|b</CodeBadge></td>
-                    <td>{t('searchPage.regOr', 'Match expression a or b')}</td>
-                    <td><CodeBadge>r:test|debug</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>.</CodeBadge></td>
-                    <td>{t('searchPage.regAnyChar', 'Match any single character except newline')}</td>
-                    <td><CodeBadge>r:a.c\.txt</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>[abc]</CodeBadge></td>
-                    <td>{t('searchPage.regCharSet', 'Match any single character in character set')}</td>
-                    <td><CodeBadge>r:log_[0-9]\.txt</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>[^abc]</CodeBadge></td>
-                    <td>{t('searchPage.regNegSet', 'Exclude characters in character set')}</td>
-                    <td><CodeBadge>r:file_[^0-9]\.dat</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>[a-z]</CodeBadge> / <CodeBadge>[0-9]</CodeBadge></td>
-                    <td>{t('searchPage.regRange', 'Match characters within specified range')}</td>
-                    <td><CodeBadge>{'r:^[a-z]{3}_[0-9]{4}'}</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>^</CodeBadge></td>
-                    <td>{t('searchPage.regStartAnchor', 'Match start of filename (head anchor)')}</td>
-                    <td><CodeBadge>r:^Tools3000.*\.exe$</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>$</CodeBadge></td>
-                    <td>{t('searchPage.regEndAnchor', 'Match end of filename (tail anchor)')}</td>
-                    <td><CodeBadge>r:\.min\.js$</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>*</CodeBadge> / <CodeBadge>+</CodeBadge> / <CodeBadge>?</CodeBadge></td>
-                    <td>{t('searchPage.regQuantifiers', 'Match 0 or more / 1 or more / 0 or 1 time')}</td>
-                    <td><CodeBadge>r:v\d+\.\d+</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>&#123;n&#125;</CodeBadge> / <CodeBadge>&#123;n,m&#125;</CodeBadge></td>
-                    <td>{t('searchPage.regExactCount', 'Specify exact match count or range')}</td>
-                    <td><CodeBadge>r:\d&#123;4&#125;-\d&#123;2&#125;-\d&#123;2&#125;</CodeBadge></td>
-                  </tr>
-                  <tr>
-                    <td><CodeBadge>\</CodeBadge></td>
-                    <td>{t('searchPage.regEscape', 'Escape special characters (e.g. \\. matches literal dot)')}</td>
-                    <td><CodeBadge>r:archive\.(tar\.gz|zip)</CodeBadge></td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </Card>
-        </div>
-      )}
-
-      {/* ── 4. 磁盘与服务状态 ──────────────────────────────────────── */}
+      {/* ── 2. 服务与索引状态 ────────────────────────────────────────── */}
       {activeTab === 'status' && (
         <div className="search-page__content">
           <Card title={t('searchPage.serviceMonitor', 'NTFS MFT Engine Monitor')}>
@@ -944,13 +826,13 @@ export const SearchPage: FC = () => {
               <div className="service-details-grid">
                 <div className="detail-item">
                   <span className="detail-label">{t('searchPage.memoryWorkingSet', 'Working Set Memory')}</span>
-                  <span className="detail-value" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                  <span className="detail-value detail-value--numeric">
                     {workingSetText}
                   </span>
                 </div>
                 <div className="detail-item">
                   <span className="detail-label">{t('searchPage.memoryPrivateBytes', 'Private Commit Memory')}</span>
-                  <span className="detail-value" style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                  <span className="detail-value detail-value--numeric">
                     {privateBytesText}
                   </span>
                 </div>
@@ -1008,31 +890,35 @@ export const SearchPage: FC = () => {
               </SettingRow>
 
               {activeMemoryMode === 'idle_trim' && (
-                <SettingRow
-                  label={t('searchPage.idleTrimMinutesTitle', 'Idle Trim Threshold')}
-                  description={t('searchPage.idleTrimMinutesDesc', 'Automatically release caches and trim working set after this idle duration while keeping USN monitoring active')}
-                >
-                  <Select
-                    id="search-idle-trim-minutes"
-                    value={String(activeIdleTrimMinutes)}
-                    onChange={v => void saveSetting('idleTrimMinutes', Number(v))}
-                    options={idleTrimOptions}
-                  />
-                </SettingRow>
+                <SubSettingGroup>
+                  <SettingRow
+                    label={t('searchPage.idleTrimMinutesTitle', 'Idle Trim Threshold')}
+                    description={t('searchPage.idleTrimMinutesDesc', 'Automatically release caches and trim working set after this idle duration while keeping USN monitoring active')}
+                  >
+                    <Select
+                      id="search-idle-trim-minutes"
+                      value={String(activeIdleTrimMinutes)}
+                      onChange={(v) => void saveSetting('idleTrimMinutes', Number(v))}
+                      options={idleTrimOptions}
+                    />
+                  </SettingRow>
+                </SubSettingGroup>
               )}
 
               {activeMemoryMode === 'idle_stop' && (
-                <SettingRow
-                  label={t('searchPage.idleStopMinutesTitle', 'Idle Deep Sleep Threshold')}
-                  description={t('searchPage.idleStopMinutesDesc', 'Automatically persist the latest USN snapshot and exit the search daemon to 0 MB after this idle duration')}
-                >
-                  <Select
-                    id="search-idle-stop-minutes"
-                    value={String(activeIdleStopMinutes)}
-                    onChange={v => void saveSetting('idleStopMinutes', Number(v))}
-                    options={idleStopOptions}
-                  />
-                </SettingRow>
+                <SubSettingGroup>
+                  <SettingRow
+                    label={t('searchPage.idleStopMinutesTitle', 'Idle Deep Sleep Threshold')}
+                    description={t('searchPage.idleStopMinutesDesc', 'Automatically persist the latest USN snapshot and exit the search daemon to 0 MB after this idle duration')}
+                  >
+                    <Select
+                      id="search-idle-stop-minutes"
+                      value={String(activeIdleStopMinutes)}
+                      onChange={(v) => void saveSetting('idleStopMinutes', Number(v))}
+                      options={idleStopOptions}
+                    />
+                  </SettingRow>
+                </SubSettingGroup>
               )}
 
               <SettingRow
@@ -1067,33 +953,256 @@ export const SearchPage: FC = () => {
                 </div>
               </SettingRow>
 
-              <div
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: '10px',
-                  marginTop: '12px',
-                  padding: '12px 14px',
-                  borderRadius: '10px',
-                  background: 'var(--well-bg)',
-                  border: '1px solid var(--well-border)',
-                  color: 'var(--text-secondary)',
-                  fontSize: '0.84rem',
-                  fontWeight: 500,
-                  lineHeight: 1.55,
-                }}
-              >
-                <ShieldCheck
-                  size={16}
-                  aria-hidden="true"
-                  style={{ color: 'var(--primary)', flexShrink: 0, marginTop: '2px' }}
-                />
+              <div className="search-page__safety-note">
+                <ShieldCheck size={16} aria-hidden="true" className="search-page__safety-icon" />
                 <span>
                   {t(
                     'searchPage.usnSafetyNote',
                     'Whether using Idle Trim or Idle Sleep, Tools3000 relies on NTFS USN Journal incremental catch-up so newly created, renamed, or modified files are never missed.',
                   )}
                 </span>
+              </div>
+            </Card>
+          </SettingGroup>
+        </div>
+      )}
+
+      {/* ── 3. 命令行 (CLI) 与 AI 智能体 (MCP) 接口 ──────────────────── */}
+      {activeTab === 'external' && (
+        <div className="search-page__content">
+          <SearchExternalApiCard
+            externalApiEnabled={settings.externalApiEnabled ?? false}
+            externalApiExcludePaths={settings.externalApiExcludePaths ?? ''}
+            externalApiAllowedRoots={settings.externalApiAllowedRoots ?? ''}
+            onSaveSettings={async (patch) => {
+              setSettings((prev) => ({ ...prev, ...patch }));
+              try {
+                await bridgeRequest('search.saveSettings', patch);
+              } catch {
+                void bridgeRequest<SearchSettings>('search.getSettings')
+                  .then((res) => setSettings((prev) => ({ ...prev, ...res })))
+                  .catch(() => {});
+              }
+            }}
+          />
+        </div>
+      )}
+
+      {/* ── 4. 搜索与正则语法手册（上下清晰分段） ────────────────────── */}
+      {activeTab === 'syntax' && (
+        <div className="search-page__content">
+          <SettingGroup
+            title={t('searchPage.syntaxSectionOperators', 'Operators & Filter Modifiers')}
+            icon={<BookOpen size={18} />}
+          >
+            <Card title={t('searchPage.operatorsTitle', 'Operators & Combination')}>
+              <div className="syntax-table-wrapper">
+                <table className="syntax-table">
+                  <thead>
+                    <tr>
+                      <th>{t('searchPage.thOpSyntax', 'Operator / Syntax')}</th>
+                      <th>{t('searchPage.thDesc', 'Description')}</th>
+                      <th>{t('searchPage.thExample', 'Example')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><CodeBadge>space</CodeBadge></td>
+                      <td>{t('searchPage.opSpaceDesc', 'Logical AND, matches all keywords simultaneously')}</td>
+                      <td><CodeBadge>report 2026</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>|</CodeBadge> / <CodeBadge>OR</CodeBadge></td>
+                      <td>{t('searchPage.opOrDesc', 'Logical OR, matches any condition')}</td>
+                      <td><CodeBadge>ext:jpg | ext:png</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>!</CodeBadge> / <CodeBadge>NOT</CodeBadge></td>
+                      <td>{t('searchPage.opNotDesc', 'Logical NOT, excludes files containing specific word')}</td>
+                      <td><CodeBadge>*.cpp !test</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>" "</CodeBadge></td>
+                      <td>{t('searchPage.opPhraseDesc', 'Quoted phrase, strictly matches exact text with spaces')}</td>
+                      <td><CodeBadge>"Program Files"</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>*</CodeBadge></td>
+                      <td>{t('searchPage.opWildcardMulti', 'Wildcard, matches 0 or more characters')}</td>
+                      <td><CodeBadge>*.pdf</CodeBadge>, <CodeBadge>report_*</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>?</CodeBadge></td>
+                      <td>{t('searchPage.opWildcardSingle', 'Wildcard, matches 1 character')}</td>
+                      <td><CodeBadge>img_??.png</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>\</CodeBadge> / <CodeBadge>/</CodeBadge></td>
+                      <td>{t('searchPage.opSlashPathPinyin', 'Cross-folder path segment search (supports Pinyin initials, full Pinyin and wildcards)')}</td>
+                      <td><CodeBadge>gzml\user</CodeBadge>, <CodeBadge>*gzml*\*user*</CodeBadge></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            <Card title={t('searchPage.modifiersTitle', 'Filters & Modifiers')}>
+              <div className="syntax-table-wrapper">
+                <table className="syntax-table">
+                  <thead>
+                    <tr>
+                      <th>{t('searchPage.thModifier', 'Prefix / Modifier')}</th>
+                      <th>{t('searchPage.thDesc', 'Description')}</th>
+                      <th>{t('searchPage.thExample', 'Example')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><CodeBadge>ext:&lt;ext_list&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modExtDesc', 'Filter by file extensions, comma or semicolon separated')}</td>
+                      <td><CodeBadge>ext:jpg;png;webp</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>file:</CodeBadge></td>
+                      <td>{t('searchPage.modFileDesc', 'Match files only (exclude folders)')}</td>
+                      <td><CodeBadge>file: *.txt</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>folder:</CodeBadge> / <CodeBadge>dir:</CodeBadge></td>
+                      <td>{t('searchPage.modFolderDesc', 'Match folders / directories only')}</td>
+                      <td><CodeBadge>folder: project</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>path:&lt;path&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modPathDesc', 'Search within full absolute path')}</td>
+                      <td><CodeBadge>path:windows\system32</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>parent:&lt;dir&gt;</CodeBadge> / <CodeBadge>p:</CodeBadge></td>
+                      <td>{t('searchPage.modParentDesc', 'Match in direct parent directory name')}</td>
+                      <td><CodeBadge>parent:tools3000</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>c:</CodeBadge> / <CodeBadge>d:</CodeBadge></td>
+                      <td>{t('searchPage.modDriveDesc', 'Restrict search to specified drive')}</td>
+                      <td><CodeBadge>d: *.zip</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>exact:&lt;name&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modExactDesc', 'Strict exact filename match')}</td>
+                      <td><CodeBadge>exact:README.md</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>content:&lt;query&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modContentDesc', 'Full-text content search, supports code, Office documents, PSD/AI/CAD drawings')}</td>
+                      <td><CodeBadge>content:SELECT</CodeBadge>, <CodeBadge>ext:docx content:contract</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>case:&lt;text&gt;</CodeBadge> / <CodeBadge>cs:</CodeBadge></td>
+                      <td>{t('searchPage.modCaseDesc', 'Enforce case-sensitive matching')}</td>
+                      <td><CodeBadge>case:Tools3000</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>pinyin:&lt;pinyin&gt;</CodeBadge> / <CodeBadge>py:</CodeBadge></td>
+                      <td>{t('searchPage.modPinyinDesc', 'Explicit pinyin search (full spell or initials)')}</td>
+                      <td><CodeBadge>py:wx</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>nopy:&lt;text&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modNopyDesc', 'Disable pinyin, match plain text only')}</td>
+                      <td><CodeBadge>nopy:wx</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>b:&lt;kw&gt;</CodeBadge> / <CodeBadge>bm:&lt;kw&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modBookmarkDesc', 'Search local browser bookmarks offline without waking index service (b:\\ still targets drive B)')}</td>
+                      <td><CodeBadge>b:github</CodeBadge>, <CodeBadge>bm:docs</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>app:&lt;name&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modAppDesc', 'Search installed Start Menu, App Paths, and portable apps offline')}</td>
+                      <td><CodeBadge>app:code</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>cmd:&lt;alias&gt;</CodeBadge></td>
+                      <td>{t('searchPage.modCmdDesc', 'Launch 35+ built-in Windows system commands offline (supports English and Pinyin aliases)')}</td>
+                      <td><CodeBadge>cmd:env</CodeBadge>, <CodeBadge>cmd:services</CodeBadge></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+          </SettingGroup>
+
+          <SettingGroup
+            title={t('searchPage.syntaxSectionRegex', 'Regular Expression Quick Reference')}
+            icon={<Code2 size={18} />}
+          >
+            <Card title={t('searchPage.regexTitle', 'Regular Expression Query (regex: or r:)')}>
+              <p className="syntax-hint-p">
+                {t('searchPage.regexHint', 'Use regex:<expr> or r:<expr> prefix to enable standard C++ ECMAScript regular expression search.')}
+              </p>
+              <div className="syntax-table-wrapper">
+                <table className="syntax-table">
+                  <thead>
+                    <tr>
+                      <th>{t('searchPage.thRegexSyntax', 'Regex Syntax')}</th>
+                      <th>{t('searchPage.thRegexRule', 'Matching Rule')}</th>
+                      <th>{t('searchPage.thRegexExample', 'Practical Example')}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><CodeBadge>a|b</CodeBadge></td>
+                      <td>{t('searchPage.regOr', 'Match expression a or b')}</td>
+                      <td><CodeBadge>r:test|debug</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>.</CodeBadge></td>
+                      <td>{t('searchPage.regAnyChar', 'Match any single character except newline')}</td>
+                      <td><CodeBadge>r:a.c\.txt</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>[abc]</CodeBadge></td>
+                      <td>{t('searchPage.regCharSet', 'Match any single character in character set')}</td>
+                      <td><CodeBadge>r:log_[0-9]\.txt</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>[^abc]</CodeBadge></td>
+                      <td>{t('searchPage.regNegSet', 'Exclude characters in character set')}</td>
+                      <td><CodeBadge>r:file_[^0-9]\.dat</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>[a-z]</CodeBadge> / <CodeBadge>[0-9]</CodeBadge></td>
+                      <td>{t('searchPage.regRange', 'Match characters within specified range')}</td>
+                      <td><CodeBadge>{'r:^[a-z]{3}_[0-9]{4}'}</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>^</CodeBadge></td>
+                      <td>{t('searchPage.regStartAnchor', 'Match start of filename (head anchor)')}</td>
+                      <td><CodeBadge>r:^Tools3000.*\.exe$</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>$</CodeBadge></td>
+                      <td>{t('searchPage.regEndAnchor', 'Match end of filename (tail anchor)')}</td>
+                      <td><CodeBadge>r:\.min\.js$</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>*</CodeBadge> / <CodeBadge>+</CodeBadge> / <CodeBadge>?</CodeBadge></td>
+                      <td>{t('searchPage.regQuantifiers', 'Match 0 or more / 1 or more / 0 or 1 time')}</td>
+                      <td><CodeBadge>r:v\d+\.\d+</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>&#123;n&#125;</CodeBadge> / <CodeBadge>&#123;n,m&#125;</CodeBadge></td>
+                      <td>{t('searchPage.regExactCount', 'Specify exact match count or range')}</td>
+                      <td><CodeBadge>r:\d&#123;4&#125;-\d&#123;2&#125;-\d&#123;2&#125;</CodeBadge></td>
+                    </tr>
+                    <tr>
+                      <td><CodeBadge>\</CodeBadge></td>
+                      <td>{t('searchPage.regEscape', 'Escape special characters (e.g. \\. matches literal dot)')}</td>
+                      <td><CodeBadge>r:archive\.(tar\.gz|zip)</CodeBadge></td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </Card>
           </SettingGroup>

@@ -112,7 +112,56 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── 快捷键总览列表 ───────────────────────────────────────────────────────── */
+/* ── 快捷键总览四域分组列表 ───────────────────────────────────────────────── */
+.general-page__hotkey-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.general-page__hotkey-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.general-page__hotkey-section + .general-page__hotkey-section {
+  padding-top: 12px;
+  border-top: 1px solid var(--card-border);
+}
+
+.general-page__hotkey-section-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 14px 4px;
+}
+
+.general-page__hotkey-section-title {
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.45;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.general-page__hotkey-section-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 999px;
+  background: var(--well-bg);
+  border: 1px solid var(--card-border);
+  color: var(--text-muted);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
 .general-page__hotkey-list {
   display: flex;
   flex-direction: column;
@@ -585,6 +634,25 @@
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.general-page__inline-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.general-page .uikit-sub-group + .uikit-setting-row {
+  border-top: 1px solid var(--hairline);
+}
+
+.general-page__danger-card {
+  border-color: color-mix(in srgb, var(--danger) 28%, var(--card-border));
+}
+
+.general-page__danger-card:hover {
+  border-color: color-mix(in srgb, var(--danger) 42%, var(--card-border));
 }
 
 @media (max-width: 720px) {

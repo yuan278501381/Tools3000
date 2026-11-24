@@ -268,3 +268,53 @@ TEST(TextExpanderMatcherTest, SlidingWindowCapDirectPathAndJsonRoundTrip) {
     EXPECT_TRUE(defaults.autoExcludeSensitiveApps);
     EXPECT_TRUE(defaults.restoreClipboard);
 }
+
+TEST(TextExpanderMatcherTest, FullwidthCjkEquivalenceMultilingualCaseAndRichMacros) {
+    using namespace tools3000::text_expander;
+
+    TextExpanderMatcher matcher;
+    TextExpanderRule cjkFlex{"cjk_flex", ";sig", "Signature", "Sig", true, tools3000::text_expander::TriggerMode::Immediate, false, 0, false, true};
+    TextExpanderRule cjkStrict{"cjk_strict", "；only", "FullwidthOnly", "Strict", true, tools3000::text_expander::TriggerMode::Immediate, false, 0, true, true};
+    TextExpanderRule ruRule{"ru_hi", ";пр", "Привет!", "Ru", true, tools3000::text_expander::TriggerMode::Immediate, false, 0, false, true};
+    TextExpanderRule delimKeep{"d_keep", "brb", "be right back[{{cursor}}]", "BRB", true, tools3000::text_expander::TriggerMode::Delimiter, false, 0, false, true};
+    matcher.setRules({cjkFlex, cjkStrict, ruRule, delimKeep});
+
+    // 1. 中日韩全角标点与全角字母智能命中半角规则 ";sig"
+    const auto fwHit = feedText(matcher, L"；ＳＩＧ");
+    ASSERT_TRUE(fwHit.has_value());
+    EXPECT_EQ(fwHit->rule.id, "cjk_flex");
+    EXPECT_EQ(fwHit->eraseCount, 4u);
+
+    // 2. 开启 fullwidthSensitive=true 时，半角 ";only" 不命中全角规则 "；only"，全角才命中
+    EXPECT_FALSE(feedText(matcher, L";only").has_value());
+    const auto strictHit = feedText(matcher, L"；only");
+    ASSERT_TRUE(strictHit.has_value());
+    EXPECT_EQ(strictHit->rule.id, "cjk_strict");
+
+    // 3. 俄语西里尔大写 "；ПР" 自动折叠全角分号与西里尔大小写命中 ";пр"
+    const auto ruHit = feedText(matcher, L"；ПР");
+    ASSERT_TRUE(ruHit.has_value());
+    EXPECT_EQ(ruHit->rule.id, "ru_hi");
+
+    // 4. Delimiter + keepDelimiter=true 保留末尾空格并自动累加 {{cursor}} 回退步数
+    const auto brbHit = feedText(matcher, L"brb ");
+    ASSERT_TRUE(brbHit.has_value());
+    ExpandedOutput brbOut = TextExpanderMatcher::expandTemplate(
+        detail::utf8ToUtf16(brbHit->rule.replacement), LocalDateTime{2026, 11, 24, 9, 5, 3}, L"");
+    TextExpanderMatcher::applyDelimiterRetention(brbOut, *brbHit);
+    EXPECT_EQ(brbOut.text, L"be right back[] ");
+    EXPECT_EQ(brbOut.moveLeftSteps, 2u); // ']' + ' '
+
+    // 5. 14 项动态宏、跨月相对日期偏移与 8 语种本地化星期验证
+    TemplateExpansionContext ctx;
+    ctx.now = LocalDateTime{2026, 11, 30, 17, 8, 9, -1, 1796058489ll}; // 2026-11-30 为星期一 (Monday)
+    ctx.clipboardText = L"  https://example.com \r\n ";
+    ctx.userName = L"alice";
+    ctx.localeCode = "ja-JP";
+
+    const auto rich = TextExpanderMatcher::expandTemplateWithContext(
+        L"{{date_compact}}|{{date_slash}}|{{time_sec}}|{{weekday}}|{{date+1d}}|{{date-30d}}|{{clipboard_trim}}|{{user}}|{{timestamp}}|{{uuid}}",
+        ctx);
+    EXPECT_NE(rich.text.find(L"20261130|2026/11/30|17:08:09|\u6708\u66DC\u65E5|2026-12-01|2026-10-31|https://example.com|alice|1796058489|"), std::wstring::npos);
+    EXPECT_GT(rich.text.size(), 110u);
+}

@@ -145,6 +145,7 @@ void TrayWindow::hide() {
             m_controller->put_IsVisible(FALSE);
         }
         m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
+        tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
     }
 }
 
@@ -438,6 +439,7 @@ void TrayWindow::initializeWebView2() {
                                         } else if (m_controller && m_webView) {
                                             m_controller->put_IsVisible(FALSE);
                                             m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
+                                            tools3000::core::WinUtils::scheduleQuietIdleTrim(3000);
                                         }
                                         return S_OK;
                                     }

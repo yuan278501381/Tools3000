@@ -373,6 +373,34 @@
   color: var(--text-secondary);
 }
 
+.fb-paste-guide-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--card-border));
+  background: var(--primary-dim);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.fb-paste-guide-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--primary);
+}
+
+.fb-bundle-path-btns {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
 .fb-bundle-path-box {
   display: flex;
   align-items: center;

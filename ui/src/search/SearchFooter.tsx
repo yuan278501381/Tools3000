@@ -40,6 +40,8 @@ export interface SearchFooterProps {
   onExportResultsToCsv: () => void;
   onToggleSyntaxHelp: () => void;
   onHide: () => void;
+  onTitlebarMouseDown?: (e: React.MouseEvent<HTMLElement>) => void;
+  onTitlebarDoubleClick?: (e: React.MouseEvent<HTMLElement>) => void;
 }
 
 export const SearchFooter: React.FC<SearchFooterProps> = ({
@@ -72,6 +74,8 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
   onExportResultsToCsv,
   onToggleSyntaxHelp,
   onHide,
+  onTitlebarMouseDown,
+  onTitlebarDoubleClick,
 }) => {
   const { t } = useTranslation();
 
@@ -149,7 +153,11 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
       : null;
 
   return (
-    <footer className="search-footer">
+    <footer
+      className="search-footer"
+      onMouseDown={onTitlebarMouseDown}
+      onDoubleClick={onTitlebarDoubleClick}
+    >
       <div className="search-footer-left">
         {sortProgress?.active ? (
           <div className="search-footer-stat-item search-footer-stat-item--stage">

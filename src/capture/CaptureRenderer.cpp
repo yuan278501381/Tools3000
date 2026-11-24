@@ -204,6 +204,13 @@ void CaptureRenderer::applyThemeColors() {
     if (!m_renderTarget) return;
 
     const auto pal = FloatingGlassBar::resolveHudPalette();
+    if (m_themeColorsInitialized &&
+        m_cachedHudDark == pal.isDark &&
+        m_infoBgBrush && m_infoTextBrush &&
+        m_borderBrush && m_crosshairBrush && m_windowHighlightBrush) {
+        return;
+    }
+
     m_renderTarget->CreateSolidColorBrush(pal.panelBg, m_infoBgBrush.ReleaseAndGetAddressOf());
     m_renderTarget->CreateSolidColorBrush(pal.primaryText, m_infoTextBrush.ReleaseAndGetAddressOf());
 
@@ -220,6 +227,8 @@ void CaptureRenderer::applyThemeColors() {
         D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f),
         m_windowHighlightBrush.ReleaseAndGetAddressOf()
     );
+    m_cachedHudDark = pal.isDark;
+    m_themeColorsInitialized = true;
 }
 
 bool CaptureRenderer::createRenderResources(CaptureState& state) {
@@ -298,6 +307,7 @@ void CaptureRenderer::releaseWindowResources() {
     m_hudPrimaryFormat.Reset();
     m_infoTextFormat.Reset();
     m_textScale = 0.0f;
+    m_themeColorsInitialized = false;
     m_renderTarget.Reset();
     m_hwnd = nullptr;
 }

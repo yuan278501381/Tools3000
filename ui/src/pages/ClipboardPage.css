@@ -9,6 +9,19 @@
   gap: 20px;
 }
 
+.clipboard-page__cascade {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.clipboard-page__row-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .clipboard-page__stats-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -29,14 +42,17 @@
 .clipboard-page__stat-label {
   font-size: 0.83rem;
   font-weight: 500;
+  line-height: 1.4;
   color: var(--text-secondary);
 }
 
 .clipboard-page__stat-value {
   font-size: 1.15rem;
   font-weight: 700;
+  line-height: 1.4;
   color: var(--text-primary);
   font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .clipboard-page__privacy-banner {
@@ -64,6 +80,19 @@
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+.clipboard-page__excluded-row {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.clipboard-page__excluded-input {
+  flex: 1;
+  min-width: 240px;
 }
 
 @container (max-width: 640px) {

@@ -1,5 +1,6 @@
 #include "core/diagnostics/FeedbackDiagnosticService.h"
 #include "core/config/ConfigManager.h"
+#include "core/hotkey/HotkeyManager.h"
 #include "core/plugin/PluginManager.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
@@ -36,7 +37,7 @@ namespace tools3000::core {
 
 namespace {
 
-constexpr const char* kGitHubIssuesNewUrl = "https://github.com/yuan278501381/tools3000/issues/new";
+constexpr const char* kGitHubIssuesNewUrl = "https://github.com/yuan278501381/Tools3000/issues/new";
 
 std::string sha256Hex(const std::string& data) {
     BCRYPT_ALG_HANDLE hAlg = nullptr;
@@ -165,6 +166,125 @@ std::string queryWindowsBuildString() {
     return "Windows (Unknown Build)";
 }
 
+std::string resolveEffectiveSupportedLocale(const std::string& configuredLang) {
+    std::string raw = configuredLang;
+    if (raw.empty() || raw == "auto") {
+        wchar_t sysLoc[LOCALE_NAME_MAX_LENGTH]{};
+        if (GetUserDefaultLocaleName(sysLoc, LOCALE_NAME_MAX_LENGTH) > 0) {
+            raw = WinUtils::wstringToUtf8(sysLoc);
+        } else {
+            raw = "en";
+        }
+    }
+    const std::string lower = WinUtils::toLower(raw);
+    if (lower.rfind("zh-tw", 0) == 0 || lower.rfind("zh-hk", 0) == 0 || lower.rfind("zh-mo", 0) == 0 || lower.find("hant") != std::string::npos) {
+        return "zh-TW";
+    }
+    if (lower.rfind("zh", 0) == 0) return "zh-CN";
+    if (lower.rfind("ja", 0) == 0) return "ja";
+    if (lower.rfind("ko", 0) == 0) return "ko";
+    if (lower.rfind("ru", 0) == 0) return "ru";
+    if (lower.rfind("pt", 0) == 0) return "pt-BR";
+    if (lower.rfind("es", 0) == 0) return "es";
+    return "en";
+}
+
+std::string buildLocalizedPasteGuideMarkdown(const std::string& effectiveLocale) {
+    if (effectiveLocale == "zh-CN") {
+        return "> **[提示] 完整脱敏诊断包（及截图）已自动复制到剪贴板**：点击下方空白处直接按 **Ctrl+V** 即可一键上传附件！";
+    }
+    if (effectiveLocale == "zh-TW") {
+        return "> **[提示] 完整去識別化診斷包（及截圖）已自動複製到剪貼簿**：點擊下方空白處直接按 **Ctrl+V** 即可一鍵上傳附件！";
+    }
+    if (effectiveLocale == "ja") {
+        return "> **[ヒント] 匿名化済み診断パック（とスクリーンショット）をクリップボードにコピーしました**：下の空欄で **Ctrl+V** を押すだけで添付できます！";
+    }
+    if (effectiveLocale == "ko") {
+        return "> **[팁] 비식별화된 진단 패키지(및 스크린샷)가 클립보드에 복사되었습니다**: 아래 빈칸에서 **Ctrl+V**를 누르면 바로 첨부됩니다!";
+    }
+    if (effectiveLocale == "ru") {
+        return "> **[Подсказка] Обезличенный диагностический архив (и скриншот) скопированы в буфер обмена** — нажмите **Ctrl+V** ниже для мгновенной загрузки!";
+    }
+    if (effectiveLocale == "pt-BR") {
+        return "> **[Dica] O pacote de diagnóstico anonimizado (e a captura) foi copiado para a área de transferência** — clique abaixo e pressione **Ctrl+V** para anexar!";
+    }
+    if (effectiveLocale == "es") {
+        return "> **[Consejo] El paquete de diagnóstico anonimizado (y la captura) está en el portapapeles** — haz clic abajo y pulsa **Ctrl+V** para adjuntarlo!";
+    }
+    return "> **[Tip] The redacted diagnostic .zip (and screenshot) has been copied to your clipboard** — click below and press **Ctrl+V** to attach them instantly!";
+}
+
+// 将原始单行日志无损浓缩为紧凑格式 (去掉重复年月日、tid 与内部 17 位 TraceID，单行信息密度提升 2.4 倍)
+std::string compactDiagnosticLogLine(std::string_view line) {
+    // 典型格式: [2026-11-24 15:09:37.028] [info] [tid:40772] [20261124-150937-03CF] 内容...
+    std::string_view cur = line;
+    std::string timePart;
+    if (cur.size() >= 25 && cur[0] == '[' && cur[11] == ' ' && cur[24] == ']') {
+        timePart = std::string(cur.substr(12, 12)); // HH:MM:SS.mmm
+        cur.remove_prefix(25);
+        while (!cur.empty() && cur.front() == ' ') cur.remove_prefix(1);
+    }
+    std::string levelShort = "I";
+    if (!cur.empty() && cur.front() == '[') {
+        const size_t close = cur.find(']');
+        if (close != std::string_view::npos && close <= 12) {
+            const std::string_view lvl = cur.substr(1, close - 1);
+            if (lvl.find("err") != std::string_view::npos || lvl.find("crit") != std::string_view::npos) levelShort = "E";
+            else if (lvl.find("warn") != std::string_view::npos) levelShort = "W";
+            else if (lvl.find("debug") != std::string_view::npos) levelShort = "D";
+            cur.remove_prefix(close + 1);
+            while (!cur.empty() && cur.front() == ' ') cur.remove_prefix(1);
+        }
+    }
+    // 跳过可选的 [tid:xxxx] 与 [YYYYMMDD-HHMMSS-XXXX]
+    for (int skip = 0; skip < 2; ++skip) {
+        if (!cur.empty() && cur.front() == '[') {
+            const size_t close = cur.find(']');
+            if (close != std::string_view::npos && close <= 24) {
+                const std::string_view tag = cur.substr(1, close - 1);
+                if (tag.rfind("tid:", 0) == 0 || (tag.size() >= 15 && tag[8] == '-')) {
+                    cur.remove_prefix(close + 1);
+                    while (!cur.empty() && cur.front() == ' ') cur.remove_prefix(1);
+                    continue;
+                }
+            }
+        }
+        break;
+    }
+    if (!timePart.empty()) {
+        return timePart + " [" + levelShort + "] " + std::string(cur);
+    }
+    return std::string(line);
+}
+
+void splitLinesAndExtractAlerts(
+    const std::string& logText,
+    std::vector<std::string>& outAllCompactLines,
+    std::vector<std::string>& outAlertLines) {
+    outAllCompactLines.clear();
+    outAlertLines.clear();
+    size_t pos = 0;
+    while (pos < logText.size()) {
+        size_t nl = logText.find('\n', pos);
+        if (nl == std::string::npos) nl = logText.size();
+        std::string_view line(logText.data() + pos, nl - pos);
+        if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+        if (!line.empty()) {
+            std::string compact = compactDiagnosticLogLine(line);
+            const bool isAlert =
+                line.find("[warning]") != std::string_view::npos ||
+                line.find("[warn]") != std::string_view::npos ||
+                line.find("[error]") != std::string_view::npos ||
+                line.find("[critical]") != std::string_view::npos;
+            if (isAlert) {
+                outAlertLines.push_back(compact);
+            }
+            outAllCompactLines.push_back(std::move(compact));
+        }
+        pos = nl + 1;
+    }
+}
+
 json collectSanitizedEnvironmentSnapshot() {
     json monitors = json::array();
     EnumDisplayMonitors(
@@ -212,16 +332,28 @@ json collectSanitizedEnvironmentSnapshot() {
 #endif
 
     auto& cfg = ConfigManager::instance();
+    const std::string cfgLang = cfg.get<std::string>("/general/language", "auto");
+    const std::string effectiveLocale = resolveEffectiveSupportedLocale(cfgLang);
+
+    size_t hotkeyTotal = 0;
+    size_t hotkeyConflicts = 0;
+    for (const auto& hk : HotkeyManager::instance().getAllHotkeys()) {
+        ++hotkeyTotal;
+        if (hk.conflict) ++hotkeyConflicts;
+    }
+
     return {
         {"appVersion", tools3000::version::String},
         {"arch", arch},
         {"portableMode", WinUtils::isPortableMode()},
         {"elevated", WinUtils::isCurrentProcessElevated()},
         {"os", queryWindowsBuildString()},
-        {"language", cfg.get<std::string>("/general/language", "auto")},
+        {"language", cfgLang},
+        {"effectiveLocale", effectiveLocale},
         {"theme", cfg.get<std::string>("/general/theme", "system")},
         {"monitors", std::move(monitors)},
         {"enabledPlugins", std::move(enabledPlugins)},
+        {"hotkeys", {{"total", hotkeyTotal}, {"conflicts", hotkeyConflicts}}},
         {"hostMemoryMb", {{"workingSet", wsMb}, {"private", privMb}}}
     };
 }
@@ -615,6 +747,12 @@ FeedbackBundlePreview FeedbackDiagnosticService::buildDiagnosticPreview(
         (input.feedbackType == "performance") ? "Performance / Memory" :
         (input.feedbackType == "other") ? "General Feedback" : "Bug Report";
 
+    std::vector<std::string> allCompactLines;
+    std::vector<std::string> alertLines;
+    if (input.includeLogs && !preview.redactedMainLog.empty()) {
+        splitLinesAndExtractAlerts(preview.redactedMainLog, allCompactLines, alertLines);
+    }
+
     std::ostringstream md;
     md << "## [" << typeTag << "] " << (input.title.empty() ? "User Feedback" : input.title) << "\n\n";
     md << "### Description\n" << (descRed.redactedText.empty() ? "(No description provided)" : descRed.redactedText) << "\n\n";
@@ -622,9 +760,16 @@ FeedbackBundlePreview FeedbackDiagnosticService::buildDiagnosticPreview(
         md << "### Steps to Reproduce\n" << stepsRed.redactedText << "\n\n";
     }
     md << "### Environment Snapshot\n```json\n" << preview.environment.dump(2, ' ', false, json::error_handler_t::replace) << "\n```\n\n";
+    if (!alertLines.empty()) {
+        md << "### Warnings & Errors\n```text\n";
+        const size_t startAlert = alertLines.size() > 15 ? alertLines.size() - 15 : 0;
+        for (size_t i = startAlert; i < alertLines.size(); ++i) {
+            md << alertLines[i] << '\n';
+        }
+        md << "```\n\n";
+    }
     if (input.includeLogs && !preview.redactedMainLog.empty()) {
-        // Markdown 内保留末 2400 字节日志摘录（严格按 UTF-8 码点与整行边界截断），完整最近 1000 行随 .zip / 中继传输
-        const size_t tailKeep = 2400;
+        const size_t tailKeep = 4800;
         const std::string excerpt = WinUtils::truncateUtf8Tail(
             preview.redactedMainLog, tailKeep, /*alignToLineStart=*/true);
         md << "### Redacted Log Excerpt\n```text\n" << excerpt << "\n```\n";
@@ -635,21 +780,93 @@ FeedbackBundlePreview FeedbackDiagnosticService::buildDiagnosticPreview(
     }
     preview.markdownReport = WinUtils::sanitizeUtf8(md.str());
 
-    // 预填 GitHub Issue URL（按 UTF-8 码点边界安全截断，保持 <= 3500 字符安全打开）
+    // 预填 GitHub Issue URL（严格保尾部最新日志、独立提纯报错、闭合 Markdown 块，并附 8 语种 Ctrl+V 粘贴引导）
     const std::string issueTitle = WinUtils::sanitizeUtf8(
         "[" + typeTag + "] " + (input.title.empty() ? "Feedback" : input.title));
-    std::string bodyForUrl = preview.markdownReport;
-    if (bodyForUrl.size() > 2600) {
-        bodyForUrl = WinUtils::truncateUtf8Head(bodyForUrl, 2600);
-        bodyForUrl += "\n\n...(truncated, please attach the exported Tools3000 diagnostic .zip bundle)";
-    }
     const std::string labelParam =
         (input.feedbackType == "feature") ? "enhancement" :
         (input.feedbackType == "performance") ? "performance" : "bug";
-    preview.githubIssueUrl = std::string(kGitHubIssuesNewUrl) +
+    const std::string urlPrefix = std::string(kGitHubIssuesNewUrl) +
         "?labels=" + urlEncodeComponent(labelParam) +
-        "&title=" + urlEncodeComponent(issueTitle) +
-        "&body=" + urlEncodeComponent(bodyForUrl);
+        "&title=" + urlEncodeComponent(WinUtils::truncateUtf8Head(issueTitle, 180)) +
+        "&body=";
+
+    const std::string effectiveLocale = preview.environment.value("effectiveLocale", std::string("en"));
+    const std::string pasteGuide = buildLocalizedPasteGuideMarkdown(effectiveLocale);
+
+    const std::string safeDesc = descRed.redactedText.empty()
+        ? "(No description provided)"
+        : WinUtils::truncateUtf8Head(descRed.redactedText, 1500);
+    const std::string safeSteps = stepsRed.redactedText.empty()
+        ? ""
+        : WinUtils::truncateUtf8Head(stepsRed.redactedText, 600);
+
+    std::ostringstream urlHead;
+    urlHead << "### Description\n" << safeDesc << "\n\n";
+    if (!safeSteps.empty()) {
+        urlHead << "### Steps to Reproduce\n" << safeSteps << "\n\n";
+    }
+    urlHead << "### Environment Snapshot\n```json\n"
+            << preview.environment.dump(-1, ' ', false, json::error_handler_t::replace)
+            << "\n```\n\n";
+
+    if (input.includeLogs && !preview.redactedLatestCrash.empty()) {
+        urlHead << "### Latest Crash Summary\n```text\n"
+                << WinUtils::truncateUtf8Head(preview.redactedLatestCrash, 500)
+                << "\n```\n\n";
+    }
+
+    if (!alertLines.empty()) {
+        urlHead << "### Warnings & Errors\n```text\n";
+        const size_t startIdx = alertLines.size() > 10 ? alertLines.size() - 10 : 0;
+        for (size_t i = startIdx; i < alertLines.size(); ++i) {
+            urlHead << WinUtils::truncateUtf8Head(alertLines[i], 220) << '\n';
+        }
+        urlHead << "```\n\n";
+    }
+
+    const std::string fixedHead = WinUtils::sanitizeUtf8(urlHead.str());
+    const std::string fixedFoot = "\n" + pasteGuide + "\n\n";
+
+    constexpr size_t kMaxTotalUrlChars = 7000;
+    const size_t baseEncodedLen =
+        urlPrefix.size() + urlEncodeComponent(fixedHead).size() + urlEncodeComponent(fixedFoot).size();
+
+    std::string traceSection;
+    if (!allCompactLines.empty() && baseEncodedLen + 220 < kMaxTotalUrlChars) {
+        const std::string traceOpen = "<details open>\n<summary>Recent Runtime Trace (Latest First-hand Context)</summary>\n\n```text\n";
+        const std::string traceClose = "```\n</details>\n";
+        size_t usedBudget = baseEncodedLen + urlEncodeComponent(traceOpen).size() + urlEncodeComponent(traceClose).size();
+
+        std::deque<std::string> chosenTail;
+        const size_t maxLinesToScan = (std::min)(allCompactLines.size(), static_cast<size_t>(45));
+        for (size_t k = 0; k < maxLinesToScan; ++k) {
+            const std::string& rawLine = allCompactLines[allCompactLines.size() - 1 - k];
+            const std::string clippedLine = WinUtils::truncateUtf8Head(rawLine, 220) + "\n";
+            const size_t encodedLineCost = urlEncodeComponent(clippedLine).size();
+            if (usedBudget + encodedLineCost > kMaxTotalUrlChars) {
+                break;
+            }
+            chosenTail.push_front(clippedLine);
+            usedBudget += encodedLineCost;
+        }
+
+        if (!chosenTail.empty()) {
+            std::ostringstream ts;
+            ts << traceOpen;
+            for (const auto& ln : chosenTail) {
+                ts << ln;
+            }
+            ts << traceClose;
+            traceSection = WinUtils::sanitizeUtf8(ts.str());
+        }
+    }
+
+    std::string bodyForUrl = fixedHead + traceSection + fixedFoot;
+    if (urlPrefix.size() + urlEncodeComponent(bodyForUrl).size() > 7600) {
+        bodyForUrl = WinUtils::truncateUtf8Head(fixedHead, 1800) + fixedFoot;
+    }
+    preview.githubIssueUrl = urlPrefix + urlEncodeComponent(bodyForUrl);
 
     return preview;
 }
@@ -796,12 +1013,135 @@ FeedbackSubmitOutcome FeedbackDiagnosticService::submitFeedback(const FeedbackSu
         outcome.ok = true;
         outcome.mode = "fallback_local";
         outcome.exportedBundlePath = WinUtils::pathToUtf8(zipPath);
+
+        // 若用户附带了截图，同步落地一份独立图片文件并与 .zip 一并写入剪贴板 CF_HDROP，
+        // 用户在 GitHub Issue 编辑框按一次 Ctrl+V 即可同时上传内联预览图与 .zip 诊断包
+        std::filesystem::path standaloneImgPath;
+        if (!input.screenshotDataUri.empty()) {
+            const size_t comma = input.screenshotDataUri.find(',');
+            if (comma != std::string::npos) {
+                const std::string header = input.screenshotDataUri.substr(0, comma);
+                const std::string decoded = decodeBase64Payload(
+                    std::string_view(input.screenshotDataUri).substr(comma + 1));
+                if (!decoded.empty() && decoded.size() <= 8u * 1024u * 1024u) {
+                    const std::wstring extW =
+                        (header.find("jpeg") != std::string::npos || header.find("jpg") != std::string::npos)
+                            ? L".jpg"
+                            : L".png";
+                    const std::filesystem::path tempDir = WinUtils::getAppDataDirectory() / L"feedback";
+                    std::error_code dirEc;
+                    std::filesystem::create_directories(tempDir, dirEc);
+                    const std::filesystem::path candidateImg =
+                        tempDir / (L"Tools3000_Screenshot_" + std::wstring(stamp) + extW);
+                    if (WinUtils::atomicWriteFileWithFlush(candidateImg.wstring(), decoded)) {
+                        standaloneImgPath = candidateImg;
+                        outcome.exportedScreenshotPath = WinUtils::pathToUtf8(standaloneImgPath);
+                    }
+                }
+            }
+        } else if (!input.screenshotPath.empty()) {
+            const std::filesystem::path p = WinUtils::utf8ToPath(input.screenshotPath);
+            std::error_code ec;
+            if (std::filesystem::is_regular_file(p, ec)) {
+                standaloneImgPath = p;
+                outcome.exportedScreenshotPath = input.screenshotPath;
+            }
+        }
+
+        outcome.copiedToClipboard = copyDiagnosticFilesToClipboard(zipPath, standaloneImgPath);
     } else {
         outcome.ok = false;
         outcome.mode = "fallback_local";
         outcome.errorMessage = zipErr;
     }
     return outcome;
+}
+
+bool FeedbackDiagnosticService::copyDiagnosticFilesToClipboard(
+    const std::filesystem::path& bundleZipPath,
+    const std::filesystem::path& optionalScreenshotPath) {
+    std::vector<std::wstring> files;
+    std::error_code ec;
+    if (!optionalScreenshotPath.empty() && std::filesystem::is_regular_file(optionalScreenshotPath, ec) && !ec) {
+        files.push_back(optionalScreenshotPath.wstring());
+    }
+    ec.clear();
+    if (!bundleZipPath.empty() && std::filesystem::is_regular_file(bundleZipPath, ec) && !ec) {
+        files.push_back(bundleZipPath.wstring());
+    }
+    if (files.empty()) {
+        return false;
+    }
+
+    size_t totalChars = 1u;
+    for (const auto& f : files) {
+        totalChars += f.size() + 1u;
+    }
+    const size_t dropBytes = sizeof(DROPFILES) + totalChars * sizeof(wchar_t);
+    HGLOBAL hDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, dropBytes);
+    if (!hDrop) return false;
+    auto* df = static_cast<DROPFILES*>(GlobalLock(hDrop));
+    if (!df) {
+        GlobalFree(hDrop);
+        return false;
+    }
+    df->pFiles = sizeof(DROPFILES);
+    df->fWide = TRUE;
+    wchar_t* cursor = reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(df) + sizeof(DROPFILES));
+    for (const auto& f : files) {
+        std::memcpy(cursor, f.c_str(), (f.size() + 1u) * sizeof(wchar_t));
+        cursor += f.size() + 1u;
+    }
+    *cursor = L'\0';
+    GlobalUnlock(hDrop);
+
+    bool opened = false;
+    for (int i = 0; i < 6; ++i) {
+        if (OpenClipboard(nullptr) != FALSE) {
+            opened = true;
+            break;
+        }
+        Sleep(12);
+    }
+    if (!opened) {
+        GlobalFree(hDrop);
+        return false;
+    }
+
+    if (EmptyClipboard() == FALSE) {
+        CloseClipboard();
+        GlobalFree(hDrop);
+        return false;
+    }
+
+    if (!SetClipboardData(CF_HDROP, hDrop)) {
+        CloseClipboard();
+        GlobalFree(hDrop);
+        return false;
+    }
+
+    // 挂载系统剪贴板隐私排除标记，避免诊断包自身污染用户的 Tools3000 剪贴板历史
+    auto setFlagDword = [](const wchar_t* fmtName, DWORD val) {
+        const UINT fmt = RegisterClipboardFormatW(fmtName);
+        if (fmt == 0) return;
+        HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+        if (!hMem) return;
+        if (void* p = GlobalLock(hMem)) {
+            std::memcpy(p, &val, sizeof(DWORD));
+            GlobalUnlock(hMem);
+            if (!SetClipboardData(fmt, hMem)) {
+                GlobalFree(hMem);
+            }
+        } else {
+            GlobalFree(hMem);
+        }
+    };
+    setFlagDword(L"ExcludeClipboardContentFromMonitorProcessing", 1u);
+    setFlagDword(L"CanIncludeInClipboardHistory", 0u);
+    setFlagDword(L"Clipboard Viewer Ignore", 0u);
+
+    CloseClipboard();
+    return true;
 }
 
 std::string FeedbackDiagnosticService::getGitHubNewIssueBaseUrl() {

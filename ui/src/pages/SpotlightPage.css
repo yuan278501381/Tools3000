@@ -1,8 +1,9 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * SpotlightPage.css — 寻找鼠标与演示特效视觉样式
+ * SpotlightPage.css — 寻找鼠标与演示特效视觉样式 (@container 自适应)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .spotlight-page {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
@@ -10,24 +11,10 @@
   animation: fadeIn 0.25s ease-out;
 }
 
-.spotlight-page__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--spacing-sm);
-}
-
-.spotlight-page__title-wrap {
+.spotlight-page__cascade {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-}
-
-.spotlight-page__title {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+  gap: var(--spacing-lg);
 }
 
 .spotlight-page__grid {
@@ -40,13 +27,13 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
-@container app-canvas (max-width: 780px) {
+@container (max-width: 780px) {
   .spotlight-page__grid--three {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-@container app-canvas (max-width: 640px) {
+@container (max-width: 640px) {
   .spotlight-page__grid {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -69,6 +56,10 @@
   background: var(--card-hover);
 }
 
+.spotlight-page__prop-card--surface {
+  background: var(--card-bg);
+}
+
 .spotlight-page__prop-header {
   display: flex;
   flex-direction: column;
@@ -78,11 +69,13 @@
 .spotlight-page__prop-title {
   font-size: 0.95rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
 .spotlight-page__prop-desc {
   font-size: 0.83rem;
+  font-weight: 500;
   color: var(--text-secondary);
   line-height: 1.45;
 }
@@ -108,6 +101,10 @@
   gap: 3px;
 }
 
+.spotlight-page__capsule-wrap--narrow {
+  max-width: 380px;
+}
+
 .spotlight-page__capsule-btn {
   flex: 1;
   min-width: 0;
@@ -122,6 +119,7 @@
   color: var(--text-secondary);
   font-size: 0.83rem;
   font-weight: 550;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -165,8 +163,9 @@
   border: 1px solid var(--well-border);
   background: var(--well-bg);
   color: var(--text-secondary);
-  font-size: var(--text-xs, 0.84rem);
+  font-size: var(--text-xs);
   font-weight: 550;
+  line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -176,26 +175,6 @@
   background: var(--thumb-bg);
   border-color: color-mix(in srgb, var(--primary) 36%, var(--well-border));
   color: var(--text-primary);
-}
-
-.spotlight-page__number-input {
-  width: 100%;
-  max-width: 140px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--input-border);
-  background: var(--input-bg);
-  color: var(--text-primary);
-  font-size: 0.95rem;
-  font-weight: 600;
-  font-family: inherit;
-  transition: border-color 0.15s ease;
-}
-
-.spotlight-page__number-input:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-dim);
 }
 
 .spotlight-page__color-row {
@@ -209,6 +188,7 @@
   font-family: var(--font-mono);
   font-size: 0.88rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
@@ -254,13 +234,13 @@
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-@container app-canvas (max-width: 720px) {
+@container (max-width: 720px) {
   .spotlight-page__style-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
-@container app-canvas (max-width: 500px) {
+@container (max-width: 500px) {
   .spotlight-page__style-grid,
   .spotlight-page__style-grid--two {
     grid-template-columns: minmax(0, 1fr);
@@ -300,6 +280,7 @@
   color: var(--text-primary);
   font-size: 0.92rem;
   font-weight: 600;
+  line-height: 1.4;
   letter-spacing: -0.01em;
 }
 
@@ -309,34 +290,35 @@
 
 .spotlight-page__style-card-desc {
   font-size: 0.84rem;
+  font-weight: 500;
   color: var(--text-muted);
   line-height: 1.45;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * 内嵌从属面板 (Nested Inset Sub-Panel) 打造世界级空间层次
- * ───────────────────────────────────────────────────────────────────────────── */
-.spotlight-page__inset-panel {
-  margin-top: 14px;
-  padding: 16px;
-  background: var(--input-bg);
-  border: 1px solid var(--input-border);
-  border-radius: var(--radius-md);
+/* ── 子面板块间距与分隔 ─────────────────────────────────────────────────── */
+.spotlight-page__sub-stack {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  animation: fadeIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  padding: 6px 0;
+}
+
+.spotlight-page__sub-divider {
+  padding-top: 12px;
+  border-top: 1px solid var(--card-border);
 }
 
 .spotlight-page__section-label {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  margin-bottom: 10px;
 }
 
 .spotlight-page__section-title {
   font-size: 0.9rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
   display: flex;
   align-items: center;
@@ -345,6 +327,7 @@
 
 .spotlight-page__section-desc {
   font-size: 0.83rem;
+  font-weight: 500;
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -352,7 +335,8 @@
 .spotlight-page__action-footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 12px;
-  padding-top: var(--spacing-md);
+  padding-top: var(--spacing-xs);
+  border-top: 1px solid var(--card-border);
 }

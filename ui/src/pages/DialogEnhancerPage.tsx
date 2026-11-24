@@ -3,7 +3,19 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, ConfirmModal, PageSkeleton } from '../components/UIKit';
+import {
+  Card,
+  Toggle,
+  SettingRow,
+  SettingGroup,
+  SubSettingGroup,
+  DisabledCascade,
+  Select,
+  Button,
+  CodeBadge,
+  ConfirmModal,
+  PageSkeleton,
+} from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -296,208 +308,217 @@ export const DialogEnhancerPage: FC = () => {
             checked={config.enabled}
             onChange={(v) => updateConfig({ enabled: v })}
           />
-          <Toggle
-            id="dialog-per-app"
-            label={t('dialog.perAppMemory')}
-            description={t('dialog.perAppMemoryDesc')}
-            checked={config.perAppMemory}
-            disabled={!config.enabled}
-            onChange={(v) => updateConfig({ perAppMemory: v })}
-          />
         </Card>
       </SettingGroup>
 
-      {/* 2. 文件对话框快捷工具条与内嵌即搜 */}
-      <SettingGroup title={t('dialog.ribbonGroup')} icon={<Sparkles size={18} />}>
-        <Card>
-          <Toggle
-            id="dialog-ribbon-enable"
-            label={t('dialog.ribbonEnabled')}
-            description={t('dialog.ribbonEnabledDesc')}
-            checked={config.ribbonEnabled}
-            disabled={!config.enabled}
-            onChange={(v) => updateConfig({ ribbonEnabled: v })}
-          />
-          <div
-            className={`dialog-ribbon-options ${!config.enabled || !config.ribbonEnabled ? 'dialog-ribbon-options--disabled' : ''}`}
-            aria-label={t('dialog.ribbonOptions')}
-          >
-            <div className="dialog-ribbon-options__title">{t('dialog.ribbonOptions')}</div>
-            <Toggle
-              id="dialog-inline-search"
-              label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump (Ctrl+G)')}
-              description={t(
-                'dialog.inlineSearchEnabledDesc',
-                'Click the search icon or press Ctrl+G inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
-              )}
-              checked={config.inlineSearchEnabled}
-              disabled={!config.enabled || !config.ribbonEnabled}
-              onChange={(v) => updateConfig({ inlineSearchEnabled: v })}
-            />
-            <Toggle
-              id="dialog-quick-switch"
-              label={t('dialog.quickSwitch')}
-              description={t('dialog.quickSwitchDesc')}
-              checked={config.quickSwitch}
-              disabled={!config.enabled || !config.ribbonEnabled}
-              onChange={(v) => updateConfig({ quickSwitch: v })}
-            />
-            <SettingRow label={t('dialog.ribbonPosition')}>
-              <Select
-                id="dialog-ribbon-pos"
-                value={config.ribbonPosition}
-                disabled={!config.enabled || !config.ribbonEnabled}
-                options={[
-                  { value: 'top-right', label: t('dialog.ribbonPositionTopRight') },
-                  { value: 'top-center', label: t('dialog.ribbonPositionTopCenter') },
-                  { value: 'bottom-right', label: t('dialog.ribbonPositionBottomRight', 'Bottom Right') },
-                  { value: 'bottom-center', label: t('dialog.ribbonPositionBottomCenter', 'Bottom Center') },
-                ]}
-                onChange={(v) => updateConfig({ ribbonPosition: v })}
+      <DisabledCascade disabled={!config.enabled}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+          {/* 2. 文件对话框快捷工具条与内嵌即搜 */}
+          <SettingGroup title={t('dialog.ribbonGroup')} icon={<Sparkles size={18} />}>
+            <Card>
+              <Toggle
+                id="dialog-ribbon-enable"
+                label={t('dialog.ribbonEnabled')}
+                description={t('dialog.ribbonEnabledDesc')}
+                checked={config.ribbonEnabled}
+                disabled={!config.enabled}
+                onChange={(v) => updateConfig({ ribbonEnabled: v })}
               />
-            </SettingRow>
-          </div>
-        </Card>
-      </SettingGroup>
+              <SubSettingGroup disabled={!config.enabled || !config.ribbonEnabled}>
+                <Toggle
+                  id="dialog-inline-search"
+                  label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump (Ctrl+G)')}
+                  description={t(
+                    'dialog.inlineSearchEnabledDesc',
+                    'Click the search icon or press Ctrl+G inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
+                  )}
+                  checked={config.inlineSearchEnabled}
+                  disabled={!config.enabled || !config.ribbonEnabled}
+                  onChange={(v) => updateConfig({ inlineSearchEnabled: v })}
+                />
+                <Toggle
+                  id="dialog-quick-switch"
+                  label={t('dialog.quickSwitch')}
+                  description={t('dialog.quickSwitchDesc')}
+                  checked={config.quickSwitch}
+                  disabled={!config.enabled || !config.ribbonEnabled}
+                  onChange={(v) => updateConfig({ quickSwitch: v })}
+                />
+                <SettingRow label={t('dialog.ribbonPosition')}>
+                  <Select
+                    id="dialog-ribbon-pos"
+                    value={config.ribbonPosition}
+                    disabled={!config.enabled || !config.ribbonEnabled}
+                    options={[
+                      { value: 'top-right', label: t('dialog.ribbonPositionTopRight') },
+                      { value: 'top-center', label: t('dialog.ribbonPositionTopCenter') },
+                      { value: 'bottom-right', label: t('dialog.ribbonPositionBottomRight', 'Bottom Right') },
+                      { value: 'bottom-center', label: t('dialog.ribbonPositionBottomCenter', 'Bottom Center') },
+                    ]}
+                    onChange={(v) => updateConfig({ ribbonPosition: v })}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
+            </Card>
+          </SettingGroup>
 
-      {/* 3. 常用工作区收藏 */}
-      <SettingGroup title={t('dialog.favoritesGroup')} icon={<Star size={18} />}>
-        <Card subtitle={t('dialog.favoritesDesc')}>
-          <div className="dialog-add-row">
-            <input
-              type="text"
-              className="dialog-input"
-              placeholder={t('dialog.enterPath')}
-              value={newFavoriteInput}
-              onChange={(e) => setNewFavoriteInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && void handleAddFavorite()}
-            />
-            <Button variant="ghost" onClick={() => void handleBrowseFavorite()} title={t('dialog.browseFolder')}>
-              <FolderOpen size={16} /> {t('dialog.browseFolder')}
-            </Button>
-            <Button variant="primary" onClick={() => void handleAddFavorite()}>
-              <Plus size={16} /> {t('common.add')}
-            </Button>
-          </div>
+          {/* 3. 常用工作区收藏 */}
+          <SettingGroup title={t('dialog.favoritesGroup')} icon={<Star size={18} />}>
+            <Card subtitle={t('dialog.favoritesDesc')}>
+              <div className="dialog-add-row">
+                <input
+                  type="text"
+                  className="dialog-input"
+                  placeholder={t('dialog.enterPath')}
+                  value={newFavoriteInput}
+                  onChange={(e) => setNewFavoriteInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && void handleAddFavorite()}
+                />
+                <Button variant="ghost" onClick={() => void handleBrowseFavorite()} title={t('dialog.browseFolder')}>
+                  <FolderOpen size={16} /> {t('dialog.browseFolder')}
+                </Button>
+                <Button variant="primary" onClick={() => void handleAddFavorite()}>
+                  <Plus size={16} /> {t('common.add')}
+                </Button>
+              </div>
 
-          <div className="dialog-list">
-            {favorites.length === 0 ? (
-              <div className="dialog-empty">{t('dialog.noFavorites')}</div>
-            ) : (
-              favorites.map((fav) => (
-                <div key={fav} className="dialog-list-item">
-                  <div className="dialog-item-icon">
-                    <FolderHeart size={16} />
-                  </div>
-                  <div className="dialog-item-text" title={fav}>
-                    <CodeBadge>{fav}</CodeBadge>
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="dialog-btn-danger"
-                    title={t('common.delete')}
-                    aria-label={t('common.delete')}
-                    onClick={() => handleRemoveFavorite(fav)}
-                  >
-                    <Trash2 size={14} />
-                  </Button>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-      </SettingGroup>
+              <div className="dialog-list">
+                {favorites.length === 0 ? (
+                  <div className="dialog-empty">{t('dialog.noFavorites')}</div>
+                ) : (
+                  favorites.map((fav) => (
+                    <div key={fav} className="dialog-list-item">
+                      <div className="dialog-item-icon">
+                        <FolderHeart size={16} />
+                      </div>
+                      <div className="dialog-item-text" title={fav}>
+                        <CodeBadge>{fav}</CodeBadge>
+                      </div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="dialog-btn-danger"
+                        title={t('common.delete')}
+                        aria-label={t('common.delete')}
+                        onClick={() => handleRemoveFavorite(fav)}
+                      >
+                        <Trash2 size={14} />
+                      </Button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </Card>
+          </SettingGroup>
 
-      {/* 4. 已记忆的应用路径表 */}
-      <SettingGroup title={t('dialog.appMemoriesGroup')} icon={<History size={18} />}>
-        <Card subtitle={t('dialog.appMemoriesDesc')}>
-          {appMemories.length > 0 && (
-            <div className="dialog-memories-toolbar">
-              <Button variant="ghost" size="sm" onClick={() => setConfirmClearMemoriesOpen(true)}>
-                <Trash2 size={14} /> {t('dialog.clearAllMemories')}
-              </Button>
-            </div>
-          )}
-          <div className="dialog-memories-table">
-            {appMemories.length === 0 ? (
-              <div className="dialog-empty">{t('dialog.noMemories')}</div>
-            ) : (
-              appMemories.map((item) => (
-                <div key={item.processName} className="dialog-memory-row">
-                  <div className="dialog-memory-proc">
-                    <CodeBadge className="dialog-proc-badge">{item.processName}</CodeBadge>
-                    {item.isFixed && (
-                      <span className="dialog-fixed-badge">{t('dialog.fixedBadge')}</span>
-                    )}
-                  </div>
-                  <div className="dialog-memory-path" title={item.isFixed ? item.fixedWorkspace : item.lastPath}>
-                    <CodeBadge>{item.isFixed ? item.fixedWorkspace : item.lastPath}</CodeBadge>
-                  </div>
-                  <div className="dialog-memory-time">{formatTime(item.lastUsedTimestamp)}</div>
-                  <div className="dialog-memory-action">
+          {/* 4. 已记忆的应用路径表（父子同处一卡） */}
+          <SettingGroup title={t('dialog.appMemoriesGroup')} icon={<History size={18} />}>
+            <Card subtitle={t('dialog.appMemoriesDesc')}>
+              <Toggle
+                id="dialog-per-app"
+                label={t('dialog.perAppMemory')}
+                description={t('dialog.perAppMemoryDesc')}
+                checked={config.perAppMemory}
+                disabled={!config.enabled}
+                onChange={(v) => updateConfig({ perAppMemory: v })}
+              />
+              <SubSettingGroup disabled={!config.enabled || !config.perAppMemory}>
+                {appMemories.length > 0 && (
+                  <div className="dialog-memories-toolbar">
                     <Button
                       variant="ghost"
                       size="sm"
-                      title={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
-                      aria-label={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
-                      onClick={() => handleTogglePinWorkspace(item)}
+                      disabled={!config.enabled || !config.perAppMemory}
+                      onClick={() => setConfirmClearMemoriesOpen(true)}
                     >
-                      {item.isFixed ? <PinOff size={14} /> : <Pin size={14} />}
+                      <Trash2 size={14} /> {t('dialog.clearAllMemories')}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="dialog-btn-danger"
+                  </div>
+                )}
+                <div className="dialog-memories-table">
+                  {appMemories.length === 0 ? (
+                    <div className="dialog-empty">{t('dialog.noMemories')}</div>
+                  ) : (
+                    appMemories.map((item) => (
+                      <div key={item.processName} className="dialog-memory-row">
+                        <div className="dialog-memory-proc">
+                          <CodeBadge className="dialog-proc-badge">{item.processName}</CodeBadge>
+                          {item.isFixed && (
+                            <span className="dialog-fixed-badge">{t('dialog.fixedBadge')}</span>
+                          )}
+                        </div>
+                        <div className="dialog-memory-path" title={item.isFixed ? item.fixedWorkspace : item.lastPath}>
+                          <CodeBadge>{item.isFixed ? item.fixedWorkspace : item.lastPath}</CodeBadge>
+                        </div>
+                        <div className="dialog-memory-time">{formatTime(item.lastUsedTimestamp)}</div>
+                        <div className="dialog-memory-action">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!config.enabled || !config.perAppMemory}
+                            title={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
+                            aria-label={item.isFixed ? t('dialog.unpinWorkspace') : t('dialog.pinWorkspace')}
+                            onClick={() => handleTogglePinWorkspace(item)}
+                          >
+                            {item.isFixed ? <PinOff size={14} /> : <Pin size={14} />}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            disabled={!config.enabled || !config.perAppMemory}
+                            className="dialog-btn-danger"
+                            title={t('common.delete')}
+                            aria-label={t('common.delete')}
+                            onClick={() => handleRemoveAppMemory(item.processName)}
+                          >
+                            <Trash2 size={14} />
+                          </Button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </SubSettingGroup>
+            </Card>
+          </SettingGroup>
+
+          {/* 5. 排除黑名单 */}
+          <SettingGroup title={t('dialog.blacklistGroup')} icon={<ShieldAlert size={18} />}>
+            <Card subtitle={t('dialog.blacklistDesc')}>
+              <div className="dialog-add-row">
+                <input
+                  type="text"
+                  className="dialog-input"
+                  placeholder={t('dialog.enterProcessName')}
+                  value={newBlacklistInput}
+                  onChange={(e) => setNewBlacklistInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleAddBlacklist()}
+                />
+                <Button variant="primary" onClick={handleAddBlacklist}>
+                  <Plus size={16} /> {t('common.add')}
+                </Button>
+              </div>
+
+              <div className="dialog-chips">
+                {blacklist.map((proc) => (
+                  <div key={proc} className="dialog-chip">
+                    <CodeBadge>{proc}</CodeBadge>
+                    <button
+                      type="button"
+                      className="dialog-chip-remove"
                       title={t('common.delete')}
                       aria-label={t('common.delete')}
-                      onClick={() => handleRemoveAppMemory(item.processName)}
+                      onClick={() => handleRemoveBlacklist(proc)}
                     >
-                      <Trash2 size={14} />
-                    </Button>
+                      <X size={13} aria-hidden="true" />
+                    </button>
                   </div>
-                </div>
-              ))
-            )}
-          </div>
-        </Card>
-      </SettingGroup>
-
-      {/* 5. 排除黑名单 */}
-      <SettingGroup title={t('dialog.blacklistGroup')} icon={<ShieldAlert size={18} />}>
-        <Card subtitle={t('dialog.blacklistDesc')}>
-          <div className="dialog-add-row">
-            <input
-              type="text"
-              className="dialog-input"
-              placeholder={t('dialog.enterProcessName')}
-              value={newBlacklistInput}
-              onChange={(e) => setNewBlacklistInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleAddBlacklist()}
-            />
-            <Button variant="primary" onClick={handleAddBlacklist}>
-              <Plus size={16} /> {t('common.add')}
-            </Button>
-          </div>
-
-          <div className="dialog-chips">
-            {blacklist.map((proc) => (
-              <div key={proc} className="dialog-chip">
-                <CodeBadge>{proc}</CodeBadge>
-                <button
-                  type="button"
-                  className="dialog-chip-remove"
-                  title={t('common.delete')}
-                  aria-label={t('common.delete')}
-                  onClick={() => handleRemoveBlacklist(proc)}
-                >
-                  <X size={13} aria-hidden="true" />
-                </button>
+                ))}
               </div>
-            ))}
-          </div>
-        </Card>
-      </SettingGroup>
+            </Card>
+          </SettingGroup>
+        </div>
+      </DisabledCascade>
 
       <ConfirmModal
         open={confirmClearMemoriesOpen}

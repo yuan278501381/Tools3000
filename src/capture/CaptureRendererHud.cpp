@@ -1745,17 +1745,19 @@ void CaptureRenderer::render(CaptureState& state) {
             float r = state.detectedWindowCornerRadius * scale;
             auto roundedWin = D2D1::RoundedRect(winRect, r, r);
 
-            // 窗口区域采用圆角几何裁剪透出原始画面（去掉变暗效果）
+            // 窗口区域采用圆角几何裁剪透出原始画面（复用会话级 m_markupClipLayer，彻底消灭 1000Hz 预选悬停每帧新建/销毁 GPU 离屏层纹理）
             if (hasScreenContent() && m_d2dFactory) {
                 ComPtr<ID2D1RoundedRectangleGeometry> geo;
                 if (SUCCEEDED(m_d2dFactory->CreateRoundedRectangleGeometry(roundedWin, geo.GetAddressOf())) && geo) {
-                    ComPtr<ID2D1Layer> layer;
-                    if (SUCCEEDED(m_renderTarget->CreateLayer(layer.GetAddressOf())) && layer) {
+                    if (!m_markupClipLayer) {
+                        m_renderTarget->CreateLayer(m_markupClipLayer.GetAddressOf());
+                    }
+                    if (m_markupClipLayer) {
                         m_renderTarget->PushLayer(
                             D2D1::LayerParameters(D2D1::InfiniteRect(), geo.Get(),
                                 D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(),
                                 1.0f, nullptr, D2D1_LAYER_OPTIONS_NONE),
-                            layer.Get());
+                            m_markupClipLayer.Get());
                         if (m_screenBitmap) {
                             m_renderTarget->DrawBitmap(m_screenBitmap.Get(), winRect, 1.0f,
                                 D2D1_BITMAP_INTERPOLATION_MODE_LINEAR, &winRect);

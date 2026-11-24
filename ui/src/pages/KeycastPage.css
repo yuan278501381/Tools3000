@@ -1,8 +1,9 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * KeycastPage.css — 按键回显与屏幕演示视觉样式
+ * KeycastPage.css — 按键回显与屏幕演示视觉样式 (@container 自适应)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .keycast-page {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
@@ -10,24 +11,17 @@
   animation: fadeIn 0.25s ease-out;
 }
 
-.keycast-page__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--spacing-sm);
-}
-
-.keycast-page__title-wrap {
+.keycast-page__cascade {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--spacing-lg);
 }
 
-.keycast-page__title {
-  font-size: 1.4rem;
-  font-weight: 700;
-  color: var(--text-primary);
-  letter-spacing: -0.02em;
+.keycast-page__row-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
 }
 
 .keycast-page__grid {
@@ -36,8 +30,19 @@
   gap: var(--spacing-md);
 }
 
-@container app-canvas (max-width: 680px) {
-  .keycast-page__grid {
+.keycast-page__grid--three {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@container (max-width: 780px) {
+  .keycast-page__grid--three {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@container (max-width: 680px) {
+  .keycast-page__grid,
+  .keycast-page__grid--three {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -68,11 +73,13 @@
 .keycast-page__prop-title {
   font-size: 0.95rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
 .keycast-page__prop-desc {
   font-size: 0.83rem;
+  font-weight: 500;
   color: var(--text-secondary);
   line-height: 1.45;
 }
@@ -112,6 +119,7 @@
   color: var(--text-secondary);
   font-size: 0.83rem;
   font-weight: 550;
+  line-height: 1.4;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -155,8 +163,9 @@
   border: 1px solid var(--well-border);
   background: var(--well-bg);
   color: var(--text-secondary);
-  font-size: var(--text-xs, 0.84rem);
+  font-size: var(--text-xs);
   font-weight: 550;
+  line-height: 1.4;
   white-space: nowrap;
   cursor: pointer;
   transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
@@ -166,26 +175,6 @@
   background: var(--thumb-bg);
   border-color: color-mix(in srgb, var(--primary) 36%, var(--well-border));
   color: var(--text-primary);
-}
-
-.keycast-page__number-input {
-  width: 100%;
-  max-width: 140px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--input-border);
-  background: var(--input-bg);
-  color: var(--text-primary);
-  font-size: 0.95rem;
-  font-weight: 600;
-  font-family: inherit;
-  transition: border-color 0.15s ease;
-}
-
-.keycast-page__number-input:focus {
-  outline: none;
-  border-color: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-dim);
 }
 
 .keycast-page__color-row {
@@ -199,6 +188,7 @@
   font-family: var(--font-mono);
   font-size: 0.88rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
@@ -236,9 +226,10 @@
 .keycast-page__action-footer {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: flex-start;
   gap: 12px;
-  padding-top: var(--spacing-md);
+  padding-top: var(--spacing-xs);
+  border-top: 1px solid var(--card-border);
 }
 
 /* ── 拟真交互式虚拟显示器沙盘 (Interactive Virtual Screen Monitor) ──────── */
@@ -247,10 +238,10 @@
   flex-direction: column;
   align-items: center;
   gap: 16px;
-  padding: 20px 16px 12px;
-  background: var(--bg-elevated, rgba(255, 255, 255, 0.02));
+  padding: 20px 16px;
+  background: var(--bg-elevated);
   border: 1px solid var(--card-border);
-  border-radius: var(--radius-lg, 16px);
+  border-radius: var(--radius-lg);
   width: 100%;
 }
 
@@ -299,11 +290,11 @@
   overflow: hidden;
 }
 
-/* 5 大物理热区 */
+/* 6 大物理空间热区 */
 .keycast-page__monitor-hotspot {
   position: absolute;
-  border: 1px dashed rgba(255, 255, 255, 0.15);
-  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.04);
   border-radius: 8px;
   padding: 6px 10px;
   cursor: pointer;
@@ -317,7 +308,7 @@
 
 .keycast-page__monitor-hotspot:hover {
   border-color: var(--primary);
-  background: rgba(59, 130, 246, 0.12);
+  background: rgba(59, 130, 246, 0.14);
   transform: scale(1.04);
 }
 
@@ -364,13 +355,14 @@
 .keycast-page__monitor-hotspot.active {
   border: 1px solid var(--primary);
   background: rgba(59, 130, 246, 0.22);
-  box-shadow: 0 0 16px var(--primary-dim, rgba(59, 130, 246, 0.4));
+  box-shadow: 0 0 16px var(--primary-dim);
 }
 
 .keycast-page__monitor-hotspot-hint {
-  font-size: var(--text-xs, 0.84rem);
+  font-size: var(--text-xs);
   font-weight: 550;
-  color: rgba(255, 255, 255, 0.5);
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.6);
   transition: color 0.15s ease;
   pointer-events: none;
   white-space: nowrap;
@@ -403,8 +395,9 @@
   border-radius: 5px;
   color: #ffffff;
   font-family: var(--font-mono);
-  font-size: var(--text-xs, 0.84rem);
+  font-size: var(--text-xs);
   font-weight: 700;
+  line-height: 1.4;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
 }
 
@@ -416,8 +409,9 @@
 
 .keycast-page__monitor-capsule-plus {
   font-family: var(--font-mono);
-  font-size: var(--text-xs, 0.84rem);
+  font-size: var(--text-xs);
   font-weight: 700;
+  line-height: 1.4;
   color: rgba(255, 255, 255, 0.7);
 }
 
@@ -485,52 +479,6 @@
   box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
 }
 
-/* 底部快速切换药丸 */
-.keycast-page__monitor-pills {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  margin-top: 6px;
-  width: 100%;
-}
-
-.keycast-page__monitor-pill {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: var(--well-bg);
-  border: 1px solid var(--well-border);
-  color: var(--text-secondary);
-  font-size: var(--text-xs, 0.84rem);
-  font-weight: 550;
-  cursor: pointer;
-  transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease;
-  outline: none;
-}
-
-.keycast-page__monitor-pill:hover {
-  color: var(--text-primary);
-  border-color: var(--input-border);
-  background: var(--thumb-bg);
-}
-
-.keycast-page__monitor-pill.active {
-  color: var(--text-primary);
-  border-color: color-mix(in srgb, var(--primary) 42%, var(--thumb-border));
-  background: var(--thumb-bg);
-  font-weight: 650;
-  box-shadow: var(--thumb-shadow);
-}
-
-.keycast-page__pos-check-icon {
-  color: var(--primary);
-  stroke-width: 3;
-}
-
 /* ── 按键过滤模式卡片组 ────────────────────────────────────────── */
 .keycast-page__filter-grid {
   display: grid;
@@ -573,11 +521,13 @@
 .keycast-page__filter-title {
   font-size: 0.92rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
 .keycast-page__filter-desc {
   font-size: 0.83rem;
+  font-weight: 500;
   color: var(--text-secondary);
   line-height: 1.45;
   margin: 0;

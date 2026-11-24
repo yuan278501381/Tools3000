@@ -90,6 +90,10 @@ private:
         size_t eraseCount = 0;
         std::wstring replacementW;
         bool restoreClipboard = true;
+        bool triggeredByDelimiter = false;
+        bool keepDelimiter = true;
+        wchar_t delimiterChar = L'\0';
+        HWND targetFgHwnd = nullptr;
     };
 
     void loadSettingsFromConfigLocked();
@@ -113,7 +117,6 @@ private:
     void pushStateChangedEvents(bool enabled) const;
 
     static LRESULT CALLBACK lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
-    static LRESULT CALLBACK lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
     static void CALLBACK winEventForegroundProc(
         HWINEVENTHOOK hWinEventHook,
         DWORD event,
@@ -128,7 +131,7 @@ private:
     static bool writeClipboardPlainTextPrivate(const std::wstring& text, DWORD& outSeqAfterWrite);
     static void sendBackspaces(size_t count);
     static void sendDirectUnicodeExpansion(size_t backspaces, std::wstring_view text, size_t moveLeftSteps);
-    static void sendCtrlV();
+    static void sendPasteShortcutForWindow(HWND targetFgHwnd);
     static void sendLeftArrows(size_t count);
     static void waitModifiersReleased(DWORD maxWaitMs);
 
@@ -158,7 +161,7 @@ private:
     std::thread m_hookThread;
     std::atomic<DWORD> m_hookThreadId{0};
     std::atomic<HHOOK> m_kbHook{nullptr};
-    std::atomic<HHOOK> m_mouseHook{nullptr};
+    uint64_t m_mouseActivitySubId = 0;
 
     std::thread m_workerThread;
     std::mutex m_jobMutex;

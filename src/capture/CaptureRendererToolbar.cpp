@@ -772,7 +772,7 @@ void CaptureRenderer::drawToolbar(const D2D1_RECT_F& selectionRect, CaptureState
                 state.currentCursor.y < button.rect.top  || state.currentCursor.y > button.rect.bottom) {
                 continue;
             }
-            std::wstring tip = tooltipForButton(button, state.toolbarLayoutChinese);
+            std::wstring tip = tooltipForButton(button, state.toolbarLayoutChinese, &state.options);
             if (tip.empty()) continue;
 
             std::wstring labelPart = tip;

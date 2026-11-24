@@ -147,6 +147,48 @@ export const SettingGroup: FC<SettingGroupProps> = ({ title, icon, children }) =
   );
 };
 
+/* ── SubSettingGroup (父子依赖从属缩进容器) ───────────────────────────────── */
+
+export interface SubSettingGroupProps {
+  children: ReactNode;
+  disabled?: boolean;
+  className?: string;
+}
+
+export const SubSettingGroup: FC<SubSettingGroupProps> = ({
+  children,
+  disabled = false,
+  className = '',
+}) => (
+  <div
+    className={`uikit-sub-group ${disabled ? 'uikit-sub-group--disabled' : ''} ${className}`.trim()}
+    aria-disabled={disabled || undefined}
+  >
+    {children}
+  </div>
+);
+
+/* ── DisabledCascade (模块总开关关闭时的子区视觉降权包裹层) ────────────────── */
+
+export interface DisabledCascadeProps {
+  disabled: boolean;
+  children: ReactNode;
+  className?: string;
+}
+
+export const DisabledCascade: FC<DisabledCascadeProps> = ({
+  disabled,
+  children,
+  className = '',
+}) => (
+  <div
+    className={`uikit-disabled-cascade ${disabled ? 'uikit-disabled-cascade--inactive' : ''} ${className}`.trim()}
+    aria-disabled={disabled || undefined}
+  >
+    {children}
+  </div>
+);
+
 /* ── Badge ────────────────────────────────────────────────────────────────── */
 
 interface BadgeProps {
@@ -628,17 +670,38 @@ export const Modal: FC<ModalProps> = ({ open, title, onClose, children, footer }
   const { t } = useTranslation();
   const titleId = useId();
   const modalRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
   useEffect(() => {
     if (!open) return;
     const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const focusableSelector = 'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const primaryInputSelector = '.uikit-modal__body input:not([disabled]):not([type="hidden"]):not([type="checkbox"]):not([type="radio"]), .uikit-modal__body textarea:not([disabled]), .uikit-modal__body select:not([disabled])';
+    const bodyFocusableSelector = '.uikit-modal__body button:not([disabled]), .uikit-modal__body input:not([disabled]), .uikit-modal__body select:not([disabled]), .uikit-modal__body textarea:not([disabled]), .uikit-modal__body [tabindex]:not([tabindex="-1"])';
+
     const frame = requestAnimationFrame(() => {
-      modalRef.current?.querySelector<HTMLElement>(focusableSelector)?.focus();
+      const dialogEl = modalRef.current;
+      if (!dialogEl) return;
+      if (document.activeElement instanceof HTMLElement && dialogEl.contains(document.activeElement)) {
+        return;
+      }
+      const initialTarget =
+        dialogEl.querySelector<HTMLElement>(primaryInputSelector) ??
+        dialogEl.querySelector<HTMLElement>(bodyFocusableSelector) ??
+        dialogEl.querySelector<HTMLElement>('.uikit-modal__footer button:not([disabled])') ??
+        dialogEl.querySelector<HTMLElement>(focusableSelector);
+      initialTarget?.focus();
     });
+
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.isComposing || e.keyCode === 229 || e.key === 'Process') return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        onClose();
+        onCloseRef.current();
       } else if (e.key === 'Tab' && modalRef.current) {
         const focusable = Array.from(modalRef.current.querySelectorAll<HTMLElement>(focusableSelector));
         if (focusable.length === 0) return;
@@ -652,9 +715,11 @@ export const Modal: FC<ModalProps> = ({ open, title, onClose, children, footer }
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener('keydown', onKeyDown);
-      previousFocus?.focus();
+      if (previousFocus && document.contains(previousFocus)) {
+        previousFocus.focus();
+      }
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(

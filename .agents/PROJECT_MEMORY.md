@@ -6,6 +6,91 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 贴图海量 4K 大图内存封顶五层架构：全局单飞三级优先级 OCR 调度器、超长图切片、冷热无损压缩池与 256MB 预算护栏
+- **1. 根因审计**：
+  - 旧版 `PinWindow::create()` 对每张上屏贴图立即执行 `m_sourceImage.clone()` + `std::thread::detach()`，并发冲入 `OcrEngine::extractPage` 同时拉起 N 路 `std::async(detectQrCodes)` 二维码图像金字塔，批量贴出 15~20 张 4K 大图时瞬时衍生 30+ 线程并冲高 `1.2~2.5 GB` 峰值内存；且每个线程结束均调 `WinUtils::trimWorkingSet()` 造成连续贴图软缺页抖动；
+  - 每张 4K 贴图即使折叠为迷你胶囊（`M`）、全局隐藏或长期闲置，仍永久常驻全尺寸未压缩 `cv::Mat`（`33MB`）+ 全尺寸 Direct2D `ID2D1Bitmap`（`33MB`）+ 窗口交换链（`33~66MB`），20 张静置贴图常驻 `~2GB`。
+- **2. 五层根治方案 (`src/capture/PinMemoryGovernor.{h,cpp}`, `PinWindow*.{h,cpp}`, `OcrEngine.cpp`, `CapturePage.tsx`)**：
+  - **全局单飞优先级调度器 `PinOcrScheduler`**：并发度严格锁定为 `1`，等待队列仅存轻量句柄实现 **0 像素预克隆**；支持 `Interactive (P0)`（用户点击识别/翻译或鼠标悬停原地插队提权）、`SilentWarmup (P1)`（`<= 3.8 MP` 且桌面 `<= 6` 张贴图时自动平滑预热保障 0ms 划词）、以及 **巨图/多图按需懒触发 `shouldDeferPinAutoWarmupOcr`**（4K 全屏巨图、超长截图或 `> 6` 张贴图推迟至首次鼠标悬停再按 `P0` 触发）；队列彻底排空防抖 `3s` 后仅执行 1 次工作集修剪；
+  - **超长截图重叠条带分片与先缩后灰二维码扫描**：`extractPinPageMemoryBounded` 对 `> 2800px` 长图按 `2048px`（`160px` 重叠去重）分片识别并还原全局坐标，单次 IPC 共享内存恒定 `<= ~16 MB` 且小字清晰不漏识；`detectQrCodes` 改为先 `INTER_AREA` 缩至 `1120px` 再转灰度，消灭大图全尺寸灰度缓冲分配；
+  - **比特级无损冷热压缩槽 `PinLosslessImageSlot` + 全局 `256 MB` LRU 预算 + 折叠/隐藏/缩小 LOD 纹理卸载**：超过 `256 MB` CPU 热像素预算时按 LRU 自动将后台非活跃贴图 CPU 矩阵以 Zlib Level-1 极速 PNG 无损冻结（单张 4K 由 `33.2 MB` 压至 `~1.8 MB`，节省 ~94%，同时保留屏幕 D2D 纹理零闪烁，访问时 `ensureImagesMaterialized()` 毫秒级比特级无损解冻）；折叠胶囊与隐藏态同步卸载全尺寸 D2D 纹理，缩小参考图（`<= 65%`）自动采用抗锯齿 LOD 轻量纹理；
+  - **双入口同源设置**：在「截图与录屏 -> 贴图与固定选区」补齐「贴图时自动识别文字」开关（初始默认开启 `true`，与「文本识别与翻译」共享 `/ocr/liveTextOnPin` 单一事实源，覆盖 8 国语言与全局设置搜索索引）。
+
+### [2026-11-24] 三大交互与诊断体验终局闭环：剪贴板双通道防 AI 附件层空吞与网页动态框聚焦、文本扩展器 8 语种全半角/14 宏升维、问题反馈最新日志直嵌与剪贴板一键 Ctrl+V 传包
+- **1. 剪贴板拖拽双通道精准协同与跨窗指针捕获 (`src/clipboard/ClipboardNativeDrag.{h,cpp}`, `ui/src/ClipboardApp.tsx`)**:
+  - *根因*：① 同为管理员权限时，拖向 `Antigravity` / `Cursor` 等 AI IDE 走原生 OLE，其聊天区外层全局附件上传 DropZone 对 `http(s)://` 生成 `@Link` 卡片却将非 URL 普通纯文本 `e.preventDefault()` 后静默丢弃，且 Chromium 在 `DragEnter` 预读 `GetData` 绕过了假接收检测；② 现代浏览器（`Chrome` / `Edge` / `Firefox` 等）在 `IDropTarget::DragEnter` 阶段通过 `EnumFormatEtc` 构建 `e.dataTransfer.types`，只要枚举集非空就会弹出 Google「`将文件拖放到此处`」文件上传遮罩层盖住底层 `<input>`/`<textarea>` 并返回 `DROPEFFECT_COPY`；同时起拖第 1 帧鼠标仍在 `ClipboardWindow` 内部时，剪贴板自身的 WebView2 触发 `DragEnter -> GetData` 提前将 `m_anyDataRetrieved` 污染为 `true`，导致松手后误判为 OLE 已消费而跳过落点粘贴；③ 跨权限拖向网页动态展开搜索框时，原代码在激活后 0ms 瞬发合并点击且仅等 45ms 即发 `Ctrl+V`，早于跨进程 DOM 获焦；④ 卡片左边缘极速甩出窗口时未挂载 `PointerCapture` 偶发漏触发起拖；
+  - *根治*：① 新增 `classifyCursorDropRelation`、`isSingleHttpUrlPayload` 与 `shouldBypassOleTextDropForHost`：对剪贴板自身及现代浏览器的所有纯文本/富文本载荷，在 `EnumFormatEtc` 直接返回空枚举集（0 格式，从源头阻止 Chromium 构建 `dataTransfer.types` 弹出「`将文件拖放到此处`」遮罩）并在 `validateFormatEtc` 返回 `DV_E_FORMATETC`，`GetData` 严格仅在允许 OLE 的外部窗口上标记 `m_anyDataRetrieved = true`，且松手后按落点进程实施 `forceBypassAtDrop` 二次兜底；拖动图片/文件时保留原生 OLE 支持以图搜图与网页上传，桌面 AI IDE 保留单条 `http(s)://` 原生 `@Link` 胶囊；② 重排五步聚焦管线（激活/DragLeave 静置 `28ms` -> 分步 `MOVE` `10ms` / `LEFTDOWN` `14ms` / `LEFTUP` -> Web 容器静置 `110ms` -> 硬件扫描码 `Ctrl+V`）；③ 前端卡片挂载 `setPointerCapture` 与 `5px` 灵敏阈值；④ `Alt+Space` 搜索界面顶栏、分类筛选栏与底栏空白区统一支持 `4px` 拖窗并呈现与剪贴板一致的 `cursor: grab / grabbing` 手型光标。
+- **2. 文本扩展器 8 语种全半角等价、边界符保留、14 类动态变量与实时预览 (`src/text_expander/TextExpander{Types,Matcher,Manager}.*`, `ui/src/pages/TextExpanderPage.{tsx,css}`, 8 语种词典)**:
+  - 新增 `fullwidthSensitive`（默认 `false` = 自动兼容中日韩全角英数 `U+FF01..0xFF5E`、全角空格及 `；：、。！？（）【】“”￥` 等同键位标点）、拉丁重音与俄语西里尔字母大小写折叠及韩/俄/西/葡多语种词首边界保护；
+  - 新增 `keepDelimiter`（`Delimiter` 边界模式默认 `true` = 展开后无损保留触发空格/Tab/回车并自动修正 `{{cursor}}` 回退步数），剪贴板粘贴路径同步兼容 `Windows Terminal` (`Ctrl+Shift+V`) 与 `mintty` (`Shift+Insert`)；
+  - 动态宏扩充至 3 组 15 项胶囊（`{{date}}`、`{{date_compact}}`、`{{date_slash}}`、`{{date+1d}}`/`{{date-1d}}` 及任意 `±Nd` 偏移、`{{time}}`、`{{time_sec}}`、`{{datetime}}`、8 语种本地化 `{{weekday}}`、`{{clipboard}}`、`{{clipboard_trim}}`、`{{cursor}}`、密码学随机 `{{uuid}}`、`{{timestamp}}`、`{{user}}`），并在弹窗内置带光标落点指示的实时展开预览。
+- **3. 问题反馈高密度最新日志直嵌 + 剪贴板预置 `.zip`/截图一键 `Ctrl+V` 上传 (`src/core/diagnostics/FeedbackDiagnosticService.{h,cpp}`, `src/main.cpp`, `ui/src/components/FeedbackModal.{tsx,css}`)**:
+  - 废除旧版 `truncateUtf8Head(2600)` 砍掉尾部最新发病日志与代码块闭合符的做法；补齐 `effectiveLocale` 与热键冲突摘要，独立置顶最近 `[warning]`/`[error]` 告警，从最后一行倒序浓缩最新运行轨迹（控制在总编码 URL `<= 7000` 字符内完整闭合 `<details>` 代码块）；
+  - 导出本地脱敏 `.zip`（及独立截图文件）后立即以隐私免录 `CF_HDROP` 写入系统剪贴板（点击打开 GitHub 时再次保鲜），并在弹窗与预填 Issue 底部以用户生效的 8 国母语引导直接按一次 `Ctrl+V` 完成 GitHub 附件自动上传。
+
+### [2026-11-24] 五项用户体验与系统稳定性深层根治：搜索打开前台移交、剪贴板跨权限终端/无边框拖放直贴、长时运行截图丝滑度、快捷键四域重排与 Issue #25 弹窗失焦修复
+- **1. 搜索界面打开文件/目录前台激活与单实例焦点移交 (`src/core/utils/WinUtils.{h,cpp}`)**:
+  - *根因*：`SearchWindow` 采用标准独立桌面窗口（失焦不自动隐藏），通过 `Desktop Explorer` COM 代理启动已运行的单实例应用（如 Win11 多标签 `Notepad.exe`、Office、VS Code、已打开的 `CabinetWClass`）时，仅靠 `ShellExecuteEx` 无法将 `Tools3000` 持有的前台令牌传递给既有进程，Windows 防抢焦机制阻断 `SetForegroundWindow` 并退化为任务栏橙色闪烁；
+  - *根治*：新增 `resolveShellTargetAssociatedExe`（`AssocQueryStringW` 解析关联进程）与 `extractShellTargetTitleHint`，启动前执行 `grantForegroundPermissionForLaunch`（`LockSetForegroundWindow(LSFW_UNLOCK)` + `AllowSetForegroundWindow(ASFW_ANY)` + 显式预授权桌面 `Explorer` 与目标单实例 PID，非钉住搜索窗自动解除残余 `TOPMOST`）；同时为 `launchShellTargetBoundedSta` 与 `openFolderAndSelectItem` 挂载 `650ms` 有界 `spawnForegroundHandOffWatchdog` 前台移交看门狗，精准将新建或复用的外部窗口拉至前台并消除任务栏闪烁。
+- **2. 剪贴板拖放直贴跨 UIPI 终端与 Electron 无边框窗口兼容 (`src/clipboard/ClipboardNativeDrag.{h,cpp}`, 感谢 Linux.do `@宫灵紫凝`)**:
+  - *根因*：① 管理员态 `Tools3000` 向普通权限无边框 Electron 应用（如 Clash Party 订阅输入框）拖放时，UIPI 拦截 OLE `DoDragDrop` 转入智能回退引擎，而 Electron 顶部扩展 `-webkit-app-region: drag` 命中 `HTCAPTION` 被旧安全过滤器误拒（或外层容器假接收 `dragover` 却未调用 `IDataObject::GetData` 消费文本）；② 拖向 `Windows Terminal`（`powershell` / `pi` CLI TUI）时，回退引擎发送模拟左键点击触发控制台选区/VT 鼠标捕获，且富文本剪贴板与裸 `Ctrl+V` 在 TUI 下失效；
+  - *根治*：① `ClipboardDragDataObject` 将 `CF_UNICODETEXT` 置于 `HTML Format` 之前并追踪 `wasAnyDataRetrieved()`，未实际读取数据的假接收自动回退智能粘贴；② `resolveSafeExternalDropTarget` 引入 DPI 自适应 `38px` 顶栏高度阈值与右上角三键排除区，安全放行窗体腹地 `HTCAPTION` 及 `Chrome_RenderWidgetHostHWND` / `InputSiteWindowClass` 子宿主；③ 新增 `classifyTerminalPasteTarget` 四分类终端路由（`Windows Terminal`/`WezTerm`/`Alacritty` 走硬件扫描码 `Ctrl+Shift+V`，`mintty`/`PuTTY` 走 `Shift+Insert`，经典 `conhost` 走 `Ctrl+V`），终端目标强制剥离富文本且**跳过虚拟左键点击**，零干扰直贴 CLI TUI。
+- **3. 长时运行后截图卡顿与全局钩子/僵尸进程卫生 (`src/text_expander/TextExpanderManager.{h,cpp}`, `src/main.cpp`, `src/capture/CaptureRenderer*.{h,cpp}`, `src/capture/CaptureInput*.{h,cpp}`, 感谢 Linux.do `@宫灵紫凝`)**:
+  - *根因*：① `TextExpanderManager` 在普通优先级线程重复挂载了全进程第 2 条全局 `WH_MOUSE_LL` 钩子，使 1000Hz 鼠标移动经历双倍跨线程内核钩子跳数；② `main.cpp` 全屏感知 `WinEventHook` 订阅了宽泛的 `0x0003..0x0017`（含全局滚动/捕获/菜单事件）持续轰炸 UI 主线程；③ 旧实例退出偶发卡在 CRT 静态析构/显卡驱动卸载形成单线程僵尸进程；④ `CaptureRenderer` 每帧重建 5 把主题画刷与 `ID2D1Layer`，且 `CaptureInput` 未合并积压 `WM_MOUSEMOVE`；
+  - *根治*：移除 `TextExpanderManager` 冗余 `WH_MOUSE_LL` 改订进程内 `EventBus` `MouseActivityEvent` 并将键盘钩子线程提至 `THREAD_PRIORITY_HIGHEST`；`WinEventHook` 收窄至精确前台/移动缩放/最小化恢复事件且截图遮罩可见时短路；`main()` 尾部增设 `1200ms` 退出看门狗杜绝残留僵尸进程；`CaptureRenderer` 缓存主题画刷并复用持久化 `m_markupClipLayer`，`CaptureInput` 在非自由画笔态合并最多 32 条陈旧 `WM_MOUSEMOVE` 并缓存同屏 DPI。
+- **4. 通用设置「快捷键总览」四域分组与高频优先排序 (`ui/src/config/hotkeyCatalog.ts`, `GeneralPage.{tsx,css}`, `MessageBridge.cpp`, 8 语种词典)**:
+  - 废除原先按英文 Action ID 字母序 `A -> Z` 排列导致「录屏时静音麦克风」排第一而高频「屏幕截图 (`F1`)」沉底的反直觉顺序；在 `hotkeyCatalog.ts` 建立单一事实源优先级权重与四大功能域分组（`高频核心唤起` -> `贴图与图文识别` -> `屏幕录制控制` -> `输入与辅助增强`），前后端 `hotkey.getAll` 同步对齐。
+- **5. 通用弹窗 `<Modal>` 逐字输入自动失焦与输入法 `Escape` 误关根治 (`ui/src/components/UIKit.tsx`, `OnboardingModal.tsx`, `SearchRenameModal.tsx`, 修复 GitHub Issue `#25 @fxzou`)**:
+  - *根因*：`UIKit.Modal` 的焦点捕获与恢复 `useEffect` 依赖了 `[open, onClose]`；当 `TextExpanderPage`（新增/编辑短语弹窗）等父组件传入内联箭头函数 `onClose={() => setEditorOpen(false)}` 时，用户在输入框每敲入 1 个字符触发 `setDraft` 重渲染，都会生成新的 `onClose` 引用，导致 `Modal` 执行 cleanup 扯走焦点并在下一帧 `requestAnimationFrame` 将焦点强行抢到弹窗右上角首个 `<button class="uikit-modal__close">` 关闭按钮上；
+  - *根治*：在 `UIKit.Modal`、`OnboardingModal`、`SearchRenameModal` 全面采用 `onCloseRef` / `onCompleteRef` 解耦回调引用，焦点生命周期严格仅响应 `[open]` 跃迁；首次打开弹窗时优先聚焦 `.uikit-modal__body` 内首个文本输入控件（开窗即输入），并增加 `e.isComposing || e.keyCode === 229` 守卫防止中文输入法按 `Esc` 取消候选词时误关整个弹窗。
+
+### [2026-11-24] 全站 19 个菜单页信息架构（IA）重整、「功能模块」单行高扩展列表与专门一级页面「性能与内存」落地
+- **1. 全站设置信息架构黄金五律与通用原语 (`UIKit.{tsx,css}`, `routes.ts`, `settingsSearchIndex.ts`)**：
+  - 建立全站统一纵向心智漏斗：**「1. 顶栏总控与核心热键（含立即体验） -> 2. 日常高频行为偏好 -> 3. 视觉外观与个性化 -> 4. 进阶参数/离线模型/开发者接口 -> 5. 隐私排除与危险重置沉底」**；
+  - 在 `UIKit` 新增父子依赖缩进原语 `<SubSettingGroup>`（左侧微晶引导竖线与禁用降权）及模块停用级联包裹层 `<DisabledCascade>`，彻底根治数十处条件子项与父开关平铺左对齐的主从混淆；
+  - 四大超长瀑布流重型页面全面接入顶栏一级 `<Tabs>` 分流并与侧边栏细粒度搜索（`tools3000:navigate-deep`）双向联动：`截图与录屏`（4 页签：截图与标注 / 贴图与固定选区 / 屏幕录制 [内拆 4 组] / 演播室与水印）、`鼠标手势`（3 页签：手势与目标规则 [首屏直达工作台，统一 13 药丸单一事实源] / 轨迹外观与演示 / 识别算法与防误触）、`文本识别与翻译`（3 页签：识文与交互 / 原位与划词翻译 / 离线引擎与模型包）、`文件搜索`（4 页签：基础与热键 [补齐模块总开关] / 服务与索引 / CLI 与 MCP 接口 / 搜索与正则语法二合一）；
+  - 其余全部页面同步正置：`通用设置` 拆为 7 组（全局快捷键提至第 3 组，危险重置沉底）、`数据统计` 修复金字塔倒置将 4 宫格 KPI 置顶并持久化热力图配列、`文件占用解锁` 去空壳重复头并将立即检测提至首屏、`文本扩展器` 将短语规则提至首屏、`按键回显` 拆出键帽配色与时序动效、`鼠标演示与特效` 按聚光灯/波纹/轨迹三平行引擎分块并将摇晃阈值紧随摇晃开关缩进、`远程协助增强` 三大核心引擎置顶首屏并将 28 项进程/类名收拢后置。
+- **2. 「功能模块 (`PluginsPage`)」单行高扩展列表架构 (`PluginsPage.{tsx,css}`, `routes.ts`)**：
+  - 画布收敛为 `reading (960px)` 黄金阅读宽，废除双列大高卡片与内置模块重复 11 遍的版本号噪音；
+  - 顶部配备搜索过滤与 `全部 / 运行中 / 已停用` 分段胶囊，下方按 `PLUGIN_DOMAIN_GROUPS` 四大正交业务域渲染单行列表（左图标瓷砖 + 模块名 + 关联子页微标签 + 单行简介；右权限盾牌微按钮 `<details>` 按需全宽展开技术元数据 + 配置跳转 + 垂直对齐 `<Toggle>` 轴），支撑未来 20~30+ 模块平滑扩展。
+- **3. 专门一级页面「性能与内存 (`PerformancePage`)」与全链路只读回收时间表 (`PerformancePage.{tsx,css}`, `AboutPage.tsx`, `MessageBridge.cpp`)**：
+  - 在左侧「洞察与关于」分组下新增专门页面 `performance`（精简剥离原 `AboutPage` 底部简陋监控卡，并将 `AboutPage` 25 项底层依赖收纳为可折叠面板）；
+  - 上半部提供 6 宫格实时遥测（专用工作集 / 总工作集 / CPU / 截图、手势、UI 延迟，仅停留本页时按秒轮询）及 `perf.trimMemory` 一键静默回收；
+  - 下半部构建 **4 层 10 项全链路内存自动回收时间表（只读透明看板）**：动态读取 `general.getSettings` (`autoReleaseSettingsMemory`) 与 `search.getSettings` (`memoryMode` / 阈值) 实时映射关联状态并提供一键跳往设置入口，所有时间参数只读零误改风险，且对主进程堆紧缩与冷态防抖保护项显式标注 `内核锁定 · 不可修改`。
+
+### [2026-11-24] MECE 四维无损内存与进程外文件对话框隔离治理：常驻专用工作集 42.02 MB -> 1.61 MB (-96.2%)，3 张 2K 大图后 57.00 MB -> 2.20 MB 且 0 .NET CLR 污染
+- **1. 真机内存膨胀四大正交病灶（MECE 取证复盘）**：
+  - *病灶 A（第三方外壳扩展与 `.NET 4.0 CLR` 进程内永久寄生）*：在主进程内直接调用 `IFileOpenDialog` / `IFileSaveDialog` / `GetSaveFileNameW` 时，Windows Shell 会将本机安装的网盘同步图标扩展（如百度网盘 `YunShellExtV164.dll`）连同整套 `.NET 4.0 CLR`（`clr.dll` 9.64 MB、`mscorlib.ni.dll` 22.36 MB、`System.ni.dll` 12.47 MB、`System.Core.ni.dll` 10.45 MB）永久加载进 `Tools3000.exe` 且无法卸载，造成 60+ MB 提交内存与 20+ 个后台线程常驻；
+  - *病灶 B（截图完成回收时序倒挂与异步剪贴板二次脏页）*：`CaptureOverlay::confirmSelection` 先调用 `cleanupAfterDelivery(true)` 触发 `trimWorkingSet()`，此时栈上数 MB 的 `cropped` 尚未析构；且 50~200ms 后 `ClipboardManager` 异步读取系统剪贴板 `2560x1440` `CF_DIB`（14.75 MB）并编码 PNG、`ToastOverlay` 播放 2.5s 动画，恰处于 `trimWorkingSet` 2000ms 节流锁定期内，导致每次截图后稳定残留 ~17 MB 脏页（任务管理器显示 `24.28 MB`）；
+  - *病灶 C（已落盘截图历史 RAM 双重驻留）*：`CaptureHistory` 上限设为 `128 MiB` 且即使截图已写入磁盘仍把数 MB `compressedPng` 全量常驻内存；
+  - *病灶 D（UCRT / Win32 堆空闲大块不归还 + 冷启动预热后无静默紧缩）*：大位图/PNG 缓冲 `free` 后未执行 `_heapmin()` 与 `HeapCompact()`，导致连续采集 3 张 2K 大图后 `PrivateCommit` 涨至 `86.68 MB`（长跑达 `517.73 MB`），冷启动预热后亦停留在 `42.02 MB`。
+- **2. 世界级无损四维根治方案（严格遵循 0 功能降级、0 热路径延迟损耗铁律）**：
+  - **维度一：短命子进程文件对话框隔离 (`src/core/utils/OutOfProcessFileDialog.{h,cpp}`, `main.cpp` `--worker=file-dialog`)**：全库全部 10 处文件/目录选择入口（`MessageBridge` 配置导入导出、`main.cpp` 日志导出与占用检测选文件、`CaptureInputCommands` 选区另存为、`ScreenCapture` 长图另存为、`PinWindow` 贴图保存、`capture/PluginEntry` 水印图与历史另存为、`StudioPreviewWindowExport` 三处异步选择器、`dialog/PluginEntry` 常用目录选择）100% 收归 `OutOfProcessFileDialog::show` 单一事实源；父窗 UI 线程通过 `MsgWaitForMultipleObjects(..., QS_SENDMESSAGE | QS_PAINT)` 安全响应模态跨进程同步消息防互锁，选完即退，子进程异常时无感回退进程内执行；`collect-performance-baseline.ps1` 的 `CheckColdModules` 门禁新增 `clr.dll` / `mscorlib.ni.dll` / `coreclr.dll` 零污染强断言。
+  - **维度二：堆紧缩 + 主消息循环零线程冷态防抖回收 (`WinUtils::compactProcessHeaps`, `WinUtils::scheduleQuietIdleTrim`, `main.cpp` `TIMER_ID_QUIET_IDLE_CLEANUP`)**：`trimWorkingSet` 前自动执行 `_heapmin()` 与全进程 `GetProcessHeaps` + `HeapCompact` 归还空闲大块；通过主消息窗口单一定时器（0 额外线程）在冷启动预热后、截图与剪贴板大图队列排空后、各 WebView2 宿主挂起后延迟 `2.8s~4.5s` 执行 `CoFreeUnusedLibrariesEx(0, 0)` + `trimWorkingSet(true)`，并内置鼠标按键/手势/截图遮罩/录屏/聚光灯活跃态自动顺延守卫，100% 不触碰 1000Hz 钩子、`timeBeginPeriod(1)` 与 `Alt+Space` 瞬开热挂起。
+  - **维度三：截图历史磁盘惰性水合 (`src/capture/CaptureHistory.{h,cpp}`)**：已落盘截图在内存中仅保留 `~15 KB` 的 `160px` 缩略图与 UTF-8 路径（`compressedPng` 0 字节重复驻留），调用 `get`/`getById` 时从 Unicode 磁盘路径无损惰性解码还原；纯内存未落盘截图上限收敛至 `32 MiB`；`CaptureOverlay::confirmSelection` 修正为先显式 `release()` 局部 `cv::Mat` 再触发回收。
+  - **维度四：剪贴板大图即时释放与面板闲置超时收敛 (`ClipboardManager.cpp`, `ClipboardWindow.h`)**：`ClipboardManager::workerLoop` 处理完单任务立即销毁 `PendingCaptureTask` 大块缓冲并在大图/富文本批次排空后调度静默回收；`ClipboardWindow` 后台闲置销毁周期由 `300s` 收敛至 `90s`。
+- **3. 同机同口径实测前后对比 (`scripts/test_mece_all_features_memory_e2e.ps1` + MECE 7 域全绿)**：
+  - **S1 冷启动静默稳态**：`PrivWS` 由 `42.02 MB` 降至 **`1.61 MB`**（**-96.2%**），`TotalWS` 由 `105.10 MB` 降至 **`4.36 MB`**；
+  - **S2 设置中心 WebView2 开合后稳态**：`PrivWS` 由 `42.07 MB` 降至 **`1.62 MB`**；
+  - **S3 连续采集 3 张 `2560x1440` (2K) 大图入库后稳态**：`PrivWS` 由 `57.00 MB` 降至 **`2.20 MB`**（**-96.1%**），`PrivCommit` 保持 `70.55 MB -> 70.55 MB`（**+0.00 MB 零堆残留膨胀**）；
+  - **S4 执行 `--worker=file-dialog` 与 `--worker=media-probe` 后稳态**：`PrivWS = 2.21 MB`，宿主加载模块恒定 `137` 个，`.NET CLR` 污染 **`False`**。
+
+### [2026-11-24] 四项社区高优先级能力落地：截图收尾解耦、剪贴板彩色应用图标、便携版原地热更新与配置云端/同步盘安全备份
+- **1. 截图完成动作解耦 + 动态「完成」提示 + 双关兜底复制 (`src/capture/CaptureState.h`, `ScreenCapture.cpp`, `CaptureToolbarLayout.{h,cpp}`, `CaptureRendererToolbar.cpp`, `ShortcutHintOverlay.cpp`, `resources/locales/native/*.json`, 感谢 LINUX DO `@longqiuyu`)**：
+  - `resolveCaptureDeliveryDecision` 移除默认完成下的强制另存为弹窗兜底；开启「自动保存到文件」且关闭「自动复制到剪贴板」时严格仅保存文件不污染剪贴板；当两项同时关闭（且非 OCR 等纯内存直达回调）时，点击「完成」/ `Enter` / 双击无打扰兜底复制到剪贴板（绝不弹另存为框，并与 `Esc` 取消形成清晰区分），长截图同步对齐；
+  - 工具栏 `✓` 按钮悬浮提示与 `ShortcutHintOverlay` 的 `Enter` 提示统一调用 `resolveCaptureDeliveryDecision` 动态切换为「完成 · 复制并保存 / 完成并保存 / 完成并复制」（8 语种原生词典与前端描述全量同步）。
+- **2. 剪贴板来源彩色应用图标 + 友好应用名 (`src/clipboard/ClipboardManager.{h,cpp}`, `ui/src/ClipboardApp.{tsx,css}`, `CMakeLists.txt`, 感谢 LINUX DO `@yue_bro`)**：
+  - 采集前景进程可执行路径时同步通过 Win32 PE VersionInfo (`GetFileVersionInfoW` -> `FileDescription` / `ProductName`) 提取人类可读友好名，通过 `WinUtils::getFileTypeIconBase64` 提取真实 Windows 彩色应用图标，持久化于 `%LOCALAPPDATA%\Tools3000\clipboard\app_meta.json`；
+  - 首次查询老历史条目时以单次进程快照 + `App Paths` 注册表低开销回填元数据；前端胶囊以 `14×14` 真彩图标 + 友好名呈现，悬浮显示完整 `应用名 (proc.exe)`，并保留对友好名与原始进程名的双向搜索过滤；`CMakeLists.txt` 为 `ui_objects` 与 `Tools3000` 显式链接 `version.lib`。
+- **3. 便携版自动更新原地热替换 + 安装版 `/DIR` 保护 (`scripts/New-FastZipArchive.ps1`, `deploy.ps1`, `src/core/update/UpdateChecker.{h,cpp}`, `ui/src/App.tsx`, `AboutPage.tsx`, 感谢 GitHub Issue `#4 @Yafeiml`)**：
+  - `New-FastZipArchive.ps1` 支持 `-ExtraMarkerEntryName` / `-ExtraMarkerContent` 直接向便携版 ZIP 注入 `portable.flag`（零污染源 staging 目录）；
+  - `UpdateChecker::isPortableDirectory` 统一按 `portable.flag` / `.tools3000` / `data` / `portable_data` 及缺失 Inno `unins000.exe` + 卸载注册表综合判定，防止便携版误下 `Setup.exe` 装出双份副本；
+  - 安装版静默升级传参追加 `/DIR="<currentExeDir>"` 锁定原安装目录；便携版下载完 ZIP 后启动独立 UTF-8 BOM PowerShell 热更新脚本（兼容 8 语种与中文路径），等待父进程退出、严格保护用户数据目录（`data`/`config`/`logs`/`clipboard`/`gestures`/`models` 等）、原地覆盖替换二进制、保活 `portable.flag` 并从原路径无缝重启。
+- **4. 多策略配置云备份与端到端加密 (`src/core/backup/{ConfigBackupTypes.h,BackupCrypto.*,BackupTransport.*,ConfigBackupService.*}`, `MessageBridge.cpp`, `main.cpp`, `ui/src/components/business/CloudBackupCard.*`, `GeneralPage.tsx`, 8 语种字典, 感谢 GitHub Issue `#4 @Yafeiml`)**：
+  - **产品权衡与多态策略 (`IBackupTransport`)**：避免在客户端内嵌重型 OAuth SDK 及付费年度 Google CASA Tier 2 审计门槛，采用 **同步文件夹自动探测**（OneDrive / Google Drive / Dropbox / iCloud Drive / 坚果云）、**标准 WebDAV**（原生 `WinHTTP` `MKCOL`/`PROPFIND`/`PUT`/`GET`/`DELETE` + Basic Auth）与 **S3 兼容对象存储**（原生 `WinHTTP` + `BCrypt` AWS Signature Version 4，支持 Path-Style 与 Virtual-Host，兼容 R2 / OSS / MinIO / AWS）三路并进；
+  - **安全与防回退防线**：本机 WebDAV 密码 / S3 Secret Key / 加密口令 100% 通过 Windows DPAPI (`CryptProtectData`) 加密落盘，快照强制剥离 `/backup` 与 `/update` 敏感子树；可选客户端 **AES-256-GCM + PBKDF2-HMAC-SHA256 (100,000 次迭代)** 端到端加密，密文快照使用规范后缀 `.enc.t3kbak`（并兼容旧文件尾部探测）确保全通道列表无需额外下载即可展示加密徽章；恢复前强制生成 `config.pre-restore-<ts>.json` 保险副本并保留本机备份凭据，支持保留份数自动裁剪与可选退出静默自动备份；
+  - **实测验证暗坑收获**：全量 E2E 实测捕获并根治了 `nlohmann::json` 按字母序序列化导致 `ciphertextB64` 位于 `encrypted` 之前使 256B 文件头嗅探误判的隐患，并顺带修复根目录整理后 `tests/unit/test_core.inc` 中 6 处旧 `installer.iss` 定位路径。
+
 ### [2026-11-24] 仓库根目录文件结构整理（44 -> 22 项）与安全优先 Dependabot 配置
 - **根目录极简主义（Single-Viewport Root Rule）**：
   1. 7 份副语种 README 统一移入 `docs/i18n/`（根目录仅保留唯一英文主 `README.md`）；

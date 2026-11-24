@@ -336,6 +336,7 @@ void CaptureInput::initialize(HWND hwnd, CaptureState& state, CaptureRenderer& r
     m_hwnd = hwnd;
     m_state = &state;
     m_renderer = &renderer;
+    m_lastDpiMonitor = nullptr;
     m_cancelCb = std::move(cancelCb);
     m_confirmCb = std::move(confirmCb);
 }

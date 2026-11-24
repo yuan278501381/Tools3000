@@ -1,0 +1,89 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CapturePage.css — 截图与录屏设置页样式 (4 页签分流 + 父子从属缩进架构)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.capture-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  max-width: 100%;
+  padding-bottom: var(--spacing-xl);
+  animation: fadeIn 0.3s ease;
+}
+
+.capture-page__tabs {
+  flex-wrap: wrap;
+}
+
+.capture-page__panel {
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn var(--transition-normal);
+}
+
+.capture-page__panel[hidden] {
+  display: none !important;
+}
+
+.capture-page__panel > .uikit-group:last-child {
+  margin-bottom: 0;
+}
+
+/* 子组结束后紧跟同级开关或设置行时保持精细分隔线 */
+.capture-page .uikit-sub-group + .uikit-toggle--with-text,
+.capture-page .uikit-sub-group + .uikit-setting-row {
+  border-top: 1px solid var(--hairline);
+}
+
+.capture-page__inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.capture-page__inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.capture-page__dir-input {
+  min-width: 260px;
+  flex: 1 1 260px;
+}
+
+.capture-page__watermark-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.capture-page__token-bar {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.capture-page__gif-audio-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  margin: 4px 2px;
+  border-radius: var(--radius-md);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.capture-page__gif-audio-notice-icon {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}

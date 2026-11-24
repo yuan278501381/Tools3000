@@ -256,6 +256,10 @@ bool PinWindow::isLiveTextEnabled() const noexcept {
 }
 
 void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
+    m_ocrDeferredUntilHover.store(false, std::memory_order_release);
+    if (m_pinInstanceId != 0) {
+        PinOcrScheduler::instance().cancelPending(m_pinInstanceId);
+    }
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         m_ocrBlocks.clear();
@@ -296,13 +300,23 @@ void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
 
 void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     if (s_ocrShuttingDown.load(std::memory_order_acquire) ||
-        m_sourceImage.empty() || !m_pinnedSourceText.empty() || m_ocrReady.load()) {
+        !m_pinnedSourceText.empty() || m_ocrReady.load()) {
         return;
     }
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) {
+        return;
+    }
+    m_ocrDeferredUntilHover.store(false, std::memory_order_release);
     if (!silentPreload) {
         m_silentOcrPreload.store(false, std::memory_order_release);
     }
+
+    const PinOcrPriority priority =
+        (!silentPreload || m_isHovering) ? PinOcrPriority::Interactive : PinOcrPriority::SilentWarmup;
+
     uint64_t currentVer = 0;
+    bool alreadyInFlightSameVer = false;
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         if (s_ocrShuttingDown.load(std::memory_order_acquire) || m_ocrReady.load() || m_sourceImage.empty()) {
@@ -311,25 +325,27 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
         currentVer = m_ocrVersion.load();
         if (currentVer == 0) currentVer = ++m_ocrVersion;
         if (m_ocrInFlightVersion.load() == currentVer) {
-            if (!silentPreload && m_hwnd && IsWindow(m_hwnd)) {
-                InvalidateRect(m_hwnd, nullptr, FALSE);
-            }
+            alreadyInFlightSameVer = true;
+        } else {
+            m_silentOcrPreload.store(silentPreload, std::memory_order_release);
+            m_ocrInFlightVersion.store(currentVer);
+        }
+    }
+
+    if (alreadyInFlightSameVer) {
+        if (!silentPreload && m_hwnd && IsWindow(m_hwnd)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
+        if (priority != PinOcrPriority::Interactive) {
             return;
         }
-        m_silentOcrPreload.store(silentPreload, std::memory_order_release);
-        m_ocrInFlightVersion.store(currentVer);
+        // 若此前处于队尾 SilentWarmup 等待态，而用户此刻主动悬停或点击识别，向调度器提交提权请求（旧排队项回调自动收到 cancelled=true 归还计数）
+    } else {
+        ++m_ocrRunCount;
     }
-    ++m_ocrRunCount;
-    cv::Mat imgCopy = m_sourceImage.clone();
-    std::string scriptModeOverride;
-    {
-        std::lock_guard<std::mutex> lock(m_ocrMutex);
-        scriptModeOverride = m_ocrScriptModeOverride;
-    }
-    std::weak_ptr<PinWindow> weakSelf = shared_from_this();
-    auto activeWorkers = m_ocrActiveWorkers;
-    if (activeWorkers) {
-        activeWorkers->fetch_add(1, std::memory_order_acq_rel);
+
+    if (m_ocrActiveWorkers) {
+        m_ocrActiveWorkers->fetch_add(1, std::memory_order_acq_rel);
     }
     s_globalActiveOcrWorkers.fetch_add(1, std::memory_order_acq_rel);
 
@@ -337,6 +353,7 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                                   const tools3000::ocr::OcrPageExtraction& page,
                                   uint64_t expectedVer) {
         if (self->m_ocrVersion.load() != expectedVer) return;
+        self->ensureImagesMaterialized();
         self->m_ocrBlocks.clear();
         self->m_ocrBlocks.reserve(page.lines.size());
         for (const auto& r : page.lines) {
@@ -439,72 +456,86 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
-    try {
-        std::thread([weakSelf, imgCopy, scriptModeOverride, currentVer, activeWorkers, applyRecognizedPage]() {
-            bool inFlightHandedOff = false;
-            struct WorkerScopeGuard {
-                std::weak_ptr<PinWindow> weakPin;
-                uint64_t ver;
-                bool* handedOff;
-                std::shared_ptr<std::atomic<uint32_t>> workers;
-                ~WorkerScopeGuard() {
-                    if (handedOff && !*handedOff) {
-                        if (auto self = weakPin.lock()) {
-                            uint64_t expected = ver;
-                            self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
-                        }
-                    }
-                    cleanupOcrWorkingSet();
-                    if (workers) {
-                        workers->fetch_sub(1, std::memory_order_acq_rel);
-                    }
-                    s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
-                }
-            } workerGuard{weakSelf, currentVer, &inFlightHandedOff, activeWorkers};
+    std::weak_ptr<PinWindow> weakSelf = shared_from_this();
+    auto activeWorkers = m_ocrActiveWorkers;
+    const uint64_t pinId = (m_pinInstanceId != 0) ? m_pinInstanceId : reinterpret_cast<uint64_t>(this);
+    auto workerSlotReleased = std::make_shared<std::atomic<bool>>(false);
 
-            if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
-                return;
+    PinOcrScheduler::JobRequest job{};
+    job.pinId = pinId;
+    job.version = currentVer;
+    job.priority = priority;
+    job.acquireInput = [weakSelf, currentVer]() -> PinOcrScheduler::AcquiredTaskInput {
+        PinOcrScheduler::AcquiredTaskInput out{};
+        if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
+            return out;
+        }
+        auto self = weakSelf.lock();
+        if (!self || !self->isAlive() || self->m_ocrVersion.load() != currentVer || self->m_ocrReady.load()) {
+            return out;
+        }
+        self->ensureImagesMaterialized();
+        {
+            std::lock_guard<std::mutex> vLock(self->m_imageVaultMutex);
+            if (!self->m_sourceImage.empty()) {
+                out.image = self->m_sourceImage.clone();
             }
-            tools3000::core::TraceId::Scope traceScope;
-            tools3000::ocr::OcrPageExtraction page{};
-            try {
-                page = tools3000::ocr::OcrEngine::instance().extractPage(imgCopy, scriptModeOverride);
-            } catch (const std::exception& e) {
-                LOG_ERROR("PinWindow: background OCR thread exception: {}", e.what());
-                return;
-            } catch (...) {
-                LOG_ERROR("PinWindow: background OCR thread unknown exception");
-                return;
+        }
+        {
+            std::lock_guard<std::mutex> oLock(self->m_ocrMutex);
+            out.scriptModeOverride = self->m_ocrScriptModeOverride;
+        }
+        return out;
+    };
+
+    job.onComplete = [weakSelf, currentVer, activeWorkers, workerSlotReleased, applyRecognizedPage](
+                         tools3000::ocr::OcrPageExtraction&& page, bool cancelled) {
+        auto releaseCountersOnce = [activeWorkers, workerSlotReleased]() {
+            if (workerSlotReleased && !workerSlotReleased->exchange(true, std::memory_order_acq_rel)) {
+                if (activeWorkers) {
+                    activeWorkers->fetch_sub(1, std::memory_order_acq_rel);
+                }
+                s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
             }
-            if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
-                return;
+        };
+
+        if (cancelled || s_ocrShuttingDown.load(std::memory_order_acquire)) {
+            if (auto self = weakSelf.lock()) {
+                uint64_t expected = currentVer;
+                self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
             }
-            const bool posted = tools3000::core::MainThreadDispatcher::instance().post(
-                [weakSelf, page, currentVer, applyRecognizedPage]() {
-                    if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
+            releaseCountersOnce();
+            return;
+        }
+
+        const bool posted = tools3000::core::MainThreadDispatcher::instance().post(
+            [weakSelf, page = std::move(page), currentVer, applyRecognizedPage, releaseCountersOnce]() mutable {
+                if (!s_ocrShuttingDown.load(std::memory_order_acquire)) {
                     if (auto self = weakSelf.lock()) {
                         uint64_t expected = currentVer;
                         self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
-                        if (self->m_ocrVersion.load() != currentVer) return;
-                        {
-                            std::lock_guard<std::mutex> lock(self->m_ocrMutex);
-                            applyRecognizedPage(self, page, currentVer);
-                        }
-                        if (self->m_pendingTranslateAfterOcr.exchange(false, std::memory_order_acq_rel)) {
-                            const bool selOnly = self->m_pendingTranslateSelectedOnly.exchange(false, std::memory_order_acq_rel);
-                            self->translateInPlace(selOnly, /*forceRetranslate=*/true);
+                        if (self->m_ocrVersion.load() == currentVer) {
+                            {
+                                std::lock_guard<std::mutex> lock(self->m_ocrMutex);
+                                applyRecognizedPage(self, page, currentVer);
+                            }
+                            if (self->m_pendingTranslateAfterOcr.exchange(false, std::memory_order_acq_rel)) {
+                                const bool selOnly = self->m_pendingTranslateSelectedOnly.exchange(false, std::memory_order_acq_rel);
+                                self->translateInPlace(selOnly, /*forceRetranslate=*/true);
+                            }
                         }
                     }
-                });
-            if (posted) {
-                inFlightHandedOff = true;
-            } else if (!s_ocrShuttingDown.load(std::memory_order_acquire)) {
+                }
+                releaseCountersOnce();
+            });
+
+        if (!posted) {
+            if (!s_ocrShuttingDown.load(std::memory_order_acquire)) {
                 if (auto self = weakSelf.lock()) {
                     {
                         std::lock_guard<std::mutex> lock(self->m_ocrMutex);
                         uint64_t expected = currentVer;
                         self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
-                        inFlightHandedOff = true;
                         applyRecognizedPage(self, page, currentVer);
                     }
                     if (self->m_pendingTranslateAfterOcr.exchange(false, std::memory_order_acq_rel)) {
@@ -513,15 +544,11 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
                     }
                 }
             }
-        }).detach();
-    } catch (...) {
-        uint64_t expected = currentVer;
-        m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
-        if (activeWorkers) {
-            activeWorkers->fetch_sub(1, std::memory_order_acq_rel);
+            releaseCountersOnce();
         }
-        s_globalActiveOcrWorkers.fetch_sub(1, std::memory_order_acq_rel);
-    }
+    };
+
+    PinOcrScheduler::instance().submit(std::move(job));
 }
 
 void PinWindow::injectRecognizedPage(std::vector<tools3000::ocr::OcrResult> lines,
@@ -909,7 +936,9 @@ void PinWindow::extractText() {
             tools3000::core::ShowToastEvent{tools3000::core::trWCstrFor(isZh, L"已复制贴图文字", L"Copied note text")});
         return;
     }
-    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
+    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive()) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
 
     // 若贴图后台实景 OCR 已经就绪，0ms 直接复用内存版面块复制全文，彻底消灭重复深度学习推理
     if (m_ocrReady.load(std::memory_order_acquire)) {
@@ -966,7 +995,9 @@ std::string PinWindow::effectiveOcrScriptMode() const {
 }
 
 void PinWindow::setOcrScriptModeOverride(const std::string& scriptMode) {
-    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive() || m_sourceImage.empty()) return;
+    if (s_ocrShuttingDown.load(std::memory_order_acquire) || !isAlive()) return;
+    ensureImagesMaterialized();
+    if (m_sourceImage.empty()) return;
     const bool isZh = tools3000::core::isUiLanguageChinese();
 
     std::string normalized = scriptMode;
@@ -1042,9 +1073,15 @@ void PinWindow::updateImage(const cv::Mat& newImage, bool clearCardMetadata) {
         m_cardCornerRadius = 0.0f;
         m_pinnedSourceText.clear();
     }
-    m_sourceImage = newImage.clone();
-    // COW 共享底图引用，未产生标注/滤镜原地修改前零冗余拷贝
-    m_cleanBaseImage = m_sourceImage;
+    {
+        std::lock_guard<std::mutex> vLock(m_imageVaultMutex);
+        m_sourceVault.clear();
+        m_cleanBaseVault.clear();
+        m_vaultSharesCleanWithSource = false;
+        m_sourceImage = newImage.clone();
+        // COW 共享底图引用，未产生标注/滤镜原地修改前零冗余拷贝
+        m_cleanBaseImage = m_sourceImage;
+    }
     m_markupElements.clear();
     m_pinUndoStack.clear();
     m_pinRedoStack.clear();
@@ -1091,7 +1128,13 @@ void PinWindow::applyEditedMarkup(
     m_colorBackup.release();
     m_grayscale = false;
     m_inverted = false;
-    m_cleanBaseImage = cleanBaseImage.clone();
+    {
+        std::lock_guard<std::mutex> vLock(m_imageVaultMutex);
+        m_sourceVault.clear();
+        m_cleanBaseVault.clear();
+        m_vaultSharesCleanWithSource = false;
+        m_cleanBaseImage = cleanBaseImage.clone();
+    }
     m_markupElements = elements;
 
     cv::Mat composited;
@@ -1168,11 +1211,17 @@ void PinWindow::pushPinMarkupUndoState() {
 }
 
 void PinWindow::recompositeMarkupPreservingOcr() {
+    ensureImagesMaterialized();
     if (m_cleanBaseImage.empty() || !m_hwnd) return;
     clearTranslationState();
     m_colorBackup.release();
     m_grayscale = false;
     m_inverted = false;
+    {
+        std::lock_guard<std::mutex> vLock(m_imageVaultMutex);
+        m_sourceVault.clear();
+        m_vaultSharesCleanWithSource = false;
+    }
 
     cv::Mat composited;
     if (m_markupElements.empty()) {
@@ -1207,7 +1256,9 @@ void PinWindow::recompositeMarkupPreservingOcr() {
 }
 
 bool PinWindow::annotateSelectedText(TextMarkupMode mode) {
-    if (m_folded || !m_pinnedSourceText.empty() || m_cleanBaseImage.empty()) return false;
+    if (m_folded || !m_pinnedSourceText.empty()) return false;
+    ensureImagesMaterialized();
+    if (m_cleanBaseImage.empty()) return false;
     if (mode == TextMarkupMode::RectRegion) return false;
 
     std::vector<cv::Rect> spans;

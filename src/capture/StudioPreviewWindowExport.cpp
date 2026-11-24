@@ -15,6 +15,7 @@
 #include "core/utils/DpiUtils.h"
 #include "core/utils/ThemeUtils.h"
 #include "core/utils/TraceId.h"
+#include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
 #include "ui/KeyboardPipeline.h"
 
@@ -64,44 +65,18 @@ void StudioPreviewWindow::browseCustomWallpaperImageAsync() {
 
     std::lock_guard lock(m_fileDialogMutex);
     m_fileDialogWorker = std::thread([this, targetHwnd, isZh]() {
-        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        const bool needUninit = SUCCEEDED(comHr);
-        struct ScopedCom {
-            bool active;
-            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
-        } comScope{needUninit};
-
-        std::wstring chosenPath;
-        if (SUCCEEDED(comHr) || comHr == RPC_E_CHANGED_MODE) {
-            ComPtr<IFileOpenDialog> dlg;
-            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dlg.GetAddressOf()))) && dlg) {
-                const COMDLG_FILTERSPEC spec[] = {
-                    {tools3000::core::trWCstrFor(isZh, L"图片文件 (*.jpg;*.jpeg;*.png;*.webp;*.bmp)", L"Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp)"),
-                     L"*.jpg;*.jpeg;*.png;*.webp;*.bmp"},
-                    {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
-                };
-                dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择自定义背景图片", L"Select Custom Background Image"));
-                DWORD fos = 0;
-                if (SUCCEEDED(dlg->GetOptions(&fos))) {
-                    dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
-                }
-                if (SUCCEEDED(dlg->Show(nullptr))) {
-                    ComPtr<IShellItem> resItem;
-                    if (SUCCEEDED(dlg->GetResult(resItem.GetAddressOf())) && resItem) {
-                        PWSTR rawPath = nullptr;
-                        if (SUCCEEDED(resItem->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                            chosenPath = rawPath;
-                            CoTaskMemFree(rawPath);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!chosenPath.empty()) {
+        tools3000::core::FileDialogRequest req;
+        req.mode = tools3000::core::FileDialogMode::OpenFile;
+        req.title = tools3000::core::trWCstrFor(isZh, L"选择自定义背景图片", L"Select Custom Background Image");
+        req.filters = {
+            {tools3000::core::trWCstrFor(isZh, L"图片文件 (*.jpg;*.jpeg;*.png;*.webp;*.bmp)", L"Image Files (*.jpg;*.jpeg;*.png;*.webp;*.bmp)"),
+             L"*.jpg;*.jpeg;*.png;*.webp;*.bmp"},
+            {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
+        };
+        const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+        if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
             std::lock_guard dLock(m_fileDialogMutex);
-            m_pendingCustomBgWide = std::move(chosenPath);
+            m_pendingCustomBgWide = dlgRes.selectedPath.wstring();
         }
         m_fileDialogInFlight.store(false, std::memory_order_release);
         if (targetHwnd && IsWindow(targetHwnd)) {
@@ -122,44 +97,16 @@ void StudioPreviewWindow::browseExportDirectoryAsync() {
 
     std::lock_guard lock(m_fileDialogMutex);
     m_fileDialogWorker = std::thread([this, targetHwnd, initDir, isZh]() {
-        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        const bool needUninit = SUCCEEDED(comHr);
-        struct ScopedCom {
-            bool active;
-            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
-        } comScope{needUninit};
-
-        std::wstring chosenDir;
-        if (SUCCEEDED(comHr) || comHr == RPC_E_CHANGED_MODE) {
-            ComPtr<IFileOpenDialog> dlg;
-            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dlg.GetAddressOf()))) && dlg) {
-                DWORD fos = 0;
-                if (SUCCEEDED(dlg->GetOptions(&fos))) {
-                    dlg->SetOptions(fos | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
-                }
-                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"选择导出保存目录", L"Select Export Directory"));
-                if (!initDir.empty()) {
-                    ComPtr<IShellItem> initFolder;
-                    if (SUCCEEDED(SHCreateItemFromParsingName(initDir.c_str(), nullptr, IID_PPV_ARGS(initFolder.GetAddressOf()))) && initFolder) {
-                        dlg->SetFolder(initFolder.Get());
-                    }
-                }
-                if (SUCCEEDED(dlg->Show(nullptr))) {
-                    ComPtr<IShellItem> resItem;
-                    if (SUCCEEDED(dlg->GetResult(resItem.GetAddressOf())) && resItem) {
-                        PWSTR rawPath = nullptr;
-                        if (SUCCEEDED(resItem->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                            chosenDir = rawPath;
-                            CoTaskMemFree(rawPath);
-                        }
-                    }
-                }
-            }
+        tools3000::core::FileDialogRequest req;
+        req.mode = tools3000::core::FileDialogMode::PickFolder;
+        req.title = tools3000::core::trWCstrFor(isZh, L"选择导出保存目录", L"Select Export Directory");
+        if (!initDir.empty()) {
+            req.initialDirectory = std::filesystem::path(initDir);
         }
-
-        if (!chosenDir.empty()) {
+        const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+        if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
             std::lock_guard dLock(m_fileDialogMutex);
-            m_pendingExportDirWide = std::move(chosenDir);
+            m_pendingExportDirWide = dlgRes.selectedPath.wstring();
         }
         m_fileDialogInFlight.store(false, std::memory_order_release);
         if (targetHwnd && IsWindow(targetHwnd)) {
@@ -235,44 +182,18 @@ void StudioPreviewWindow::browseWatermarkLogoImageAsync() {
 
     std::lock_guard lock(m_fileDialogMutex);
     m_fileDialogWorker = std::thread([this, targetHwnd, isZh]() {
-        const HRESULT comHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-        const bool needUninit = SUCCEEDED(comHr);
-        struct ScopedCom {
-            bool active;
-            ~ScopedCom() noexcept { if (active) CoUninitialize(); }
-        } comScope{needUninit};
-
-        std::wstring chosenPath;
-        if (SUCCEEDED(comHr) || comHr == RPC_E_CHANGED_MODE) {
-            ComPtr<IFileOpenDialog> dlg;
-            if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(dlg.GetAddressOf()))) && dlg) {
-                const COMDLG_FILTERSPEC spec[] = {
-                    {tools3000::core::trWCstrFor(isZh, L"透明图片与 Logo (*.png;*.webp;*.jpg;*.jpeg;*.bmp)", L"Logo & Images (*.png;*.webp;*.jpg;*.jpeg;*.bmp)"),
-                     L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
-                    {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"}
-                };
-                dlg->SetFileTypes(static_cast<UINT>(std::size(spec)), spec);
-                dlg->SetTitle(tools3000::core::trWCstrFor(isZh, L"导入水印图片 / 企业 Logo", L"Import Watermark Logo Image"));
-                DWORD fos = 0;
-                if (SUCCEEDED(dlg->GetOptions(&fos))) {
-                    dlg->SetOptions(fos | FOS_FORCEFILESYSTEM | FOS_FILEMUSTEXIST | FOS_NOCHANGEDIR | FOS_DONTADDTORECENT);
-                }
-                if (SUCCEEDED(dlg->Show(nullptr))) {
-                    ComPtr<IShellItem> resItem;
-                    if (SUCCEEDED(dlg->GetResult(resItem.GetAddressOf())) && resItem) {
-                        PWSTR rawPath = nullptr;
-                        if (SUCCEEDED(resItem->GetDisplayName(SIGDN_FILESYSPATH, &rawPath)) && rawPath) {
-                            chosenPath = rawPath;
-                            CoTaskMemFree(rawPath);
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!chosenPath.empty()) {
+        tools3000::core::FileDialogRequest req;
+        req.mode = tools3000::core::FileDialogMode::OpenFile;
+        req.title = tools3000::core::trWCstrFor(isZh, L"导入水印图片 / 企业 Logo", L"Import Watermark Logo Image");
+        req.filters = {
+            {tools3000::core::trWCstrFor(isZh, L"透明图片与 Logo (*.png;*.webp;*.jpg;*.jpeg;*.bmp)", L"Logo & Images (*.png;*.webp;*.jpg;*.jpeg;*.bmp)"),
+             L"*.png;*.webp;*.jpg;*.jpeg;*.bmp"},
+            {tools3000::core::trWCstrFor(isZh, L"所有文件 (*.*)", L"All Files (*.*)"), L"*.*"},
+        };
+        const auto dlgRes = tools3000::core::OutOfProcessFileDialog::show(req);
+        if (dlgRes.accepted && !dlgRes.selectedPath.empty()) {
             std::lock_guard dLock(m_fileDialogMutex);
-            m_pendingWatermarkImgWide = std::move(chosenPath);
+            m_pendingWatermarkImgWide = dlgRes.selectedPath.wstring();
         }
         m_fileDialogInFlight.store(false, std::memory_order_release);
         if (targetHwnd && IsWindow(targetHwnd)) {

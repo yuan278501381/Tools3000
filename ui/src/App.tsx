@@ -47,6 +47,7 @@ const CapturePage = lazy(() => import('./pages/CapturePage').then((module) => ({
 const OcrPage = lazy(() => import('./pages/OcrPage').then((module) => ({ default: module.OcrPage })));
 const GeneralPage = lazy(() => import('./pages/GeneralPage').then((module) => ({ default: module.GeneralPage })));
 const AboutPage = lazy(() => import('./pages/AboutPage').then((module) => ({ default: module.AboutPage })));
+const PerformancePage = lazy(() => import('./pages/PerformancePage').then((module) => ({ default: module.PerformancePage })));
 const PluginsPage = lazy(() => import('./pages/PluginsPage').then((module) => ({ default: module.PluginsPage })));
 const HistoryPage = lazy(() => import('./pages/HistoryPage'));
 const KeyStatsPage = lazy(() => import('./pages/KeyStatsPage').then((module) => ({ default: module.KeyStatsPage })));
@@ -263,9 +264,6 @@ function App() {
           toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
           return;
         }
-        if (updateState.isPortable) {
-          setInstallingUpdate(false);
-        }
       } catch {
         setInstallingUpdate(false);
         toast.error(t('about.installUpdateFailed', 'Failed to launch update installer'));
@@ -281,7 +279,7 @@ function App() {
     } catch {
       toast.error(t('about.updateFailed'));
     }
-  }, [installingUpdate, t, updateState.isPortable, updateState.readyToInstall, updateState.status]);
+  }, [installingUpdate, t, updateState.readyToInstall, updateState.status]);
 
   const handleStripDismissUpdate = useCallback(async () => {
     if (dismissingUpdate) return;
@@ -591,10 +589,11 @@ function App() {
   // 渲染当前页面：未启用页面的组件绝不挂载到 DOM 中（就地停用保留态除外），以阻断资源预载并释放内存
   const renderPage = () => {
     if (!currentNavActive && retainedDisabledNav !== activeNav) {
-      return <GeneralPage />;
+      return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
     }
     switch (activeNav) {
       case 'stats':           return <KeyStatsPage />;
+      case 'performance':     return <PerformancePage onNavigate={handleNavSelect} />;
       case 'gesture':         return <GesturePage />;
       case 'hotcorner':       return <HotCornerPage />;
       case 'capture':         return <CapturePage />;
@@ -610,10 +609,10 @@ function App() {
       case 'remote_boost':    return <RemoteBoostPage />;
       case 'picasa_viewer':   return <PicasaViewerPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
-      case 'general':         return <GeneralPage />;
-      case 'about':           return <AboutPage />;
+      case 'general':         return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
+      case 'about':           return <AboutPage onNavigate={handleNavSelect} />;
       default:
-        return <GeneralPage />;
+        return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
     }
   };
 
@@ -702,9 +701,7 @@ function App() {
                   {updateState.status === 'downloading'
                     ? `${updateState.progress}%`
                     : updateState.readyToInstall
-                      ? (updateState.isPortable
-                          ? t('about.openDownloadedPortable', 'Open Portable Package')
-                          : t('about.installNowBtn' as never, 'Install Now'))
+                      ? t('about.installNowBtn' as never, 'Install Now')
                       : t('about.downloadNowBtn' as never, 'Download Now')}
                 </button>
                 <button

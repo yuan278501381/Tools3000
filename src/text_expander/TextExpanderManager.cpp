@@ -4,13 +4,18 @@
 
 #include "text_expander/TextExpanderManager.h"
 
+#include "clipboard/ClipboardNativeDrag.h"
 #include "core/config/ConfigManager.h"
+#include "core/events/EventBus.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 
+#include <bcrypt.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <ctime>
@@ -153,21 +158,69 @@ std::string buildIsoTimestampUtc() {
     return std::string(buf);
 }
 
+std::wstring queryCurrentSystemUserNameWide() {
+    wchar_t buf[256]{};
+    DWORD len = static_cast<DWORD>(std::size(buf));
+    if (GetUserNameW(buf, &len) && len > 0) {
+        return std::wstring(buf);
+    }
+    return L"user";
+}
+
+std::string resolveEffectiveLocaleCode() {
+    const std::string configured =
+        tools3000::core::ConfigManager::instance().get<std::string>("/general/language", "auto");
+    if (!configured.empty() && configured != "auto") {
+        return configured;
+    }
+    wchar_t localeName[LOCALE_NAME_MAX_LENGTH]{};
+    if (GetUserDefaultLocaleName(localeName, LOCALE_NAME_MAX_LENGTH) > 0) {
+        return detail::utf16ToUtf8(localeName);
+    }
+    return "en";
+}
+
+std::wstring generateRandomUuidV4Wide() {
+    std::array<uint8_t, 16> bytes{};
+    if (BCryptGenRandom(
+            nullptr,
+            bytes.data(),
+            static_cast<ULONG>(bytes.size()),
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) {
+        const uint64_t seed = static_cast<uint64_t>(GetTickCount64()) ^
+                              reinterpret_cast<uintptr_t>(&bytes);
+        return detail::fallbackDeterministicUuidV4(seed);
+    }
+    bytes[6] = static_cast<uint8_t>((bytes[6] & 0x0Fu) | 0x40u);
+    bytes[8] = static_cast<uint8_t>((bytes[8] & 0x3Fu) | 0x80u);
+    wchar_t out[40]{};
+    std::swprintf(
+        out,
+        std::size(out),
+        L"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]);
+    return std::wstring(out);
+}
+
 bool hasDuplicateTrigger(
     const std::vector<TextExpanderRule>& rules,
     const TextExpanderRule& candidate) {
     const std::wstring candW = detail::utf8ToUtf16(candidate.trigger);
-    const std::wstring candLower = detail::toLowerWide(candW);
 
     for (const auto& existing : rules) {
         if (!candidate.id.empty() && existing.id == candidate.id) continue;
         if (existing.mode != candidate.mode) continue;
 
         const std::wstring existW = detail::utf8ToUtf16(existing.trigger);
-        if (candidate.caseSensitive && existing.caseSensitive) {
-            if (existW == candW) return true;
-        } else {
-            if (detail::toLowerWide(existW) == candLower) return true;
+        const bool strictCase = candidate.caseSensitive && existing.caseSensitive;
+        const bool strictFullwidth = candidate.fullwidthSensitive && existing.fullwidthSensitive;
+        if (detail::normalizeRuleString(existW, strictCase, strictFullwidth) ==
+            detail::normalizeRuleString(candW, strictCase, strictFullwidth)) {
+            return true;
         }
     }
     return false;
@@ -719,6 +772,15 @@ void TextExpanderManager::syncMatcherRulesLocked() {
 void TextExpanderManager::startRuntimeWorkers() {
     std::lock_guard lifecycleLock(m_lifecycleMutex);
 
+    if (m_mouseActivitySubId == 0) {
+        m_mouseActivitySubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::MouseActivityEvent>(
+            [this](const tools3000::core::MouseActivityEvent& ev) {
+                if (ev.button >= 0) {
+                    m_mouseClicked.store(true, std::memory_order_relaxed);
+                }
+            });
+    }
+
     if (!m_workerThread.joinable()) {
         m_workerRunning.store(true, std::memory_order_release);
         m_workerThread = std::thread([this]() { expansionWorkerLoop(); });
@@ -743,9 +805,13 @@ void TextExpanderManager::startRuntimeWorkers() {
 void TextExpanderManager::stopRuntimeWorkers() {
     std::thread hookToJoin;
     std::thread workerToJoin;
+    uint64_t subToUnsub = 0;
 
     {
         std::lock_guard lifecycleLock(m_lifecycleMutex);
+        subToUnsub = m_mouseActivitySubId;
+        m_mouseActivitySubId = 0;
+
         const DWORD tid = m_hookThreadId.load(std::memory_order_acquire);
         if (tid != 0) {
             PostThreadMessageW(tid, WM_QUIT, 0, 0);
@@ -765,6 +831,9 @@ void TextExpanderManager::stopRuntimeWorkers() {
         }
     }
 
+    if (subToUnsub != 0) {
+        tools3000::core::EventBus::instance().unsubscribeAndWait(subToUnsub);
+    }
     if (hookToJoin.joinable()) {
         hookToJoin.join();
     }
@@ -774,6 +843,9 @@ void TextExpanderManager::stopRuntimeWorkers() {
 }
 
 void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& hookReadyOk) {
+    // 提升钩子线程调度优先级，杜绝系统重负载下 WH_KEYBOARD_LL 回调延迟
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
     // 强制初始化线程消息队列，确保 PostThreadMessageW(WM_QUIT) 绝不丢失
     MSG msg{};
     PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
@@ -793,13 +865,8 @@ void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& h
         0);
     m_kbHook.store(kbHook, std::memory_order_release);
 
-    HHOOK mouseHook = SetWindowsHookExW(
-        WH_MOUSE_LL,
-        &TextExpanderManager::lowLevelMouseProc,
-        GetModuleHandleW(nullptr),
-        0);
-    m_mouseHook.store(mouseHook, std::memory_order_release);
-
+    // 鼠标点击感知统一复用宿主核心 MouseHook -> EventBus(MouseActivityEvent)，
+    // 严禁在此安装第 2 个全局 WH_MOUSE_LL 钩子引发 1000Hz 鼠标移动与截图框选串行延迟！
     HWINEVENTHOOK fgEventHook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_FOREGROUND,
@@ -824,9 +891,6 @@ void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& h
     if (fgEventHook) {
         UnhookWinEvent(fgEventHook);
     }
-    if (HHOOK mh = m_mouseHook.exchange(nullptr, std::memory_order_acq_rel)) {
-        UnhookWindowsHookEx(mh);
-    }
     if (HHOOK kh = m_kbHook.exchange(nullptr, std::memory_order_acq_rel)) {
         UnhookWindowsHookEx(kh);
     }
@@ -845,19 +909,6 @@ LRESULT CALLBACK TextExpanderManager::lowLevelKeyboardProc(int nCode, WPARAM wPa
         }
     }
     return CallNextHookEx(self.m_kbHook.load(std::memory_order_relaxed), nCode, wParam, lParam);
-}
-
-LRESULT CALLBACK TextExpanderManager::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    // 极致零开销热路径：仅捕获鼠标按下点击事件置位原子标记，WM_MOUSEMOVE 瞬间放行
-    if (nCode == HC_ACTION &&
-        (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN)) {
-        TextExpanderManager::instance().m_mouseClicked.store(true, std::memory_order_relaxed);
-    }
-    return CallNextHookEx(
-        TextExpanderManager::instance().m_mouseHook.load(std::memory_order_relaxed),
-        nCode,
-        wParam,
-        lParam);
 }
 
 void CALLBACK TextExpanderManager::winEventForegroundProc(
@@ -1043,6 +1094,10 @@ void TextExpanderManager::handleLowLevelKeyDown(const KBDLLHOOKSTRUCT& data) {
     job.eraseCount = match->eraseCount;
     job.replacementW = detail::utf8ToUtf16(match->rule.replacement);
     job.restoreClipboard = restoreClip;
+    job.triggeredByDelimiter = match->triggeredByDelimiter;
+    job.keepDelimiter = match->rule.keepDelimiter;
+    job.delimiterChar = match->delimiterChar;
+    job.targetFgHwnd = fg;
 
     {
         std::lock_guard jobLock(m_jobMutex);
@@ -1097,12 +1152,23 @@ void TextExpanderManager::executeExpansionJob(const ExpansionJob& job) {
         capturedOriginalClip = readClipboardPlainText(originalClipText, originalClipWasSensitive);
     }
 
-    // 3. 动态宏单遍展开
-    const LocalDateTime now = TextExpanderMatcher::currentLocalDateTime();
-    const ExpandedOutput expanded = TextExpanderMatcher::expandTemplate(
-        job.replacementW,
-        now,
-        capturedOriginalClip ? std::wstring_view(originalClipText) : std::wstring_view{});
+    // 3. 动态宏单遍展开（注入 8 语种本地化上下文、系统登录用户名与密码学随机 UUID v4）
+    const std::wstring sysUserW = queryCurrentSystemUserNameWide();
+    const std::string effLocale = resolveEffectiveLocaleCode();
+    TemplateExpansionContext ctx;
+    ctx.now = TextExpanderMatcher::currentLocalDateTime();
+    ctx.clipboardText = capturedOriginalClip ? std::wstring_view(originalClipText) : std::wstring_view{};
+    ctx.userName = sysUserW;
+    ctx.localeCode = effLocale;
+    ctx.uuidGenerator = []() { return generateRandomUuidV4Wide(); };
+
+    ExpandedOutput expanded = TextExpanderMatcher::expandTemplateWithContext(job.replacementW, ctx);
+    if (job.triggeredByDelimiter && job.keepDelimiter && job.delimiterChar != L'\0') {
+        expanded.text.push_back(job.delimiterChar);
+        if (expanded.moveLeftSteps > 0) {
+            expanded.moveLeftSteps += 1;
+        }
+    }
 
     // 4. 双路径无痕投递
     if (TextExpanderMatcher::isFastDirectUnicodeCandidate(expanded.text)) {
@@ -1119,7 +1185,7 @@ void TextExpanderManager::executeExpansionJob(const ExpansionJob& job) {
         if (wroteClip) {
             sendBackspaces(job.eraseCount);
             Sleep(10);
-            sendCtrlV();
+            sendPasteShortcutForWindow(job.targetFgHwnd);
             if (expanded.moveLeftSteps > 0) {
                 Sleep(18);
                 sendLeftArrows(expanded.moveLeftSteps);
@@ -1336,6 +1402,9 @@ void TextExpanderManager::sendDirectUnicodeExpansion(
         if (ch == L'\n') {
             inputs.push_back(makeVkInput(VK_RETURN, false));
             inputs.push_back(makeVkInput(VK_RETURN, true));
+        } else if (ch == L'\t') {
+            inputs.push_back(makeVkInput(VK_TAB, false));
+            inputs.push_back(makeVkInput(VK_TAB, true));
         } else {
             inputs.push_back(makeUnicodeInput(ch, false));
             inputs.push_back(makeUnicodeInput(ch, true));
@@ -1351,7 +1420,45 @@ void TextExpanderManager::sendDirectUnicodeExpansion(
     }
 }
 
-void TextExpanderManager::sendCtrlV() {
+void TextExpanderManager::sendPasteShortcutForWindow(HWND targetFgHwnd) {
+    using tools3000::clipboard::TerminalPasteKind;
+    TerminalPasteKind termKind = TerminalPasteKind::NotTerminal;
+    HWND hwnd = (targetFgHwnd && IsWindow(targetFgHwnd)) ? targetFgHwnd : GetForegroundWindow();
+    if (hwnd && IsWindow(hwnd)) {
+        HWND root = GetAncestor(hwnd, GA_ROOT);
+        if (!root) root = hwnd;
+        wchar_t cls[96]{};
+        const int clsLen = GetClassNameW(root, cls, static_cast<int>(std::size(cls)));
+        const std::wstring_view clsView(cls, clsLen > 0 ? static_cast<size_t>(clsLen) : 0u);
+        const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(root);
+        std::wstring exeLower;
+        if (!procPath.empty()) {
+            exeLower = tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+        }
+        termKind = tools3000::clipboard::classifyTerminalPasteTarget(clsView, exeLower);
+    }
+
+    if (termKind == TerminalPasteKind::ModernCtrlShiftV) {
+        INPUT inputs[6]{};
+        inputs[0] = makeVkInput(VK_CONTROL, false);
+        inputs[1] = makeVkInput(VK_SHIFT, false);
+        inputs[2] = makeVkInput('V', false);
+        inputs[3] = makeVkInput('V', true);
+        inputs[4] = makeVkInput(VK_SHIFT, true);
+        inputs[5] = makeVkInput(VK_CONTROL, true);
+        SendInput(6, inputs, sizeof(INPUT));
+        return;
+    }
+    if (termKind == TerminalPasteKind::ShiftInsert) {
+        INPUT inputs[4]{};
+        inputs[0] = makeVkInput(VK_SHIFT, false);
+        inputs[1] = makeVkInput(VK_INSERT, false, true);
+        inputs[2] = makeVkInput(VK_INSERT, true, true);
+        inputs[3] = makeVkInput(VK_SHIFT, true);
+        SendInput(4, inputs, sizeof(INPUT));
+        return;
+    }
+
     INPUT inputs[4]{};
     inputs[0] = makeVkInput(VK_CONTROL, false);
     inputs[1] = makeVkInput('V', false);

@@ -12,19 +12,24 @@ import {
   Mouse,
   Puzzle,
   RotateCw,
+  Search,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   TextCursorInput,
+  X,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 import { Button, Toggle, CodeBadge } from '../components/UIKit';
 import type { NavId } from '../components/Sidebar';
 import {
+  PLUGIN_DOMAIN_GROUPS,
   getBuiltinPluginAliases,
   getBuiltinPluginDisplayOrder,
   getBuiltinPluginPrimaryRoute,
+  getBuiltinPluginSecondaryRoutes,
+  normalizeBuiltinPluginId,
 } from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './PluginsPage.css';
@@ -57,6 +62,8 @@ interface UpdateResult {
   error?: string;
 }
 
+type PluginFilterMode = 'all' | 'active' | 'disabled';
+
 const ICONS = {
   gesture: Mouse,
   capture: Camera,
@@ -76,12 +83,18 @@ const ICONS = {
   textexpander: TextCursorInput,
 } as const;
 
+const ALL_BUILTIN_DOMAIN_IDS = new Set<string>(
+  PLUGIN_DOMAIN_GROUPS.flatMap((group) => group.pluginIds.map((id) => normalizeBuiltinPluginId(id))),
+);
+
 export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavigate }) => {
   const { t } = useTranslation();
   const [plugins, setPlugins] = useState<PluginStatus[]>(initialPlugins);
   const [loading, setLoading] = useState(initialPlugins.length === 0);
   const [savingId, setSavingId] = useState<string | null>(null);
   const [isRestarting, setIsRestarting] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterMode, setFilterMode] = useState<PluginFilterMode>('all');
 
   const handleRestart = useCallback(async () => {
     if (isRestarting) return;
@@ -245,6 +258,73 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
       .map((entry) => entry.plugin);
   }, [plugins]);
 
+  const counts = useMemo(() => {
+    const all = sortedPlugins.length;
+    const active = sortedPlugins.filter((p) => p.enabled).length;
+    return {
+      all,
+      active,
+      disabled: all - active,
+    };
+  }, [sortedPlugins]);
+
+  const filteredPlugins = useMemo(() => {
+    const needle = searchQuery.trim().toLowerCase();
+    return sortedPlugins.filter((plugin) => {
+      if (filterMode === 'active' && !plugin.enabled) return false;
+      if (filterMode === 'disabled' && plugin.enabled) return false;
+      if (!needle) return true;
+
+      const canonicalId = normalizeBuiltinPluginId(plugin.id);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const displayName = String(t(`plugins.items.${canonicalId}.name` as any, { defaultValue: plugin.name })).toLowerCase();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const displayDesc = String(t(`plugins.items.${canonicalId}.description` as any, { defaultValue: plugin.name })).toLowerCase();
+      const secondaryNames = getBuiltinPluginSecondaryRoutes(plugin.id)
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        .map((route) => String(t(route.labelKey as any)))
+        .join(' ')
+        .toLowerCase();
+
+      return (
+        displayName.includes(needle) ||
+        displayDesc.includes(needle) ||
+        plugin.id.toLowerCase().includes(needle) ||
+        plugin.name.toLowerCase().includes(needle) ||
+        secondaryNames.includes(needle)
+      );
+    });
+  }, [sortedPlugins, filterMode, searchQuery, t]);
+
+  const groupedSections = useMemo(() => {
+    const sections: Array<{ id: string; titleKey: string; items: PluginStatus[] }> = [];
+
+    for (const group of PLUGIN_DOMAIN_GROUPS) {
+      const groupSet = new Set(group.pluginIds.map((id) => normalizeBuiltinPluginId(id)));
+      const items = filteredPlugins.filter((p) => groupSet.has(normalizeBuiltinPluginId(p.id)));
+      if (items.length > 0) {
+        sections.push({
+          id: group.id,
+          titleKey: group.titleKey,
+          items,
+        });
+      }
+    }
+
+    const extensionItems = filteredPlugins.filter(
+      (p) => !ALL_BUILTIN_DOMAIN_IDS.has(normalizeBuiltinPluginId(p.id)),
+    );
+    if (extensionItems.length > 0) {
+      sections.push({
+        id: 'extensions',
+        titleKey: 'plugins.domainExtensions',
+        items: extensionItems,
+      });
+    }
+
+    return sections;
+  }, [filteredPlugins]);
+
   if (loading) return <div className="plugins-page__loading">{t('common.loading')}</div>;
 
   const pending = plugins.some((plugin) => plugin.restartRequired);
@@ -272,117 +352,203 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
         </div>
       )}
 
-      {/* 核心已安装模块矩阵 */}
-      <div className="plugins-page__grid">
-        {sortedPlugins.map((plugin) => {
-          const Icon = ICONS[plugin.id as keyof typeof ICONS] ?? Puzzle;
-          const failed = plugin.state === 'failed';
-          const isUnavailable = plugin.state === 'unavailable';
-          const isRunning = plugin.active && !failed && !isUnavailable && !plugin.restartRequired;
-          const statusTone = failed
-            ? 'danger'
-            : isUnavailable
-              ? 'muted'
-              : plugin.restartRequired
-                ? 'warning'
-                : plugin.active
-                  ? 'success'
-                  : 'muted';
+      {/* 顶部轻量搜索与三态分段筛选工具栏 */}
+      {plugins.length > 0 && (
+        <div className="plugins-page__toolbar">
+          <div className="plugins-page__search-box">
+            <Search size={15} className="plugins-page__search-icon" aria-hidden="true" />
+            <input
+              type="search"
+              className="plugins-page__search-input"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={t('plugins.searchPlaceholder')}
+              aria-label={t('plugins.searchPlaceholder')}
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                className="plugins-page__search-clear"
+                onClick={() => setSearchQuery('')}
+                aria-label={t('common.close')}
+              >
+                <X size={13} aria-hidden="true" />
+              </button>
+            )}
+          </div>
 
-          return (
-            <article
-              className={`plugin-card ${isRunning ? 'plugin-card--active' : ''} ${failed ? 'plugin-card--failed' : ''} ${isUnavailable ? 'plugin-card--unavailable' : ''}`}
-              key={plugin.id}
-            >
-              <div className="plugin-card__header">
-                <span className="plugin-card__icon" aria-hidden="true">
-                  <Icon size={17} strokeWidth={1.85} />
-                </span>
-                <div className="plugin-card__identity">
-                  <div className="plugin-card__title-row">
-                    <h2>{t(`plugins.items.${plugin.id}.name`, { defaultValue: plugin.name })}</h2>
-                  </div>
-                  <div className="plugin-card__status-line">
-                    <span className={`plugin-card__status-dot plugin-card__status-dot--${statusTone}`} aria-hidden="true" />
-                    <span className={`plugin-card__status-text plugin-card__status-text--${statusTone}`}>
-                      {t(`plugins.state.${plugin.state}`)}
-                    </span>
-                    <span className="plugin-card__status-sep" aria-hidden="true">·</span>
-                    <span className="plugin-card__version-inline">v{plugin.version || '—'}</span>
-                  </div>
-                </div>
-                <div className="plugin-card__switch">
-                  <Toggle
-                    id={`plugin-${plugin.id}`}
-                    checked={plugin.enabled}
-                    disabled={savingId === plugin.id || (failed && !plugin.enabled) || isUnavailable}
-                    onChange={(value) => void setEnabled(plugin, value)}
-                  />
-                </div>
-              </div>
+          <div className="plugins-page__filters" role="tablist" aria-label={t('plugins.title')}>
+            {(
+              [
+                { id: 'all', label: t('plugins.filterAll', { count: counts.all }) },
+                { id: 'active', label: t('plugins.filterActive', { count: counts.active }) },
+                { id: 'disabled', label: t('plugins.filterDisabled', { count: counts.disabled }) },
+              ] as const
+            ).map((tab) => {
+              const isSelected = filterMode === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={isSelected}
+                  className={`plugins-page__filter-pill ${isSelected ? 'is-active' : ''}`}
+                  onClick={() => setFilterMode(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
-              <p className="plugin-card__description">
-                {t(`plugins.items.${plugin.id}.description`, { defaultValue: plugin.name })}
-              </p>
+      {/* 四大正交业务域分组单列列表 */}
+      <div className="plugins-page__domains">
+        {groupedSections.map((section) => (
+          <section key={section.id} className="plugins-domain-group">
+            <div className="plugins-domain-group__header">
+              {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+              <span className="plugins-domain-group__title">{t(section.titleKey as any)}</span>
+            </div>
 
-              {plugin.error && <p className="plugin-card__error" role="alert">{plugin.error}</p>}
+            <div className="plugins-domain-card">
+              {section.items.map((plugin) => {
+                const canonicalId = normalizeBuiltinPluginId(plugin.id);
+                const Icon = ICONS[plugin.id as keyof typeof ICONS] ?? ICONS[canonicalId as keyof typeof ICONS] ?? Puzzle;
+                const failed = plugin.state === 'failed';
+                const isUnavailable = plugin.state === 'unavailable';
+                const isRunning = plugin.active && !failed && !isUnavailable && !plugin.restartRequired;
+                const statusTone = failed
+                  ? 'danger'
+                  : isUnavailable
+                    ? 'muted'
+                    : plugin.restartRequired
+                      ? 'warning'
+                      : plugin.active
+                        ? 'success'
+                        : 'muted';
 
-              <div className="plugin-card__footer">
-                <details className="plugin-card__details">
-                  <summary className="plugin-card__details-trigger">
-                    <ShieldCheck size={13} strokeWidth={1.9} aria-hidden="true" />
-                    <span>{t('plugins.permissions')}</span>
-                    <ChevronDown size={13} strokeWidth={2} className="plugin-card__details-chevron" aria-hidden="true" />
-                  </summary>
-                  <div className="plugin-card__details-body">
-                    <div className="plugin-card__meta-row">
-                      <CodeBadge>{plugin.fileName}</CodeBadge>
-                      <CodeBadge variant="muted">{t('plugins.abi', { version: plugin.abiVersion || '—' })}</CodeBadge>
-                      <span className="plugin-card__runtime-note">
-                        {plugin.active ? t('plugins.resourceActive') : t('plugins.resourceInactive')}
+                const secondaryRoutes = getBuiltinPluginSecondaryRoutes(plugin.id);
+                const subPageNames = secondaryRoutes
+                  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                  .map((route) => String(t(route.labelKey as any)))
+                  .join(' / ');
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const moduleTitle = String(t(`plugins.items.${canonicalId}.name` as any, { defaultValue: plugin.name }));
+                // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                const moduleDescription = String(t(`plugins.items.${canonicalId}.description` as any, { defaultValue: plugin.name }));
+                const targetNav = getBuiltinPluginPrimaryRoute(plugin.id);
+
+                return (
+                  <article
+                    className={`plugin-row ${isRunning ? 'plugin-row--active' : ''} ${failed ? 'plugin-row--failed' : ''} ${isUnavailable ? 'plugin-row--unavailable' : ''}`}
+                    key={plugin.id}
+                  >
+                    <div className="plugin-row__main">
+                      <span className="plugin-row__icon" aria-hidden="true">
+                        <Icon size={17} strokeWidth={1.85} />
                       </span>
-                    </div>
-                    {(plugin.capabilities || []).length > 0 && (
-                      <div className="plugin-card__meta-group" aria-label={t('plugins.capabilities')}>
-                        {(plugin.capabilities || []).map((capability) => (
-                          <CodeBadge key={capability}>{capability}</CodeBadge>
-                        ))}
-                      </div>
-                    )}
-                    {(plugin.permissions || []).length > 0 && (
-                      <div className="plugin-card__meta-group">
-                        {plugin.executionModel === 'trusted-native-in-process' && (
-                          <span className="plugin-card__trust-note">{t('plugins.fullTrustWarning')}</span>
-                        )}
-                        <div className="plugin-card__perm-chips">
-                          {plugin.permissions.map((permission) => <CodeBadge key={permission} variant="muted">{permission}</CodeBadge>)}
+                      <div className="plugin-row__identity">
+                        <div className="plugin-row__title-line">
+                          <h2>{moduleTitle}</h2>
+                          <span className="plugin-row__status-pill">
+                            <span
+                              className={`plugin-row__status-dot plugin-row__status-dot--${statusTone}`}
+                              aria-hidden="true"
+                            />
+                            <span className={`plugin-row__status-text plugin-row__status-text--${statusTone}`}>
+                              {t(`plugins.state.${plugin.state}`)}
+                            </span>
+                          </span>
+                          {secondaryRoutes.length > 0 && (
+                            <span className="plugin-row__subpages-pill">
+                              {t('plugins.includesSubPages', { pages: subPageNames })}
+                            </span>
+                          )}
                         </div>
+                        <p className="plugin-row__description" title={moduleDescription}>
+                          {moduleDescription}
+                        </p>
+                        {plugin.error && (
+                          <p className="plugin-row__error" role="alert">
+                            {plugin.error}
+                          </p>
+                        )}
                       </div>
-                    )}
-                  </div>
-                </details>
+                    </div>
 
-                {(() => {
-                  const targetNav = getBuiltinPluginPrimaryRoute(plugin.id);
-                  if (!onNavigate || !plugin.enabled || !plugin.active || !targetNav) return null;
-                  return (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="plugin-card__config-btn"
-                      onClick={() => onNavigate(targetNav)}
-                      title={t('plugins.configure')}
-                    >
-                      <SlidersHorizontal size={13} strokeWidth={1.9} />
-                      <span>{t('plugins.configure')}</span>
-                    </Button>
-                  );
-                })()}
-              </div>
-            </article>
-          );
-        })}
+                    <details className="plugin-row__details">
+                      <summary
+                        className="plugin-row__details-trigger"
+                        title={t('plugins.permissions')}
+                        aria-label={t('plugins.permissions')}
+                      >
+                        <ShieldCheck size={14} strokeWidth={1.9} aria-hidden="true" />
+                        <ChevronDown size={13} strokeWidth={2} className="plugin-row__details-chevron" aria-hidden="true" />
+                      </summary>
+                      <div className="plugin-row__details-body">
+                        <div className="plugin-row__meta-row">
+                          <CodeBadge>{plugin.fileName}</CodeBadge>
+                          <CodeBadge variant="muted">v{plugin.version || '1.0.0'}</CodeBadge>
+                          <CodeBadge variant="muted">{t('plugins.abi', { version: plugin.abiVersion || 1 })}</CodeBadge>
+                          <span className="plugin-row__runtime-note">
+                            {plugin.active ? t('plugins.resourceActive') : t('plugins.resourceInactive')}
+                          </span>
+                        </div>
+                        {(plugin.capabilities || []).length > 0 && (
+                          <div className="plugin-row__meta-group" aria-label={t('plugins.capabilities')}>
+                            {(plugin.capabilities || []).map((capability) => (
+                              <CodeBadge key={capability}>{capability}</CodeBadge>
+                            ))}
+                          </div>
+                        )}
+                        {(plugin.permissions || []).length > 0 && (
+                          <div className="plugin-row__meta-group">
+                            {plugin.executionModel === 'trusted-native-in-process' && (
+                              <span className="plugin-row__trust-note">{t('plugins.fullTrustWarning')}</span>
+                            )}
+                            <div className="plugin-row__perm-chips">
+                              {plugin.permissions.map((permission) => (
+                                <CodeBadge key={permission} variant="muted">{permission}</CodeBadge>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </details>
+
+                    <div className="plugin-row__actions">
+                      {onNavigate && plugin.enabled && plugin.active && targetNav && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="plugin-row__config-btn"
+                          onClick={() => onNavigate(targetNav)}
+                          title={t('plugins.configure')}
+                        >
+                          <SlidersHorizontal size={13} strokeWidth={1.9} />
+                          <span>{t('plugins.configure')}</span>
+                        </Button>
+                      )}
+                      <Toggle
+                        id={`plugin-${plugin.id}`}
+                        checked={plugin.enabled}
+                        disabled={savingId === plugin.id || (failed && !plugin.enabled) || isUnavailable}
+                        onChange={(value) => void setEnabled(plugin, value)}
+                      />
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
+
+      {plugins.length > 0 && groupedSections.length === 0 && (
+        <div className="plugins-page__empty">{t('plugins.noMatchSearch')}</div>
+      )}
 
       {plugins.length === 0 && (
         <div className="plugins-page__empty">{t('plugins.empty')}</div>

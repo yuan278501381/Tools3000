@@ -223,6 +223,7 @@ set(CAPTURE_OBJECT_SOURCES
     src/capture/PinGroupManager.cpp
     src/capture/PinContextMenuModel.cpp
     src/capture/PinContextMenu.cpp
+    src/capture/PinMemoryGovernor.cpp
     src/capture/CaptureHistory.cpp
 )
 add_library(capture_objects OBJECT ${CAPTURE_OBJECT_SOURCES})
@@ -377,7 +378,7 @@ if(EXISTS "${WEBVIEW2_DIR}")
     target_include_directories(ui_objects PUBLIC "${WEBVIEW2_DIR}/build/native/include")
 endif()
 target_link_libraries(ui_objects PUBLIC "${RUST_CLIPBOARD_LIB}" Tools3000Core
-    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt
+    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt version
 )
 
 # ── 2. Plugin_Gesture (动态库) ────────────────────────────────────────────────
@@ -523,7 +524,7 @@ set_target_properties(Tools3000 PROPERTIES OUTPUT_NAME "Tools3000")
 tools3000_add_version_resource(Tools3000 "Tools3000 Desktop Productivity Toolkit" "Tools3000.exe" VFT_APP)
 target_include_directories(Tools3000 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(Tools3000 PRIVATE "${RUST_CLIPBOARD_LIB}" Tools3000Core
-    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt
+    shlwapi shell32 user32 gdi32 ole32 oleaut32 advapi32 comctl32 shcore d2d1 dwrite wtsapi32 dwmapi windowscodecs ntdll userenv ws2_32 bcrypt version
 )
 
 # A runnable host build must contain the same validated plugin bundle that the

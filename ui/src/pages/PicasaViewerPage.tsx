@@ -19,7 +19,7 @@ import {
   Unlink,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { Button, Card, CodeBadge, PageSkeleton, SettingGroup, Toggle } from '../components/UIKit';
+import { Button, Card, CodeBadge, DisabledCascade, PageSkeleton, SettingGroup, Toggle } from '../components/UIKit';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './PicasaViewerPage.css';
 
@@ -372,6 +372,18 @@ export const PicasaViewerPage: FC = () => {
               </span>
             </span>
             <Button
+              variant="secondary"
+              size="sm"
+              disabled={!status.installed || busyAction !== null}
+              title={t('picasaViewer.tryOpenDesc')}
+              onClick={() => { void handleLaunchViewer(); }}
+            >
+              {busyAction === 'launch'
+                ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
+                : <FolderOpen size={14} aria-hidden="true" />}
+              <span>{t('picasaViewer.tryOpenBtn')}</span>
+            </Button>
+            <Button
               variant="ghost"
               size="sm"
               disabled={busyAction !== null}
@@ -405,135 +417,119 @@ export const PicasaViewerPage: FC = () => {
         </div>
       </div>
 
-      {/* ── 3. 文件关联与快速操作 ────────────────────────────────────────────── */}
-      <SettingGroup title={t('picasaViewer.assocSectionTitle')}>
-        <p className="picasa-viewer-section-desc">{t('picasaViewer.assocSectionDesc')}</p>
-        <Card className="picasa-viewer-actions-card">
-          <div className="picasa-viewer-action-row uikit-setting-row">
-            <div className="picasa-viewer-action-row__text">
-              <div className="picasa-viewer-action-row__title">{t('picasaViewer.associateAllTitle')}</div>
-              <div className="picasa-viewer-action-row__desc">
-                {t('picasaViewer.associateAllDesc', { total: status.supportedCount })}
-              </div>
-            </div>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={!status.installed || busyAction !== null}
-              onClick={() => { void handleAssociateAll(); }}
-            >
-              {busyAction === 'associate'
-                ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
-                : <Layers size={14} aria-hidden="true" />}
-              <span>{t('picasaViewer.associateAllBtn')}</span>
-            </Button>
-          </div>
-
-          <div className="picasa-viewer-action-row uikit-setting-row">
-            <div className="picasa-viewer-action-row__text">
-              <div className="picasa-viewer-action-row__title">{t('picasaViewer.customFormatsTitle')}</div>
-              <div className="picasa-viewer-action-row__desc">{t('picasaViewer.customFormatsDesc')}</div>
-            </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={!status.installed || busyAction !== null}
-              onClick={() => { void handleOpenFormatConfig(); }}
-            >
-              {busyAction === 'config'
-                ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
-                : <SlidersHorizontal size={14} aria-hidden="true" />}
-              <span>{t('picasaViewer.customFormatsBtn')}</span>
-            </Button>
-          </div>
-
-          <div className="picasa-viewer-action-row uikit-setting-row">
-            <div className="picasa-viewer-action-row__text">
-              <div className="picasa-viewer-action-row__title">{t('picasaViewer.defaultAppsTitle')}</div>
-              <div className="picasa-viewer-action-row__desc">{t('picasaViewer.defaultAppsDesc')}</div>
-            </div>
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyAction !== null}
-              onClick={() => { void handleOpenDefaultApps(); }}
-            >
-              {busyAction === 'defaultApps'
-                ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
-                : <ExternalLink size={14} aria-hidden="true" />}
-              <span>{t('picasaViewer.defaultAppsBtn')}</span>
-            </Button>
-          </div>
-
-          {status.registeredCount > 0 && (
+      {/* ── 3 & 4. 文件格式关联与支持的图片格式矩阵（未启用时视觉降权） ──── */}
+      <DisabledCascade disabled={!status.enabled} className="picasa-viewer-cascade">
+        <SettingGroup title={t('picasaViewer.assocSectionTitle')}>
+          <p className="picasa-viewer-section-desc">{t('picasaViewer.assocSectionDesc')}</p>
+          <Card className="picasa-viewer-actions-card">
             <div className="picasa-viewer-action-row uikit-setting-row">
               <div className="picasa-viewer-action-row__text">
-                <div className="picasa-viewer-action-row__title">{t('picasaViewer.unassociateAllTitle')}</div>
-                <div className="picasa-viewer-action-row__desc">{t('picasaViewer.unassociateAllDesc')}</div>
+                <div className="picasa-viewer-action-row__title">{t('picasaViewer.associateAllTitle')}</div>
+                <div className="picasa-viewer-action-row__desc">
+                  {t('picasaViewer.associateAllDesc', { total: status.supportedCount })}
+                </div>
               </div>
               <Button
-                variant="ghost"
+                variant="primary"
                 size="sm"
                 disabled={!status.installed || busyAction !== null}
-                onClick={() => { void handleUnassociateAll(); }}
+                onClick={() => { void handleAssociateAll(); }}
               >
-                {busyAction === 'unassociate'
+                {busyAction === 'associate'
                   ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
-                  : <Unlink size={14} aria-hidden="true" />}
-                <span>{t('picasaViewer.unassociateAllBtn')}</span>
+                  : <Layers size={14} aria-hidden="true" />}
+                <span>{t('picasaViewer.associateAllBtn')}</span>
               </Button>
             </div>
-          )}
 
-          <div className="picasa-viewer-action-row uikit-setting-row">
-            <div className="picasa-viewer-action-row__text">
-              <div className="picasa-viewer-action-row__title">{t('picasaViewer.tryOpenTitle')}</div>
-              <div className="picasa-viewer-action-row__desc">{t('picasaViewer.tryOpenDesc')}</div>
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={!status.installed || busyAction !== null}
-              onClick={() => { void handleLaunchViewer(); }}
-            >
-              {busyAction === 'launch'
-                ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
-                : <FolderOpen size={14} aria-hidden="true" />}
-              <span>{t('picasaViewer.tryOpenBtn')}</span>
-            </Button>
-          </div>
-        </Card>
-      </SettingGroup>
-
-      {/* ── 4. 支持的图片格式矩阵 ────────────────────────────────────────────── */}
-      <SettingGroup title={t('picasaViewer.formatsSectionTitle')}>
-        <p className="picasa-viewer-section-desc">{t('picasaViewer.formatsSectionDesc')}</p>
-        <Card className="picasa-viewer-formats-card">
-          <div className="picasa-viewer-formats-grid">
-            {FORMAT_GROUPS.map((group) => (
-              <div key={group.id} className="picasa-viewer-format-group">
-                <div className="picasa-viewer-format-group__label">
-                  {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-                  {t(group.labelKey as any)}
-                </div>
-                <div className="picasa-viewer-format-chips">
-                  {group.extensions.map((ext) => {
-                    const active = registeredSet.has(ext);
-                    return (
-                      <span
-                        key={ext}
-                        className={`picasa-viewer-ext-chip ${active ? 'picasa-viewer-ext-chip--active' : ''}`}
-                      >
-                        .{ext.toUpperCase()}
-                      </span>
-                    );
-                  })}
-                </div>
+            <div className="picasa-viewer-action-row uikit-setting-row">
+              <div className="picasa-viewer-action-row__text">
+                <div className="picasa-viewer-action-row__title">{t('picasaViewer.customFormatsTitle')}</div>
+                <div className="picasa-viewer-action-row__desc">{t('picasaViewer.customFormatsDesc')}</div>
               </div>
-            ))}
-          </div>
-        </Card>
-      </SettingGroup>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={!status.installed || busyAction !== null}
+                onClick={() => { void handleOpenFormatConfig(); }}
+              >
+                {busyAction === 'config'
+                  ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
+                  : <SlidersHorizontal size={14} aria-hidden="true" />}
+                <span>{t('picasaViewer.customFormatsBtn')}</span>
+              </Button>
+            </div>
+
+            <div className="picasa-viewer-action-row uikit-setting-row">
+              <div className="picasa-viewer-action-row__text">
+                <div className="picasa-viewer-action-row__title">{t('picasaViewer.defaultAppsTitle')}</div>
+                <div className="picasa-viewer-action-row__desc">{t('picasaViewer.defaultAppsDesc')}</div>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busyAction !== null}
+                onClick={() => { void handleOpenDefaultApps(); }}
+              >
+                {busyAction === 'defaultApps'
+                  ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
+                  : <ExternalLink size={14} aria-hidden="true" />}
+                <span>{t('picasaViewer.defaultAppsBtn')}</span>
+              </Button>
+            </div>
+
+            {status.registeredCount > 0 && (
+              <div className="picasa-viewer-action-row uikit-setting-row">
+                <div className="picasa-viewer-action-row__text">
+                  <div className="picasa-viewer-action-row__title">{t('picasaViewer.unassociateAllTitle')}</div>
+                  <div className="picasa-viewer-action-row__desc">{t('picasaViewer.unassociateAllDesc')}</div>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!status.installed || busyAction !== null}
+                  onClick={() => { void handleUnassociateAll(); }}
+                >
+                  {busyAction === 'unassociate'
+                    ? <Loader2 size={14} className="picasa-viewer-spin" aria-hidden="true" />
+                    : <Unlink size={14} aria-hidden="true" />}
+                  <span>{t('picasaViewer.unassociateAllBtn')}</span>
+                </Button>
+              </div>
+            )}
+          </Card>
+        </SettingGroup>
+
+        {/* ── 4. 支持的图片格式矩阵 ────────────────────────────────────────────── */}
+        <SettingGroup title={t('picasaViewer.formatsSectionTitle')}>
+          <p className="picasa-viewer-section-desc">{t('picasaViewer.formatsSectionDesc')}</p>
+          <Card className="picasa-viewer-formats-card">
+            <div className="picasa-viewer-formats-grid">
+              {FORMAT_GROUPS.map((group) => (
+                <div key={group.id} className="picasa-viewer-format-group">
+                  <div className="picasa-viewer-format-group__label">
+                    {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+                    {t(group.labelKey as any)}
+                  </div>
+                  <div className="picasa-viewer-format-chips">
+                    {group.extensions.map((ext) => {
+                      const active = registeredSet.has(ext);
+                      return (
+                        <span
+                          key={ext}
+                          className={`picasa-viewer-ext-chip ${active ? 'picasa-viewer-ext-chip--active' : ''}`}
+                        >
+                          .{ext.toUpperCase()}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </SettingGroup>
+      </DisabledCascade>
 
       {/* ── 5. 常用看图快捷键速查 ────────────────────────────────────────────── */}
       <SettingGroup title={t('picasaViewer.shortcutsSectionTitle')}>

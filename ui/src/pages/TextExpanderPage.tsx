@@ -39,6 +39,7 @@ import {
   PageSkeleton,
   SettingGroup,
   SettingRow,
+  SubSettingGroup,
   TextInput,
   Toggle,
 } from '../components/UIKit';
@@ -55,6 +56,8 @@ export interface TextExpanderRuleItem {
   enabled: boolean;
   mode: TextExpanderTriggerMode;
   caseSensitive: boolean;
+  fullwidthSensitive: boolean;
+  keepDelimiter: boolean;
   hitCount: number;
 }
 
@@ -74,6 +77,8 @@ interface RuleFormDraft {
   enabled: boolean;
   mode: TextExpanderTriggerMode;
   caseSensitive: boolean;
+  fullwidthSensitive: boolean;
+  keepDelimiter: boolean;
 }
 
 const DEFAULT_SENSITIVE_PROCESSES = [
@@ -98,17 +103,55 @@ const DEFAULT_SETTINGS: TextExpanderSettingsState = {
 
 const MAX_TRIGGER_LENGTH = 64;
 
-const DYNAMIC_MACROS: ReadonlyArray<{
+interface MacroItemSpec {
   id: string;
   token: string;
   labelKey: string;
   fallbackLabel: string;
+}
+
+const DYNAMIC_MACRO_GROUPS: ReadonlyArray<{
+  groupId: string;
+  groupLabelKey: string;
+  groupFallback: string;
+  items: ReadonlyArray<MacroItemSpec>;
 }> = [
-  { id: 'date', token: '{{date}}', labelKey: 'textExpander.macroDate', fallbackLabel: 'Date' },
-  { id: 'time', token: '{{time}}', labelKey: 'textExpander.macroTime', fallbackLabel: 'Time' },
-  { id: 'datetime', token: '{{datetime}}', labelKey: 'textExpander.macroDateTime', fallbackLabel: 'Date & Time' },
-  { id: 'clipboard', token: '{{clipboard}}', labelKey: 'textExpander.macroClipboard', fallbackLabel: 'Clipboard' },
-  { id: 'cursor', token: '{{cursor}}', labelKey: 'textExpander.macroCursor', fallbackLabel: 'Cursor' },
+  {
+    groupId: 'datetime',
+    groupLabelKey: 'textExpander.macroGroupDate',
+    groupFallback: 'Date & Time',
+    items: [
+      { id: 'date', token: '{{date}}', labelKey: 'textExpander.macroDate', fallbackLabel: 'Date' },
+      { id: 'date_compact', token: '{{date_compact}}', labelKey: 'textExpander.macroDateCompact', fallbackLabel: 'Compact Date' },
+      { id: 'date_slash', token: '{{date_slash}}', labelKey: 'textExpander.macroDateSlash', fallbackLabel: 'Slash Date' },
+      { id: 'time', token: '{{time}}', labelKey: 'textExpander.macroTime', fallbackLabel: 'Time' },
+      { id: 'time_sec', token: '{{time_sec}}', labelKey: 'textExpander.macroTimeSec', fallbackLabel: 'Time (Sec)' },
+      { id: 'datetime', token: '{{datetime}}', labelKey: 'textExpander.macroDateTime', fallbackLabel: 'Date & Time' },
+      { id: 'weekday', token: '{{weekday}}', labelKey: 'textExpander.macroWeekday', fallbackLabel: 'Weekday' },
+      { id: 'date_plus_1d', token: '{{date+1d}}', labelKey: 'textExpander.macroDateTomorrow', fallbackLabel: 'Tomorrow' },
+      { id: 'date_minus_1d', token: '{{date-1d}}', labelKey: 'textExpander.macroDateYesterday', fallbackLabel: 'Yesterday' },
+    ],
+  },
+  {
+    groupId: 'clipboard',
+    groupLabelKey: 'textExpander.macroGroupClip',
+    groupFallback: 'Clipboard & Cursor',
+    items: [
+      { id: 'clipboard', token: '{{clipboard}}', labelKey: 'textExpander.macroClipboard', fallbackLabel: 'Clipboard' },
+      { id: 'clipboard_trim', token: '{{clipboard_trim}}', labelKey: 'textExpander.macroClipboardTrim', fallbackLabel: 'Trimmed Clipboard' },
+      { id: 'cursor', token: '{{cursor}}', labelKey: 'textExpander.macroCursor', fallbackLabel: 'Cursor' },
+    ],
+  },
+  {
+    groupId: 'system',
+    groupLabelKey: 'textExpander.macroGroupSystem',
+    groupFallback: 'Dev & System',
+    items: [
+      { id: 'uuid', token: '{{uuid}}', labelKey: 'textExpander.macroUuid', fallbackLabel: 'UUID v4' },
+      { id: 'timestamp', token: '{{timestamp}}', labelKey: 'textExpander.macroTimestamp', fallbackLabel: 'Unix Timestamp' },
+      { id: 'user', token: '{{user}}', labelKey: 'textExpander.macroUser', fallbackLabel: 'System User' },
+    ],
+  },
 ];
 
 function createEmptyDraft(): RuleFormDraft {
@@ -120,7 +163,49 @@ function createEmptyDraft(): RuleFormDraft {
     enabled: true,
     mode: 'immediate',
     caseSensitive: false,
+    fullwidthSensitive: false,
+    keepDelimiter: true,
   };
+}
+
+function foldHalfwidthCodePoint(ch: string): string {
+  const code = ch.charCodeAt(0);
+  if (code >= 0xff01 && code <= 0xff5e) {
+    return String.fromCharCode(code - 0xfee0);
+  }
+  if (code === 0x3000) return ' ';
+  switch (code) {
+    case 0x3001: return '\\';
+    case 0x3002: return '.';
+    case 0x300a: return '<';
+    case 0x300b: return '>';
+    case 0x3010: return '[';
+    case 0x3011: return ']';
+    case 0x300c:
+    case 0x300d:
+    case 0x201c:
+    case 0x201d: return '"';
+    case 0x2018:
+    case 0x2019: return "'";
+    case 0xffe5: return '$';
+    case 0x2014: return '-';
+    case 0x2026: return '.';
+    case 0x00b7: return '`';
+    default: return ch;
+  }
+}
+
+function normalizeTriggerForMatch(
+  input: string,
+  caseSensitive: boolean,
+  fullwidthSensitive: boolean,
+): string {
+  let out = '';
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = fullwidthSensitive ? input[i] : foldHalfwidthCodePoint(input[i]);
+    out += caseSensitive ? ch : ch.toLowerCase();
+  }
+  return out;
 }
 
 function normalizeTriggerMode(raw: unknown): TextExpanderTriggerMode {
@@ -142,16 +227,39 @@ function normalizeRule(raw: unknown): TextExpanderRuleItem | null {
     enabled: typeof obj.enabled === 'boolean' ? obj.enabled : true,
     mode: normalizeTriggerMode(obj.mode),
     caseSensitive: Boolean(obj.caseSensitive),
+    fullwidthSensitive: Boolean(obj.fullwidthSensitive),
+    keepDelimiter: typeof obj.keepDelimiter === 'boolean' ? obj.keepDelimiter : true,
     hitCount: typeof obj.hitCount === 'number' && obj.hitCount >= 0 ? obj.hitCount : 0,
   };
 }
 
-function expandMacrosForPreview(template: string): { text: string; cursorOffsetFromEnd: number } {
+function formatLocalizedWeekdayPreview(date: Date, lang: string): string {
+  const raw = (lang || 'en').trim();
+  const normalized = raw.toLowerCase() === 'zh' ? 'zh-CN' : raw;
+  try {
+    return new Intl.DateTimeFormat(normalized, { weekday: 'long' }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat('en', { weekday: 'long' }).format(date);
+  }
+}
+
+function expandMacrosForPreview(
+  template: string,
+  locale = 'en',
+): { text: string; cursorOffsetFromEnd: number; cursorIndex: number | null } {
   const now = new Date();
   const pad2 = (n: number) => String(n).padStart(2, '0');
-  const dateStr = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
+  const formatYmd = (d: Date, sep = '-') =>
+    `${d.getFullYear()}${sep}${pad2(d.getMonth() + 1)}${sep}${pad2(d.getDate())}`;
+
+  const dateStr = formatYmd(now, '-');
+  const dateCompactStr = formatYmd(now, '');
+  const dateSlashStr = formatYmd(now, '/');
   const timeStr = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+  const timeSecStr = `${timeStr}:${pad2(now.getSeconds())}`;
   const dateTimeStr = `${dateStr} ${timeStr}`;
+  const weekdayStr = formatLocalizedWeekdayPreview(now, locale);
+  const timestampStr = String(Math.floor(now.getTime() / 1000));
 
   let out = '';
   let cursorPos: number | null = null;
@@ -160,34 +268,37 @@ function expandMacrosForPreview(template: string): { text: string; cursorOffsetF
   while (i < template.length) {
     if (template[i] === '{' && template[i + 1] === '{') {
       const end = template.indexOf('}}', i + 2);
-      if (end !== -1) {
+      if (end !== -1 && end - (i + 2) <= 28) {
         const token = template.slice(i + 2, end);
-        if (token === 'date') {
-          out += dateStr;
-          i = end + 2;
-          continue;
-        }
-        if (token === 'time') {
-          out += timeStr;
-          i = end + 2;
-          continue;
-        }
-        if (token === 'datetime') {
-          out += dateTimeStr;
-          i = end + 2;
-          continue;
-        }
-        if (token === 'clipboard') {
-          out += '[clipboard]';
-          i = end + 2;
-          continue;
-        }
+        if (token === 'date') { out += dateStr; i = end + 2; continue; }
+        if (token === 'date_compact') { out += dateCompactStr; i = end + 2; continue; }
+        if (token === 'date_slash') { out += dateSlashStr; i = end + 2; continue; }
+        if (token === 'time') { out += timeStr; i = end + 2; continue; }
+        if (token === 'time_sec') { out += timeSecStr; i = end + 2; continue; }
+        if (token === 'datetime') { out += dateTimeStr; i = end + 2; continue; }
+        if (token === 'weekday') { out += weekdayStr; i = end + 2; continue; }
+        if (token === 'clipboard') { out += '[clipboard]'; i = end + 2; continue; }
+        if (token === 'clipboard_trim') { out += '[clipboard_trim]'; i = end + 2; continue; }
+        if (token === 'uuid') { out += 'f47ac10b-58cc-4372-a567-0e02b2c3d479'; i = end + 2; continue; }
+        if (token === 'timestamp') { out += timestampStr; i = end + 2; continue; }
+        if (token === 'user') { out += 'user'; i = end + 2; continue; }
         if (token === 'cursor') {
           if (cursorPos === null) {
             cursorPos = out.length;
           }
           i = end + 2;
           continue;
+        }
+        const offsetMatch = /^date([+-]\d{1,5})d$/i.exec(token);
+        if (offsetMatch) {
+          const delta = Number(offsetMatch[1]);
+          if (Math.abs(delta) <= 36500) {
+            const shifted = new Date(now.getTime());
+            shifted.setDate(shifted.getDate() + delta);
+            out += formatYmd(shifted, '-');
+            i = end + 2;
+            continue;
+          }
         }
       }
     }
@@ -198,6 +309,7 @@ function expandMacrosForPreview(template: string): { text: string; cursorOffsetF
   return {
     text: out,
     cursorOffsetFromEnd: cursorPos === null ? 0 : out.length - cursorPos,
+    cursorIndex: cursorPos,
   };
 }
 
@@ -218,7 +330,8 @@ function parseCsvProcessList(csv: string): string[] {
 }
 
 export const TextExpanderPage: FC = () => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const activeLocale = i18n?.language || 'en';
   const [loading, setLoading] = useState(true);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingRule, setSavingRule] = useState(false);
@@ -232,9 +345,11 @@ export const TextExpanderPage: FC = () => {
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState<RuleFormDraft>(createEmptyDraft);
   const [formError, setFormError] = useState('');
+  const [sandboxCollapsed, setSandboxCollapsed] = useState(false);
 
   const replacementRef = useRef<HTMLTextAreaElement>(null);
   const sandboxRef = useRef<HTMLTextAreaElement>(null);
+  const sandboxSectionRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
@@ -347,11 +462,11 @@ export const TextExpanderPage: FC = () => {
     for (const rule of activeRules) {
       if (rule.mode === 'immediate') {
         const tail = prefix.slice(-rule.trigger.length);
-        const matched = rule.caseSensitive
-          ? tail === rule.trigger
-          : tail.toLowerCase() === rule.trigger.toLowerCase();
+        const matched =
+          normalizeTriggerForMatch(tail, rule.caseSensitive, rule.fullwidthSensitive) ===
+          normalizeTriggerForMatch(rule.trigger, rule.caseSensitive, rule.fullwidthSensitive);
         if (matched && prefix.length >= rule.trigger.length) {
-          const expanded = expandMacrosForPreview(rule.replacement);
+          const expanded = expandMacrosForPreview(rule.replacement, activeLocale);
           const before = prefix.slice(0, prefix.length - rule.trigger.length);
           const merged = `${before}${expanded.text}${suffix}`;
           const nextCaret = before.length + expanded.text.length - expanded.cursorOffsetFromEnd;
@@ -363,17 +478,22 @@ export const TextExpanderPage: FC = () => {
         }
       } else if (prefix.length >= rule.trigger.length + 1) {
         const lastChar = prefix[prefix.length - 1];
-        if (lastChar === ' ' || lastChar === '\t' || lastChar === '\n') {
+        if (lastChar === ' ' || lastChar === '\t' || lastChar === '\n' || lastChar === '\u3000') {
           const body = prefix.slice(0, -1);
           const tail = body.slice(-rule.trigger.length);
-          const matched = rule.caseSensitive
-            ? tail === rule.trigger
-            : tail.toLowerCase() === rule.trigger.toLowerCase();
+          const matched =
+            normalizeTriggerForMatch(tail, rule.caseSensitive, rule.fullwidthSensitive) ===
+            normalizeTriggerForMatch(rule.trigger, rule.caseSensitive, rule.fullwidthSensitive);
           if (matched) {
-            const expanded = expandMacrosForPreview(rule.replacement);
+            const expanded = expandMacrosForPreview(rule.replacement, activeLocale);
+            const trailingDelim = rule.keepDelimiter ? lastChar : '';
             const before = body.slice(0, body.length - rule.trigger.length);
-            const merged = `${before}${expanded.text}${suffix}`;
-            const nextCaret = before.length + expanded.text.length - expanded.cursorOffsetFromEnd;
+            const merged = `${before}${expanded.text}${trailingDelim}${suffix}`;
+            const cursorBack =
+              expanded.cursorIndex !== null
+                ? expanded.cursorOffsetFromEnd + trailingDelim.length
+                : 0;
+            const nextCaret = before.length + expanded.text.length + trailingDelim.length - cursorBack;
             setSandboxText(merged);
             requestAnimationFrame(() => {
               sandboxRef.current?.setSelectionRange(nextCaret, nextCaret);
@@ -402,6 +522,8 @@ export const TextExpanderPage: FC = () => {
       enabled: rule.enabled,
       mode: rule.mode,
       caseSensitive: rule.caseSensitive,
+      fullwidthSensitive: rule.fullwidthSensitive,
+      keepDelimiter: rule.keepDelimiter,
     });
     setFormError('');
     setEditorOpen(true);
@@ -438,10 +560,12 @@ export const TextExpanderPage: FC = () => {
     const dup = rules.some((r) => {
       if (candidate.id && r.id === candidate.id) return false;
       if (r.mode !== candidate.mode) return false;
-      if (candidate.caseSensitive && r.caseSensitive) {
-        return r.trigger === trig;
-      }
-      return r.trigger.toLowerCase() === trig.toLowerCase();
+      const strictCase = candidate.caseSensitive && r.caseSensitive;
+      const strictFullwidth = candidate.fullwidthSensitive && r.fullwidthSensitive;
+      return (
+        normalizeTriggerForMatch(r.trigger, strictCase, strictFullwidth) ===
+        normalizeTriggerForMatch(trig, strictCase, strictFullwidth)
+      );
     });
     if (dup) {
       return t('textExpander.errDuplicateTrigger', 'A snippet with this trigger keyword already exists');
@@ -474,6 +598,8 @@ export const TextExpanderPage: FC = () => {
           enabled: draft.enabled,
           mode: draft.mode,
           caseSensitive: draft.caseSensitive,
+          fullwidthSensitive: draft.fullwidthSensitive,
+          keepDelimiter: draft.keepDelimiter,
         },
         { silent: true },
       );
@@ -694,70 +820,7 @@ export const TextExpanderPage: FC = () => {
         </div>
       </Card>
 
-      {/* 2. 实时体验沙盒 */}
-      <SettingGroup
-        title={t('textExpander.sandboxGroup', 'Live Try-it Sandbox')}
-        icon={<Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />}
-      >
-        <Card>
-          <div className="te-sandbox">
-            {!settings.enabled && (
-              <div className="te-sandbox__notice" role="status">
-                <span className="te-sandbox__notice-left">
-                  <Lock size={15} className="te-sandbox__notice-icon" aria-hidden="true" />
-                  <span>
-                    {t(
-                      'textExpander.sandboxDisabledHint',
-                      'Enable the master switch above to test typing triggers live right here.',
-                    )}
-                  </span>
-                </span>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={savingSettings}
-                  onClick={() => void patchSettings({ enabled: true })}
-                >
-                  <span>{t('textExpander.enableNowBtn', 'Enable Now')}</span>
-                </Button>
-              </div>
-            )}
-
-            <textarea
-              ref={sandboxRef}
-              id="text-expander-sandbox"
-              className="te-sandbox__textarea"
-              value={sandboxText}
-              onChange={handleSandboxChange}
-              placeholder={t(
-                'textExpander.sandboxPlaceholder',
-                'Click here and type a trigger such as ;date, ;now, or ;thx to see instant expansion...',
-              )}
-              aria-label={t('textExpander.sandboxAria', 'Live text expander sandbox')}
-              spellCheck={false}
-            />
-
-            <div className="te-sandbox__footer">
-              <div className="te-sandbox__hints">
-                <span>{t('textExpander.tryTriggersLabel', 'Try typing:')}</span>
-                {sampleHintTriggers.map((rule) => (
-                  <CodeBadge key={rule.id || rule.trigger} variant="primary">
-                    {rule.trigger}
-                  </CodeBadge>
-                ))}
-              </div>
-              {sandboxText.length > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setSandboxText('')}>
-                  <RotateCcw size={13} aria-hidden="true" />
-                  <span>{t('textExpander.clearSandboxBtn', 'Clear')}</span>
-                </Button>
-              )}
-            </div>
-          </div>
-        </Card>
-      </SettingGroup>
-
-      {/* 3. 短语规则管理卡片 */}
+      {/* 2. 短语规则管理卡片（首屏黄金位置） */}
       <SettingGroup
         title={t('textExpander.rulesGroup', 'Snippet Rules')}
         icon={<TextCursorInput size={18} strokeWidth={2.2} aria-hidden="true" />}
@@ -787,6 +850,28 @@ export const TextExpanderPage: FC = () => {
             </div>
 
             <div className="te-toolbar__actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (sandboxCollapsed) {
+                    setSandboxCollapsed(false);
+                    requestAnimationFrame(() => {
+                      sandboxSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+                      sandboxRef.current?.focus();
+                    });
+                  } else {
+                    setSandboxCollapsed(true);
+                  }
+                }}
+              >
+                <Sparkles size={14} aria-hidden="true" />
+                <span>
+                  {sandboxCollapsed
+                    ? t('textExpander.toggleSandboxBtn', 'Test Sandbox')
+                    : t('textExpander.hideSandboxBtn', 'Hide Sandbox')}
+                </span>
+              </Button>
               <input
                 ref={importInputRef}
                 type="file"
@@ -855,6 +940,14 @@ export const TextExpanderPage: FC = () => {
                           Aa
                         </CodeBadge>
                       )}
+                      {rule.fullwidthSensitive && (
+                        <CodeBadge
+                          variant="muted"
+                          title={t('textExpander.fullwidthSensitiveTitle', 'Distinguish Fullwidth & Halfwidth')}
+                        >
+                          {t('textExpander.fullwidthBadge', 'Strict Width')}
+                        </CodeBadge>
+                      )}
                       <span className="te-rule-item__hits">
                         {t('textExpander.hitCount', {
                           count: rule.hitCount,
@@ -899,6 +992,71 @@ export const TextExpanderPage: FC = () => {
           )}
         </Card>
       </SettingGroup>
+
+      {/* 3. 实时体验沙盒（默认在规则列表下方完整渲染，支持一键收起/展开定位） */}
+      <div ref={sandboxSectionRef} hidden={sandboxCollapsed}>
+        <SettingGroup
+          title={t('textExpander.sandboxGroup', 'Live Try-it Sandbox')}
+          icon={<Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <div className="te-sandbox">
+              {!settings.enabled && (
+                <div className="te-sandbox__notice" role="status">
+                  <span className="te-sandbox__notice-left">
+                    <Lock size={15} className="te-sandbox__notice-icon" aria-hidden="true" />
+                    <span>
+                      {t(
+                        'textExpander.sandboxDisabledHint',
+                        'Enable the master switch above to test typing triggers live right here.',
+                      )}
+                    </span>
+                  </span>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={savingSettings}
+                    onClick={() => void patchSettings({ enabled: true })}
+                  >
+                    <span>{t('textExpander.enableNowBtn', 'Enable Now')}</span>
+                  </Button>
+                </div>
+              )}
+
+              <textarea
+                ref={sandboxRef}
+                id="text-expander-sandbox"
+                className="te-sandbox__textarea"
+                value={sandboxText}
+                onChange={handleSandboxChange}
+                placeholder={t(
+                  'textExpander.sandboxPlaceholder',
+                  'Click here and type a trigger such as ;date, ;now, or ;thx to see instant expansion...',
+                )}
+                aria-label={t('textExpander.sandboxAria', 'Live text expander sandbox')}
+                spellCheck={false}
+              />
+
+              <div className="te-sandbox__footer">
+                <div className="te-sandbox__hints">
+                  <span>{t('textExpander.tryTriggersLabel', 'Try typing:')}</span>
+                  {sampleHintTriggers.map((rule) => (
+                    <CodeBadge key={rule.id || rule.trigger} variant="primary">
+                      {rule.trigger}
+                    </CodeBadge>
+                  ))}
+                </div>
+                {sandboxText.length > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setSandboxText('')}>
+                    <RotateCcw size={13} aria-hidden="true" />
+                    <span>{t('textExpander.clearSandboxBtn', 'Clear')}</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Card>
+        </SettingGroup>
+      </div>
 
       {/* 4. 隐私与防误触设置卡片 */}
       <SettingGroup
@@ -1082,13 +1240,45 @@ export const TextExpanderPage: FC = () => {
             </div>
           </Field>
 
-          <Toggle
-            id="te-rule-case-sensitive"
-            label={t('textExpander.caseSensitiveTitle', 'Case Sensitive')}
-            description={t('textExpander.caseSensitiveDesc', 'Require exact uppercase and lowercase letter matching.')}
-            checked={draft.caseSensitive}
-            onChange={(caseSensitive) => setDraft((prev) => ({ ...prev, caseSensitive }))}
-          />
+          {draft.mode === 'delimiter' && (
+            <SubSettingGroup>
+              <Toggle
+                id="te-rule-keep-delimiter"
+                label={t('textExpander.keepDelimiterTitle', 'Keep Boundary Key After Expansion')}
+                description={t(
+                  'textExpander.keepDelimiterDesc',
+                  'Preserve the trailing Space, Tab, or Enter that triggered expansion for natural continuous typing.',
+                )}
+                checked={draft.keepDelimiter}
+                onChange={(keepDelimiter) => setDraft((prev) => ({ ...prev, keepDelimiter }))}
+              />
+            </SubSettingGroup>
+          )}
+
+          <div className="te-match-toggles">
+            <div className="te-match-toggle-card">
+              <Toggle
+                id="te-rule-case-sensitive"
+                label={t('textExpander.caseSensitiveTitle', 'Case Sensitive')}
+                description={t('textExpander.caseSensitiveDesc', 'Require exact uppercase and lowercase letter matching.')}
+                checked={draft.caseSensitive}
+                onChange={(caseSensitive) => setDraft((prev) => ({ ...prev, caseSensitive }))}
+              />
+            </div>
+
+            <div className="te-match-toggle-card">
+              <Toggle
+                id="te-rule-fullwidth-sensitive"
+                label={t('textExpander.fullwidthSensitiveTitle', 'Distinguish Fullwidth & Halfwidth')}
+                description={t(
+                  'textExpander.fullwidthSensitiveDesc',
+                  'When off, fullwidth letters and CJK punctuation on the same key (e.g. ;sig) match seamlessly.',
+                )}
+                checked={draft.fullwidthSensitive}
+                onChange={(fullwidthSensitive) => setDraft((prev) => ({ ...prev, fullwidthSensitive }))}
+              />
+            </div>
+          </div>
 
           <Field label={t('textExpander.fieldReplacement', 'Expanded Content')}>
             <textarea
@@ -1098,25 +1288,65 @@ export const TextExpanderPage: FC = () => {
               value={draft.replacement}
               onChange={(e) => setDraft((prev) => ({ ...prev, replacement: e.target.value }))}
               placeholder={t('textExpander.fieldReplacementPlaceholder', 'Enter the expanded text or template...')}
-              rows={5}
+              rows={4}
             />
           </Field>
 
+          {draft.replacement.length > 0 && (() => {
+            const preview = expandMacrosForPreview(draft.replacement, activeLocale);
+            const hasCursor = preview.cursorIndex !== null;
+            const beforeText = hasCursor ? preview.text.slice(0, preview.cursorIndex ?? 0) : preview.text;
+            const afterText = hasCursor ? preview.text.slice(preview.cursorIndex ?? 0) : '';
+            return (
+              <div className="te-live-preview" role="status" aria-live="polite">
+                <span className="te-live-preview__label">
+                  {t('textExpander.livePreviewLabel', 'Live Expansion Preview')}
+                </span>
+                <div className="te-live-preview__box">
+                  <span>{beforeText}</span>
+                  {hasCursor && (
+                    <span className="te-live-preview__cursor" aria-label={t('textExpander.macroCursor', 'Cursor')}>
+                      |
+                    </span>
+                  )}
+                  <span>{afterText}</span>
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="te-macros">
-            <span className="te-macros__label">
-              {t('textExpander.insertMacroTitle', 'Insert Dynamic Variable')}
-            </span>
-            <div className="te-macros__bar">
-              {DYNAMIC_MACROS.map((macro) => (
-                <button
-                  key={macro.id}
-                  type="button"
-                  className="te-macro-pill"
-                  onClick={() => handleInsertMacro(macro.token)}
-                >
-                  <span className="te-macro-pill__token">{macro.token}</span>
-                  <span>{t(macro.labelKey, macro.fallbackLabel)}</span>
-                </button>
+            <div className="te-macros__head">
+              <span className="te-macros__label">
+                {t('textExpander.insertMacroTitle', 'Insert Dynamic Variable')}
+              </span>
+              <span className="te-macros__hint">
+                {t('textExpander.livePreviewOffsetHint', {
+                  example: '{{date+7d}}',
+                  defaultValue: 'Tip: arbitrary day offsets like {{date+7d}} are also supported',
+                })}
+              </span>
+            </div>
+            <div className="te-macros__groups">
+              {DYNAMIC_MACRO_GROUPS.map((group) => (
+                <div key={group.groupId} className="te-macros__group-row">
+                  <span className="te-macros__group-title">
+                    {t(group.groupLabelKey, group.groupFallback)}
+                  </span>
+                  <div className="te-macros__bar">
+                    {group.items.map((macro) => (
+                      <button
+                        key={macro.id}
+                        type="button"
+                        className="te-macro-pill"
+                        onClick={() => handleInsertMacro(macro.token)}
+                      >
+                        <span className="te-macro-pill__token">{macro.token}</span>
+                        <span>{t(macro.labelKey, macro.fallbackLabel)}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ))}
             </div>
           </div>
