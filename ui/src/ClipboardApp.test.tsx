@@ -209,11 +209,13 @@ describe('ClipboardApp', () => {
         id: 102,
         text: 'Updated inline text',
       });
+      expect(screen.queryByLabelText('Edit clipboard text')).toBeNull();
     });
 
     // 3. Ctrl+Click 多选第 3 条 -> 第 2 条，验证按勾选顺序合并粘贴
-    fireEvent.click(options[2], { ctrlKey: true });
-    fireEvent.click(options[1], { ctrlKey: true });
+    const optionsAfterEdit = screen.getAllByRole('option');
+    fireEvent.click(optionsAfterEdit[2], { ctrlKey: true });
+    fireEvent.click(optionsAfterEdit[1], { ctrlKey: true });
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Merge Paste' })).toBeTruthy();
     });
@@ -225,13 +227,16 @@ describe('ClipboardApp', () => {
         autoPaste: true,
         hideAfter: true,
       });
+      expect(screen.queryByRole('button', { name: 'Merge Paste' })).toBeNull();
     });
 
     // 4. 开启多选模式勾选后执行批量删除
     fireEvent.click(screen.getByRole('button', { name: 'Select' }));
-    fireEvent.click(options[1]);
-    fireEvent.click(options[2]);
-    fireEvent.click(screen.getByRole('button', { name: 'Delete (2)' }));
+    const optionsForDelete = screen.getAllByRole('option');
+    fireEvent.click(optionsForDelete[1]);
+    fireEvent.click(optionsForDelete[2]);
+    const deleteBatchBtn = await screen.findByRole('button', { name: 'Delete (2)' });
+    fireEvent.click(deleteBatchBtn);
     await waitFor(() => {
       expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.deleteItems', {
         ids: [102, 103],
