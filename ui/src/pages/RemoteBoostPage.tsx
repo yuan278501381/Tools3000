@@ -1,15 +1,25 @@
 /* ─────────────────────────────────────────────────────────────────────────────
  * RemoteBoostPage.tsx — 远程协助主控单边增强设置中心 (Remote Desktop Host Boost)
  *
- * 核心设计:
- *   1. 沉浸式系统热键直通 (Immersive Remote Hotkey Tunnel)
- *   2. 远程修饰键卡死一键急救 (Modifier Key Emergency Flush)
- *   3. 远控输入法智能脱敏 (Smart Remote IME Sanitizer)
- *   4. 世界级玻璃拟态微晶卡片与微徽章交互
+ * 信息架构重排:
+ *   1. 顶部总控与实时前台感知状态条
+ *   2. 首屏黄金区连续呈现三大核心增强引擎（系统热键直通 / 修饰键急救冲刷 / 输入法智能脱敏）
+ *   3. 进阶区后置：共享「远控客户端识别规则」（受管进程名 + 受管窗口类名列表）
+ *   4. 底部恢复默认配置栏
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, Button, CodeBadge, PageSkeleton } from '../components/UIKit';
+import {
+  Card,
+  Toggle,
+  SettingGroup,
+  SettingRow,
+  SubSettingGroup,
+  DisabledCascade,
+  Button,
+  CodeBadge,
+  PageSkeleton,
+} from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
@@ -23,6 +33,9 @@ import {
   Trash2,
   CheckCircle2,
   Radio,
+  Sliders,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import './RemoteBoostPage.css';
 
@@ -96,6 +109,7 @@ export const RemoteBoostPage: FC = () => {
   const [newProcessInput, setNewProcessInput] = useState('');
   const [newClassInput, setNewClassInput] = useState('');
   const [flushing, setFlushing] = useState(false);
+  const [rulesCollapsed, setRulesCollapsed] = useState(false);
 
   // 加载后台真实配置与状态
   const loadData = useCallback(() => {
@@ -254,15 +268,15 @@ export const RemoteBoostPage: FC = () => {
 
   return (
     <div className="remote-boost-page">
-      {/* ── 顶部总控卡片与前台感知状态条 ────────────────────────────────────── */}
+      {/* ── 1. 顶部总控卡片与前台感知状态条 ─────────────────────────────────── */}
       <Card className="remote-boost-hero-card">
         <div className="remote-boost-hero">
-          <div className="remote-boost-hero__info" style={{ flexDirection: 'row', alignItems: 'flex-start', gap: '12px' }}>
-            <Cast size={20} className="remote-boost-hero__icon" style={{ marginTop: 2, flexShrink: 0 }} />
+          <div className="remote-boost-hero__info">
+            <Cast size={20} className="remote-boost-hero__icon" aria-hidden="true" />
             <p className="remote-boost-hero__desc">
               {t(
                 'remoteBoost.masterDesc',
-                'Unilateral enhancement on host PC: Immersive system hotkey tunnel, emergency modifier flush, and intelligent IME sanitizing without installing any software on remote machines.'
+                'Unilateral enhancement on host PC: Immersive system hotkey tunnel, emergency modifier flush, and intelligent IME sanitizing without installing any software on remote machines.',
               )}
             </p>
           </div>
@@ -298,254 +312,300 @@ export const RemoteBoostPage: FC = () => {
           </div>
           {remoteState.imeSanitized && (
             <div className="remote-boost-ime-pill" title={t('remoteBoost.imeSanitizedTooltip', 'IME Sanitized')}>
-              <Languages size={13} />
+              <Languages size={13} aria-hidden="true" />
               <span>{t('remoteBoost.imePureEnglish', 'ENG 0409 Active')}</span>
             </div>
           )}
         </div>
       </Card>
 
-      {/* ── 引擎 1: 沉浸式系统热键直通 ───────────────────────────────────────── */}
-      <Card
-        title={t('remoteBoost.tunnelSectionTitle', 'Immersive Remote Hotkey Tunnel')}
-        subtitle={t(
-          'remoteBoost.tunnelSectionSubtitle',
-          'Intercepts local Windows priority consumption on system hotkeys and forwards hardware scancodes to remote canvas'
-        )}
-        className="remote-boost-card"
-      >
-        <div className="remote-boost-card__stack">
-          <SettingRow
-            label={t('remoteBoost.hotkeyTunnelTitle', 'Enable System Hotkey Tunnel')}
-            description={t(
-              'remoteBoost.hotkeyTunnelDesc',
-              'Forwards Win, Win+R, Win+E, Win+D, Win+X, Alt+Tab, Ctrl+Shift+Esc to remote PC without triggering local menus'
+      <DisabledCascade disabled={!settings.enabled} className="remote-boost-page__cascade">
+        {/* ── 2. 首屏黄金区：连续排列三大核心远控增强引擎 ─────────────────── */}
+        <SettingGroup
+          title={t('remoteBoost.coreEnginesGroup', 'Core Remote Enhancement Engines')}
+          icon={<Zap size={18} />}
+        >
+          {/* 引擎 1: 沉浸式系统热键直通（仅保留开关与 7 枚系统按键胶囊） */}
+          <Card
+            title={t('remoteBoost.tunnelSectionTitle', 'Immersive Remote Hotkey Tunnel')}
+            subtitle={t(
+              'remoteBoost.tunnelSectionSubtitle',
+              'Intercepts local Windows priority consumption on system hotkeys and forwards hardware scancodes to remote canvas',
             )}
+            className="remote-boost-card"
           >
-            <Toggle
-              id="hotkey-tunnel-toggle"
-              checked={settings.hotkeyTunnelEnabled && settings.enabled}
-              disabled={!settings.enabled}
-              onChange={(checked) => void updateSettings({ hotkeyTunnelEnabled: checked })}
-            />
-          </SettingRow>
-
-          {/* 直通按键胶囊清单 */}
-          <div className="remote-boost-tags-container">
-            <span className="remote-boost-tags-label">
-              {t('remoteBoost.interceptedKeysLabel', 'Intercepted & Tunneled Keys:')}
-            </span>
-            <div className="remote-boost-key-chips">
-              <CodeBadge>Win</CodeBadge>
-              <CodeBadge>Win + R</CodeBadge>
-              <CodeBadge>Win + E</CodeBadge>
-              <CodeBadge>Win + D</CodeBadge>
-              <CodeBadge>Win + X</CodeBadge>
-              <CodeBadge>Alt + Tab</CodeBadge>
-              <CodeBadge>Ctrl + Shift + Esc</CodeBadge>
-            </div>
-          </div>
-
-          {/* 支持的远控客户端进程列表 */}
-          <div className="remote-boost-process-section">
-            <div className="remote-boost-process-header">
-              <span className="remote-boost-tags-label">
-                {t('remoteBoost.targetProcessesLabel', 'Target Remote Client Processes:')}
-              </span>
-            </div>
-
-            <div className="remote-boost-process-tags">
-              {settings.targetProcesses.map((proc) => (
-                <span key={proc} className="remote-boost-process-chip">
-                  <CodeBadge variant="muted">{proc}</CodeBadge>
-                  <button
-                    type="button"
-                    className="remote-boost-process-chip__remove"
-                    title={t('common.delete', 'Delete')}
-                    aria-label={`${t('common.delete', 'Delete')} ${proc}`}
-                    onClick={() => handleRemoveProcess(proc)}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-
-            {/* 新增进程输入栏 */}
-            <div className="remote-boost-add-row">
-              <input
-                type="text"
-                className="remote-boost-input"
-                placeholder={t('remoteBoost.addProcessPlaceholder', 'e.g., CustomRemote.exe')}
-                value={newProcessInput}
-                onChange={(e) => setNewProcessInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAddProcess();
-                }}
-              />
-              <Button variant="secondary" size="sm" onClick={handleAddProcess}>
-                <Plus size={14} />
-                <span>{t('common.add', 'Add')}</span>
-              </Button>
-            </div>
-          </div>
-
-          {/* 支持的远控窗口类名列表 (C-03 开放编辑) */}
-          <div className="remote-boost-process-section">
-            <div className="remote-boost-process-header">
-              <span className="remote-boost-tags-label">
-                {t('remoteBoost.targetClassesLabel', 'Target Remote Window Classes:')}
-              </span>
-            </div>
-
-            <div className="remote-boost-process-tags">
-              {settings.targetClasses.map((cls) => (
-                <span key={cls} className="remote-boost-process-chip">
-                  <CodeBadge variant="muted">{cls}</CodeBadge>
-                  <button
-                    type="button"
-                    className="remote-boost-process-chip__remove"
-                    title={t('common.delete', 'Delete')}
-                    aria-label={`${t('common.delete', 'Delete')} ${cls}`}
-                    onClick={() => handleRemoveClass(cls)}
-                  >
-                    <Trash2 size={12} />
-                  </button>
-                </span>
-              ))}
-            </div>
-
-            <div className="remote-boost-add-row">
-              <input
-                type="text"
-                className="remote-boost-input"
-                placeholder={t('remoteBoost.addClassPlaceholder', 'e.g., TSSHELLWND')}
-                value={newClassInput}
-                onChange={(e) => setNewClassInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') handleAddClass();
-                }}
-              />
-              <Button variant="secondary" size="sm" onClick={handleAddClass}>
-                <Plus size={14} />
-                <span>{t('common.add', 'Add')}</span>
-              </Button>
-            </div>
-          </div>
-        </div>
-      </Card>
-
-      {/* ── 引擎 2: 远程修饰键卡死一键急救 ───────────────────────────────────── */}
-      <Card
-        title={t('remoteBoost.flushSectionTitle', 'Modifier Key Emergency Flush')}
-        subtitle={t(
-          'remoteBoost.flushSectionSubtitle',
-          'Instantly releases stuck Ctrl, Alt, Shift, Win and mouse buttons caused by network latency or focus loss'
-        )}
-        className="remote-boost-card"
-      >
-        <div className="remote-boost-card__stack">
-          <SettingRow
-            label={t('remoteBoost.emergencyFlushTitle', 'Emergency Flush Engine')}
-            description={t(
-              'remoteBoost.emergencyFlushDesc',
-              'Sends atomic 11-channel KEYUP pulses across hardware scancodes to completely flush remote stuck keys'
-            )}
-          >
-            <Toggle
-              id="emergency-flush-toggle"
-              checked={settings.emergencyFlushEnabled && settings.enabled}
-              disabled={!settings.enabled}
-              onChange={(checked) => void updateSettings({ emergencyFlushEnabled: checked })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('remoteBoost.doubleRightCtrlTitle', 'Double-tap Right Ctrl Trigger')}
-            description={t(
-              'remoteBoost.doubleRightCtrlDesc',
-              'Double-tap Right Ctrl within 400ms to immediately fire emergency flush without lifting hands from keyboard'
-            )}
-          >
-            <Toggle
-              id="double-ctrl-toggle"
-              checked={settings.doubleRightCtrlTrigger && settings.emergencyFlushEnabled && settings.enabled}
-              disabled={!settings.enabled || !settings.emergencyFlushEnabled}
-              onChange={(checked) => void updateSettings({ doubleRightCtrlTrigger: checked })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('remoteBoost.dedicatedShortcutTitle', 'Dedicated Emergency Hotkey')}
-            description={t('remoteBoost.dedicatedShortcutDesc', 'Global emergency shortcut to trigger flush anytime')}
-          >
-            <HotkeyRecorder
-              id="remote-emergency-shortcut"
-              value={settings.emergencyShortcut}
-              onChange={(val) => void updateSettings({ emergencyShortcut: val })}
-            />
-          </SettingRow>
-
-          {/* 立即急救冲刷按钮 */}
-          <div className="remote-boost-flush-action-bar">
-            <div className="remote-boost-flush-desc">
-              <Radio size={15} className="remote-boost-flush-icon" />
-              <span>
-                {t(
-                  'remoteBoost.flushTestDesc',
-                  'Test flush: Emits full-array KEYUP pulses to current window and cleans sticky states'
+            <div className="remote-boost-card__stack">
+              <SettingRow
+                label={t('remoteBoost.hotkeyTunnelTitle', 'Enable System Hotkey Tunnel')}
+                description={t(
+                  'remoteBoost.hotkeyTunnelDesc',
+                  'Forwards Win, Win+R, Win+E, Win+D, Win+X, Alt+Tab, Ctrl+Shift+Esc to remote PC without triggering local menus',
                 )}
-              </span>
+              >
+                <Toggle
+                  id="hotkey-tunnel-toggle"
+                  checked={settings.hotkeyTunnelEnabled && settings.enabled}
+                  disabled={!settings.enabled}
+                  onChange={(checked) => void updateSettings({ hotkeyTunnelEnabled: checked })}
+                />
+              </SettingRow>
+
+              <div className="remote-boost-tags-container">
+                <span className="remote-boost-tags-label">
+                  {t('remoteBoost.interceptedKeysLabel', 'Intercepted & Tunneled Keys:')}
+                </span>
+                <div className="remote-boost-key-chips">
+                  <CodeBadge>Win</CodeBadge>
+                  <CodeBadge>Win + R</CodeBadge>
+                  <CodeBadge>Win + E</CodeBadge>
+                  <CodeBadge>Win + D</CodeBadge>
+                  <CodeBadge>Win + X</CodeBadge>
+                  <CodeBadge>Alt + Tab</CodeBadge>
+                  <CodeBadge>Ctrl + Shift + Esc</CodeBadge>
+                </div>
+              </div>
             </div>
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={flushing}
-              onClick={() => void handleEmergencyFlush()}
-              className="remote-boost-flush-btn"
-            >
-              <Zap size={14} />
-              <span>{flushing ? t('remoteBoost.flushing', 'Flushing...') : t('remoteBoost.flushNow', 'Flush Now')}</span>
-            </Button>
-          </div>
-        </div>
-      </Card>
+          </Card>
 
-      {/* ── 引擎 3: 远控输入法智能脱敏 ───────────────────────────────────────── */}
-      <Card
-        title={t('remoteBoost.imeSectionTitle', 'Smart Remote IME Sanitizer')}
-        subtitle={t(
-          'remoteBoost.imeSectionSubtitle',
-          'Prevents local Chinese IME candidate window from obscuring and corrupting remote keyboard input'
-        )}
-        className="remote-boost-card"
-      >
-        <div className="remote-boost-card__stack">
-          <SettingRow
-            label={t('remoteBoost.imeSanitizerTitle', 'Auto Switch to US English on Focus')}
-            description={t(
-              'remoteBoost.imeSanitizerDesc',
-              'Automatically activates pure US English (ENG 0409) when entering remote window; seamlessly restores original IME on blur'
+          {/* 引擎 2: 远程修饰键卡死一键急救（子触发项缩进联动） */}
+          <Card
+            title={t('remoteBoost.flushSectionTitle', 'Modifier Key Emergency Flush')}
+            subtitle={t(
+              'remoteBoost.flushSectionSubtitle',
+              'Instantly releases stuck Ctrl, Alt, Shift, Win and mouse buttons caused by network latency or focus loss',
             )}
+            className="remote-boost-card"
           >
-            <Toggle
-              id="ime-sanitizer-toggle"
-              checked={settings.imeSanitizerEnabled && settings.enabled}
-              disabled={!settings.enabled}
-              onChange={(checked) => void updateSettings({ imeSanitizerEnabled: checked })}
-            />
-          </SettingRow>
-        </div>
-      </Card>
+            <div className="remote-boost-card__stack">
+              <SettingRow
+                label={t('remoteBoost.emergencyFlushTitle', 'Emergency Flush Engine')}
+                description={t(
+                  'remoteBoost.emergencyFlushDesc',
+                  'Sends atomic 11-channel KEYUP pulses across hardware scancodes to completely flush remote stuck keys',
+                )}
+              >
+                <Toggle
+                  id="emergency-flush-toggle"
+                  checked={settings.emergencyFlushEnabled && settings.enabled}
+                  disabled={!settings.enabled}
+                  onChange={(checked) => void updateSettings({ emergencyFlushEnabled: checked })}
+                />
+              </SettingRow>
 
-      {/* ── 底部操作栏 ──────────────────────────────────────────────────────── */}
+              <SubSettingGroup disabled={!settings.enabled || !settings.emergencyFlushEnabled}>
+                <SettingRow
+                  label={t('remoteBoost.doubleRightCtrlTitle', 'Double-tap Right Ctrl Trigger')}
+                  description={t(
+                    'remoteBoost.doubleRightCtrlDesc',
+                    'Double-tap Right Ctrl within 400ms to immediately fire emergency flush without lifting hands from keyboard',
+                  )}
+                >
+                  <Toggle
+                    id="double-ctrl-toggle"
+                    checked={settings.doubleRightCtrlTrigger && settings.emergencyFlushEnabled && settings.enabled}
+                    disabled={!settings.enabled || !settings.emergencyFlushEnabled}
+                    onChange={(checked) => void updateSettings({ doubleRightCtrlTrigger: checked })}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('remoteBoost.dedicatedShortcutTitle', 'Dedicated Emergency Hotkey')}
+                  description={t('remoteBoost.dedicatedShortcutDesc', 'Global emergency shortcut to trigger flush anytime')}
+                >
+                  <HotkeyRecorder
+                    id="remote-emergency-shortcut"
+                    value={settings.emergencyShortcut}
+                    onChange={(val) => void updateSettings({ emergencyShortcut: val })}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
+
+              {/* 立即急救冲刷按钮 */}
+              <div className="remote-boost-flush-action-bar">
+                <div className="remote-boost-flush-desc">
+                  <Radio size={15} className="remote-boost-flush-icon" aria-hidden="true" />
+                  <span>
+                    {t(
+                      'remoteBoost.flushTestDesc',
+                      'Test flush: Emits full-array KEYUP pulses to current window and cleans sticky states',
+                    )}
+                  </span>
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={flushing}
+                  onClick={() => void handleEmergencyFlush()}
+                  className="remote-boost-flush-btn"
+                >
+                  <Zap size={14} aria-hidden="true" />
+                  <span>{flushing ? t('remoteBoost.flushing', 'Flushing...') : t('remoteBoost.flushNow', 'Flush Now')}</span>
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          {/* 引擎 3: 远控输入法智能脱敏 */}
+          <Card
+            title={t('remoteBoost.imeSectionTitle', 'Smart Remote IME Sanitizer')}
+            subtitle={t(
+              'remoteBoost.imeSectionSubtitle',
+              'Prevents local Chinese IME candidate window from obscuring and corrupting remote keyboard input',
+            )}
+            className="remote-boost-card"
+          >
+            <div className="remote-boost-card__stack">
+              <SettingRow
+                label={t('remoteBoost.imeSanitizerTitle', 'Auto Switch to US English on Focus')}
+                description={t(
+                  'remoteBoost.imeSanitizerDesc',
+                  'Automatically activates pure US English (ENG 0409) when entering remote window; seamlessly restores original IME on blur',
+                )}
+              >
+                <Toggle
+                  id="ime-sanitizer-toggle"
+                  checked={settings.imeSanitizerEnabled && settings.enabled}
+                  disabled={!settings.enabled}
+                  onChange={(checked) => void updateSettings({ imeSanitizerEnabled: checked })}
+                />
+              </SettingRow>
+            </div>
+          </Card>
+        </SettingGroup>
+
+        {/* ── 3. 进阶区后置：远控客户端识别规则（进程名与窗口类名统一收拢） ─ */}
+        <SettingGroup
+          title={t('remoteBoost.targetRulesGroup', 'Remote Client Detection Rules')}
+          icon={<Sliders size={18} />}
+        >
+          <Card
+            subtitle={t(
+              'remoteBoost.targetRulesCollapsedSummary',
+              '{{procCount}} remote client processes and {{classCount}} canvas window classes configured (click to customize)',
+              {
+                procCount: settings.targetProcesses.length,
+                classCount: settings.targetClasses.length,
+              },
+            )}
+            headerAction={
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRulesCollapsed((prev) => !prev)}
+              >
+                {rulesCollapsed ? (
+                  <ChevronDown size={14} aria-hidden="true" />
+                ) : (
+                  <ChevronUp size={14} aria-hidden="true" />
+                )}
+                <span>
+                  {rulesCollapsed
+                    ? t('remoteBoost.expandRulesBtn', 'Expand Rules')
+                    : t('remoteBoost.collapseRulesBtn', 'Collapse Rules')}
+                </span>
+              </Button>
+            }
+            className="remote-boost-card"
+          >
+            <div className="remote-boost-rules-stack" hidden={rulesCollapsed}>
+              {/* 已适配的远控客户端进程列表 */}
+              <div className="remote-boost-process-section">
+                <div className="remote-boost-process-header">
+                  <span className="remote-boost-tags-label">
+                    {t('remoteBoost.targetProcessesLabel', 'Target Remote Client Processes:')}
+                  </span>
+                </div>
+
+                <div className="remote-boost-process-tags">
+                  {settings.targetProcesses.map((proc) => (
+                    <span key={proc} className="remote-boost-process-chip">
+                      <CodeBadge variant="muted">{proc}</CodeBadge>
+                      <button
+                        type="button"
+                        className="remote-boost-process-chip__remove"
+                        title={t('common.delete', 'Delete')}
+                        aria-label={`${t('common.delete', 'Delete')} ${proc}`}
+                        onClick={() => handleRemoveProcess(proc)}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                <div className="remote-boost-add-row">
+                  <input
+                    type="text"
+                    className="remote-boost-input"
+                    placeholder={t('remoteBoost.addProcessPlaceholder', 'e.g., CustomRemote.exe')}
+                    value={newProcessInput}
+                    onChange={(e) => setNewProcessInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddProcess();
+                    }}
+                  />
+                  <Button variant="secondary" size="sm" onClick={handleAddProcess}>
+                    <Plus size={14} aria-hidden="true" />
+                    <span>{t('common.add', 'Add')}</span>
+                  </Button>
+                </div>
+              </div>
+
+              {/* 受管远程控制窗口类名列表 */}
+              <div className="remote-boost-process-section">
+                <div className="remote-boost-process-header">
+                  <span className="remote-boost-tags-label">
+                    {t('remoteBoost.targetClassesLabel', 'Target Remote Window Classes:')}
+                  </span>
+                </div>
+
+                <div className="remote-boost-process-tags">
+                  {settings.targetClasses.map((cls) => (
+                    <span key={cls} className="remote-boost-process-chip">
+                      <CodeBadge variant="muted">{cls}</CodeBadge>
+                      <button
+                        type="button"
+                        className="remote-boost-process-chip__remove"
+                        title={t('common.delete', 'Delete')}
+                        aria-label={`${t('common.delete', 'Delete')} ${cls}`}
+                        onClick={() => handleRemoveClass(cls)}
+                      >
+                        <Trash2 size={12} aria-hidden="true" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                <div className="remote-boost-add-row">
+                  <input
+                    type="text"
+                    className="remote-boost-input"
+                    placeholder={t('remoteBoost.addClassPlaceholder', 'e.g., TSSHELLWND')}
+                    value={newClassInput}
+                    onChange={(e) => setNewClassInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddClass();
+                    }}
+                  />
+                  <Button variant="secondary" size="sm" onClick={handleAddClass}>
+                    <Plus size={14} aria-hidden="true" />
+                    <span>{t('common.add', 'Add')}</span>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </SettingGroup>
+      </DisabledCascade>
+
+      {/* ── 4. 底部恢复默认栏 ───────────────────────────────────────────────── */}
       <div className="remote-boost-footer">
         <Button variant="ghost" size="sm" onClick={() => void handleResetDefaults()}>
-          <RotateCcw size={14} />
+          <RotateCcw size={14} aria-hidden="true" />
           <span>{t('remoteBoost.resetDefaults', 'Reset Defaults')}</span>
         </Button>
         <div className="remote-boost-footer__status">
-          <CheckCircle2 size={13} className="remote-boost-footer__check" />
+          <CheckCircle2 size={13} className="remote-boost-footer__check" aria-hidden="true" />
           <span>{t('remoteBoost.autoSaved', 'Auto saved')}</span>
         </div>
       </div>

@@ -6,6 +6,7 @@
 #include "clipboard/ClipboardManager.h"
 
 #include "core/logger/Logger.h"
+#include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
 
 #include <ole2.h>
@@ -153,8 +154,37 @@ bool isDesktopShellWindow(HWND rootHwnd) noexcept {
            sv == L"TopLevelWindowForOverflowXamlIsland";
 }
 
-HWND resolveSafeExternalDropTarget(POINT screenPt, HWND sourceClipboardHwnd, bool& outInClientArea) noexcept {
+bool equalsIgnoreCaseAsciiW(std::wstring_view a, std::wstring_view b) noexcept {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        const wchar_t ca = (a[i] >= L'A' && a[i] <= L'Z') ? static_cast<wchar_t>(a[i] - L'A' + L'a') : a[i];
+        const wchar_t cb = (b[i] >= L'A' && b[i] <= L'Z') ? static_cast<wchar_t>(b[i] - L'A' + L'a') : b[i];
+        if (ca != cb) return false;
+    }
+    return true;
+}
+
+bool sourceWindowMatches(HWND fgHwnd, HWND sourceClipboardHwnd) noexcept {
+    if (!fgHwnd) return false;
+    if (sourceClipboardHwnd && (fgHwnd == sourceClipboardHwnd || IsChild(sourceClipboardHwnd, fgHwnd))) {
+        return true;
+    }
+    wchar_t cls[64]{};
+    if (GetClassNameW(fgHwnd, cls, static_cast<int>(std::size(cls))) > 0 &&
+        std::wstring_view(cls) == L"Tools3000_ClipboardWindow") {
+        return true;
+    }
+    return false;
+}
+
+HWND resolveSafeExternalDropTarget(
+    POINT screenPt,
+    HWND sourceClipboardHwnd,
+    bool& outInClientArea,
+    TerminalPasteKind& outTerminalKind) noexcept {
     outInClientArea = false;
+    outTerminalKind = TerminalPasteKind::NotTerminal;
+
     HWND hitHwnd = WindowFromPoint(screenPt);
     if (!hitHwnd || !IsWindow(hitHwnd)) return nullptr;
 
@@ -163,7 +193,69 @@ HWND resolveSafeExternalDropTarget(POINT screenPt, HWND sourceClipboardHwnd, boo
         return nullptr;
     }
 
-    // 校验非客户区命中：严禁对标题栏、关闭/最小化按钮、菜单栏或窗口拖拽边框触发落点单击
+    wchar_t rootCls[96]{};
+    const int rootClsLen = GetClassNameW(rootHwnd, rootCls, static_cast<int>(std::size(rootCls)));
+    const std::wstring_view rootClsView(rootCls, rootClsLen > 0 ? static_cast<size_t>(rootClsLen) : 0u);
+
+    const std::wstring procPath = tools3000::core::WinUtils::getProcessPathFromWindow(rootHwnd);
+    std::wstring exeLower;
+    if (!procPath.empty()) {
+        exeLower = tools3000::core::WinUtils::toLower(std::filesystem::path(procPath).filename().wstring());
+    }
+    outTerminalKind = classifyTerminalPasteTarget(rootClsView, exeLower);
+
+    RECT rc{};
+    if (!GetWindowRect(rootHwnd, &rc)) {
+        return rootHwnd;
+    }
+
+    const float dpi = std::clamp(tools3000::core::dpi::scaleForWindow(rootHwnd), 1.0f, 4.0f);
+    const LONG edgeMargin = static_cast<LONG>(std::lround(7.0f * dpi));
+    const LONG stdTitleHeight = static_cast<LONG>(std::lround(38.0f * dpi));
+    const LONG winBtnsWidth = static_cast<LONG>(std::lround(150.0f * dpi));
+    const LONG winBtnsHeight = static_cast<LONG>(std::lround(42.0f * dpi));
+
+    // 硬几何安全红线：严禁在窗口四周拉伸窄边或右上角系统最小化/最大化/关闭按钮区触发落点单击
+    const bool insideOuterSafeBounds =
+        (screenPt.x > rc.left + edgeMargin && screenPt.x < rc.right - edgeMargin &&
+         screenPt.y > rc.top + edgeMargin && screenPt.y < rc.bottom - edgeMargin);
+    const bool inTopRightWindowControls =
+        (screenPt.x >= rc.right - winBtnsWidth && screenPt.y <= rc.top + winBtnsHeight);
+
+    if (!insideOuterSafeBounds || inTopRightWindowControls) {
+        outInClientArea = false;
+        return rootHwnd;
+    }
+
+    const bool deepInsideBody = (screenPt.y > rc.top + stdTitleHeight);
+
+    // 若 WindowFromPoint 直接命中了真实子内容渲染窗（如 Windows Terminal 的 InputSiteWindowClass
+    // 或 Chromium 的 Chrome_RenderWidgetHostHWND），排除标题栏拖拽子窗后即确认为有效客户区
+    if (hitHwnd != rootHwnd) {
+        wchar_t hitCls[96]{};
+        const int hitClsLen = GetClassNameW(hitHwnd, hitCls, static_cast<int>(std::size(hitCls)));
+        const std::wstring_view hitClsView(hitCls, hitClsLen > 0 ? static_cast<size_t>(hitClsLen) : 0u);
+        if (!equalsIgnoreCaseAsciiW(hitClsView, L"DRAG_BAR_WINDOW_CLASS") &&
+            !equalsIgnoreCaseAsciiW(hitClsView, L"NonClientIslandWindow")) {
+            DWORD_PTR childHit = HTCLIENT;
+            if (SendMessageTimeoutW(
+                    hitHwnd,
+                    WM_NCHITTEST,
+                    0,
+                    MAKELPARAM(screenPt.x, screenPt.y),
+                    SMTO_ABORTIFHUNG | SMTO_BLOCK,
+                    45,
+                    &childHit) != 0) {
+                outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(childHit), deepInsideBody);
+            } else {
+                outInClientArea = true;
+            }
+            return rootHwnd;
+        }
+    }
+
+    // 校验顶层窗口非客户区命中：对无边框自绘 Electron/Tauri 窗口（如 Clash Party），
+    // 当落点已深入窗口腹地（y > top + 38*dpi）且已排除右上角控制按钮区时，放行外层 drag 容器的 HTCAPTION
     DWORD_PTR hitTest = HTCLIENT;
     if (SendMessageTimeoutW(
             rootHwnd,
@@ -173,15 +265,9 @@ HWND resolveSafeExternalDropTarget(POINT screenPt, HWND sourceClipboardHwnd, boo
             SMTO_ABORTIFHUNG | SMTO_BLOCK,
             60,
             &hitTest) != 0) {
-        outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(hitTest));
+        outInClientArea = isSafeDropHitTestResult(static_cast<LRESULT>(hitTest), deepInsideBody);
     } else {
-        // 目标线程短暂繁忙时，保守仅在矩形严格位于窗口内部（避开顶部 34px 标题区与 8px 边缘）才放行
-        RECT rc{};
-        if (GetWindowRect(rootHwnd, &rc)) {
-            outInClientArea =
-                (screenPt.x > rc.left + 8 && screenPt.x < rc.right - 8 &&
-                 screenPt.y > rc.top + 34 && screenPt.y < rc.bottom - 8);
-        }
+        outInClientArea = deepInsideBody;
     }
     return rootHwnd;
 }
@@ -219,23 +305,28 @@ void sendVirtualDesktopClickAt(POINT screenPt) noexcept {
 void dispatchSmartDropPasteAsync(
     HWND targetRootHwnd,
     POINT dropScreenPt,
-    HWND keepVisibleClipboardHwnd) {
-    // 异步线程内完成：激活目标窗 -> 精准单击落点定位光标（并解除 Sublime 等编辑器选区） -> Ctrl+V -> 无激活浮顶保持剪贴板可见
-    std::thread([targetRootHwnd, dropScreenPt, keepVisibleClipboardHwnd]() {
+    HWND keepVisibleClipboardHwnd,
+    TerminalPasteKind terminalKind) {
+    // 异步线程内完成：
+    // - 普通 GUI 应用：激活目标窗 -> 精准单击落点定位输入框光标（并解除 Sublime 等编辑器旧选区） -> Ctrl+V；
+    // - 命令行终端宿主：仅激活终端窗（跳过鼠标左键单击，绝不误触 QuickEdit 选区或打断 pi/vim TUI） -> 终端原生粘贴热键。
+    std::thread([targetRootHwnd, dropScreenPt, keepVisibleClipboardHwnd, terminalKind]() {
         constexpr DWORD kPollStepMs = 10;
-        constexpr DWORD kMaxFgWaitMs = 180;
+        constexpr DWORD kMaxFgWaitMs = 190;
 
         // 1. 等待物理左键完全松开（防止极少数驱动上行抖动）
         for (int i = 0; i < 8 && (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0; ++i) {
             Sleep(8);
         }
 
-        // 2. 激活目标窗口并精准单击落点（AGY/Electron 输入框获焦 + Sublime 取消高亮选区并落位光标）
+        // 2. 激活目标窗口；仅非终端 GUI 窗口执行落点单击定位输入框光标
         if (targetRootHwnd && IsWindow(targetRootHwnd)) {
             AllowSetForegroundWindow(ASFW_ANY);
             (void)tools3000::core::WinUtils::activateWindowForeground(targetRootHwnd);
         }
-        sendVirtualDesktopClickAt(dropScreenPt);
+        if (terminalKind == TerminalPasteKind::NotTerminal) {
+            sendVirtualDesktopClickAt(dropScreenPt);
+        }
 
         // 3. 确认目标窗口真正位于前台，并留出短暂焦点稳定期
         if (targetRootHwnd && IsWindow(targetRootHwnd)) {
@@ -248,14 +339,25 @@ void dispatchSmartDropPasteAsync(
         }
         Sleep(45);
 
-        // 4. 释放残留修饰键并发送 Ctrl+V 粘贴（数据已带 m_suppressedSeq 写入系统剪贴板，0 历史污染）
+        // 安全守卫：若前台意外仍停留在剪贴板窗自身，中止按键投递防止误贴回自身搜索框
+        const HWND fgNow = GetForegroundWindow();
+        if (fgNow && sourceWindowMatches(fgNow, keepVisibleClipboardHwnd)) {
+            return;
+        }
+
+        // 4. 释放残留修饰键，附带真实硬件扫描码发送对应粘贴组合键
         std::vector<INPUT> inputs;
-        inputs.reserve(10);
+        inputs.reserve(12);
         auto appendKey = [&inputs](WORD vk, DWORD flags) {
             INPUT in{};
             in.type = INPUT_KEYBOARD;
             in.ki.wVk = vk;
-            in.ki.dwFlags = flags;
+            in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+            if (vk == VK_INSERT || vk == VK_RCONTROL || vk == VK_RMENU) {
+                in.ki.dwFlags = flags | KEYEVENTF_EXTENDEDKEY;
+            } else {
+                in.ki.dwFlags = flags;
+            }
             inputs.push_back(in);
         };
 
@@ -264,15 +366,35 @@ void dispatchSmartDropPasteAsync(
         if ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) appendKey(VK_LWIN, KEYEVENTF_KEYUP);
         if ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0) appendKey(VK_RWIN, KEYEVENTF_KEYUP);
 
-        appendKey(VK_CONTROL, 0);
-        appendKey('V', 0);
-        appendKey('V', KEYEVENTF_KEYUP);
-        appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+        switch (terminalKind) {
+            case TerminalPasteKind::ModernCtrlShiftV:
+                appendKey(VK_CONTROL, 0);
+                appendKey(VK_SHIFT, 0);
+                appendKey('V', 0);
+                appendKey('V', KEYEVENTF_KEYUP);
+                appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+                appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+                break;
+            case TerminalPasteKind::ShiftInsert:
+                appendKey(VK_SHIFT, 0);
+                appendKey(VK_INSERT, 0);
+                appendKey(VK_INSERT, KEYEVENTF_KEYUP);
+                appendKey(VK_SHIFT, KEYEVENTF_KEYUP);
+                break;
+            case TerminalPasteKind::LegacyCtrlV:
+            case TerminalPasteKind::NotTerminal:
+            default:
+                appendKey(VK_CONTROL, 0);
+                appendKey('V', 0);
+                appendKey('V', KEYEVENTF_KEYUP);
+                appendKey(VK_CONTROL, KEYEVENTF_KEYUP);
+                break;
+        }
         SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 
-        // 5. 粘贴完成后确保剪贴板窗口无激活浮于目标窗之上（不抢 AGY/Sublime/Chrome 焦点，但也不被盖住）
+        // 5. 粘贴完成后确保剪贴板窗口无激活浮于目标窗之上（不抢焦点，也不被盖住）
         if (keepVisibleClipboardHwnd && IsWindow(keepVisibleClipboardHwnd) && IsWindowVisible(keepVisibleClipboardHwnd)) {
-            Sleep(40);
+            Sleep(45);
             SetWindowPos(
                 keepVisibleClipboardHwnd,
                 HWND_TOPMOST,
@@ -457,13 +579,18 @@ public:
         if (!m_payload.pngBytes.empty()) {
             addFormat(static_cast<CLIPFORMAT>(getPngClipboardFormat()));
         }
-        if (!m_payload.htmlBytes.empty()) {
-            addFormat(static_cast<CLIPFORMAT>(getHtmlClipboardFormat()));
-        }
+        // 纯文本格式优先排在 HTML Format 之前，确保 WinRT DataPackageView / 终端 / 代码编辑器优先消费纯净文本
         if (!m_payload.unicodeText.empty()) {
             addFormat(CF_UNICODETEXT);
             addFormat(CF_TEXT);
         }
+        if (!m_payload.htmlBytes.empty()) {
+            addFormat(static_cast<CLIPFORMAT>(getHtmlClipboardFormat()));
+        }
+    }
+
+    bool wasAnyDataRetrieved() const noexcept {
+        return m_anyDataRetrieved.load(std::memory_order_acquire);
     }
 
     STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override {
@@ -518,6 +645,7 @@ public:
         pmedium->tymed = TYMED_HGLOBAL;
         pmedium->hGlobal = hMem;
         pmedium->pUnkForRelease = nullptr;
+        m_anyDataRetrieved.store(true, std::memory_order_release);
         return S_OK;
     }
 
@@ -586,6 +714,7 @@ private:
     }
 
     std::atomic<ULONG> m_refCount{1};
+    std::atomic<bool> m_anyDataRetrieved{false};
     NativeDragPayload m_payload;
     std::vector<FORMATETC> m_formats;
 };
@@ -648,6 +777,55 @@ private:
 };
 
 }  // namespace
+
+TerminalPasteKind classifyTerminalPasteTarget(
+    std::wstring_view rootClassName,
+    std::wstring_view processExeLower) noexcept {
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"CASCADIA_HOSTING_WINDOW_CLASS") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"org.wezfurlong.wezterm") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"WarpTerminal")) {
+        return TerminalPasteKind::ModernCtrlShiftV;
+    }
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"ConsoleWindowClass") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"VirtualConsoleClass")) {
+        return TerminalPasteKind::LegacyCtrlV;
+    }
+    if (equalsIgnoreCaseAsciiW(rootClassName, L"mintty") ||
+        equalsIgnoreCaseAsciiW(rootClassName, L"PuTTY")) {
+        return TerminalPasteKind::ShiftInsert;
+    }
+
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"windowsterminal.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"wt.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"openconsole.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"wezterm-gui.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"alacritty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"kitty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"warp.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"tabby.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"hyper.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"rio.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"ghostty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"windterm.exe")) {
+        return TerminalPasteKind::ModernCtrlShiftV;
+    }
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"conhost.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"cmd.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"powershell.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"pwsh.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"conemu64.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"conemu.exe")) {
+        return TerminalPasteKind::LegacyCtrlV;
+    }
+    if (equalsIgnoreCaseAsciiW(processExeLower, L"mintty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"putty.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"xshell.exe") ||
+        equalsIgnoreCaseAsciiW(processExeLower, L"mobaxterm.exe")) {
+        return TerminalPasteKind::ShiftInsert;
+    }
+
+    return TerminalPasteKind::NotTerminal;
+}
 
 bool buildNativeDragPayloadForItem(uint64_t itemId, NativeDragPayload& outPayload) {
     outPayload = NativeDragPayload{};
@@ -751,10 +929,11 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
         ~OleGuard() { OleUninitialize(); }
     } oleGuard;
 
-    ComPtr<IDataObject> dataObj = createNativeDragDataObject(payload);
+    ComPtr<ClipboardDragDataObject> concreteDataObj;
+    concreteDataObj.Attach(new (std::nothrow) ClipboardDragDataObject(payload));
     ComPtr<ClipboardDropSource> dropSource;
     dropSource.Attach(new (std::nothrow) ClipboardDropSource());
-    if (!dataObj || !dropSource) {
+    if (!concreteDataObj || !dropSource) {
         return outcome;
     }
 
@@ -762,7 +941,7 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
 
     DWORD dwEffect = DROPEFFECT_NONE;
     const HRESULT dragHr = DoDragDrop(
-        dataObj.Get(),
+        concreteDataObj.Get(),
         dropSource.Get(),
         DROPEFFECT_COPY | DROPEFFECT_LINK,
         &dwEffect);
@@ -772,48 +951,53 @@ NativeDragOutcome startNativeDragForItem(uint64_t itemId, HWND sourceClipboardHw
     outcome.dropScreenPt = dropPt;
 
     bool inClientArea = false;
-    HWND targetRoot = resolveSafeExternalDropTarget(dropPt, sourceClipboardHwnd, inClientArea);
+    TerminalPasteKind terminalKind = TerminalPasteKind::NotTerminal;
+    HWND targetRoot = resolveSafeExternalDropTarget(dropPt, sourceClipboardHwnd, inClientArea, terminalKind);
     outcome.targetRootHwnd = targetRoot;
 
-    LOG_DEBUG("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, userCancel={}, relLBtn={}, targetInClient={})",
+    const bool oleRetrieved = concreteDataObj->wasAnyDataRetrieved();
+
+    LOG_DEBUG("ClipboardNativeDrag: DoDragDrop finished for item {} (hr=0x{:08X}, effect={}, oleRead={}, userCancel={}, relLBtn={}, targetInClient={}, termKind={})",
               itemId,
               static_cast<unsigned>(dragHr),
               static_cast<unsigned>(dwEffect),
+              oleRetrieved,
               dropSource->wasCancelledByUser(),
               dropSource->wasReleasedLeftButton(),
-              inClientArea);
+              inClientArea,
+              static_cast<unsigned>(terminalKind));
 
-    if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE) {
-        outcome.status = NativeDragStatus::DroppedByOle;
-        return outcome;
-    }
-
-    if (dropSource->wasCancelledByUser() || !dropSource->wasReleasedLeftButton() || !targetRoot || !inClientArea) {
-        outcome.status = NativeDragStatus::Cancelled;
-        return outcome;
-    }
-
-    // 第二引擎：跨 UIPI 权限隔离（如管理员 Tools3000 拖入普通权限 Antigravity/Electron）
-    // 或代码编辑器选中态拒收（如 Sublime 选中刚拖入文本后在末尾续拖）自动落点智能直贴
-    if (shouldFallbackToSmartDropPaste(
+    if (!shouldFallbackToSmartDropPaste(
             dragHr,
             dwEffect,
             dropSource->wasCancelledByUser(),
             dropSource->wasReleasedLeftButton(),
-            targetRoot != nullptr && inClientArea)) {
-        const auto settings = ClipboardManager::instance().getSettings();
-        const bool written = ClipboardManager::instance().activateItem(
-            itemId,
-            settings.plainTextByDefault,
-            /*autoPaste=*/false,
-            nullptr);
-        if (written) {
-            LOG_INFO("ClipboardNativeDrag: OLE returned NONE; engaging smart drop-paste at ({}, {}) for item {}",
-                     dropPt.x, dropPt.y, itemId);
-            dispatchSmartDropPasteAsync(targetRoot, dropPt, sourceClipboardHwnd);
-            outcome.status = NativeDragStatus::DroppedBySmartPaste;
-            return outcome;
+            targetRoot != nullptr && inClientArea,
+            oleRetrieved)) {
+        if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE && oleRetrieved) {
+            outcome.status = NativeDragStatus::DroppedByOle;
+        } else {
+            outcome.status = NativeDragStatus::Cancelled;
         }
+        return outcome;
+    }
+
+    // 第二引擎：跨 UIPI 权限隔离（如管理员 Tools3000 拖入普通权限 Clash Party / Windows Terminal / Electron）、
+    // 假 Drop 空吞或代码编辑器选中态拒收时，自动执行落点智能直贴；对终端强制剥离富文本包装
+    const auto settings = ClipboardManager::instance().getSettings();
+    const bool forcePlainText =
+        settings.plainTextByDefault || (terminalKind != TerminalPasteKind::NotTerminal);
+    const bool written = ClipboardManager::instance().activateItem(
+        itemId,
+        forcePlainText,
+        /*autoPaste=*/false,
+        nullptr);
+    if (written) {
+        LOG_INFO("ClipboardNativeDrag: engaging smart drop-paste at ({}, {}) for item {} (termKind={})",
+                 dropPt.x, dropPt.y, itemId, static_cast<unsigned>(terminalKind));
+        dispatchSmartDropPasteAsync(targetRoot, dropPt, sourceClipboardHwnd, terminalKind);
+        outcome.status = NativeDragStatus::DroppedBySmartPaste;
+        return outcome;
     }
 
     outcome.status = NativeDragStatus::FailedOrSkipped;

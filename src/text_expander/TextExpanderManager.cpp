@@ -5,6 +5,7 @@
 #include "text_expander/TextExpanderManager.h"
 
 #include "core/config/ConfigManager.h"
+#include "core/events/EventBus.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/logger/Logger.h"
@@ -719,6 +720,15 @@ void TextExpanderManager::syncMatcherRulesLocked() {
 void TextExpanderManager::startRuntimeWorkers() {
     std::lock_guard lifecycleLock(m_lifecycleMutex);
 
+    if (m_mouseActivitySubId == 0) {
+        m_mouseActivitySubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::MouseActivityEvent>(
+            [this](const tools3000::core::MouseActivityEvent& ev) {
+                if (ev.button >= 0) {
+                    m_mouseClicked.store(true, std::memory_order_relaxed);
+                }
+            });
+    }
+
     if (!m_workerThread.joinable()) {
         m_workerRunning.store(true, std::memory_order_release);
         m_workerThread = std::thread([this]() { expansionWorkerLoop(); });
@@ -743,9 +753,13 @@ void TextExpanderManager::startRuntimeWorkers() {
 void TextExpanderManager::stopRuntimeWorkers() {
     std::thread hookToJoin;
     std::thread workerToJoin;
+    uint64_t subToUnsub = 0;
 
     {
         std::lock_guard lifecycleLock(m_lifecycleMutex);
+        subToUnsub = m_mouseActivitySubId;
+        m_mouseActivitySubId = 0;
+
         const DWORD tid = m_hookThreadId.load(std::memory_order_acquire);
         if (tid != 0) {
             PostThreadMessageW(tid, WM_QUIT, 0, 0);
@@ -765,6 +779,9 @@ void TextExpanderManager::stopRuntimeWorkers() {
         }
     }
 
+    if (subToUnsub != 0) {
+        tools3000::core::EventBus::instance().unsubscribeAndWait(subToUnsub);
+    }
     if (hookToJoin.joinable()) {
         hookToJoin.join();
     }
@@ -774,6 +791,9 @@ void TextExpanderManager::stopRuntimeWorkers() {
 }
 
 void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& hookReadyOk) {
+    // 提升钩子线程调度优先级，杜绝系统重负载下 WH_KEYBOARD_LL 回调延迟
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
     // 强制初始化线程消息队列，确保 PostThreadMessageW(WM_QUIT) 绝不丢失
     MSG msg{};
     PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
@@ -793,13 +813,8 @@ void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& h
         0);
     m_kbHook.store(kbHook, std::memory_order_release);
 
-    HHOOK mouseHook = SetWindowsHookExW(
-        WH_MOUSE_LL,
-        &TextExpanderManager::lowLevelMouseProc,
-        GetModuleHandleW(nullptr),
-        0);
-    m_mouseHook.store(mouseHook, std::memory_order_release);
-
+    // 鼠标点击感知统一复用宿主核心 MouseHook -> EventBus(MouseActivityEvent)，
+    // 严禁在此安装第 2 个全局 WH_MOUSE_LL 钩子引发 1000Hz 鼠标移动与截图框选串行延迟！
     HWINEVENTHOOK fgEventHook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_FOREGROUND,
@@ -824,9 +839,6 @@ void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& h
     if (fgEventHook) {
         UnhookWinEvent(fgEventHook);
     }
-    if (HHOOK mh = m_mouseHook.exchange(nullptr, std::memory_order_acq_rel)) {
-        UnhookWindowsHookEx(mh);
-    }
     if (HHOOK kh = m_kbHook.exchange(nullptr, std::memory_order_acq_rel)) {
         UnhookWindowsHookEx(kh);
     }
@@ -845,19 +857,6 @@ LRESULT CALLBACK TextExpanderManager::lowLevelKeyboardProc(int nCode, WPARAM wPa
         }
     }
     return CallNextHookEx(self.m_kbHook.load(std::memory_order_relaxed), nCode, wParam, lParam);
-}
-
-LRESULT CALLBACK TextExpanderManager::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    // 极致零开销热路径：仅捕获鼠标按下点击事件置位原子标记，WM_MOUSEMOVE 瞬间放行
-    if (nCode == HC_ACTION &&
-        (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN)) {
-        TextExpanderManager::instance().m_mouseClicked.store(true, std::memory_order_relaxed);
-    }
-    return CallNextHookEx(
-        TextExpanderManager::instance().m_mouseHook.load(std::memory_order_relaxed),
-        nCode,
-        wParam,
-        lParam);
 }
 
 void CALLBACK TextExpanderManager::winEventForegroundProc(

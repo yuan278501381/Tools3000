@@ -489,6 +489,64 @@ export const KeyStatsPage: FC = () => {
         </Button>
       </div>
 
+      <SettingGroup title={t('stats.kpiOverviewTitle')} icon={<Trophy size={20} strokeWidth={2.5} />}>
+        <div className="stats-kpi-grid">
+          <Card>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--primary" aria-hidden="true" />
+                <span>{t('stats.allTimeKeys')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
+                {totalOverview.totalKeystrokes.toLocaleString()}
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--accent" aria-hidden="true" />
+                <span>{t('stats.totalKeys')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
+                {todayStats.keystrokes.toLocaleString()}
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <div className="stats-kpi-card">
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--success" aria-hidden="true" />
+                <span>{t('stats.mouseClicks')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
+                {todayStats.mouseClicks.toLocaleString()}
+              </div>
+            </div>
+          </Card>
+          <Card>
+            <div
+              className="stats-kpi-card"
+              title={`${Math.round(todayStats.mouseDistance).toLocaleString()} ${t('stats.pixels', 'Pixels')}`}
+            >
+              <div className="stats-kpi-label">
+                <span className="stats-kpi-dot stats-kpi-dot--info" aria-hidden="true" />
+                <span>{t('stats.mouseDistance')}</span>
+              </div>
+              <div className="stats-page__counter stats-kpi-value">
+                <span>
+                  {(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, {
+                    minimumFractionDigits: 1,
+                    maximumFractionDigits: 1,
+                  })}
+                </span>
+                <span className="stats-kpi-unit">m</span>
+              </div>
+            </div>
+          </Card>
+        </div>
+      </SettingGroup>
+
       <SettingGroup title={t('stats.dailyTitle')} icon={<LineChartIcon size={20} strokeWidth={2.5} />}>
         <Card className="activity-chart-card">
           <div className="activity-chart-card__header">
@@ -550,66 +608,8 @@ export const KeyStatsPage: FC = () => {
         </Card>
       </SettingGroup>
 
-      <SettingGroup title={t('stats.heatmapTitle')} icon={<Flame size={20} strokeWidth={2.5} />}>
+      <SettingGroup title={t('stats.todayHeatmapTitle')} icon={<Flame size={20} strokeWidth={2.5} />}>
         <KeyboardHeatmap keyMap={todayStats.keyMap || {}} />
-      </SettingGroup>
-
-      <SettingGroup title={t('stats.totalOverview')} icon={<Trophy size={20} strokeWidth={2.5} />}>
-        <div className="stats-kpi-grid">
-          <Card>
-            <div className="stats-kpi-card">
-              <div className="stats-kpi-label">
-                <span className="stats-kpi-dot stats-kpi-dot--primary" aria-hidden="true" />
-                <span>{t('stats.allTimeKeys')}</span>
-              </div>
-              <div className="stats-page__counter stats-kpi-value">
-                {totalOverview.totalKeystrokes.toLocaleString()}
-              </div>
-            </div>
-          </Card>
-          <Card>
-            <div className="stats-kpi-card">
-              <div className="stats-kpi-label">
-                <span className="stats-kpi-dot stats-kpi-dot--accent" aria-hidden="true" />
-                <span>{t('stats.totalKeys')}</span>
-              </div>
-              <div className="stats-page__counter stats-kpi-value">
-                {todayStats.keystrokes.toLocaleString()}
-              </div>
-            </div>
-          </Card>
-          <Card>
-            <div className="stats-kpi-card">
-              <div className="stats-kpi-label">
-                <span className="stats-kpi-dot stats-kpi-dot--success" aria-hidden="true" />
-                <span>{t('stats.mouseClicks')}</span>
-              </div>
-              <div className="stats-page__counter stats-kpi-value">
-                {todayStats.mouseClicks.toLocaleString()}
-              </div>
-            </div>
-          </Card>
-          <Card>
-            <div
-              className="stats-kpi-card"
-              title={`${Math.round(todayStats.mouseDistance).toLocaleString()} ${t('stats.pixels', 'Pixels')}`}
-            >
-              <div className="stats-kpi-label">
-                <span className="stats-kpi-dot stats-kpi-dot--info" aria-hidden="true" />
-                <span>{t('stats.mouseDistance')}</span>
-              </div>
-              <div className="stats-page__counter stats-kpi-value">
-                <span>
-                  {(todayStats.mouseDistance * (0.0254 / 96)).toLocaleString(undefined, {
-                    minimumFractionDigits: 1,
-                    maximumFractionDigits: 1,
-                  })}
-                </span>
-                <span className="stats-kpi-unit">m</span>
-              </div>
-            </div>
-          </Card>
-        </div>
       </SettingGroup>
 
       <ConfirmModal

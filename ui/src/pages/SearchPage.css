@@ -1,8 +1,9 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * SearchPage.css — 搜索设置与语法手册样式 (100% 对齐设计系统规范)
+ * SearchPage.css — 搜索设置、外部接口与语法手册样式 (100% 对齐设计系统规范)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .search-page {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-lg);
@@ -14,6 +15,34 @@
   flex-direction: column;
   gap: var(--spacing-lg);
   animation: fadeIn var(--transition-normal);
+}
+
+.search-page__row-label {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+}
+
+.search-page__safety-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.55;
+}
+
+.search-page__safety-icon {
+  color: var(--primary);
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
 /* 语法与正则手册表格 */
@@ -30,6 +59,7 @@
   border-collapse: collapse;
   font-family: inherit;
   font-size: 0.88rem;
+  font-weight: 500;
   text-align: left;
   line-height: 1.5;
 }
@@ -73,6 +103,7 @@
 .syntax-hint-p {
   color: var(--text-secondary);
   font-size: 0.88rem;
+  font-weight: 500;
   margin: 0 0 var(--spacing-md) 0;
   line-height: 1.6;
 }
@@ -140,30 +171,38 @@
 
 .status-info {
   flex: 1;
+  min-width: 0;
 }
 
 .status-title {
   margin: 0 0 4px 0;
   font-size: 0.95rem;
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-primary);
 }
 
 .status-desc {
   margin: 0;
   font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
   color: var(--text-secondary);
 }
 
 .service-details-grid {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--spacing-md);
 }
 
-@media (max-width: 768px) {
+@container (max-width: 680px) {
+  .service-status-header {
+    flex-wrap: wrap;
+  }
+
   .service-details-grid {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -178,15 +217,24 @@
 }
 
 .detail-label {
-  font-size: var(--text-sm, 0.86rem);
+  font-size: var(--text-sm);
   font-weight: 600;
+  line-height: 1.4;
   color: var(--text-muted);
 }
 
 .detail-value {
   font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.45;
   color: var(--text-primary);
   word-break: break-all;
+}
+
+.detail-value--numeric {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
 }
 
 .detail-value code {

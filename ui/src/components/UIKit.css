@@ -1735,6 +1735,34 @@
   font-feature-settings: "tnum" 1;
 }
 
+/* ── SubSettingGroup & DisabledCascade (全站统一父子从属缩进与停用降权原语) ── */
+.uikit-sub-group {
+  position: relative;
+  margin: 4px 0 8px 10px;
+  padding: 6px 0 6px 16px;
+  border-left: 2px solid color-mix(in srgb, var(--primary) 34%, var(--card-border));
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: opacity 160ms ease, border-color 160ms ease;
+}
+
+.uikit-sub-group--disabled {
+  opacity: 0.54;
+  border-left-color: var(--card-border);
+}
+
+.uikit-disabled-cascade {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  transition: opacity 180ms ease;
+}
+
+.uikit-disabled-cascade--inactive {
+  opacity: 0.56;
+}
+
 
 
 

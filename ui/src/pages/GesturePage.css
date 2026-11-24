@@ -3,7 +3,50 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .gesture-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+  max-width: 100%;
+  padding-bottom: 2.5rem;
   animation: fadeIn 0.3s ease;
+}
+
+.gesture-page__tabs {
+  flex-wrap: wrap;
+}
+
+.gesture-page__panel {
+  display: flex;
+  flex-direction: column;
+  animation: fadeIn var(--transition-normal);
+}
+
+.gesture-page__panel > .uikit-group:last-child {
+  margin-bottom: 0;
+}
+
+.gesture-page .uikit-sub-group + .uikit-toggle--with-text,
+.gesture-page .uikit-sub-group + .uikit-setting-row {
+  border-top: 1px solid var(--hairline);
+}
+
+.gesture-inline-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.gesture-search-engine-card {
+  margin-top: var(--spacing-md);
+}
+
+.gesture-guide-card .uikit-card__body {
+  padding: 12px;
+}
+
+.gesture-guide-card .gesture-guide {
+  margin-top: 0;
 }
 
 /* ── 加载状态 ─────────────────────────────────────────────────────────────── */

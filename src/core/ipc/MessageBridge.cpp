@@ -2597,6 +2597,10 @@ void MessageBridge::registerBuiltinHandlers() {
         }
         return arr;
     });
+    registerHandler("perf.trimMemory", [](const json&) -> json {
+        WinUtils::scheduleQuietIdleTrim(250);
+        return {{"success", true}};
+    });
 
     // ── 配置管理（导入/导出/重置）────────────────────────────────────────
     registerHandler("config.export", [](const json& params) -> json {
@@ -2670,8 +2674,39 @@ void MessageBridge::registerBuiltinHandlers() {
                 {"conflictWith", entry.conflictWith}
             });
         }
-        std::sort(hotkeys.begin(), hotkeys.end(), [](const json& a, const json& b) {
-            return a.value("name", "") < b.value("name", "");
+        auto hotkeyPriorityRank = [](std::string_view name) noexcept -> int {
+            static constexpr std::array<std::string_view, 16> kPriorityOrder = {
+                "Screenshot",
+                "Repeat Last Capture",
+                "Toggle Clipboard",
+                "Toggle Search",
+                "Pin Paste",
+                "Pin Toggle",
+                "Pin Hide All",
+                "Pin Arrange",
+                "OCR",
+                "Translate Selection",
+                "Record",
+                "Record Pause",
+                "Record Snapshot",
+                "Mute System Audio",
+                "Mute Microphone",
+                "Pause Gestures",
+            };
+            for (size_t i = 0; i < kPriorityOrder.size(); ++i) {
+                if (kPriorityOrder[i] == name) {
+                    return static_cast<int>(i);
+                }
+            }
+            return 10000;
+        };
+        std::sort(hotkeys.begin(), hotkeys.end(), [&](const json& a, const json& b) {
+            const std::string na = a.value("name", "");
+            const std::string nb = b.value("name", "");
+            const int ra = hotkeyPriorityRank(na);
+            const int rb = hotkeyPriorityRank(nb);
+            if (ra != rb) return ra < rb;
+            return na < nb;
         });
         return hotkeys;
     });

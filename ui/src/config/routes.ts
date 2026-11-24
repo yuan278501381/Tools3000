@@ -16,6 +16,7 @@ import {
   History,
   FileText,
   BarChart3,
+  Gauge,
   Info,
   FolderSymlink,
   Sparkles,
@@ -47,6 +48,7 @@ export type BuiltinNavId =
   | 'remote_boost'
   | 'picasa_viewer'
   | 'stats'
+  | 'performance'
   | 'about';
 
 export type NavId = BuiltinNavId | (string & {});
@@ -71,7 +73,7 @@ export interface RouteItemConfig {
 export const APP_ROUTES: readonly RouteItemConfig[] = [
   // ── 系统设置 ──────────────────────────────────────────────────────────────
   { id: 'general', labelKey: 'nav.settings', subtitleKey: 'navSubtitle.general', category: 'system', icon: Settings, toneStart: '#64748b', toneEnd: '#475569', canvasWidth: 'reading' },
-  { id: 'plugins', labelKey: 'nav.plugins', subtitleKey: 'navSubtitle.plugins', category: 'system', icon: Boxes, toneStart: '#6366f1', toneEnd: '#4f46e5', canvasWidth: 'workspace' },
+  { id: 'plugins', labelKey: 'nav.plugins', subtitleKey: 'navSubtitle.plugins', category: 'system', icon: Boxes, toneStart: '#6366f1', toneEnd: '#4f46e5', canvasWidth: 'reading' },
 
   // ── 核心效率工具（MECE 4 域语义成对单一事实源：侧边栏 / 功能模块 / 托盘 100% 同序） ──
   // 1. 高频捕获与剪贴流转
@@ -95,7 +97,42 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
 
   // ── 洞察与关于 ────────────────────────────────────────────────────────────
   { id: 'stats', labelKey: 'nav.stats', subtitleKey: 'navSubtitle.stats', category: 'insights', icon: BarChart3, toneStart: '#22c55e', toneEnd: '#16a34a', canvasWidth: 'workspace' },
+  { id: 'performance', labelKey: 'nav.performance', subtitleKey: 'navSubtitle.performance', category: 'insights', icon: Gauge, toneStart: '#06b6d4', toneEnd: '#3b82f6', canvasWidth: 'reading' },
   { id: 'about', labelKey: 'nav.about', subtitleKey: 'navSubtitle.about', category: 'insights', icon: Info, toneStart: '#6366f1', toneEnd: '#8b5cf6', canvasWidth: 'reading' },
+];
+
+export type PluginDomainGroupId = 'capture_flow' | 'input_control' | 'file_system' | 'present_remote';
+
+export interface PluginDomainGroupMeta {
+  id: PluginDomainGroupId;
+  titleKey: string;
+  pluginIds: readonly string[];
+}
+
+/**
+ * 功能模块页四大正交业务域分组单一事实源（与 APP_ROUTES 顺序严格一致）
+ */
+export const PLUGIN_DOMAIN_GROUPS: readonly PluginDomainGroupMeta[] = [
+  {
+    id: 'capture_flow',
+    titleKey: 'plugins.domainCaptureFlow',
+    pluginIds: ['capture', 'clipboard'],
+  },
+  {
+    id: 'input_control',
+    titleKey: 'plugins.domainInputControl',
+    pluginIds: ['gesture', 'text_expander'],
+  },
+  {
+    id: 'file_system',
+    titleKey: 'plugins.domainFileSystem',
+    pluginIds: ['search', 'dialog_enhancer', 'file_locksmith', 'picasa_viewer'],
+  },
+  {
+    id: 'present_remote',
+    titleKey: 'plugins.domainPresentRemote',
+    pluginIds: ['keycast', 'spotlight', 'remote_boost'],
+  },
 ];
 
 export const ROUTE_MAP = new Map<string, RouteItemConfig>(APP_ROUTES.map(r => [r.id, r]));
@@ -171,6 +208,21 @@ export function getBuiltinPluginDisplayOrder(id: string): number {
 export function getBuiltinPluginPrimaryRoute(id: string): NavId | undefined {
   const canonical = normalizeBuiltinPluginId(id);
   return builtinPluginPrimaryRouteMap.get(canonical);
+}
+
+/**
+ * 获取由同一底层插件驱动的附属子导航路由（如 capture -> ['history', 'ocr']，gesture -> ['hotcorner']）
+ */
+export function getBuiltinPluginSecondaryRoutes(id: string): readonly RouteItemConfig[] {
+  const canonical = normalizeBuiltinPluginId(id);
+  const primary = builtinPluginPrimaryRouteMap.get(canonical);
+  return APP_ROUTES.filter(
+    (r) =>
+      r.category === 'core_tools' &&
+      r.requiresPlugin &&
+      normalizeBuiltinPluginId(r.requiresPlugin) === canonical &&
+      r.id !== primary,
+  );
 }
 
 export function resolveExtensionRoute(id: string, fallbackLabel?: string): RouteItemConfig {

@@ -375,6 +375,14 @@ public:
     /// 非阻塞弹出 Windows 原生文件属性对话框
     static bool showFileProperties(const std::wstring& filePath);
 
+    /// 解析 Shell 打开目标关联的默认可执行程序名（小写，如 "notepad.exe" / "explorer.exe" / "msedge.exe"）
+    static std::wstring resolveShellTargetAssociatedExe(const std::wstring& target,
+                                                        const std::wstring& args = L"");
+
+    /// 提取 Shell 打开目标对应的窗口标题匹配提示词（如 "D:\\docs\\账号密码.txt" -> "账号密码"）
+    static std::wstring extractShellTargetTitleHint(const std::wstring& target,
+                                                    const std::wstring& args = L"");
+
     /// 判断 Windows 系统任务栏是否为深色模式 (用于自适应托盘图标与浮层明暗)
     static bool isSystemTaskbarDark();
 

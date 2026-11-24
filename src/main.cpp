@@ -119,6 +119,7 @@ static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
 static HWINEVENTHOOK g_fullscreenWinEventHook = nullptr;
+static HWINEVENTHOOK g_fullscreenMoveSizeHook = nullptr;
 static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 
 namespace {
@@ -190,12 +191,24 @@ void releaseHostHotkeysAndMessageWindow(HWND& msgHwnd) {
 
 void CALLBACK FullscreenGuardWinEventProc(
     HWINEVENTHOOK /*hWinEventHook*/,
-    DWORD /*event*/,
+    DWORD event,
     HWND /*hwnd*/,
-    LONG /*idObject*/,
+    LONG idObject,
     LONG /*idChild*/,
     DWORD /*dwEventThread*/,
     DWORD /*dwmsEventTime*/) {
+    if (idObject != OBJID_WINDOW) {
+        return;
+    }
+    if (event != EVENT_SYSTEM_FOREGROUND &&
+        event != EVENT_SYSTEM_MOVESIZEEND &&
+        event != EVENT_SYSTEM_MINIMIZESTART &&
+        event != EVENT_SYSTEM_MINIMIZEEND) {
+        return;
+    }
+    if (tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible()) {
+        return;
+    }
     syncForegroundFullscreenState();
 }
 
@@ -844,7 +857,15 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     releaseHostHotkeysAndMessageWindow(hwndMessage);
     releaseSingleInstanceMutex();
     CoUninitialize();
-    return messageResult == -1 ? 1 : static_cast<int>(msg.wParam);
+
+    const int finalExitCode = (messageResult == -1) ? 1 : static_cast<int>(msg.wParam);
+    // 防僵尸退场守护：已完成全部配置落盘、云端备份、钩子卸载与日志刷盘，若 CRT 静态析构或底层图形驱动在
+    // ExitProcess 阶段偶发锁竞争超时 (>1200ms)，自动强制终结进程，杜绝后台残留单线程僵尸实例。
+    std::thread([finalExitCode]() {
+        Sleep(1200);
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
+    }).detach();
+    return finalExitCode;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2414,9 +2435,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     // 6. 初始化本次启动获准加载的插件
     pm.initializePlugins();
 
-    // 6.5. 启动前台窗口全屏/游戏感知守护（WinEventHook + 500ms 几何巡检双保险）
+    // 6.5. 启动前台窗口全屏/游戏感知守护（精准订阅 FOREGROUND 与 MOVESIZEEND..MINIMIZEEND，
+    // 彻底避开 SCROLLINGSTART / CAPTURESTART / MENUSTART 等高频系统噪声污染 UI 主线程消息队列）
     g_fullscreenWinEventHook = SetWinEventHook(
         EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        nullptr,
+        FullscreenGuardWinEventProc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    g_fullscreenMoveSizeHook = SetWinEventHook(
+        EVENT_SYSTEM_MOVESIZEEND,
         EVENT_SYSTEM_MINIMIZEEND,
         nullptr,
         FullscreenGuardWinEventProc,
@@ -2488,6 +2518,10 @@ void shutdownSubsystems() {
     if (g_fullscreenWinEventHook) {
         UnhookWinEvent(g_fullscreenWinEventHook);
         g_fullscreenWinEventHook = nullptr;
+    }
+    if (g_fullscreenMoveSizeHook) {
+        UnhookWinEvent(g_fullscreenMoveSizeHook);
+        g_fullscreenMoveSizeHook = nullptr;
     }
     tools3000::core::HotkeyManager::instance().setFullscreenSuspended(false);
     tools3000::core::MouseHook::instance().setFullscreenSuspended(false);

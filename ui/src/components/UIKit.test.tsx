@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { useState } from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Select, Modal, Tooltip, NumberInput, ColorPickerInput } from './UIKit';
@@ -198,6 +199,51 @@ describe('UIKit - Modal', () => {
       </Modal>
     );
     expect(screen.queryByText('Test Modal')).toBeNull();
+  });
+
+  it('preserves input focus across parent re-renders with inline onClose and ignores IME Escape (#25)', async () => {
+    let closeCalls = 0;
+    const StatefulHost = () => {
+      const [val, setVal] = useState('');
+      return (
+        <Modal
+          open={true}
+          title="Form Modal"
+          onClose={() => {
+            closeCalls += 1;
+          }}
+        >
+          <input
+            aria-label="Snippet Trigger"
+            value={val}
+            onChange={(e) => setVal(e.target.value)}
+          />
+        </Modal>
+      );
+    };
+
+    render(<StatefulHost />);
+    const input = screen.getByLabelText('Snippet Trigger') as HTMLInputElement;
+
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    });
+    expect(document.activeElement).toBe(input);
+
+    for (const nextVal of [';', ';s', ';si', ';sig']) {
+      fireEvent.change(input, { target: { value: nextVal } });
+      await act(async () => {
+        await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      });
+      expect(document.activeElement).toBe(input);
+    }
+
+    fireEvent.keyDown(window, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(window, { key: 'Escape', keyCode: 229 });
+    expect(closeCalls).toBe(0);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(closeCalls).toBe(1);
   });
 });
 

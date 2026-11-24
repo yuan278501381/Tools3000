@@ -15,6 +15,7 @@
 #include <shlobj.h>
 #include <shobjidl.h>
 #include <shldisp.h>
+#include <shlwapi.h>
 #include <exdisp.h>
 #include <dwmapi.h>
 #include <gdiplus.h>
@@ -41,6 +42,7 @@
 
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "wintrust.lib")
+#pragma comment(lib, "shlwapi.lib")
 
 namespace tools3000::core {
 
@@ -2923,11 +2925,387 @@ std::vector<WinUtils::SystemDriveInfo> WinUtils::getSystemDrives() {
     return drives;
 }
 
+namespace {
+
+std::wstring trimWhitespaceW(std::wstring_view raw) {
+    const auto first = raw.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring_view::npos) return {};
+    const auto last = raw.find_last_not_of(L" \t\r\n");
+    return std::wstring(raw.substr(first, last - first + 1));
+}
+
+std::wstring stripWrappingQuotesW(std::wstring_view raw) {
+    std::wstring s = trimWhitespaceW(raw);
+    if (s.size() >= 2 &&
+        ((s.front() == L'"' && s.back() == L'"') ||
+         (s.front() == L'\'' && s.back() == L'\''))) {
+        s = trimWhitespaceW(std::wstring_view(s).substr(1, s.size() - 2));
+    }
+    return s;
+}
+
+std::wstring queryAssocExecutableLower(const wchar_t* assocKey) noexcept {
+    if (!assocKey || !*assocKey) return {};
+    wchar_t buf[MAX_PATH * 2]{};
+    DWORD cch = static_cast<DWORD>(std::size(buf));
+    HRESULT hr = AssocQueryStringW(
+        ASSOCF_NOTRUNCATE | ASSOCF_INIT_IGNOREUNKNOWN,
+        ASSOCSTR_EXECUTABLE,
+        assocKey,
+        L"open",
+        buf,
+        &cch);
+    if (FAILED(hr) || buf[0] == L'\0') {
+        cch = static_cast<DWORD>(std::size(buf));
+        hr = AssocQueryStringW(
+            ASSOCF_NOTRUNCATE,
+            ASSOCSTR_EXECUTABLE,
+            assocKey,
+            nullptr,
+            buf,
+            &cch);
+    }
+    if (SUCCEEDED(hr) && buf[0] != L'\0') {
+        return extractExeBasenameLower(buf);
+    }
+    return {};
+}
+
+bool isCurrentProcessHoldingForeground() noexcept {
+    const HWND fg = GetForegroundWindow();
+    if (!fg || !IsWindow(fg)) return false;
+    DWORD fgPid = 0;
+    GetWindowThreadProcessId(fg, &fgPid);
+    return fgPid != 0 && fgPid == GetCurrentProcessId();
+}
+
+std::unordered_set<HWND> snapshotExternalTopLevelWindows() {
+    std::unordered_set<HWND> set;
+    struct SnapCtx {
+        DWORD selfPid = 0;
+        std::unordered_set<HWND>* out = nullptr;
+    } ctx{GetCurrentProcessId(), &set};
+
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* c = reinterpret_cast<SnapCtx*>(lParam);
+        if (!isEligibleTopLevelAppWindow(hwnd)) return TRUE;
+        if (WinUtils::isDesktopWindow(hwnd) || WinUtils::isTaskbarWindow(hwnd)) return TRUE;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != 0 && pid != c->selfPid) {
+            c->out->insert(hwnd);
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+    return set;
+}
+
+void grantForegroundPermissionForLaunch(const std::wstring& assocExeLower,
+                                        bool callerOwnedForeground) noexcept {
+    LockSetForegroundWindow(LSFW_UNLOCK);
+    AllowSetForegroundWindow(ASFW_ANY);
+
+    if (const HWND shellWnd = GetShellWindow()) {
+        DWORD shellPid = 0;
+        GetWindowThreadProcessId(shellWnd, &shellPid);
+        if (shellPid != 0) {
+            AllowSetForegroundWindow(shellPid);
+        }
+    }
+
+    if (!assocExeLower.empty()) {
+        struct GrantCtx {
+            std::wstring targetBase;
+            DWORD selfPid = 0;
+        } ctx{assocExeLower, GetCurrentProcessId()};
+
+        EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* c = reinterpret_cast<GrantCtx*>(lParam);
+            if (!IsWindowVisible(hwnd)) return TRUE;
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid == 0 || pid == c->selfPid) return TRUE;
+            const std::wstring base = extractExeBasenameLower(WinUtils::getProcessPathFromWindow(hwnd));
+            if (base == c->targetBase) {
+                AllowSetForegroundWindow(pid);
+            }
+            return TRUE;
+        }, reinterpret_cast<LPARAM>(&ctx));
+    }
+
+    // Win32 前台锁绑定在当前拥有焦点窗口的 UI 线程输入状态上；若调用来自 IPC 工作线程，
+    // 同步通知 UI 主线程解锁并下调非钉住搜索窗的残留 Topmost 层级，杜绝遮挡新激活窗口。
+    if (callerOwnedForeground &&
+        MainThreadDispatcher::instance().isInitialized() &&
+        !MainThreadDispatcher::instance().isOwnerThread()) {
+        MainThreadDispatcher::instance().post([]() {
+            LockSetForegroundWindow(LSFW_UNLOCK);
+            AllowSetForegroundWindow(ASFW_ANY);
+            const HWND fg = GetForegroundWindow();
+            if (fg && IsWindow(fg)) {
+                wchar_t cls[64]{};
+                if (GetClassNameW(fg, cls, static_cast<int>(std::size(cls))) > 0 &&
+                    std::wstring_view(cls) == L"Tools3000_SearchWindow" &&
+                    GetPropW(fg, L"Tools3000_SearchPinned") == nullptr) {
+                    SetWindowPos(fg, HWND_NOTOPMOST, 0, 0, 0, 0,
+                                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                }
+            }
+        });
+    }
+}
+
+HWND findExternalLaunchTargetWindow(const std::unordered_set<HWND>& preExisting,
+                                    const std::wstring& assocExeLower,
+                                    const std::wstring& titleHintLower,
+                                    bool expectCabinetFolder,
+                                    bool allowExistingFallback) {
+    struct FindCtx {
+        const std::unordered_set<HWND>* preExisting = nullptr;
+        std::wstring assocExeLower;
+        std::wstring titleHintLower;
+        bool expectCabinetFolder = false;
+        bool allowExistingFallback = false;
+        DWORD selfPid = 0;
+
+        HWND newExactMatch = nullptr;
+        HWND newAnyExternal = nullptr;
+        HWND existingTitleAndExeMatch = nullptr;
+        HWND existingTitleOnlyMatch = nullptr;
+        HWND existingExeMatch = nullptr;
+    } ctx{
+        &preExisting,
+        assocExeLower,
+        titleHintLower,
+        expectCabinetFolder,
+        allowExistingFallback,
+        GetCurrentProcessId()
+    };
+
+    EnumWindows([](HWND hwnd, LPARAM lParam) -> BOOL {
+        auto* c = reinterpret_cast<FindCtx*>(lParam);
+        if (!isEligibleTopLevelAppWindow(hwnd)) return TRUE;
+        if (WinUtils::isDesktopWindow(hwnd) || WinUtils::isTaskbarWindow(hwnd)) return TRUE;
+
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid == 0 || pid == c->selfPid) return TRUE;
+
+        wchar_t clsBuf[96]{};
+        GetClassNameW(hwnd, clsBuf, static_cast<int>(std::size(clsBuf)));
+        const std::wstring_view clsView(clsBuf);
+        if (clsView == L"Tools3000_ToastOverlay" ||
+            clsView == L"Tools3000_ShortcutHintOverlay" ||
+            clsView == L"Progman" ||
+            clsView == L"WorkerW") {
+            return TRUE;
+        }
+
+        const bool isNewWindow = (c->preExisting->find(hwnd) == c->preExisting->end());
+        const bool isCabinet = (clsView == L"CabinetWClass" || clsView == L"ExploreWClass");
+
+        wchar_t titleBuf[512]{};
+        const int titleLen = GetWindowTextW(hwnd, titleBuf, static_cast<int>(std::size(titleBuf)));
+        std::wstring lowerTitle = titleLen > 0 ? WinUtils::toLower(std::wstring(titleBuf, titleLen)) : std::wstring{};
+
+        const bool hasTitleMatch =
+            !c->titleHintLower.empty() &&
+            c->titleHintLower.size() >= 2 &&
+            lowerTitle.find(c->titleHintLower) != std::wstring::npos;
+
+        bool hasExeMatch = false;
+        if (c->expectCabinetFolder) {
+            hasExeMatch = isCabinet;
+        } else if (!c->assocExeLower.empty()) {
+            const std::wstring base = extractExeBasenameLower(WinUtils::getProcessPathFromWindow(hwnd));
+            hasExeMatch = (base == c->assocExeLower);
+        }
+
+        if (isNewWindow) {
+            if ((hasExeMatch || hasTitleMatch) && !c->newExactMatch) {
+                c->newExactMatch = hwnd;
+                return FALSE; // Z 序最顶的新增精确目标窗，立即锁定
+            }
+            if (!c->newAnyExternal && !c->expectCabinetFolder) {
+                c->newAnyExternal = hwnd;
+            }
+            return TRUE;
+        }
+
+        if (!c->allowExistingFallback) {
+            return TRUE;
+        }
+
+        if (hasExeMatch && hasTitleMatch && !c->existingTitleAndExeMatch) {
+            c->existingTitleAndExeMatch = hwnd;
+        } else if (!c->expectCabinetFolder && hasTitleMatch && !c->existingTitleOnlyMatch) {
+            c->existingTitleOnlyMatch = hwnd;
+        } else if (hasExeMatch && !c->existingExeMatch) {
+            c->existingExeMatch = hwnd;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+
+    if (ctx.newExactMatch) return ctx.newExactMatch;
+    if (ctx.existingTitleAndExeMatch) return ctx.existingTitleAndExeMatch;
+    if (ctx.newAnyExternal) return ctx.newAnyExternal;
+    if (ctx.existingTitleOnlyMatch) return ctx.existingTitleOnlyMatch;
+    if (ctx.existingExeMatch) return ctx.existingExeMatch;
+    return nullptr;
+}
+
+void spawnForegroundHandOffWatchdog(std::unordered_set<HWND> preExisting,
+                                    std::wstring assocExeLower,
+                                    std::wstring titleHintLower,
+                                    bool expectCabinetFolder) {
+    std::thread([preExisting = std::move(preExisting),
+                 assocExeLower = std::move(assocExeLower),
+                 titleHintLower = std::move(titleHintLower),
+                 expectCabinetFolder]() {
+        const DWORD selfPid = GetCurrentProcessId();
+        constexpr DWORD kStepMs = 25;
+        constexpr DWORD kMaxWatchMs = 650;
+
+        for (DWORD elapsed = 0; elapsed <= kMaxWatchMs; elapsed += kStepMs) {
+            const HWND fg = GetForegroundWindow();
+            if (fg && IsWindow(fg) && !WinUtils::isDesktopWindow(fg) && !WinUtils::isTaskbarWindow(fg)) {
+                DWORD fgPid = 0;
+                GetWindowThreadProcessId(fg, &fgPid);
+                if (fgPid != 0 && fgPid != selfPid) {
+                    // 外部目标窗口已自然获得前台焦点，守护任务零干扰结束
+                    return;
+                }
+            }
+
+            // 前 75ms 优先捕获新创建的顶层窗口；75ms 后同步放开对已运行单实例窗口（如 Win11 多标签记事本、
+            // VS Code、WPS、浏览器、已打开的资源管理器）的匹配拉起，彻底消除任务栏橙色闪烁！
+            const bool allowExisting = (elapsed >= 75);
+            const HWND candidate = findExternalLaunchTargetWindow(
+                preExisting, assocExeLower, titleHintLower, expectCabinetFolder, allowExisting);
+            if (candidate && IsWindow(candidate)) {
+                (void)WinUtils::activateWindowForeground(candidate);
+                const HWND fgAfter = GetForegroundWindow();
+                DWORD afterPid = 0;
+                if (fgAfter) GetWindowThreadProcessId(fgAfter, &afterPid);
+                if (afterPid != 0 && afterPid != selfPid) {
+                    return;
+                }
+            }
+            Sleep(kStepMs);
+        }
+    }).detach();
+}
+
+}  // namespace
+
+std::wstring WinUtils::resolveShellTargetAssociatedExe(const std::wstring& target,
+                                                       const std::wstring& args) {
+    (void)args;
+    const std::wstring clean = stripWrappingQuotesW(target);
+    if (clean.empty()) return {};
+
+    if (startsWithAsciiCaseInsensitiveW(clean, L"http://")) {
+        return queryAssocExecutableLower(L"http");
+    }
+    if (startsWithAsciiCaseInsensitiveW(clean, L"https://")) {
+        return queryAssocExecutableLower(L"https");
+    }
+    if (startsWithAsciiCaseInsensitiveW(clean, L"shell:")) {
+        return {};
+    }
+
+    const DWORD attrs = GetFileAttributesW(clean.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return L"explorer.exe";
+    }
+
+    const std::filesystem::path p(clean);
+    const std::wstring ext = toLower(p.extension().wstring());
+    if (ext == L".exe" || ext == L".com" || ext == L".scr") {
+        return extractExeBasenameLower(clean);
+    }
+    if (!ext.empty()) {
+        if (std::wstring assoc = queryAssocExecutableLower(ext.c_str()); !assoc.empty()) {
+            return assoc;
+        }
+    }
+    // 兼容裸程序名（如 "notepad.exe" 未带路径且不在当前目录）
+    if (clean.find(L'\\') == std::wstring::npos &&
+        clean.find(L'/') == std::wstring::npos &&
+        ext.empty()) {
+        return toLower(clean) + L".exe";
+    }
+    return {};
+}
+
+std::wstring WinUtils::extractShellTargetTitleHint(const std::wstring& target,
+                                                   const std::wstring& args) {
+    std::wstring cleanTarget = stripWrappingQuotesW(target);
+    if (cleanTarget.empty() ||
+        startsWithAsciiCaseInsensitiveW(cleanTarget, L"http://") ||
+        startsWithAsciiCaseInsensitiveW(cleanTarget, L"https://") ||
+        startsWithAsciiCaseInsensitiveW(cleanTarget, L"shell:")) {
+        return {};
+    }
+
+    const std::filesystem::path tp(cleanTarget);
+    const std::wstring extLower = toLower(tp.extension().wstring());
+    // 若直接运行 notepad.exe "D:\...\账号密码.txt"，从参数中提取被打开文档的标题提示词
+    if ((extLower == L".exe" || cleanTarget.find(L'\\') == std::wstring::npos) && !args.empty()) {
+        const std::wstring cleanArg = stripWrappingQuotesW(args);
+        if (!cleanArg.empty() && !cleanArg.starts_with(L"-") && !cleanArg.starts_with(L"/")) {
+            const std::filesystem::path ap(cleanArg);
+            const std::wstring stem = ap.stem().wstring();
+            if (!stem.empty()) return toLower(stem);
+        }
+    }
+
+    const DWORD attrs = GetFileAttributesW(cleanTarget.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        std::wstring folderName = tp.filename().wstring();
+        if (folderName.empty()) {
+            folderName = tp.root_name().wstring();
+        }
+        return toLower(folderName);
+    }
+
+    if (extLower == L".exe" || extLower == L".lnk" || extLower == L".bat" || extLower == L".cmd") {
+        return toLower(tp.stem().wstring());
+    }
+
+    const std::wstring stem = tp.stem().wstring();
+    if (!stem.empty()) {
+        return toLower(stem);
+    }
+    return toLower(tp.filename().wstring());
+}
+
 bool WinUtils::openFolderAndSelectItem(const std::wstring& filePath) {
     if (filePath.empty()) return false;
 
+    const bool callerOwnedFg = isCurrentProcessHoldingForeground();
+    std::unordered_set<HWND> preExisting = callerOwnedFg
+        ? snapshotExternalTopLevelWindows()
+        : std::unordered_set<HWND>{};
+    std::wstring folderHint;
+    {
+        const std::wstring clean = stripWrappingQuotesW(filePath);
+        const DWORD attrs = GetFileAttributesW(clean.c_str());
+        const std::filesystem::path p(clean);
+        if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            folderHint = toLower(p.filename().empty() ? p.root_name().wstring() : p.filename().wstring());
+        } else if (p.has_parent_path()) {
+            const auto parent = p.parent_path();
+            folderHint = toLower(parent.filename().empty() ? parent.root_name().wstring() : parent.filename().wstring());
+        }
+    }
+    grantForegroundPermissionForLaunch(L"explorer.exe", callerOwnedFg);
+
     struct LocateTaskState {
         std::wstring targetPath;
+        bool callerOwnedFg = false;
+        std::unordered_set<HWND> preExisting;
+        std::wstring folderHint;
         std::mutex mutex;
         std::condition_variable cv;
         bool finished = false;
@@ -2936,12 +3314,17 @@ bool WinUtils::openFolderAndSelectItem(const std::wstring& filePath) {
 
     auto state = std::make_shared<LocateTaskState>();
     state->targetPath = filePath;
+    state->callerOwnedFg = callerOwnedFg;
+    state->preExisting = std::move(preExisting);
+    state->folderHint = std::move(folderHint);
 
     // 全部磁盘属性探测、COM STA 定位及三级降级均封装在共享堆状态的独立 STA 线程内执行，
     // 禁止在调用方为 UI 主线程时无限同步阻塞，且超时 detach 后零栈引用悬垂风险。
     std::thread staThread([state]() {
         const std::wstring& path = state->targetPath;
         bool located = false;
+
+        AllowSetForegroundWindow(ASFW_ANY);
 
         const DWORD attributes = GetFileAttributesW(path.c_str());
         if (attributes == INVALID_FILE_ATTRIBUTES) {
@@ -2992,6 +3375,11 @@ bool WinUtils::openFolderAndSelectItem(const std::wstring& filePath) {
                     }
                 }
             }
+        }
+
+        if (located && state->callerOwnedFg) {
+            spawnForegroundHandOffWatchdog(
+                state->preExisting, L"explorer.exe", state->folderHint, /*expectCabinetFolder=*/true);
         }
 
         {
@@ -3055,6 +3443,16 @@ bool tryShellExecuteViaDesktopExplorer(const std::wstring& target,
     if (FAILED(shellWindows->FindWindowSW(&vEmpty, &vEmpty, SWC_DESKTOP, &hwndDesktop,
                                           SWFO_NEEDDISPATCH, &dispDesktop)) || !dispDesktop) {
         return false;
+    }
+
+    // 显式将前台激活权限授予桌面 explorer.exe，确保其拉起的子进程可合法调用 SetForegroundWindow
+    AllowSetForegroundWindow(ASFW_ANY);
+    if (hwndDesktop != 0) {
+        DWORD explorerPid = 0;
+        GetWindowThreadProcessId(reinterpret_cast<HWND>(static_cast<intptr_t>(hwndDesktop)), &explorerPid);
+        if (explorerPid != 0) {
+            AllowSetForegroundWindow(explorerPid);
+        }
     }
 
     Microsoft::WRL::ComPtr<IServiceProvider> serviceProvider;
@@ -3136,21 +3534,45 @@ bool launchShellTargetBoundedSta(const std::wstring& target,
                                  const std::wstring& verb,
                                  bool preferUnelevated,
                                  bool suppressUiErrors) {
+    const bool callerOwnedFg = isCurrentProcessHoldingForeground();
+    const std::wstring assocExeLower = WinUtils::resolveShellTargetAssociatedExe(target, args);
+    const std::wstring titleHintLower = WinUtils::extractShellTargetTitleHint(target, args);
+    const DWORD targetAttrs = GetFileAttributesW(stripWrappingQuotesW(target).c_str());
+    const bool isFolderTarget =
+        (targetAttrs != INVALID_FILE_ATTRIBUTES && (targetAttrs & FILE_ATTRIBUTE_DIRECTORY) != 0);
+
+    std::unordered_set<HWND> preExisting = callerOwnedFg
+        ? snapshotExternalTopLevelWindows()
+        : std::unordered_set<HWND>{};
+    grantForegroundPermissionForLaunch(assocExeLower, callerOwnedFg);
+
     struct LaunchState {
         std::mutex mutex;
         std::condition_variable cv;
         bool finished = false;
         bool success = false;
         DWORD lastError = ERROR_SUCCESS;
+        bool callerOwnedFg = false;
+        bool isFolderTarget = false;
+        std::unordered_set<HWND> preExisting;
+        std::wstring assocExeLower;
+        std::wstring titleHintLower;
     };
 
     auto state = std::make_shared<LaunchState>();
+    state->callerOwnedFg = callerOwnedFg;
+    state->isFolderTarget = isFolderTarget;
+    state->preExisting = std::move(preExisting);
+    state->assocExeLower = assocExeLower;
+    state->titleHintLower = titleHintLower;
     const bool useExplorerDeElevation = preferUnelevated && WinUtils::isCurrentProcessElevated();
 
     std::thread staThread([state, target, args, workingDir, verb, useExplorerDeElevation, suppressUiErrors]() {
         ScopedStaComGuard comGuard;
         bool launched = false;
         DWORD err = ERROR_SUCCESS;
+
+        AllowSetForegroundWindow(ASFW_ANY);
 
         if (useExplorerDeElevation) {
             launched = tryShellExecuteViaDesktopExplorer(target, args, workingDir, verb, SW_SHOWNORMAL);
@@ -3170,6 +3592,14 @@ bool launchShellTargetBoundedSta(const std::wstring& target,
             } else {
                 err = GetLastError();
             }
+        }
+
+        if (launched && state->callerOwnedFg) {
+            spawnForegroundHandOffWatchdog(
+                state->preExisting,
+                state->assocExeLower,
+                state->titleHintLower,
+                state->isFolderTarget);
         }
 
         {

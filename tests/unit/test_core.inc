@@ -5494,7 +5494,10 @@ TEST(ClipboardManagerTest, ExcludePinnedQueryV2AndNativeDragDataObject) {
     FORMATETC enumerated[5]{};
     ULONG fetched = 0;
     EXPECT_EQ(enumFmt->Next(5, enumerated, &fetched), S_FALSE);
-    EXPECT_EQ(fetched, 4u); // CF_HDROP + HTML Format + CF_UNICODETEXT + CF_TEXT
+    ASSERT_EQ(fetched, 4u); // CF_HDROP -> CF_UNICODETEXT -> CF_TEXT -> HTML Format
+    EXPECT_EQ(enumerated[0].cfFormat, CF_HDROP);
+    EXPECT_EQ(enumerated[1].cfFormat, CF_UNICODETEXT);
+    EXPECT_EQ(enumerated[2].cfFormat, CF_TEXT);
     EXPECT_EQ(enumFmt->Reset(), S_OK);
 
     auto dropSource = createNativeDropSource();
@@ -5504,23 +5507,38 @@ TEST(ClipboardManagerTest, ExcludePinnedQueryV2AndNativeDragDataObject) {
     EXPECT_EQ(dropSource->QueryContinueDrag(FALSE, MK_LBUTTON), S_OK);
     EXPECT_EQ(dropSource->GiveFeedback(DROPEFFECT_COPY), DRAGDROP_S_USEDEFAULTCURSORS);
 
-    // 3. 混合双引擎落点安全过滤与 Smart Drop-Paste 回退策略验证（防跨 UIPI 失效 / 防 Sublime 选区拒收 / 防误点标题栏）
+    // 3. 混合双引擎落点安全过滤与 Smart Drop-Paste 回退策略验证（含无边框 Electron 腹地输入框放行与假 Drop 识别）
     EXPECT_TRUE(isSafeDropHitTestResult(HTCLIENT));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTCAPTION));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTCLOSE));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTMINBUTTON));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTMAXBUTTON));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTSYSMENU));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTMENU));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTLEFT));
-    EXPECT_FALSE(isSafeDropHitTestResult(HTBORDER));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTCAPTION, false));
+    EXPECT_TRUE(isSafeDropHitTestResult(HTCAPTION, true)); // Clash Party 等无边框 Electron 腹地输入框放行
+    EXPECT_FALSE(isSafeDropHitTestResult(HTCLOSE, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMINBUTTON, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMAXBUTTON, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTSYSMENU, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTMENU, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTLEFT, true));
+    EXPECT_FALSE(isSafeDropHitTestResult(HTBORDER, true));
 
-    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_COPY, false, true, true));
-    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_CANCEL, DROPEFFECT_NONE, true, true, true));
-    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, false, true));
-    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, false));
-    EXPECT_TRUE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, true));
-    EXPECT_TRUE(shouldFallbackToSmartDropPaste(S_OK, DROPEFFECT_NONE, false, true, true));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_COPY, false, true, true, true));
+    // 目标仅监听文件拖入而未实际调用 GetData 读取文本载荷（假 Drop 空吞）时，自动启用第二引擎直贴兜底
+    EXPECT_TRUE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_COPY, false, true, true, false));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_CANCEL, DROPEFFECT_NONE, true, true, true, false));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, false, true, false));
+    EXPECT_FALSE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, false, false));
+    EXPECT_TRUE(shouldFallbackToSmartDropPaste(DRAGDROP_S_DROP, DROPEFFECT_NONE, false, true, true, false));
+    EXPECT_TRUE(shouldFallbackToSmartDropPaste(S_OK, DROPEFFECT_NONE, false, true, true, false));
+
+    // 4. 终端与 CLI TUI 宿主分类验证（Windows Terminal / WezTerm / ConHost / Mintty / 普通 GUI）
+    EXPECT_EQ(classifyTerminalPasteTarget(L"CASCADIA_HOSTING_WINDOW_CLASS", L"windowsterminal.exe"),
+              TerminalPasteKind::ModernCtrlShiftV);
+    EXPECT_EQ(classifyTerminalPasteTarget(L"Window Class", L"alacritty.exe"),
+              TerminalPasteKind::ModernCtrlShiftV);
+    EXPECT_EQ(classifyTerminalPasteTarget(L"ConsoleWindowClass", L"conhost.exe"),
+              TerminalPasteKind::LegacyCtrlV);
+    EXPECT_EQ(classifyTerminalPasteTarget(L"mintty", L"mintty.exe"),
+              TerminalPasteKind::ShiftInsert);
+    EXPECT_EQ(classifyTerminalPasteTarget(L"Chrome_WidgetWin_1", L"clash party.exe"),
+              TerminalPasteKind::NotTerminal);
 }
 
 TEST(ClipboardManagerTest, SourceAppFriendlyNameIconExtractionAndPersistence) {
@@ -6472,4 +6490,65 @@ TEST(QuietIdleHygieneTest, HeapCompactAndScheduleQuietIdleTrimCallback) {
     ASSERT_EQ(observedDelays.size(), 2u);
     EXPECT_EQ(observedDelays[0], 2800u);
     EXPECT_GE(observedDelays[1], 250u);
+}
+
+TEST(ShellForegroundLaunchTest, ExtractsTitleHintAndResolvesAssociatedExecutable) {
+    using tools3000::core::WinUtils;
+
+    // 1. 搜索打开文档：精准提取无后缀文件名提示词，用于识别任务栏闪烁中的单实例窗口
+    EXPECT_EQ(WinUtils::extractShellTargetTitleHint(L"D:\\Chosen\\237-上海山源\\账号密码.txt"),
+              L"账号密码");
+    EXPECT_EQ(WinUtils::extractShellTargetTitleHint(L"notepad.exe", L"\"D:\\Docs\\Project_Notes.md\""),
+              L"project_notes");
+    EXPECT_TRUE(WinUtils::extractShellTargetTitleHint(L"https://github.com/yuan278501381/tools3000").empty());
+
+    // 2. 关联可执行程序解析：显式 exe、系统目录及 .txt 文本默认关联程序
+    EXPECT_EQ(WinUtils::resolveShellTargetAssociatedExe(L"C:\\Windows\\System32\\notepad.exe"),
+              L"notepad.exe");
+    wchar_t winDir[MAX_PATH]{};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0) {
+        EXPECT_EQ(WinUtils::resolveShellTargetAssociatedExe(winDir), L"explorer.exe");
+    }
+    const std::wstring txtAssoc = WinUtils::resolveShellTargetAssociatedExe(L"D:\\Temp\\demo.txt");
+    if (!txtAssoc.empty()) {
+        EXPECT_NE(txtAssoc.find(L".exe"), std::wstring::npos);
+    }
+}
+
+TEST(HotkeyPriorityTest, GetAllOrdersCoreShortcutsAheadOfRecordingControls) {
+    using namespace tools3000::core;
+    if (!MessageBridge::instance().hasHandler("hotkey.getAll")) {
+        MessageBridge::instance().registerBuiltinHandlers();
+    }
+    auto& hm = HotkeyManager::instance();
+    (void)hm.registerHotkey(
+        "Mute Microphone",
+        HotkeyDef{ModKey::Ctrl | ModKey::Alt | ModKey::Shift, 'M'},
+        []() {});
+    (void)hm.registerHotkey(
+        "Screenshot",
+        HotkeyDef{ModKey::None, VK_F1},
+        []() {});
+
+    const std::string raw = MessageBridge::instance().handleMessage(
+        R"({"id":901,"method":"hotkey.getAll","params":{}})");
+    hm.unregisterHotkey("Mute Microphone");
+    hm.unregisterHotkey("Screenshot");
+
+    const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+    ASSERT_TRUE(parsed.is_object());
+    ASSERT_TRUE(parsed.contains("result"));
+    const auto& arr = parsed["result"];
+    ASSERT_TRUE(arr.is_array());
+
+    int idxScreenshot = -1;
+    int idxMuteMic = -1;
+    for (int i = 0; i < static_cast<int>(arr.size()); ++i) {
+        const std::string name = arr[static_cast<size_t>(i)].value("name", "");
+        if (name == "Screenshot") idxScreenshot = i;
+        if (name == "Mute Microphone") idxMuteMic = i;
+    }
+    EXPECT_GE(idxScreenshot, 0);
+    EXPECT_GE(idxMuteMic, 0);
+    EXPECT_LT(idxScreenshot, idxMuteMic);
 }

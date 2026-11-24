@@ -19,6 +19,9 @@ import {
   Card,
   SettingGroup,
   SettingRow,
+  SubSettingGroup,
+  DisabledCascade,
+  ConfirmModal,
   Toggle,
   NumberInput,
   TextInput,
@@ -27,6 +30,7 @@ import {
   PageSkeleton,
 } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
+import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './ClipboardPage.css';
 
@@ -76,6 +80,7 @@ export const ClipboardPage: FC = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<ClipboardSettings>(DEFAULT_SETTINGS);
+  const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [excludedOverride, setExcludedOverride] = useState<string | null>(null);
   const [stats, setStats] = useState<ClipboardStats>({
     totalCount: 0,
@@ -85,15 +90,28 @@ export const ClipboardPage: FC = () => {
     dataDir: '',
   });
   const [clearing, setClearing] = useState(false);
+  const [confirmClearAllOpen, setConfirmClearAllOpen] = useState(false);
 
   const excludedDraft = excludedOverride ?? settings.excludedApps;
   const excludedDirty = excludedDraft.trim() !== settings.excludedApps.trim();
+  const clipboardHotkeyEntry = hotkeys.find((h) => h.name === 'Toggle Clipboard');
 
   const refreshStats = useCallback(async () => {
     try {
       const s = await bridgeRequest<Partial<ClipboardStats>>('clipboard.getStats', undefined, { silent: true });
       if (s && typeof s === 'object') {
         setStats((prev) => ({ ...prev, ...s }));
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const refreshHotkeys = useCallback(async () => {
+    try {
+      const res = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll', undefined, { silent: true });
+      if (Array.isArray(res)) {
+        setHotkeys(res);
       }
     } catch {
       // ignore
@@ -111,6 +129,11 @@ export const ClipboardPage: FC = () => {
       bridgeRequest<Partial<ClipboardStats>>('clipboard.getStats', undefined, { silent: true }).then((res) => {
         if (!cancelled && res && typeof res === 'object') {
           setStats((prev) => ({ ...prev, ...res }));
+        }
+      }),
+      bridgeRequest<HotkeyEntry[]>('hotkey.getAll', undefined, { silent: true }).then((res) => {
+        if (!cancelled && Array.isArray(res)) {
+          setHotkeys(res);
         }
       }),
     ]).then(() => {
@@ -143,6 +166,9 @@ export const ClipboardPage: FC = () => {
         toast.error(t('clipboardPage.saveFailedToast', 'Failed to save clipboard settings'));
       } else {
         void refreshStats();
+        if ('hotkey' in patch || 'enabled' in patch) {
+          void refreshHotkeys();
+        }
       }
     } catch {
       toast.error(t('clipboardPage.saveFailedToast', 'Failed to save clipboard settings'));
@@ -181,7 +207,7 @@ export const ClipboardPage: FC = () => {
         <Card>
           <SettingRow
             label={
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+              <div className="clipboard-page__row-label">
                 <span>{t('clipboardPage.enableTitle', 'Enable Persistent Clipboard Manager')}</span>
                 <Badge text={t('clipboardPage.rustKernelBadge', 'Rust Persistent Engine')} variant="primary" />
                 <Badge
@@ -206,234 +232,261 @@ export const ClipboardPage: FC = () => {
             />
           </SettingRow>
 
-          <SettingRow
-            label={t('clipboardPage.hotkeyTitle', 'Summon Clipboard Panel Shortcut')}
-            description={t('clipboardPage.hotkeyDesc', 'Default Alt + V (avoids conflicts with Windows Win + V). Press anywhere to summon.')}
-          >
-            <HotkeyRecorder
-              id="clipboard-hotkey-recorder"
-              value={settings.hotkey}
-              onChange={(val) => void patchSettings({ hotkey: val })}
-              placeholder="Alt+V"
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.quickOpenTitle', 'Open Clipboard Panel Now')}
-            description={t('clipboardPage.quickOpenDesc', 'Preview your persisted history, pinned snippets, and captured images.')}
-          >
-            <Button
-              variant="primary"
-              onClick={() => void bridgeRequest('clipboard.showWindow')}
+          <DisabledCascade disabled={!settings.enabled}>
+            <SettingRow
+              label={
+                <div className="clipboard-page__row-label">
+                  <span>{t('clipboardPage.hotkeyTitle', 'Summon Clipboard Panel Shortcut')}</span>
+                  <HotkeyStatusBadge entry={clipboardHotkeyEntry} />
+                </div>
+              }
+              description={t('clipboardPage.hotkeyDesc', 'Default Alt + V (avoids conflicts with Windows Win + V). Press anywhere to summon.')}
             >
-              <Play size={14} aria-hidden="true" />
-              <span>{t('clipboardPage.openNowBtn', 'Open History Panel')}</span>
-            </Button>
-          </SettingRow>
+              <HotkeyRecorder
+                id="clipboard-hotkey-recorder"
+                value={settings.hotkey}
+                onChange={(val) => void patchSettings({ hotkey: val })}
+                placeholder="Alt+V"
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.quickOpenTitle', 'Open Clipboard Panel Now')}
+              description={t('clipboardPage.quickOpenDesc', 'Preview your persisted history, pinned snippets, and captured images.')}
+            >
+              <Button
+                variant="primary"
+                disabled={!settings.enabled}
+                onClick={() => void bridgeRequest('clipboard.showWindow')}
+              >
+                <Play size={14} aria-hidden="true" />
+                <span>{t('clipboardPage.openNowBtn', 'Open History Panel')}</span>
+              </Button>
+            </SettingRow>
+          </DisabledCascade>
         </Card>
       </SettingGroup>
 
-      <SettingGroup
-        title={t('clipboardPage.behaviorGroup', 'Paste & Capture Behavior')}
-        icon={<Sliders size={18} strokeWidth={2.2} aria-hidden="true" />}
-      >
-        <Card>
-          <SettingRow
-            label={t('clipboardPage.autoPasteTitle', 'Auto-Paste on Selection')}
-            description={t('clipboardPage.autoPasteDesc', 'Automatically return focus to the previous window and paste immediately after pressing Enter or double-clicking.')}
-          >
-            <Toggle
-              id="clipboard-autopaste-toggle"
-              checked={settings.autoPaste}
-              onChange={(v) => void patchSettings({ autoPaste: v })}
-            />
-          </SettingRow>
+      <DisabledCascade disabled={!settings.enabled} className="clipboard-page__cascade">
+        <SettingGroup
+          title={t('clipboardPage.behaviorGroup', 'Paste & Capture Behavior')}
+          icon={<Sliders size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <SettingRow
+              label={t('clipboardPage.autoPasteTitle', 'Auto-Paste on Selection')}
+              description={t('clipboardPage.autoPasteDesc', 'Automatically return focus to the previous window and paste immediately after pressing Enter or double-clicking.')}
+            >
+              <Toggle
+                id="clipboard-autopaste-toggle"
+                checked={settings.autoPaste}
+                onChange={(v) => void patchSettings({ autoPaste: v })}
+              />
+            </SettingRow>
 
-          <SettingRow
-            label={t('clipboardPage.plainTextTitle', 'Paste as Plain Text by Default')}
-            description={t('clipboardPage.plainTextDesc', 'Strip rich HTML formatting on paste. You can always press Shift + Enter for one-off plain text paste.')}
-          >
-            <Toggle
-              id="clipboard-plaintext-toggle"
-              checked={settings.plainTextByDefault}
-              onChange={(v) => void patchSettings({ plainTextByDefault: v })}
-            />
-          </SettingRow>
+            <SettingRow
+              label={t('clipboardPage.plainTextTitle', 'Paste as Plain Text by Default')}
+              description={t('clipboardPage.plainTextDesc', 'Strip rich HTML formatting on paste. You can always press Shift + Enter for one-off plain text paste.')}
+            >
+              <Toggle
+                id="clipboard-plaintext-toggle"
+                checked={settings.plainTextByDefault}
+                onChange={(v) => void patchSettings({ plainTextByDefault: v })}
+              />
+            </SettingRow>
 
-          <SettingRow
-            label={t('clipboardPage.captureImagesTitle', 'Record Copied Images')}
-            description={t('clipboardPage.captureImagesDesc', 'Losslessly deduplicate screenshots and copied images on disk, unlocking 1-click Pin (F3), offline OCR, and in-place translation.')}
-          >
-            <Toggle
-              id="clipboard-capture-images-toggle"
-              checked={settings.captureImages}
-              onChange={(v) => void patchSettings({ captureImages: v })}
-            />
-          </SettingRow>
+            <SettingRow
+              label={t('clipboardPage.captureImagesTitle', 'Record Copied Images')}
+              description={t('clipboardPage.captureImagesDesc', 'Losslessly deduplicate screenshots and copied images on disk, unlocking 1-click Pin (F3), offline OCR, and in-place translation.')}
+            >
+              <Toggle
+                id="clipboard-capture-images-toggle"
+                checked={settings.captureImages}
+                onChange={(v) => void patchSettings({ captureImages: v })}
+              />
+            </SettingRow>
 
-          <SettingRow
-            label={t('clipboardPage.captureFilesTitle', 'Record Copied File Paths')}
-            description={t('clipboardPage.captureFilesDesc', 'Keep track of files copied from Explorer so you can re-paste them later.')}
-          >
-            <Toggle
-              id="clipboard-capture-files-toggle"
-              checked={settings.captureFiles}
-              onChange={(v) => void patchSettings({ captureFiles: v })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.hidePinnedInOtherTitle', 'Hide Pinned Items in Other Categories')}
-            description={t(
-              'clipboardPage.hidePinnedInOtherDesc',
-              'Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors.',
-            )}
-          >
-            <Toggle
-              id="clipboard-hide-pinned-toggle"
-              checked={settings.hidePinnedInOtherCategories}
-              onChange={(v) => void patchSettings({ hidePinnedInOtherCategories: v })}
-            />
-          </SettingRow>
-        </Card>
-      </SettingGroup>
-
-      <SettingGroup
-        title={t('clipboardPage.storageGroup', 'Retention & Disk Storage')}
-        icon={<HardDrive size={18} strokeWidth={2.2} aria-hidden="true" />}
-      >
-        <Card>
-          <SettingRow layout="vertical" label={t('clipboardPage.statsTitle', 'Local Persistent Store Overview')}>
-            <div className="clipboard-page__stats-grid">
-              <div className="clipboard-page__stat-card">
-                <span className="clipboard-page__stat-label">{t('clipboardPage.statTotal', 'Saved Entries')}</span>
-                <span className="clipboard-page__stat-value">{stats.totalCount}</span>
-              </div>
-              <div className="clipboard-page__stat-card">
-                <span className="clipboard-page__stat-label">{t('clipboardPage.statPinned', 'Pinned Forever')}</span>
-                <span className="clipboard-page__stat-value">{stats.pinnedCount}</span>
-              </div>
-              <div className="clipboard-page__stat-card">
-                <span className="clipboard-page__stat-label">{t('clipboardPage.statImages', 'Cached Images')}</span>
-                <span className="clipboard-page__stat-value">{stats.imageCount}</span>
-              </div>
-              <div className="clipboard-page__stat-card">
-                <span className="clipboard-page__stat-label">{t('clipboardPage.statDisk', 'Disk Usage')}</span>
-                <span className="clipboard-page__stat-value">{formatDiskSize(stats.diskBytes)}</span>
-              </div>
-            </div>
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.maxItemsTitle', 'Maximum Unpinned Entries')}
-            description={t('clipboardPage.maxItemsDesc', 'Pinned entries are permanently preserved and never count toward automatic eviction (20 - 5000).')}
-          >
-            <NumberInput
-              id="clipboard-max-items"
-              value={settings.maxItems}
-              min={20}
-              max={5000}
-              step={50}
-              onChange={(v) => void patchSettings({ maxItems: v })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.maxDaysTitle', 'Retention Days (0 = Keep Forever)')}
-            description={t('clipboardPage.maxDaysDesc', 'Automatically expire unpinned items older than this number of days.')}
-          >
-            <NumberInput
-              id="clipboard-max-days"
-              value={settings.maxDays}
-              min={0}
-              max={3650}
-              step={5}
-              onChange={(v) => void patchSettings({ maxDays: v })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.maxImageMbTitle', 'Max Single Image Size (MB)')}
-            description={t('clipboardPage.maxImageMbDesc', 'Skip oversized bitmap captures exceeding this PNG size cap (1 - 64 MB).')}
-          >
-            <NumberInput
-              id="clipboard-max-img-mb"
-              value={settings.maxImageMb}
-              min={1}
-              max={64}
-              step={1}
-              onChange={(v) => void patchSettings({ maxImageMb: v })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label={t('clipboardPage.maintenanceTitle', 'Storage Maintenance')}
-            description={t('clipboardPage.maintenanceDesc', 'Inspect local storage folder or purge history immediately.')}
-          >
-            <div className="clipboard-page__actions-row">
-              <Button variant="secondary" onClick={() => void bridgeRequest('clipboard.openDataDir')}>
-                <FolderOpen size={14} aria-hidden="true" />
-                <span>{t('clipboardPage.openFolderBtn', 'Open Folder')}</span>
-              </Button>
-              <Button variant="secondary" disabled={clearing} onClick={() => void handleClear(true)}>
-                <Trash2 size={14} aria-hidden="true" />
-                <span>{t('clipboardPage.clearUnpinnedBtn', 'Clear Unpinned')}</span>
-              </Button>
-              <Button variant="danger" disabled={clearing} onClick={() => void handleClear(false)}>
-                <Trash2 size={14} aria-hidden="true" />
-                <span>{t('clipboardPage.clearAllBtn', 'Clear All')}</span>
-              </Button>
-            </div>
-          </SettingRow>
-        </Card>
-      </SettingGroup>
-
-      <SettingGroup
-        title={t('clipboardPage.privacyGroup', 'Privacy & Password Manager Guard')}
-        icon={<ShieldCheck size={18} strokeWidth={2.2} aria-hidden="true" />}
-      >
-        <Card>
-          <div className="clipboard-page__privacy-banner" role="note">
-            <ShieldCheck size={18} strokeWidth={2.2} className="clipboard-page__privacy-icon" aria-hidden="true" />
-            <span>
-              {t(
-                'clipboardPage.privacyBanner',
-                'Automatically honors Windows ExcludeClipboardContentFromMonitorProcessing, CanIncludeInClipboardHistory=0, and Clipboard Viewer Ignore formats. Passwords copied from compliant managers are never recorded.',
-              )}
-            </span>
-          </div>
-
-          <SettingRow
-            layout="vertical"
-            label={t('clipboardPage.excludedAppsTitle', 'Excluded Applications (Process Blacklist)')}
-            description={t('clipboardPage.excludedAppsDesc', 'Comma-separated process names whose clipboard writes are always ignored.')}
-          >
-            <div style={{ display: 'flex', gap: '10px', width: '100%', alignItems: 'center', flexWrap: 'wrap' }}>
-              <div style={{ flex: 1, minWidth: '240px' }}>
-                <TextInput
-                  id="clipboard-excluded-apps"
-                  value={excludedDraft}
-                  onChange={setExcludedOverride}
-                  placeholder="KeePass.exe,1Password.exe,Bitwarden.exe"
+            <SubSettingGroup disabled={!settings.captureImages}>
+              <SettingRow
+                label={t('clipboardPage.maxImageMbTitle', 'Max Single Image Size (MB)')}
+                description={t('clipboardPage.maxImageMbDesc', 'Skip oversized bitmap captures exceeding this PNG size cap (1 - 64 MB).')}
+              >
+                <NumberInput
+                  id="clipboard-max-img-mb"
+                  value={settings.maxImageMb}
+                  min={1}
+                  max={64}
+                  step={1}
+                  disabled={!settings.captureImages}
+                  onChange={(v) => void patchSettings({ maxImageMb: v })}
                 />
-              </div>
-              {excludedDirty && (
-                <Button
-                  variant="primary"
-                  onClick={async () => {
-                    await patchSettings({ excludedApps: excludedDraft.trim() });
-                    setExcludedOverride(null);
-                    toast.success(t('clipboardPage.excludedSavedToast', 'Excluded apps list saved'));
-                  }}
-                >
-                  <Save size={14} aria-hidden="true" />
-                  <span>{t('clipboardPage.saveBtn', 'Save')}</span>
-                </Button>
+              </SettingRow>
+            </SubSettingGroup>
+
+            <SettingRow
+              label={t('clipboardPage.captureFilesTitle', 'Record Copied File Paths')}
+              description={t('clipboardPage.captureFilesDesc', 'Keep track of files copied from Explorer so you can re-paste them later.')}
+            >
+              <Toggle
+                id="clipboard-capture-files-toggle"
+                checked={settings.captureFiles}
+                onChange={(v) => void patchSettings({ captureFiles: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.hidePinnedInOtherTitle', 'Hide Pinned Items in Other Categories')}
+              description={t(
+                'clipboardPage.hidePinnedInOtherDesc',
+                'Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors.',
               )}
+            >
+              <Toggle
+                id="clipboard-hide-pinned-toggle"
+                checked={settings.hidePinnedInOtherCategories}
+                onChange={(v) => void patchSettings({ hidePinnedInOtherCategories: v })}
+              />
+            </SettingRow>
+          </Card>
+        </SettingGroup>
+
+        <SettingGroup
+          title={t('clipboardPage.storageGroup', 'Retention & Disk Storage')}
+          icon={<HardDrive size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <SettingRow layout="vertical" label={t('clipboardPage.statsTitle', 'Local Persistent Store Overview')}>
+              <div className="clipboard-page__stats-grid">
+                <div className="clipboard-page__stat-card">
+                  <span className="clipboard-page__stat-label">{t('clipboardPage.statTotal', 'Saved Entries')}</span>
+                  <span className="clipboard-page__stat-value">{stats.totalCount}</span>
+                </div>
+                <div className="clipboard-page__stat-card">
+                  <span className="clipboard-page__stat-label">{t('clipboardPage.statPinned', 'Pinned Forever')}</span>
+                  <span className="clipboard-page__stat-value">{stats.pinnedCount}</span>
+                </div>
+                <div className="clipboard-page__stat-card">
+                  <span className="clipboard-page__stat-label">{t('clipboardPage.statImages', 'Cached Images')}</span>
+                  <span className="clipboard-page__stat-value">{stats.imageCount}</span>
+                </div>
+                <div className="clipboard-page__stat-card">
+                  <span className="clipboard-page__stat-label">{t('clipboardPage.statDisk', 'Disk Usage')}</span>
+                  <span className="clipboard-page__stat-value">{formatDiskSize(stats.diskBytes)}</span>
+                </div>
+              </div>
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.maxItemsTitle', 'Maximum Unpinned Entries')}
+              description={t('clipboardPage.maxItemsDesc', 'Pinned entries are permanently preserved and never count toward automatic eviction (20 - 5000).')}
+            >
+              <NumberInput
+                id="clipboard-max-items"
+                value={settings.maxItems}
+                min={20}
+                max={5000}
+                step={50}
+                onChange={(v) => void patchSettings({ maxItems: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.maxDaysTitle', 'Retention Days (0 = Keep Forever)')}
+              description={t('clipboardPage.maxDaysDesc', 'Automatically expire unpinned items older than this number of days.')}
+            >
+              <NumberInput
+                id="clipboard-max-days"
+                value={settings.maxDays}
+                min={0}
+                max={3650}
+                step={5}
+                onChange={(v) => void patchSettings({ maxDays: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.maintenanceTitle', 'Storage Maintenance')}
+              description={t('clipboardPage.maintenanceDesc', 'Inspect local storage folder or purge history immediately.')}
+            >
+              <div className="clipboard-page__actions-row">
+                <Button variant="secondary" onClick={() => void bridgeRequest('clipboard.openDataDir')}>
+                  <FolderOpen size={14} aria-hidden="true" />
+                  <span>{t('clipboardPage.openFolderBtn', 'Open Folder')}</span>
+                </Button>
+                <Button variant="secondary" disabled={clearing} onClick={() => void handleClear(true)}>
+                  <Trash2 size={14} aria-hidden="true" />
+                  <span>{t('clipboardPage.clearUnpinnedBtn', 'Clear Unpinned')}</span>
+                </Button>
+                <Button variant="danger" disabled={clearing} onClick={() => setConfirmClearAllOpen(true)}>
+                  <Trash2 size={14} aria-hidden="true" />
+                  <span>{t('clipboardPage.clearAllBtn', 'Clear All')}</span>
+                </Button>
+              </div>
+            </SettingRow>
+          </Card>
+        </SettingGroup>
+
+        <SettingGroup
+          title={t('clipboardPage.privacyGroup', 'Privacy & Password Manager Guard')}
+          icon={<ShieldCheck size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <div className="clipboard-page__privacy-banner" role="note">
+              <ShieldCheck size={18} strokeWidth={2.2} className="clipboard-page__privacy-icon" aria-hidden="true" />
+              <span>
+                {t(
+                  'clipboardPage.privacyBanner',
+                  'Automatically honors Windows ExcludeClipboardContentFromMonitorProcessing, CanIncludeInClipboardHistory=0, and Clipboard Viewer Ignore formats. Passwords copied from compliant managers are never recorded.',
+                )}
+              </span>
             </div>
-          </SettingRow>
-        </Card>
-      </SettingGroup>
+
+            <SettingRow
+              layout="vertical"
+              label={t('clipboardPage.excludedAppsTitle', 'Excluded Applications (Process Blacklist)')}
+              description={t('clipboardPage.excludedAppsDesc', 'Comma-separated process names whose clipboard writes are always ignored.')}
+            >
+              <div className="clipboard-page__excluded-row">
+                <div className="clipboard-page__excluded-input">
+                  <TextInput
+                    id="clipboard-excluded-apps"
+                    value={excludedDraft}
+                    onChange={setExcludedOverride}
+                    placeholder="KeePass.exe,1Password.exe,Bitwarden.exe"
+                  />
+                </div>
+                {excludedDirty && (
+                  <Button
+                    variant="primary"
+                    onClick={async () => {
+                      await patchSettings({ excludedApps: excludedDraft.trim() });
+                      setExcludedOverride(null);
+                      toast.success(t('clipboardPage.excludedSavedToast', 'Excluded apps list saved'));
+                    }}
+                  >
+                    <Save size={14} aria-hidden="true" />
+                    <span>{t('clipboardPage.saveBtn', 'Save')}</span>
+                  </Button>
+                )}
+              </div>
+            </SettingRow>
+          </Card>
+        </SettingGroup>
+      </DisabledCascade>
+
+      <ConfirmModal
+        open={confirmClearAllOpen}
+        title={t('clipboardPage.clearAllBtn', 'Clear All')}
+        description={t('history.confirmClear', 'Are you sure you want to clear all history records?')}
+        confirmText={t('history.confirmClearBtn', 'Confirm Clear')}
+        cancelText={t('common.cancel', 'Cancel')}
+        loading={clearing}
+        onConfirm={async () => {
+          await handleClear(false);
+          setConfirmClearAllOpen(false);
+        }}
+        onClose={() => setConfirmClearAllOpen(false)}
+      />
     </div>
   );
 };

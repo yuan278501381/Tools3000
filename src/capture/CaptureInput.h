@@ -80,6 +80,7 @@ private:
     std::function<void(CaptureCompletion)> m_confirmCb;
     WindowElementDetector m_elementDetector;
     HWND m_lastDetectedTopHwnd = nullptr;
+    HMONITOR m_lastDpiMonitor = nullptr;
     POINT m_lastDetectScreenPt{INT_MIN, INT_MIN};
     bool m_hasAsyncRefinedActive = false;
     

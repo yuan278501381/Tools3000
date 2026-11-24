@@ -1,19 +1,29 @@
 import type { NavId } from './routes';
 
-export type SearchPageSubTab = 'settings' | 'syntax' | 'regex' | 'status';
+export type SearchPageSubTab = 'settings' | 'syntax' | 'regex' | 'status' | 'external';
+export type CapturePageSubTab = 'screenshot' | 'pin_region' | 'recording' | 'studio';
+export type GesturePageSubTab = 'rules' | 'appearance' | 'algorithm';
+export type OcrPageSubTab = 'recognize' | 'translate' | 'models';
+
+export type AnyPageSubTab =
+  | SearchPageSubTab
+  | CapturePageSubTab
+  | GesturePageSubTab
+  | OcrPageSubTab
+  | (string & {});
 
 export interface DeepSettingEntry {
   id: string;
   navId: NavId;
   labelKey: string;
   descKey?: string;
-  tabId?: SearchPageSubTab;
+  tabId?: AnyPageSubTab;
   keywords: string;
 }
 
 export interface DeepNavigationPayload {
   navId: NavId;
-  tabId?: SearchPageSubTab;
+  tabId?: AnyPageSubTab;
   targetText?: string;
   timestamp: number;
 }
@@ -68,7 +78,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'srch-syntax', navId: 'search', tabId: 'syntax', labelKey: 'searchPage.tabSyntax', descKey: 'searchPage.modifiersTitle', keywords: 'syntax manual wildcard operator ext folder' },
   { id: 'srch-regex', navId: 'search', tabId: 'regex', labelKey: 'searchPage.tabRegex', descKey: 'searchPage.regexHint', keywords: 'regex regular expression pattern zhengze' },
   { id: 'srch-status', navId: 'search', tabId: 'status', labelKey: 'searchPage.tabStatus', descKey: 'searchPage.serviceMonitor', keywords: 'ntfs mft usn pipe service index daemon suoyin' },
-  { id: 'srch-external', navId: 'search', tabId: 'settings', labelKey: 'searchExternal.enableTitle', descKey: 'searchExternal.enableDesc', keywords: 'cli mcp ai agent cursor claude json rpc terminal minglinhang' },
+  { id: 'srch-external', navId: 'search', tabId: 'external', labelKey: 'searchExternal.enableTitle', descKey: 'searchExternal.enableDesc', keywords: 'cli mcp ai agent cursor claude json rpc terminal minglinhang' },
 
   // Clipboard
   { id: 'clip-history', navId: 'clipboard', labelKey: 'clipboardPage.enableTitle', descKey: 'clipboardPage.enableDesc', keywords: 'clipboard copy paste history pin ditto alt v rust jiantieban fuzhi zhantie' },
@@ -79,21 +89,22 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'te-privacy', navId: 'text_expander', labelKey: 'textExpander.privacyGroup', descKey: 'textExpander.autoExcludeDesc', keywords: 'password keepass 1password bitwarden restore clipboard exclude process yinsi mima' },
 
   // Gesture & HotCorner
-  { id: 'gst-trigger', navId: 'gesture', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
-  { id: 'gst-trail', navId: 'gesture', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline fade hint text brightness delete backspace guiji jianyin tishi liangdu shanchu' },
-  { id: 'gst-scope', navId: 'gesture', labelKey: 'gesture.targetConfigTitle', descKey: 'gesture.scopeRules', keywords: 'scope app blacklist whitelist rule yingyong' },
-  { id: 'gst-websearch', navId: 'gesture', labelKey: 'gesture.webSearchEngine', descKey: 'gesture.webSearchEngineDesc', keywords: 'web search engine bing google baidu duckduckgo wheel edge' },
+  { id: 'gst-trigger', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
+  { id: 'gst-trail', navId: 'gesture', tabId: 'appearance', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline fade hint text brightness delete backspace guiji jianyin tishi liangdu shanchu' },
+  { id: 'gst-scope', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.targetConfigTitle', descKey: 'gesture.scopeRules', keywords: 'scope app blacklist whitelist rule yingyong' },
+  { id: 'gst-websearch', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.webSearchEngine', descKey: 'gesture.webSearchEngineDesc', keywords: 'web search engine bing google baidu duckduckgo wheel edge' },
   { id: 'hc-corners', navId: 'hotcorner', labelKey: 'hotcorner.corners', descKey: 'hotcorner.enabledDesc', keywords: 'top bottom left right corner delay chufajiao' },
 
   // Capture, Recording, OCR, History
-  { id: 'cap-shortcut', navId: 'capture', labelKey: 'capture.shortcut', descKey: 'capture.shortcutDesc', keywords: 'f1 screenshot capture hotkey jietu' },
-  { id: 'cap-savedir', navId: 'capture', labelKey: 'capture.saveDir', descKey: 'capture.saveDirDesc', keywords: 'save folder directory path png jpg webp baocun' },
-  { id: 'cap-beauty', navId: 'capture', labelKey: 'capture.beautyShellTitle', descKey: 'capture.beautyShellDefaultDesc', keywords: 'beauty gradient shadow rounded padding meihua' },
-  { id: 'cap-pingroup', navId: 'capture', labelKey: 'capture.pinGroupsSectionTitle', descKey: 'capture.pinGroupsCardSubtitle', keywords: 'pin group desktop color tietu fenzu' },
-  { id: 'rec-video', navId: 'capture', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
-  { id: 'rec-autozoom', navId: 'capture', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
-  { id: 'ocr-lang', navId: 'ocr', labelKey: 'ocr.language', descKey: 'ocr.languageDesc', keywords: 'ocr text extract japanese korean english shibie' },
-  { id: 'ocr-translate', navId: 'ocr', labelKey: 'translate.groupTitle', descKey: 'translate.providerDesc', keywords: 'translate in-place edge bing google openai deepseek ollama deepl fanyi yuanwei' },
+  { id: 'cap-shortcut', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.shortcut', descKey: 'capture.shortcutDesc', keywords: 'f1 screenshot capture hotkey jietu' },
+  { id: 'cap-savedir', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.saveDir', descKey: 'capture.saveDirDesc', keywords: 'save folder directory path png jpg webp baocun' },
+  { id: 'cap-beauty', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.beautyShellTitle', descKey: 'capture.beautyShellDefaultDesc', keywords: 'beauty gradient shadow rounded padding meihua' },
+  { id: 'cap-pingroup', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinGroupsSectionTitle', descKey: 'capture.pinGroupsCardSubtitle', keywords: 'pin group desktop color tietu fenzu' },
+  { id: 'rec-video', navId: 'capture', tabId: 'recording', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
+  { id: 'rec-autozoom', navId: 'capture', tabId: 'studio', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
+  { id: 'ocr-lang', navId: 'ocr', tabId: 'recognize', labelKey: 'ocr.language', descKey: 'ocr.languageDesc', keywords: 'ocr text extract japanese korean english shibie' },
+  { id: 'ocr-translate', navId: 'ocr', tabId: 'translate', labelKey: 'translate.groupTitle', descKey: 'translate.providerDesc', keywords: 'translate in-place edge bing google openai deepseek ollama deepl fanyi yuanwei' },
+  { id: 'ocr-models', navId: 'ocr', tabId: 'models', labelKey: 'ocr.tabModels', descKey: 'ocr.tabModelsDesc', keywords: 'ppocr model offline download pack moxing xiazai' },
   { id: 'his-recent', navId: 'history', labelKey: 'history.title', descKey: 'history.subtitle', keywords: 'history recent screenshot pin lishi' },
 
   // Keycast, Spotlight, Dialog Enhancer, Remote Boost, Stats
@@ -110,4 +121,5 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'fl-menu', navId: 'file_locksmith', labelKey: 'general.shellMenuFileLocksmith', descKey: 'general.shellMenuFileLocksmithDesc', keywords: 'file locksmith unlock lock handle process context menu explorer shift wenjian zhanyong jiesuo' },
   { id: 'fl-inspect', navId: 'file_locksmith', labelKey: 'fileLocksmith.instantInspectGroup', descKey: 'fileLocksmith.instantInspectDesc', keywords: 'inspect locked file folder process kill unlock jiance zhanyong' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
+  { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory ram trim suspend destroy lifecycle idle latency xingneng neicun huishou' },
 ];

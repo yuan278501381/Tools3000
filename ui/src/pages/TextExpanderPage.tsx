@@ -232,9 +232,11 @@ export const TextExpanderPage: FC = () => {
   const [editorOpen, setEditorOpen] = useState(false);
   const [draft, setDraft] = useState<RuleFormDraft>(createEmptyDraft);
   const [formError, setFormError] = useState('');
+  const [sandboxCollapsed, setSandboxCollapsed] = useState(false);
 
   const replacementRef = useRef<HTMLTextAreaElement>(null);
   const sandboxRef = useRef<HTMLTextAreaElement>(null);
+  const sandboxSectionRef = useRef<HTMLDivElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
 
   const loadData = useCallback(async () => {
@@ -694,70 +696,7 @@ export const TextExpanderPage: FC = () => {
         </div>
       </Card>
 
-      {/* 2. 实时体验沙盒 */}
-      <SettingGroup
-        title={t('textExpander.sandboxGroup', 'Live Try-it Sandbox')}
-        icon={<Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />}
-      >
-        <Card>
-          <div className="te-sandbox">
-            {!settings.enabled && (
-              <div className="te-sandbox__notice" role="status">
-                <span className="te-sandbox__notice-left">
-                  <Lock size={15} className="te-sandbox__notice-icon" aria-hidden="true" />
-                  <span>
-                    {t(
-                      'textExpander.sandboxDisabledHint',
-                      'Enable the master switch above to test typing triggers live right here.',
-                    )}
-                  </span>
-                </span>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={savingSettings}
-                  onClick={() => void patchSettings({ enabled: true })}
-                >
-                  <span>{t('textExpander.enableNowBtn', 'Enable Now')}</span>
-                </Button>
-              </div>
-            )}
-
-            <textarea
-              ref={sandboxRef}
-              id="text-expander-sandbox"
-              className="te-sandbox__textarea"
-              value={sandboxText}
-              onChange={handleSandboxChange}
-              placeholder={t(
-                'textExpander.sandboxPlaceholder',
-                'Click here and type a trigger such as ;date, ;now, or ;thx to see instant expansion...',
-              )}
-              aria-label={t('textExpander.sandboxAria', 'Live text expander sandbox')}
-              spellCheck={false}
-            />
-
-            <div className="te-sandbox__footer">
-              <div className="te-sandbox__hints">
-                <span>{t('textExpander.tryTriggersLabel', 'Try typing:')}</span>
-                {sampleHintTriggers.map((rule) => (
-                  <CodeBadge key={rule.id || rule.trigger} variant="primary">
-                    {rule.trigger}
-                  </CodeBadge>
-                ))}
-              </div>
-              {sandboxText.length > 0 && (
-                <Button variant="ghost" size="sm" onClick={() => setSandboxText('')}>
-                  <RotateCcw size={13} aria-hidden="true" />
-                  <span>{t('textExpander.clearSandboxBtn', 'Clear')}</span>
-                </Button>
-              )}
-            </div>
-          </div>
-        </Card>
-      </SettingGroup>
-
-      {/* 3. 短语规则管理卡片 */}
+      {/* 2. 短语规则管理卡片（首屏黄金位置） */}
       <SettingGroup
         title={t('textExpander.rulesGroup', 'Snippet Rules')}
         icon={<TextCursorInput size={18} strokeWidth={2.2} aria-hidden="true" />}
@@ -787,6 +726,28 @@ export const TextExpanderPage: FC = () => {
             </div>
 
             <div className="te-toolbar__actions">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  if (sandboxCollapsed) {
+                    setSandboxCollapsed(false);
+                    requestAnimationFrame(() => {
+                      sandboxSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'nearest' });
+                      sandboxRef.current?.focus();
+                    });
+                  } else {
+                    setSandboxCollapsed(true);
+                  }
+                }}
+              >
+                <Sparkles size={14} aria-hidden="true" />
+                <span>
+                  {sandboxCollapsed
+                    ? t('textExpander.toggleSandboxBtn', 'Test Sandbox')
+                    : t('textExpander.hideSandboxBtn', 'Hide Sandbox')}
+                </span>
+              </Button>
               <input
                 ref={importInputRef}
                 type="file"
@@ -899,6 +860,71 @@ export const TextExpanderPage: FC = () => {
           )}
         </Card>
       </SettingGroup>
+
+      {/* 3. 实时体验沙盒（默认在规则列表下方完整渲染，支持一键收起/展开定位） */}
+      <div ref={sandboxSectionRef} hidden={sandboxCollapsed}>
+        <SettingGroup
+          title={t('textExpander.sandboxGroup', 'Live Try-it Sandbox')}
+          icon={<Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <div className="te-sandbox">
+              {!settings.enabled && (
+                <div className="te-sandbox__notice" role="status">
+                  <span className="te-sandbox__notice-left">
+                    <Lock size={15} className="te-sandbox__notice-icon" aria-hidden="true" />
+                    <span>
+                      {t(
+                        'textExpander.sandboxDisabledHint',
+                        'Enable the master switch above to test typing triggers live right here.',
+                      )}
+                    </span>
+                  </span>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={savingSettings}
+                    onClick={() => void patchSettings({ enabled: true })}
+                  >
+                    <span>{t('textExpander.enableNowBtn', 'Enable Now')}</span>
+                  </Button>
+                </div>
+              )}
+
+              <textarea
+                ref={sandboxRef}
+                id="text-expander-sandbox"
+                className="te-sandbox__textarea"
+                value={sandboxText}
+                onChange={handleSandboxChange}
+                placeholder={t(
+                  'textExpander.sandboxPlaceholder',
+                  'Click here and type a trigger such as ;date, ;now, or ;thx to see instant expansion...',
+                )}
+                aria-label={t('textExpander.sandboxAria', 'Live text expander sandbox')}
+                spellCheck={false}
+              />
+
+              <div className="te-sandbox__footer">
+                <div className="te-sandbox__hints">
+                  <span>{t('textExpander.tryTriggersLabel', 'Try typing:')}</span>
+                  {sampleHintTriggers.map((rule) => (
+                    <CodeBadge key={rule.id || rule.trigger} variant="primary">
+                      {rule.trigger}
+                    </CodeBadge>
+                  ))}
+                </div>
+                {sandboxText.length > 0 && (
+                  <Button variant="ghost" size="sm" onClick={() => setSandboxText('')}>
+                    <RotateCcw size={13} aria-hidden="true" />
+                    <span>{t('textExpander.clearSandboxBtn', 'Clear')}</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+          </Card>
+        </SettingGroup>
+      </div>
 
       {/* 4. 隐私与防误触设置卡片 */}
       <SettingGroup

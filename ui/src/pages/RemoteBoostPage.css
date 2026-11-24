@@ -1,13 +1,20 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * RemoteBoostPage.css — 远程协助主控单边增强设置页样式
+ * RemoteBoostPage.css — 远程协助主控单边增强设置页样式 (@container 自适应)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .remote-boost-page {
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
   padding-bottom: 2.5rem;
   font-family: var(--font-sans);
+}
+
+.remote-boost-page__cascade {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
 }
 
 /* ── 顶部 Hero 卡片 ──────────────────────────────────────────────────────── */
@@ -29,26 +36,15 @@
 
 .remote-boost-hero__info {
   display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-
-.remote-boost-hero__title-row {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 12px;
 }
 
 .remote-boost-hero__icon {
   color: var(--primary);
-}
-
-.remote-boost-hero__title {
-  margin: 0;
-  font-size: 1.15rem;
-  font-weight: 650;
-  line-height: 1.4;
-  color: var(--text-primary);
+  margin-top: 2px;
+  flex-shrink: 0;
 }
 
 .remote-boost-hero__desc {
@@ -65,6 +61,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   margin-top: 1rem;
   padding-top: 0.85rem;
   border-top: 1px solid var(--card-border);
@@ -159,7 +157,13 @@
   gap: 6px;
 }
 
-/* ── 进程列表与输入 ──────────────────────────────────────────────────────── */
+/* ── 目标识别规则（进程名与窗口类名） ───────────────────────────────────── */
+
+.remote-boost-rules-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 
 .remote-boost-process-section {
   display: flex;
@@ -300,4 +304,11 @@
 
 .remote-boost-footer__check {
   color: var(--success);
+}
+
+@container (max-width: 600px) {
+  .remote-boost-flush-action-bar,
+  .remote-boost-add-row {
+    flex-wrap: wrap;
+  }
 }

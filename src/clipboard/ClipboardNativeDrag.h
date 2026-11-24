@@ -23,6 +23,7 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace tools3000::clipboard {
@@ -61,10 +62,30 @@ struct NativeDragPayload {
     }
 };
 
-/// 判定 WM_NCHITTEST 返回值是否属于安全的客户区落点（严禁误点击标题栏/关闭按钮/菜单栏/边框）
-constexpr bool isSafeDropHitTestResult(LRESULT hitTest) noexcept {
+/// 判定目标窗口是否属于命令行终端 / TUI 宿主（如 Windows Terminal / ConHost / WezTerm / Alacritty / Mintty）：
+/// 终端宿主光标固定在命令行输入点，落点直贴时严禁发送虚拟鼠标左键单击（防止误入 QuickEdit 选区或打断 TUI），
+/// 且强制剥离富文本包装并采用终端原生粘贴热键投递。
+enum class TerminalPasteKind : uint8_t {
+    NotTerminal = 0,
+    ModernCtrlShiftV = 1, ///< Windows Terminal / WezTerm / Alacritty / Kitty / Warp / Tabby
+    LegacyCtrlV = 2,      ///< 经典 ConsoleWindowClass (conhost / cmd / powershell)
+    ShiftInsert = 3,      ///< Mintty / PuTTY / Git Bash / Xshell
+};
+
+TerminalPasteKind classifyTerminalPasteTarget(
+    std::wstring_view rootClassName,
+    std::wstring_view processExeLower) noexcept;
+
+/// 判定 WM_NCHITTEST 返回值是否属于安全的客户区落点（严禁误点击标题栏/关闭按钮/菜单栏/边框）；
+/// 对无边框自绘顶栏窗口（如 Electron / Clash Party），当落点深入窗口内部腹地且避开右上角窗口控制按钮禁区时，
+/// 允许放行 HTCAPTION，消除外层 -webkit-app-region: drag 容器导致的输入框拖放误杀。
+constexpr bool isSafeDropHitTestResult(
+    LRESULT hitTest,
+    bool deepInsideWindowBody = false) noexcept {
+    if (hitTest == HTCAPTION) {
+        return deepInsideWindowBody;
+    }
     switch (hitTest) {
-        case HTCAPTION:
         case HTCLOSE:
         case HTMINBUTTON:
         case HTMAXBUTTON:
@@ -88,18 +109,21 @@ constexpr bool isSafeDropHitTestResult(LRESULT hitTest) noexcept {
     }
 }
 
-/// 纯函数判定：当 OLE DoDragDrop 结束后，是否应启用第二引擎（落点智能直贴）兜底
+/// 纯函数判定：当 OLE DoDragDrop 结束后，是否应启用第二引擎（落点智能直贴）兜底。
+/// 若目标窗口虽返回了非零 dwEffect 但全程未调用 IDataObject::GetData 读取任何有效格式
+///（如 Electron 页面外层仅监听文件拖入导入配置而空吞纯文本 Drop），同样自动启用直贴兜底。
 constexpr bool shouldFallbackToSmartDropPaste(
     HRESULT dragHr,
     DWORD dwEffect,
     bool cancelledByUser,
     bool releasedLeftButton,
-    bool hasValidExternalClientTarget) noexcept {
+    bool hasValidExternalClientTarget,
+    bool oleDataActuallyRetrieved = true) noexcept {
     if (cancelledByUser || !releasedLeftButton || !hasValidExternalClientTarget) {
         return false;
     }
-    // 若第一引擎 OLE 已被目标应用消费，绝不重复粘贴
-    if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE) {
+    // 仅当第一引擎 OLE 返回成功 Drop 且目标确实调用 GetData 取走了有效载荷时，才视为已被消费
+    if (dragHr == DRAGDROP_S_DROP && dwEffect != DROPEFFECT_NONE && oleDataActuallyRetrieved) {
         return false;
     }
     return true;

@@ -2,15 +2,28 @@
  * GeneralPage — 通用设置页
  *
  * 从 C++ ConfigManager 加载设置，修改后通过 IPC 实时保存。
+ * 遵循由高频到低频再到危险收尾的 7 大正交分组信息架构。
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
-import { Card, Toggle, SettingRow, SettingGroup, Select, Button, CodeBadge, ConfirmModal, PageSkeleton } from '../components/UIKit';
+import {
+  Card,
+  Toggle,
+  SettingRow,
+  SettingGroup,
+  SubSettingGroup,
+  Select,
+  Button,
+  CodeBadge,
+  ConfirmModal,
+  PageSkeleton,
+} from '../components/UIKit';
 import { CloudBackupCard } from '../components/business/CloudBackupCard';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
+import type { NavId } from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
-import { resolveHotkeyLabel } from '../config/hotkeyCatalog';
+import { groupHotkeysByDomain, resolveHotkeyLabel, sortHotkeysByPriority } from '../config/hotkeyCatalog';
 import {
   applyLocalAppearance,
   isAccentColor,
@@ -28,8 +41,35 @@ import {
 } from '../i18n/languages';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { Settings, Zap, Globe, Database, Keyboard, Download, Upload, RotateCcw, RefreshCw, Check, CheckCircle2, AlertTriangle, AlertOctagon, FolderOpen, Disc, MinusCircle, Package, HardDrive } from 'lucide-react';
+import {
+  Settings,
+  Zap,
+  Globe,
+  Database,
+  Keyboard,
+  Download,
+  Upload,
+  RotateCcw,
+  RefreshCw,
+  Check,
+  CheckCircle2,
+  AlertTriangle,
+  AlertOctagon,
+  FolderOpen,
+  Disc,
+  MinusCircle,
+  Package,
+  HardDrive,
+  Sparkles,
+  Gauge,
+  ArrowUpRight,
+} from 'lucide-react';
 import './GeneralPage.css';
+
+export interface GeneralPageProps {
+  onNavigate?: (nav: NavId) => void;
+  onOpenOnboarding?: () => void;
+}
 
 interface GeneralSettings {
   autoStart: boolean;
@@ -71,7 +111,7 @@ const ACCENT_PRESETS = [
   { id: 'violet', labelKey: 'general.accentViolet', color: '#8b5cf6' },
 ] as const;
 
-export const GeneralPage: FC = () => {
+export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding }) => {
   const [settings, setSettings] = useState<GeneralSettings>({
     autoStart: false,
     runAsAdmin: true,
@@ -164,7 +204,7 @@ export const GeneralPage: FC = () => {
       if (i18n.language !== targetLang) {
         void i18n.changeLanguage(targetLang);
       }
-      setHotkeys(Array.isArray(hotkeyData) ? hotkeyData : []);
+      setHotkeys(Array.isArray(hotkeyData) ? sortHotkeysByPriority(hotkeyData) : []);
     })
     .catch((error) => {
       if (cancelled) return;
@@ -285,6 +325,15 @@ export const GeneralPage: FC = () => {
     }
   };
 
+  const handleReopenOnboarding = () => {
+    if (onOpenOnboarding) {
+      void bridgeRequest('general.updateSettings', { showOnboarding: true }, { silent: true }).catch(() => undefined);
+      onOpenOnboarding();
+    } else {
+      void updateSetting('showOnboarding', true);
+    }
+  };
+
   // ── 数据管理操作 ─────────────────────────────────────────────────────────
   const handleExportConfig = async () => {
     try {
@@ -313,7 +362,7 @@ export const GeneralPage: FC = () => {
       if (isAccentColor(refreshed.accentColor)) {
         setAccent(refreshed.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(refreshed.language);
       applyLocalAppearance({ theme: refreshed.theme, accentColor: refreshed.accentColor });
       void persistAppearanceToBackend({ theme: refreshed.theme, accentColor: refreshed.accentColor });
@@ -336,7 +385,7 @@ export const GeneralPage: FC = () => {
       if (isAccentColor(res.accentColor)) {
         setAccent(res.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(res.language);
       applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
       void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
@@ -355,7 +404,7 @@ export const GeneralPage: FC = () => {
       if (isAccentColor(res.accentColor)) {
         setAccent(res.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(refreshedHotkeys);
+      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(res.language);
       applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
       void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
@@ -369,7 +418,7 @@ export const GeneralPage: FC = () => {
     setRefreshingHotkeys(true);
     try {
       const data = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
-      setHotkeys(Array.isArray(data) ? data : []);
+      setHotkeys(Array.isArray(data) ? sortHotkeysByPriority(data) : []);
       toast.success(t('general.recheckShortcuts'));
     } catch {
       toast.error(t('general.loadFailed'));
@@ -392,7 +441,7 @@ export const GeneralPage: FC = () => {
       const applied = result.shortcut ?? shortcut;
       // 重新拉取完整状态以同步全量冲突关系
       const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
-      setHotkeys(Array.isArray(refreshed) ? refreshed : []);
+      setHotkeys(Array.isArray(refreshed) ? sortHotkeysByPriority(refreshed) : []);
       toast.success(`${resolveHotkeyLabel(t, entry.name)}: ${applied || t('general.shortcutDisabled')}`);
     } catch (error) {
       setHotkeys(items => items.map(item =>
@@ -418,7 +467,8 @@ export const GeneralPage: FC = () => {
 
   return (
     <div className="general-page" style={{ animation: 'fadeIn 0.3s ease' }}>
-      <SettingGroup title={t('general.behavior')} icon={<Zap size={20} strokeWidth={2.5} />}>
+      {/* ── 1. 启动与运行权限 ───────────────────────────────────────── */}
+      <SettingGroup title={t('general.startupAndPrivilege')} icon={<Zap size={20} strokeWidth={2.5} />}>
         <Card>
           <Toggle
             id="autoStart"
@@ -442,28 +492,6 @@ export const GeneralPage: FC = () => {
             checked={settings.minimizeToTray}
             onChange={(v) => updateSetting('minimizeToTray', v)}
           />
-          <Toggle
-            id="checkUpdates"
-            label={t('general.checkUpdates')}
-            description={t('general.checkUpdatesDesc')}
-            checked={settings.checkUpdates}
-            onChange={(v) => updateSetting('checkUpdates', v)}
-          />
-          <Toggle
-            id="autoDownloadUpdates"
-            label={t('general.autoDownloadUpdates', 'Auto-download updates')}
-            description={t('general.autoDownloadUpdatesDesc', 'Automatically download and verify SHA-256 checksums in the background when a new version is found')}
-            checked={settings.autoDownloadUpdates ?? true}
-            onChange={(v) => updateSetting('autoDownloadUpdates', v)}
-            disabled={!settings.checkUpdates}
-          />
-          <Toggle
-            id="autoReleaseSettingsMemory"
-            label={t('general.autoReleaseSettingsMemory')}
-            description={t('general.autoReleaseSettingsMemoryDesc')}
-            checked={settings.autoReleaseSettingsMemory ?? true}
-            onChange={(v) => updateSetting('autoReleaseSettingsMemory', v)}
-          />
           <SettingRow label={t('general.fullscreenMode')} description={t('general.fullscreenModeDesc')}>
             <Select
               id="fullscreenMode"
@@ -477,16 +505,10 @@ export const GeneralPage: FC = () => {
               ]}
             />
           </SettingRow>
-          <Toggle
-            id="showOnboarding"
-            label={t('general.showOnboarding')}
-            description={t('general.showOnboardingDesc')}
-            checked={settings.showOnboarding ?? false}
-            onChange={(v) => updateSetting('showOnboarding', v)}
-          />
         </Card>
       </SettingGroup>
 
+      {/* ── 2. 界面与语言 ───────────────────────────────────────────── */}
       <SettingGroup title={t('general.uiAndLang')} icon={<Globe size={20} strokeWidth={2.5} />}>
         <Card>
           <SettingRow label={t('general.language')} description={t('general.languageDesc')}>
@@ -564,30 +586,6 @@ export const GeneralPage: FC = () => {
             </div>
           </SettingRow>
 
-          <SettingRow label={t('general.trayIconTheme')} description={t('general.trayIconThemeDesc')} layout="vertical">
-            <div id="trayIconTheme" className="general-segmented" role="radiogroup" aria-label={t('general.trayIconTheme')}>
-              {([
-                { value: 'system', labelKey: 'general.trayIconThemeSystem' },
-                { value: 'light',  labelKey: 'general.trayIconThemeLight' },
-                { value: 'dark',   labelKey: 'general.trayIconThemeDark' },
-                { value: 'color',  labelKey: 'general.trayIconThemeColor' },
-              ] as const).map((opt) => {
-                const isSelected = (settings.trayIconTheme || 'system') === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    role="radio"
-                    aria-checked={isSelected}
-                    className={`general-segmented__btn ${isSelected ? 'is-active' : ''}`}
-                    onClick={() => updateSetting('trayIconTheme', opt.value)}
-                  >
-                    {t(opt.labelKey)}
-                  </button>
-                );
-              })}
-            </div>
-          </SettingRow>
           <SettingRow label={t('general.accentColor')} description={t('general.accentColorDesc')} layout="vertical">
             <div className="general-accent-swatches">
               {ACCENT_PRESETS.map((preset) => {
@@ -615,11 +613,245 @@ export const GeneralPage: FC = () => {
               })}
             </div>
           </SettingRow>
+
+          <SettingRow label={t('general.trayIconTheme')} description={t('general.trayIconThemeDesc')} layout="vertical">
+            <div id="trayIconTheme" className="general-segmented" role="radiogroup" aria-label={t('general.trayIconTheme')}>
+              {([
+                { value: 'system', labelKey: 'general.trayIconThemeSystem' },
+                { value: 'light',  labelKey: 'general.trayIconThemeLight' },
+                { value: 'dark',   labelKey: 'general.trayIconThemeDark' },
+                { value: 'color',  labelKey: 'general.trayIconThemeColor' },
+              ] as const).map((opt) => {
+                const isSelected = (settings.trayIconTheme || 'system') === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    className={`general-segmented__btn ${isSelected ? 'is-active' : ''}`}
+                    onClick={() => updateSetting('trayIconTheme', opt.value)}
+                  >
+                    {t(opt.labelKey)}
+                  </button>
+                );
+              })}
+            </div>
+          </SettingRow>
         </Card>
       </SettingGroup>
 
-      <SettingGroup title={t('general.advanced')} icon={<Settings size={20} strokeWidth={2.5} />}>
+      {/* ── 3. 快捷键总览与冲突检测（高频前置） ──────────────────────── */}
+      <SettingGroup title={t('general.keyboardShortcuts')} icon={<Keyboard size={20} strokeWidth={2.5} />}>
         <Card>
+          <div className="general-page__hotkey-health-bar">
+            <div className="general-page__hotkey-health-stats">
+              <span className="general-page__stat-pill total">
+                <Keyboard size={12} /> {t('general.hotkeysAllCount', 'All {{count}} items', { count: hotkeys.length })}
+              </span>
+              <span className="general-page__stat-pill ok">
+                <CheckCircle2 size={12} /> {t('general.hotkeysActiveCount', 'Active {{count}} items', { count: globalActiveCount })}
+              </span>
+              {sessionOnlyCount > 0 && (
+                <span className="general-page__stat-pill session">
+                  <Disc size={12} /> {t('general.hotkeysSessionCount', 'Recording Only {{count}} items', { count: sessionOnlyCount })}
+                </span>
+              )}
+              {internalConflictsCount > 0 && (
+                <span className="general-page__stat-pill warning">
+                  <AlertTriangle size={12} /> {t('general.hotkeysInternalConflictsCount', 'Internal Conflicts {{count}} items', { count: internalConflictsCount })}
+                </span>
+              )}
+              {externalConflictsCount > 0 && (
+                <span className="general-page__stat-pill danger">
+                  <AlertOctagon size={12} /> {t('general.hotkeysExternalConflictsCount', 'External Conflicts {{count}} items', { count: externalConflictsCount })}
+                </span>
+              )}
+              {unboundCount > 0 && (
+                <span className="general-page__stat-pill unbound">
+                  <MinusCircle size={12} /> {t('general.hotkeysUnboundCount', 'Unbound {{count}} items', { count: unboundCount })}
+                </span>
+              )}
+            </div>
+            <Button
+              variant="ghost"
+              className="general-page__recheck-btn"
+              onClick={refreshHotkeys}
+              disabled={refreshingHotkeys}
+              title={t('general.recheckShortcuts')}
+            >
+              <RefreshCw size={12} className={refreshingHotkeys ? 'general-page__spin' : ''} />
+              <span>{t('general.recheckShortcuts')}</span>
+            </Button>
+          </div>
+
+          {hotkeys.length === 0 ? (
+            <div className="general-page__empty">{t('general.noShortcuts')}</div>
+          ) : (
+            <div className="general-page__hotkey-sections">
+              {groupHotkeysByDomain(hotkeys).map((section) => (
+                <section
+                  key={section.id}
+                  className="general-page__hotkey-section"
+                  aria-label={String(t(section.titleKey as never, { defaultValue: section.defaultTitle }))}
+                >
+                  <div className="general-page__hotkey-section-header">
+                    <span className="general-page__hotkey-section-title">
+                      {String(t(section.titleKey as never, { defaultValue: section.defaultTitle }))}
+                    </span>
+                    <span className="general-page__hotkey-section-count">
+                      {section.items.length}
+                    </span>
+                  </div>
+                  <div className="general-page__hotkey-list">
+                    {section.items.map((hk) => {
+                      const isInternal = hk.conflictType === 'internal';
+                      const isExternal = hk.conflictType === 'external' ||
+                        (hk.registered === false && Boolean(hk.shortcut) && hk.armed !== false);
+
+                      return (
+                        <div
+                          key={hk.name}
+                          className={`general-page__hotkey-item ${isInternal ? 'is-internal' : ''} ${isExternal ? 'is-external' : ''}`}
+                        >
+                          <div className="general-page__hotkey-info">
+                            <div className="general-page__hotkey-name-row">
+                              <span className="general-page__hotkey-name">
+                                {resolveHotkeyLabel(t, hk.name)}
+                              </span>
+                              <HotkeyStatusBadge entry={hk} />
+                            </div>
+                          </div>
+                          <div className="general-page__hotkey-control">
+                            <HotkeyRecorder
+                              id={`general-hotkey-${hk.name.replace(/\s+/g, '-').toLowerCase()}`}
+                              value={hk.shortcut}
+                              ariaLabel={resolveHotkeyLabel(t, hk.name)}
+                              onChange={(value) => void rebindHotkey(hk, value)}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </section>
+              ))}
+            </div>
+          )}
+        </Card>
+      </SettingGroup>
+
+      {/* ── 4. 版本更新与新手引导 ───────────────────────────────────── */}
+      <SettingGroup title={t('general.updatesAndGuide')} icon={<Sparkles size={20} strokeWidth={2.5} />}>
+        <Card>
+          <Toggle
+            id="checkUpdates"
+            label={t('general.checkUpdates')}
+            description={t('general.checkUpdatesDesc')}
+            checked={settings.checkUpdates}
+            onChange={(v) => updateSetting('checkUpdates', v)}
+          />
+          <SubSettingGroup disabled={!settings.checkUpdates}>
+            <Toggle
+              id="autoDownloadUpdates"
+              label={t('general.autoDownloadUpdates', 'Auto-download updates')}
+              description={t('general.autoDownloadUpdatesDesc', 'Automatically download and verify SHA-256 checksums in the background when a new version is found')}
+              checked={settings.autoDownloadUpdates ?? true}
+              onChange={(v) => updateSetting('autoDownloadUpdates', v)}
+              disabled={!settings.checkUpdates}
+            />
+          </SubSettingGroup>
+          <SettingRow label={t('general.reopenOnboardingLabel')} description={t('general.reopenOnboardingDesc')}>
+            <Button variant="secondary" onClick={handleReopenOnboarding}>
+              <Sparkles size={15} style={{ marginRight: 6 }} />
+              {t('general.reopenOnboardingBtn')}
+            </Button>
+          </SettingRow>
+        </Card>
+      </SettingGroup>
+
+      {/* ── 5. 配置备份、同步与迁移 ─────────────────────────────────── */}
+      <SettingGroup title={t('general.backupAndMigration')} icon={<Database size={20} strokeWidth={2.5} />}>
+        <Card>
+          <SettingRow
+            label={t('general.portableMode')}
+            description={t('general.portableModeDesc')}
+            layout="vertical"
+          >
+            <div className="general-page__portable-bar">
+              <span className={`general-page__mode-pill ${settings.isPortableMode ? 'is-portable' : ''}`}>
+                {settings.isPortableMode ? (
+                  <>
+                    <Package size={13} strokeWidth={2} />
+                    <span>{t('general.portableModeActive')}</span>
+                  </>
+                ) : (
+                  <>
+                    <HardDrive size={13} strokeWidth={2} />
+                    <span>{t('general.portableModeStandard')}</span>
+                  </>
+                )}
+              </span>
+              {settings.dataDirectory && (
+                <div className="general-page__data-dir-actions">
+                  <CodeBadge title={settings.dataDirectory}>{settings.dataDirectory}</CodeBadge>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => void bridgeRequest('system.openFolder', { path: settings.dataDirectory })}
+                    title={t('general.openDataDirBtn')}
+                  >
+                    <FolderOpen size={14} />
+                    <span>{t('general.openDataDirBtn')}</span>
+                  </Button>
+                </div>
+              )}
+            </div>
+          </SettingRow>
+        </Card>
+
+        <CloudBackupCard onConfigRestored={() => void refreshAllAfterRestore()} />
+
+        <Card>
+          <SettingRow label={t('general.localConfigTransfer')} description={t('general.localConfigTransferDesc')}>
+            <div className="general-page__inline-actions">
+              <Button variant="secondary" onClick={handleExportConfig}>
+                <Download size={15} />
+                <span>{t('common.export')}</span>
+              </Button>
+              <Button variant="secondary" onClick={handleImportConfig}>
+                <Upload size={15} />
+                <span>{t('common.import')}</span>
+              </Button>
+            </div>
+          </SettingRow>
+        </Card>
+      </SettingGroup>
+
+      {/* ── 6. 诊断日志与排障 ───────────────────────────────────────── */}
+      <SettingGroup title={t('general.diagnosticsAndLogs')} icon={<Settings size={20} strokeWidth={2.5} />}>
+        <Card>
+          <Toggle
+            id="autoReleaseSettingsMemory"
+            label={t('general.autoReleaseSettingsMemory')}
+            description={t('general.autoReleaseSettingsMemoryDesc')}
+            checked={settings.autoReleaseSettingsMemory ?? true}
+            onChange={(v) => updateSetting('autoReleaseSettingsMemory', v)}
+          />
+
+          {onNavigate && (
+            <SettingRow
+              label={t('performancePage.lifecycleGroup')}
+              description={t('performancePage.lifecycleSubtitle')}
+            >
+              <Button variant="secondary" onClick={() => onNavigate('performance')}>
+                <Gauge size={15} />
+                <span>{t('general.viewMemoryLifecycleBtn')}</span>
+                <ArrowUpRight size={13} />
+              </Button>
+            </SettingRow>
+          )}
+
           <SettingRow label={t('general.logLevel')} description={t('general.logLevelDesc')}>
             <Select
               id="log-level"
@@ -683,139 +915,9 @@ export const GeneralPage: FC = () => {
         </Card>
       </SettingGroup>
 
-      {/* ── 快捷键总览与冲突检测 ─────────────────────────────────── */}
-      <SettingGroup title={t('general.keyboardShortcuts')} icon={<Keyboard size={20} strokeWidth={2.5} />}>
-        <Card>
-          {/* 快捷键健康度统计条 */}
-          <div className="general-page__hotkey-health-bar">
-            <div className="general-page__hotkey-health-stats">
-              <span className="general-page__stat-pill total">
-                <Keyboard size={12} /> {t('general.hotkeysAllCount', 'All {{count}} items', { count: hotkeys.length })}
-              </span>
-              <span className="general-page__stat-pill ok">
-                <CheckCircle2 size={12} /> {t('general.hotkeysActiveCount', 'Active {{count}} items', { count: globalActiveCount })}
-              </span>
-              {sessionOnlyCount > 0 && (
-                <span className="general-page__stat-pill session">
-                  <Disc size={12} /> {t('general.hotkeysSessionCount', 'Recording Only {{count}} items', { count: sessionOnlyCount })}
-                </span>
-              )}
-              {internalConflictsCount > 0 && (
-                <span className="general-page__stat-pill warning">
-                  <AlertTriangle size={12} /> {t('general.hotkeysInternalConflictsCount', 'Internal Conflicts {{count}} items', { count: internalConflictsCount })}
-                </span>
-              )}
-              {externalConflictsCount > 0 && (
-                <span className="general-page__stat-pill danger">
-                  <AlertOctagon size={12} /> {t('general.hotkeysExternalConflictsCount', 'External Conflicts {{count}} items', { count: externalConflictsCount })}
-                </span>
-              )}
-              {unboundCount > 0 && (
-                <span className="general-page__stat-pill unbound">
-                  <MinusCircle size={12} /> {t('general.hotkeysUnboundCount', 'Unbound {{count}} items', { count: unboundCount })}
-                </span>
-              )}
-            </div>
-            <Button
-              variant="ghost"
-              className="general-page__recheck-btn"
-              onClick={refreshHotkeys}
-              disabled={refreshingHotkeys}
-              title={t('general.recheckShortcuts')}
-            >
-              <RefreshCw size={12} className={refreshingHotkeys ? 'general-page__spin' : ''} />
-              <span>{t('general.recheckShortcuts')}</span>
-            </Button>
-          </div>
-
-          {hotkeys.length === 0 ? (
-            <div className="general-page__empty">{t('general.noShortcuts')}</div>
-          ) : (
-            <div className="general-page__hotkey-list">
-              {hotkeys.map((hk) => {
-                const isInternal = hk.conflictType === 'internal';
-                const isExternal = hk.conflictType === 'external' ||
-                  (hk.registered === false && Boolean(hk.shortcut) && hk.armed !== false);
-
-                return (
-                  <div
-                    key={hk.name}
-                    className={`general-page__hotkey-item ${isInternal ? 'is-internal' : ''} ${isExternal ? 'is-external' : ''}`}
-                  >
-                    <div className="general-page__hotkey-info">
-                      <div className="general-page__hotkey-name-row">
-                        <span className="general-page__hotkey-name">
-                          {resolveHotkeyLabel(t, hk.name)}
-                        </span>
-                        <HotkeyStatusBadge entry={hk} />
-                      </div>
-                    </div>
-                    <div className="general-page__hotkey-control">
-                      <HotkeyRecorder
-                        id={`general-hotkey-${hk.name.replace(/\s+/g, '-').toLowerCase()}`}
-                        value={hk.shortcut}
-                        ariaLabel={resolveHotkeyLabel(t, hk.name)}
-                        onChange={(value) => void rebindHotkey(hk, value)}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </Card>
-      </SettingGroup>
-
-      {/* ── 数据管理 ────────────────────────────────────────────── */}
-      <SettingGroup title={t('general.dataManagement')} icon={<Database size={20} strokeWidth={2.5} />}>
-        <Card>
-          <SettingRow
-            label={t('general.portableMode')}
-            description={t('general.portableModeDesc')}
-            layout="vertical"
-          >
-            <div className="general-page__portable-bar">
-              <span className={`general-page__mode-pill ${settings.isPortableMode ? 'is-portable' : ''}`}>
-                {settings.isPortableMode ? (
-                  <>
-                    <Package size={13} strokeWidth={2} />
-                    <span>{t('general.portableModeActive')}</span>
-                  </>
-                ) : (
-                  <>
-                    <HardDrive size={13} strokeWidth={2} />
-                    <span>{t('general.portableModeStandard')}</span>
-                  </>
-                )}
-              </span>
-              {settings.dataDirectory && (
-                <div className="general-page__data-dir-actions">
-                  <CodeBadge title={settings.dataDirectory}>{settings.dataDirectory}</CodeBadge>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => void bridgeRequest('system.openFolder', { path: settings.dataDirectory })}
-                    title={t('general.openDataDirBtn')}
-                  >
-                    <FolderOpen size={14} />
-                    <span>{t('general.openDataDirBtn')}</span>
-                  </Button>
-                </div>
-              )}
-            </div>
-          </SettingRow>
-          <SettingRow label={t('general.exportConfig')} description={t('general.exportConfigDesc')}>
-            <Button variant="ghost" onClick={handleExportConfig}>
-              <Download size={16} />
-              <span>{t('common.export')}</span>
-            </Button>
-          </SettingRow>
-          <SettingRow label={t('general.importConfig')} description={t('general.importConfigDesc')}>
-            <Button variant="ghost" onClick={handleImportConfig}>
-              <Upload size={16} />
-              <span>{t('common.import')}</span>
-            </Button>
-          </SettingRow>
+      {/* ── 7. 重置与恢复（沉底危险区防误触） ──────────────────────── */}
+      <SettingGroup title={t('general.dangerZone')} icon={<AlertTriangle size={20} strokeWidth={2.5} />}>
+        <Card className="general-page__danger-card">
           <SettingRow label={t('general.resetConfig')} description={t('general.resetConfigDesc')}>
             <Button variant="danger" onClick={() => setConfirmResetOpen(true)}>
               <RotateCcw size={16} />
@@ -823,7 +925,6 @@ export const GeneralPage: FC = () => {
             </Button>
           </SettingRow>
         </Card>
-        <CloudBackupCard onConfigRestored={() => void refreshAllAfterRestore()} />
       </SettingGroup>
 
       <ConfirmModal

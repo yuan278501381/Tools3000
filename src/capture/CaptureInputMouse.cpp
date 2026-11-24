@@ -882,6 +882,20 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
         case WM_MOUSEMOVE: {
             if (!this) break;
+
+            // 高回报率鼠标 (1000Hz~4000Hz) 队列合并：非自由画笔涂鸦态下直接吸收消息队列中积压的陈旧过期 WM_MOUSEMOVE，
+            // 确保每帧 D2D 合成始终直达物理光标最新坐标，彻底消除长时运行或 4K 多屏下的拖尾粘滞。
+            if (!(m_state->isMarking && m_state->currentTool == MarkupTool::Pen)) {
+                MSG coalesced{};
+                int drained = 0;
+                while (drained < 32 &&
+                       PeekMessageW(&coalesced, hwnd, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE)) {
+                    wParam = coalesced.wParam;
+                    lParam = coalesced.lParam;
+                    ++drained;
+                }
+            }
+
             m_state->currentCursor = {GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
             // Mouse coordinates are client-relative while monitor APIs require
@@ -889,15 +903,18 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
             POINT screenPoint = m_state->currentCursor;
             ClientToScreen(hwnd, &screenPoint);
             HMONITOR hMon = MonitorFromPoint(screenPoint, MONITOR_DEFAULTTONEAREST);
-            const UINT dpiX = tools3000::core::dpi::effectiveDpiForMonitor(hMon);
-            const float newScale = tools3000::core::dpi::scaleForDpi(dpiX);
-            if (std::abs(newScale - m_state->dpiScale) >= 0.01f) {
-                m_state->dpiScale = newScale;
-                m_state->toolbarLayoutValid = false;
-                if (!m_renderer->updateDpiScale(newScale)) {
-                    LOG_WARN("截图覆盖层 DPI 文本资源更新失败: dpi={}", dpiX);
+            if (hMon != m_lastDpiMonitor) {
+                m_lastDpiMonitor = hMon;
+                const UINT dpiX = tools3000::core::dpi::effectiveDpiForMonitor(hMon);
+                const float newScale = tools3000::core::dpi::scaleForDpi(dpiX);
+                if (std::abs(newScale - m_state->dpiScale) >= 0.01f) {
+                    m_state->dpiScale = newScale;
+                    m_state->toolbarLayoutValid = false;
+                    if (!m_renderer->updateDpiScale(newScale)) {
+                        LOG_WARN("截图覆盖层 DPI 文本资源更新失败: dpi={}", dpiX);
+                    }
+                    m_renderer->invalidate();
                 }
-                m_renderer->invalidate();
             }
 
             if ((int)m_state->state.load() == (int)OverlayState::Selected ||

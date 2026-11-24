@@ -150,6 +150,8 @@ private:
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_numberBadgeMediumFormat;
     Microsoft::WRL::ComPtr<IDWriteTextFormat> m_numberBadgeSmallFormat;
     float m_textScale = 0.0f;
+    bool m_themeColorsInitialized = false;
+    bool m_cachedHudDark = false;
 };
 
 } // namespace tools3000::capture

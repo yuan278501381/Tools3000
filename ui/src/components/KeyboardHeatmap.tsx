@@ -224,9 +224,32 @@ function computeKeyHeatStyle(count: number, intensity: number): KeyHeatStyle {
   }
 }
 
+const HEATMAP_LAYOUT_STORAGE_KEY = 'tools3000:heatmap-layout';
+
+function readStoredHeatmapLayout(): KeyboardLayoutMode {
+  try {
+    const stored = localStorage.getItem(HEATMAP_LAYOUT_STORAGE_KEY);
+    if (stored === '104' || stored === '87' || stored === '60') {
+      return stored;
+    }
+  } catch {
+    // 忽略本地存储访问异常
+  }
+  return '104';
+}
+
 export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
   const { t } = useTranslation();
-  const [layoutMode, setLayoutMode] = useState<KeyboardLayoutMode>('104');
+  const [layoutMode, setLayoutMode] = useState<KeyboardLayoutMode>(() => readStoredHeatmapLayout());
+
+  const handleSelectLayout = (mode: KeyboardLayoutMode) => {
+    setLayoutMode(mode);
+    try {
+      localStorage.setItem(HEATMAP_LAYOUT_STORAGE_KEY, mode);
+    } catch {
+      // 忽略本地存储写入异常
+    }
+  };
 
   // 物理键盘硬件锁定状态联动 (NUM / CAPS / SCROLL)
   const [lockStates, setLockStates] = useState({
@@ -390,7 +413,7 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
           <button
             type="button"
             className={`keyboard-layout-btn ${layoutMode === '104' ? 'active' : ''}`}
-            onClick={() => setLayoutMode('104')}
+            onClick={() => handleSelectLayout('104')}
           >
             <LayoutGrid size={12} />
             <span>{t('components.kb104', '104 Full Keyboard')}</span>
@@ -398,14 +421,14 @@ export const KeyboardHeatmap: FC<KeyboardHeatmapProps> = ({ keyMap }) => {
           <button
             type="button"
             className={`keyboard-layout-btn ${layoutMode === '87' ? 'active' : ''}`}
-            onClick={() => setLayoutMode('87')}
+            onClick={() => handleSelectLayout('87')}
           >
             <span>{t('components.kb87', '87-Key TKL')}</span>
           </button>
           <button
             type="button"
             className={`keyboard-layout-btn ${layoutMode === '60' ? 'active' : ''}`}
-            onClick={() => setLayoutMode('60')}
+            onClick={() => handleSelectLayout('60')}
           >
             <span>{t('components.kb60', '60-Key Compact')}</span>
           </button>

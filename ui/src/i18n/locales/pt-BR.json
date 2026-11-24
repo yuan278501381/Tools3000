@@ -53,7 +53,8 @@
     "picasa_viewer": "Visualizador Picasa",
     "clipboard": "Área de Transferência",
     "file_locksmith": "Desbloqueio de Arquivos",
-    "text_expander": "Expansor de Texto"
+    "text_expander": "Expansor de Texto",
+    "performance": "Desempenho e Memória"
   },
   "navSubtitle": {
     "stats": "Estatísticas de uso do teclado e do mouse",
@@ -77,7 +78,8 @@
     "picasa_viewer": "Recriação leve em Rust do visualizador Picasa (não é o pacote completo); associa todos os formatos ao ativar",
     "clipboard": "Histórico persistente após reiniciar, busca instantânea e Pin/Tradução de imagens em 1 clique",
     "file_locksmith": "Inspecione processos bloqueadores e desbloqueie sem uso em segundo plano",
-    "text_expander": "Expanda abreviações curtas em trechos completos, datas dinâmicas e modelos em qualquer app"
+    "text_expander": "Expanda abreviações curtas em trechos completos, datas dinâmicas e modelos em qualquer app",
+    "performance": "Telemetria em tempo real, latência e cronograma automático de memória"
   },
   "extension": {
     "statusRunning": "Em execução",
@@ -278,7 +280,25 @@
     "shellMenuFileLocksmithDesc": "Adiciona entrada sem uso de memória ao menu de contexto do Explorador para desbloquear arquivos (apenas HKCU)",
     "shellMenuFileLocksmithShiftOnly": "Mostrar apenas com Shift + botão direito",
     "shellMenuFileLocksmithShiftOnlyDesc": "Mantém o menu padrão limpo; no Windows 11, Shift + clique direito exibe diretamente",
-    "toastSaved": "Configurações salvas"
+    "toastSaved": "Configurações salvas",
+    "startupAndPrivilege": "Startup & Privileges",
+    "updatesAndGuide": "Updates & Onboarding",
+    "backupAndMigration": "Backup, Sync & Migration",
+    "diagnosticsAndLogs": "Diagnostics & Logs",
+    "dangerZone": "Reset & Recovery",
+    "currentVersionLabel": "Current Version",
+    "currentVersionDesc": "Check for new releases or view full release notes on the About page",
+    "checkUpdateNowBtn": "Check for Updates",
+    "reopenOnboardingLabel": "Interactive Welcome Guide",
+    "reopenOnboardingDesc": "Reopen the feature walkthrough and shortcut overview right away",
+    "reopenOnboardingBtn": "Open Guide",
+    "localConfigTransfer": "Manual Local Configuration Import & Export",
+    "localConfigTransferDesc": "Export all settings to a JSON file or restore from an existing backup",
+    "viewMemoryLifecycleBtn": "View Memory Lifecycle Schedule",
+    "hotkeyGroupCore": "Atalhos Principais",
+    "hotkeyGroupPinOcr": "Fixação, OCR e Tradução",
+    "hotkeyGroupRecording": "Gravação de Tela e Controle de Áudio",
+    "hotkeyGroupInput": "Controle de Entrada e Gestos"
   },
   "plugins": {
     "capabilities": "Recursos do módulo",
@@ -303,7 +323,7 @@
     "tabMarketplace": "Loja de Plugins",
     "marketplaceTitle": "Loja de Plugins",
     "marketplaceDesc": "Baixe e instale extensões oficiais e da comunidade para expandir o Tools3000.",
-    "searchPlaceholder": "Pesquisar extensões por nome, descrição ou recurso...",
+    "searchPlaceholder": "Buscar módulo ou recurso...",
     "categoryAll": "Todos",
     "categoryAi": "IA e LLM",
     "categoryUtility": "Utilitários",
@@ -384,7 +404,17 @@
         "description": "Expansão nativa de abreviações em todo o sistema com macros de data, área de transferência e cursor, proteção para gerenciadores de senha e zero poluição do histórico. Pronto para uso e sem ganchos ou RAM quando desativado."
       }
     },
-    "title": "Módulos e Extensões"
+    "title": "Módulos e Extensões",
+    "filterAll": "Todos ({{count}})",
+    "filterActive": "Ativos ({{count}})",
+    "filterDisabled": "Desativados ({{count}})",
+    "domainCaptureFlow": "Captura e Área de Transferência",
+    "domainInputControl": "Gestos do Mouse e Digitação",
+    "domainFileSystem": "Busca de Arquivos e Utilitários",
+    "domainPresentRemote": "Apresentação e Acesso Remoto",
+    "domainExtensions": "Extensões Externas",
+    "includesSubPages": "Inclui: {{pages}}",
+    "noMatchSearch": "Nenhum módulo encontrado"
   },
   "capture": {
     "title": "Configurações de Captura de Tela",
@@ -566,7 +596,18 @@
     "regionPin": "Fixar região (nunca removida)",
     "regionUnpin": "Desafixar região",
     "regionEdit": "Editar nome e dimensões",
-    "regionDelete": "Excluir região"
+    "regionDelete": "Excluir região",
+    "tabScreenshot": "Screenshot & Markup",
+    "tabPinRegion": "Pin & Saved Regions",
+    "tabRecording": "Screen Recording",
+    "tabStudioWatermark": "Studio & Watermark",
+    "groupTrigger": "Shortcuts & Trigger",
+    "groupOutput": "Save & Output Policy",
+    "groupAssist": "Selection & Visual Aids",
+    "pinShortcutsTitle": "Global Pin Controls",
+    "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
+    "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
   },
   "history": {
     "title": "Histórico de Capturas",
@@ -719,7 +760,12 @@
     "bitrate32": "32 Mbps (Ultra HD)",
     "saveDir": "Pasta de gravações",
     "saveDirDesc": "Escolha onde as gravações concluídas são armazenadas",
-    "saveDirPlaceholder": "Padrão: %LOCALAPPDATA%\\Tools3000\\Recordings"
+    "saveDirPlaceholder": "Padrão: %LOCALAPPDATA%\\Tools3000\\Recordings",
+    "groupShortcutsAndFormat": "Recording Shortcuts & Output Format",
+    "groupAudio": "Dual-Channel Audio & Noise Reduction",
+    "groupCursorAndOsd": "Cursor Effects & Keystroke Overlay",
+    "groupCleanDesktop": "Clean Desktop Protection",
+    "gifNoAudioHint": "Audio tracks are not supported when recording in animated GIF format."
   },
   "ocr": {
     "title": "Configurações de OCR de Texto",
@@ -833,7 +879,15 @@
     "scriptPackCyrillicName": "Pacote russo (cirílico)",
     "scriptPackCyrillicDesc": "Russo e alfabetos cirílicos",
     "scriptPackLatinName": "Pacote espanhol / português",
-    "scriptPackLatinDesc": "Espanhol, português e acentos latinos europeus"
+    "scriptPackLatinDesc": "Espanhol, português e acentos latinos europeus",
+    "tabRecognize": "Recognition & Live Text",
+    "tabTranslate": "In-Place & Quick Translate",
+    "tabModels": "Offline Engines & Packs",
+    "outputAndLiveTextGroup": "Output Behavior & Pin Live Text",
+    "manageModelsBtn": "Manage Offline Models",
+    "globalTranslateHotkey": "Global Selection & Clipboard Translate Shortcut",
+    "globalTranslateHotkeyDesc": "Translate selected text or clipboard content instantly in a floating overlay",
+    "tabModelsDesc": "Download or manage offline PP-OCR models, multi-language packs, and AI text erase models"
   },
   "gesture": {
     "title": "Configurações de Gestos do Mouse",
@@ -1206,7 +1260,13 @@
     "pauseCancelMsLong": "1500 ms (Longo)",
     "pauseCancelMsExtraLong": "2000 ms (Máximo)",
     "runModeShortActivate": "Ativar",
-    "runModeShortToggle": "Alternar"
+    "runModeShortToggle": "Alternar",
+    "tabRules": "Gestures & Target Rules",
+    "tabAppearance": "Trail Style & Guide",
+    "tabAlgorithm": "Recognition & Anti-Mistouch",
+    "pauseShortcutLabel": "Pause / Resume Gestures Shortcut",
+    "groupAntiMistouch": "Anti-Mistouch & Cancel Guards",
+    "groupEngineParams": "Geometric Recognition Engine"
   },
   "hotcorner": {
     "title": "Cantos Ativos",
@@ -1414,7 +1474,9 @@
     "dailyAvg": "Média diária",
     "peakValue": "Pico",
     "activeDays": "Ativo",
-    "daysUnit": "d"
+    "daysUnit": "d",
+    "kpiOverviewTitle": "Key Metrics Summary",
+    "todayHeatmapTitle": "Today's Keyboard Heatmap"
   },
   "about": {
     "title": "Sobre o Tools3000",
@@ -1498,7 +1560,9 @@
     "versionDismissedHint": "Alerta visual dispensado para esta versão. Verifique atualizações ou baixe a qualquer momento para retomar.",
     "versionDismissedToast": "Alerta de atualização ocultado para {{version}}",
     "viewChangelogShort": "Ver notas da versão",
-    "viewUpdate": "Ver atualização"
+    "viewUpdate": "Ver atualização",
+    "openPerformancePageBtn": "Performance & Memory",
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
   },
   "sidebar": {
     "groupSystem": "Sistema",
@@ -1538,7 +1602,8 @@
     "kw_picasa_viewer": "picasa foto imagem visualizador apresentacao associacao formato rust",
     "kw_clipboard": "area de transferencia historico copiar colar fixar persistente clipboard",
     "kw_file_locksmith": "desbloquear arquivo bloqueio processo menu locksmith unlock",
-    "kw_text_expander": "expansor texto snippet atalho frase macro modelo abreviacao text expander"
+    "kw_text_expander": "expansor texto snippet atalho frase macro modelo abreviacao text expander",
+    "kw_performance": "desempenho memoria latencia liberar monitorar performance memory"
   },
   "onboarding": {
     "welcomeTitle": "Bem-vindo ao Tools3000",
@@ -2259,7 +2324,15 @@
     "stopServiceFailed": "O serviço ainda está parando; clique em Verificar em breve",
     "usnSafetyNote": "Tanto na Redução Ociosa quanto na Suspensão Profunda, o Tools3000 usa o NTFS USN Journal para nunca perder alterações de arquivos.",
     "liveRefreshTitle": "Atualizar resultados em tempo real para arquivos novos e alterados",
-    "liveRefreshDesc": "Atualiza automaticamente a lista de busca aberta sem piscar quando arquivos são criados, renomeados ou excluídos via monitoramento NTFS USN. Zero consultas em segundo plano quando oculta."
+    "liveRefreshDesc": "Atualiza automaticamente a lista de busca aberta sem piscar quando arquivos são criados, renomeados ou excluídos via monitoramento NTFS USN. Zero consultas em segundo plano quando oculta.",
+    "tabExternal": "CLI & AI Agent (MCP)",
+    "tabSyntaxCombined": "Search & Regex Syntax",
+    "enableSearchTitle": "Enable Instant File Search",
+    "enableSearchDesc": "Instant NTFS filename, Pinyin, and content search; disabling unloads search entry points and hotkeys",
+    "groupMatchBehavior": "Query Matching & Defaults",
+    "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
+    "syntaxSectionOperators": "Operators & Filter Modifiers",
+    "syntaxSectionRegex": "Regular Expression Quick Reference"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -2477,7 +2550,10 @@
     "saveFailed": "Falha ao salvar as configurações de holofote",
     "resetSuccess": "Configurações padrão de holofote restauradas",
     "clickColorsSection": "Cores independentes por botão",
-    "clickColorsSectionDesc": "Defina cores distintas para os cliques esquerdo, direito e do meio"
+    "clickColorsSectionDesc": "Defina cores distintas para os cliques esquerdo, direito e do meio",
+    "spotlightGroupTitle": "Cursor Spotlight Focus",
+    "clickRippleGroupTitle": "Mouse Click Ripple Effects",
+    "mouseTrailGroupTitle": "Mouse Movement Trail Effects"
   },
   "window": {
     "minimize": "Minimizar",
@@ -2557,7 +2633,10 @@
     "autoContrastBadge": "Alto contraste inteligente",
     "autoContrastLabel": "Cor de texto adaptativa de alto contraste",
     "restoreAutoContrastDesc": "Cor personalizada ativa — clique para restaurar o alto contraste automático",
-    "restoreAutoContrast": "Contraste auto"
+    "restoreAutoContrast": "Contraste auto",
+    "appearanceSection": "Keycap Visual Style & Colors",
+    "quickToggleShortcut": "Toggle Keycast Overlay Shortcut",
+    "quickToggleShortcutDesc": "Quickly enable or hide on-screen keystrokes during live demos or recordings"
   },
   "quicklook": {
     "emptyTitle": "Selecione um arquivo no Explorador de Arquivos e pressione Espaço",
@@ -2921,7 +3000,12 @@
     "autoSaved": "Salvo automaticamente",
     "classExists": "Esta classe de janela já está na lista",
     "targetClassesLabel": "Classes de janela remota personalizadas",
-    "addClassPlaceholder": "Digite o nome da classe Win32 e pressione Enter..."
+    "addClassPlaceholder": "Digite o nome da classe Win32 e pressione Enter...",
+    "coreEnginesGroup": "Core Remote Enhancement Engines",
+    "targetRulesGroup": "Remote Client Detection Rules",
+    "targetRulesCollapsedSummary": "{{procCount}} remote client processes and {{classCount}} canvas window classes configured (click to customize)",
+    "expandRulesBtn": "Expand Rules",
+    "collapseRulesBtn": "Collapse Rules"
   },
   "picasaViewer": {
     "heroTitle": "Visualizador de Fotos Picasa",
@@ -3334,7 +3418,9 @@
     "searchPlaceholder": "Buscar gatilhos, rótulos ou conteúdo...",
     "statusActive": "Ativo",
     "statusDisabled": "Desativado (Zero Ganchos)",
-    "tryTriggersLabel": "Experimente digitar:"
+    "tryTriggersLabel": "Experimente digitar:",
+    "toggleSandboxBtn": "Test Sandbox",
+    "hideSandboxBtn": "Hide Sandbox"
   },
   "backup": {
     "title": "Backup em Nuvem e Pasta Sincronizada",
@@ -3391,5 +3477,63 @@
     "restoreSuccess": "Configuração restaurada com segurança",
     "preRestoreSaved": "A configuração anterior foi salva automaticamente",
     "restoreFailed": "Falha ao restaurar configuração"
+  },
+  "performancePage": {
+    "telemetryGroup": "Live Resource & Latency Telemetry",
+    "telemetryDesc": "Samples private working set, total working set, CPU usage, and core subsystem latencies once per second",
+    "enableLiveMonitor": "Enable Live Telemetry Sampling",
+    "enableLiveMonitorDesc": "Polls metrics only while viewing this page; zero background overhead when closed",
+    "trimNowBtn": "Run Quiet Trim Now",
+    "trimNowDone": "Heap compaction and working-set trim completed",
+    "metricPrivateWs": "Private Working Set",
+    "metricTotalWs": "Total Working Set",
+    "metricCpu": "CPU Usage",
+    "metricCaptureLatency": "Last Capture Latency",
+    "metricGestureLatency": "Gesture Recognition",
+    "metricUiLatency": "UI Render Latency",
+    "notTriggeredYet": "Not triggered",
+    "lifecycleGroup": "Memory Lifecycle & Auto-Reclamation Schedule",
+    "lifecycleSubtitle": "Read-only overview of idle reclamation timers across all layers. Settings-linked items reflect your active configuration; kernel anti-thrash guards are permanently locked.",
+    "badgeReadonly": "Read-Only Schedule",
+    "badgeLinkedSetting": "Settings-Linked",
+    "badgeKernelLocked": "Kernel Locked",
+    "jumpToSetting": "Configure",
+    "layerWebView": "1. WebView2 UI Host Surfaces (On-Demand Suspend & Destroy)",
+    "layerAiModels": "2. Offline Vision & Deep Learning Engines (Zero-Footprint Idle Unload)",
+    "layerSearchService": "3. Instant File Index Service (Elastic Out-of-Process Policy)",
+    "layerKernelGuard": "4. GPU Composition Surfaces & Kernel Anti-Thrash Guards",
+    "itemSettingsTitle": "Settings Window",
+    "itemSettingsDesc": "Suspends immediately on close; destroys renderer after idle timeout when auto-release is enabled",
+    "itemSettingsValEnabled": "Suspend on close · Destroy after 60s idle",
+    "itemSettingsValDisabled": "Suspend on close · Keep instance warm",
+    "itemClipboardTitle": "Clipboard History Window",
+    "itemClipboardDesc": "Keeps GPU frame warm for rapid consecutive pastes, then suspends and destroys renderer",
+    "itemClipboardVal": "25s warm suspend · Destroy after 90s idle",
+    "itemQuickLookTitle": "QuickLook Preview Window",
+    "itemQuickLookDesc": "Destroys preview host after idle delay to balance rapid file browsing with zero steady RAM",
+    "itemQuickLookVal": "Destroy after 60s idle",
+    "itemSearchWndTitle": "Search Bar & Tray Control Center",
+    "itemSearchWndDesc": "Suspends to ~20-40 KB physical working set while keeping Alt+Space instant wakeup (<15ms)",
+    "itemSearchWndVal": "Search 25s suspend · Tray instant suspend (warm)",
+    "itemOcrWorkerTitle": "Isolated OCR Worker Process",
+    "itemOcrWorkerDesc": "Trims DXGI & working set first while keeping DirectML graph warm; exits completely on long idle",
+    "itemOcrWorkerVal": "60s soft trim · Exit to 0 MB after 15m idle",
+    "itemDeepOcrTitle": "In-Process Deep OCR Fallback Engine",
+    "itemDeepOcrDesc": "Unloads neural detection and recognition weights automatically after fallback session goes idle",
+    "itemDeepOcrVal": "Unload weights after 120s idle",
+    "itemMiganTitle": "In-Place Text Erase AI Model (MI-GAN)",
+    "itemMiganDesc": "Releases ONNX / DirectML inpainting session and tensor buffers after idle timeout",
+    "itemMiganVal": "Unload model after 90s idle",
+    "itemSearchSvcTitle": "NTFS Instant Search Service",
+    "itemSearchSvcDesc": "Starts strictly on first search summon; supports full resident, light trim, or 0 MB hibernation",
+    "itemSearchSvcValResident": "Full Resident (no idle trim)",
+    "itemSearchSvcValTrim": "Light trim after {{minutes}}m idle",
+    "itemSearchSvcValStop": "Hibernate to 0 MB after {{minutes}}m idle",
+    "itemMouseDcompTitle": "Mouse Ripple & Trail GPU Compositor",
+    "itemMouseDcompDesc": "Releases Direct2D / DirectComposition target surfaces when idle; rebuilds in milliseconds on click",
+    "itemMouseDcompVal": "Release GPU surface after 60s idle",
+    "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
+    "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
+    "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
   }
 }

@@ -1,10 +1,26 @@
 import { useState, useEffect, type FC } from 'react';
-import { Card, SettingGroup, Toggle, Button, CodeBadge } from '../components/UIKit';
+import { SettingGroup, Button, CodeBadge } from '../components/UIKit';
 import { useTranslation } from 'react-i18next';
-import { ExternalLink, Layers, Cpu, RefreshCw, User, ShieldCheck, Download, GitBranch, MessageSquarePlus, BellOff } from 'lucide-react';
+import {
+  ExternalLink,
+  Layers,
+  RefreshCw,
+  User,
+  ShieldCheck,
+  Download,
+  GitBranch,
+  BellOff,
+  Gauge,
+  ChevronDown,
+} from 'lucide-react';
+import type { NavId } from '../config/routes';
 import { bridgeRequest, useBridgeEvent, openExternalUrl } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import './AboutPage.css';
+
+export interface AboutPageProps {
+  onNavigate?: (nav: NavId) => void;
+}
 
 type DepPurposeKey =
   | 'about.depPurpose.cppStandard'
@@ -39,7 +55,7 @@ interface DependencyInfo {
   purpose: DepPurposeKey;
 }
 
-const DEPENDENCIES: DependencyInfo[] = [
+const TECH_STACK: DependencyInfo[] = [
   // 第一梯队：核心底座与硬核原生性能 (Native Core & Hardware Acceleration)
   { name: 'C++20',                          version: 'MSVC v145 · x64 / ARM64',      purpose: 'about.depPurpose.cppStandard' },
   { name: 'Rust (SIMD Kernel)',             version: 'Edition 2021 · AVX2 / NEON',   purpose: 'about.depPurpose.rustSimd' },
@@ -74,15 +90,6 @@ const DEPENDENCIES: DependencyInfo[] = [
   { name: 'Inno Setup',                     version: '6.7',                          purpose: 'about.depPurpose.innoSetup' },
 ];
 
-interface PerfMetrics {
-  memoryMB: number;
-  privateMemoryMB: number;
-  cpuPercent: number;
-  screenshotLatencyMs: number;
-  gestureLatencyMs: number;
-  uiRenderLatencyMs: number;
-}
-
 interface UpdateResult {
   status: 'idle' | 'checking' | 'available' | 'downloading' | 'readyToInstall' | 'upToDate' | 'unavailable' | 'error';
   hasUpdate?: boolean;
@@ -106,13 +113,8 @@ function formatUpdateMB(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const safeMetric = (value: unknown) =>
-  typeof value === 'number' && Number.isFinite(value) ? value : 0;
-
-export const AboutPage: FC = () => {
+export const AboutPage: FC<AboutPageProps> = ({ onNavigate }) => {
   const { t } = useTranslation();
-  const [geekMode, setGeekMode] = useState(false);
-  const [metrics, setMetrics] = useState<PerfMetrics | null>(null);
   const [version, setVersion] = useState(__TOOLS3000_VERSION__);
   const [buildDate, setBuildDate] = useState(__TOOLS3000_BUILD_DATE__);
   const [checkingUpdate, setCheckingUpdate] = useState(false);
@@ -162,57 +164,6 @@ export const AboutPage: FC = () => {
       })
       .catch(() => undefined);
   }, []);
-
-  useEffect(() => {
-    if (!geekMode) return;
-    let active = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
-    const fetchMetrics = async () => {
-      if (document.hidden) return;
-      try {
-        const data = await bridgeRequest<PerfMetrics>('perf.getMetrics');
-        if (active) setMetrics({
-          memoryMB: safeMetric(data?.memoryMB),
-          privateMemoryMB: safeMetric(data?.privateMemoryMB),
-          cpuPercent: safeMetric(data?.cpuPercent),
-          screenshotLatencyMs: safeMetric(data?.screenshotLatencyMs),
-          gestureLatencyMs: safeMetric(data?.gestureLatencyMs),
-          uiRenderLatencyMs: safeMetric(data?.uiRenderLatencyMs),
-        });
-      } catch (e) {
-        console.error('Failed to fetch perf metrics', e);
-      }
-    };
-    const stopPolling = () => {
-      if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
-      }
-    };
-    const startPolling = () => {
-      if (document.hidden) return;
-      void fetchMetrics();
-      if (timer === null) {
-        timer = setInterval(() => {
-          void fetchMetrics();
-        }, 1000);
-      }
-    };
-    const handleVisibility = () => {
-      if (document.hidden) {
-        stopPolling();
-      } else {
-        startPolling();
-      }
-    };
-    startPolling();
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      active = false;
-      stopPolling();
-      document.removeEventListener('visibilitychange', handleVisibility);
-    };
-  }, [geekMode]);
 
   const checkForUpdates = async () => {
     if (checkingUpdate) return;
@@ -287,20 +238,9 @@ export const AboutPage: FC = () => {
     if (!success) toast.error(t('about.openReleaseFailed'));
   };
 
-  const handleExportLogs = async () => {
-    try {
-      const res = await bridgeRequest<{ success: boolean; cancelled?: boolean; error?: string }>('app.exportLogs');
-      if (res.cancelled) return;
-      if (!res.success) throw new Error(res.error || t('about.exportFailed', 'Export failed'));
-      toast.success(t('about.exportLogsSuccess', 'Diagnostic logs exported and highlighted successfully'));
-    } catch (e) {
-      toast.error(t('about.exportLogsFailed', 'Failed to export diagnostic logs'), { description: String(e) });
-    }
-  };
-
   return (
     <div className="about-page" style={{ animation: 'fadeIn 0.3s ease' }}>
-      {/* ── 单体旗舰品牌名片卡 (去重复双头 · 融合展台/操作/元信息) ── */}
+      {/* ── 单体旗舰品牌名片卡 (精简去重 · 聚焦核心操作与元信息) ── */}
       <section className="about-showcase-card" aria-label={t('about.title')}>
         <div className="about-showcase-card__top">
           <div className="about-showcase-card__brand">
@@ -318,9 +258,7 @@ export const AboutPage: FC = () => {
             <div className="about-showcase-card__identity">
               <div className="about-showcase-card__title-row">
                 <h2 className="about-showcase-card__title">Tools3000</h2>
-                <span className="about-showcase-card__version">
-                  {buildDate ? `v${version} · ${buildDate}` : `v${version}`}
-                </span>
+                <CodeBadge>{buildDate ? `v${version} · ${buildDate}` : `v${version}`}</CodeBadge>
               </div>
               <p className="about-showcase-card__subtitle">{t('about.subtitle')}</p>
             </div>
@@ -331,19 +269,14 @@ export const AboutPage: FC = () => {
               <RefreshCw size={13} className={checkingUpdate ? 'about-update-spin' : undefined} />
               <span>{checkingUpdate ? t('about.checkingUpdate') : t('about.checkUpdate')}</span>
             </Button>
-            <Button variant="secondary" size="sm" onClick={() => void handleExportLogs()} title={t('about.exportLogsTip', 'Export system diagnostic logs and environment report')}>
-              <Download size={13} />
-              <span>{t('about.exportLogs', 'Export Logs')}</span>
-            </Button>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => window.dispatchEvent(new CustomEvent('tools3000:open-feedback'))}
-              title={t('feedback.entryButton', 'Give Feedback')}
-            >
-              <MessageSquarePlus size={13} />
-              <span>{t('feedback.entryButton', 'Give Feedback')}</span>
-            </Button>
+
+            {onNavigate && (
+              <Button variant="secondary" size="sm" onClick={() => onNavigate('performance')}>
+                <Gauge size={13} />
+                <span>{t('about.openPerformancePageBtn')}</span>
+              </Button>
+            )}
+
             {updateResult?.readyToInstall ? (
               <Button variant="primary" size="sm" onClick={() => void handleInstallUpdate()} disabled={installingUpdate}>
                 <Download size={13} className={installingUpdate ? 'about-update-spin' : undefined} />
@@ -357,6 +290,7 @@ export const AboutPage: FC = () => {
                 <span>{t('about.downloadUpdateNow', { version: updateResult.latestVersion ?? '', defaultValue: `Download ${updateResult.latestVersion ?? ''}` })}</span>
               </Button>
             ) : null}
+
             {updateResult?.hasUpdate && updateResult.releaseUrl && (
               <Button variant="secondary" size="sm" onClick={() => void openReleasePage()}>
                 <ExternalLink size={13} />
@@ -483,55 +417,29 @@ export const AboutPage: FC = () => {
         </div>
       </section>
 
+      {/* ── 可折叠技术栈与开源组件矩阵（默认收起，保持首屏清爽） ── */}
       <SettingGroup title={t('about.techStack')} icon={<Layers size={20} strokeWidth={2.5} />}>
-        <Card>
-          <div className="about-deps">
-            {DEPENDENCIES.map((dep) => (
-              <div key={dep.name} className="about-dep-item">
-                <div className="about-dep-item__top">
-                  <span className="about-dep-name">{dep.name}</span>
-                  <CodeBadge variant="muted">{dep.version}</CodeBadge>
-                </div>
-                <span className="about-dep-purpose">{t(dep.purpose)}</span>
-              </div>
-            ))}
-          </div>
-        </Card>
-      </SettingGroup>
-
-      <SettingGroup title={t('about.geekMode')} icon={<Cpu size={20} strokeWidth={2.5} />}>
-        <Card>
-          <Toggle
-            id="geek-mode-toggle"
-            label={t('about.enablePerfMonitor')}
-            description={t('about.enablePerfMonitorDesc')}
-            checked={geekMode}
-            onChange={(enabled) => {
-              setGeekMode(enabled);
-              if (!enabled) setMetrics(null);
-            }}
-          />
-          {geekMode && metrics && (
-            <div className="about-perf-panel">
-              <div className="about-perf-grid">
-                <div className="about-perf-tile">
-                  <div className="about-perf-tile__label">{t('about.perfMemory')}</div>
-                  <div className="about-perf-tile__value">
-                    {((metrics.privateMemoryMB && metrics.privateMemoryMB > 0) ? metrics.privateMemoryMB : metrics.memoryMB).toFixed(1)} MB
+        <details className="about-tech-details">
+          <summary className="about-tech-details__summary">
+            <span className="about-tech-details__summary-text">
+              {t('about.techStackSummary', { count: TECH_STACK.length })}
+            </span>
+            <ChevronDown size={16} strokeWidth={2} className="about-tech-details__chevron" aria-hidden="true" />
+          </summary>
+          <div className="about-tech-details__body">
+            <div className="about-deps">
+              {TECH_STACK.map((dep) => (
+                <div key={dep.name} className="about-dep-item">
+                  <div className="about-dep-item__top">
+                    <span className="about-dep-name">{dep.name}</span>
+                    <CodeBadge variant="muted">{dep.version}</CodeBadge>
                   </div>
+                  <span className="about-dep-purpose">{t(dep.purpose)}</span>
                 </div>
-                <div className="about-perf-tile">
-                  <div className="about-perf-tile__label">{t('about.perfWorkingSet')}</div>
-                  <div className="about-perf-tile__value">{metrics.memoryMB.toFixed(1)} MB</div>
-                </div>
-                <div className="about-perf-tile">
-                  <div className="about-perf-tile__label">{t('about.perfCpu')}</div>
-                  <div className="about-perf-tile__value">{metrics.cpuPercent.toFixed(1)} %</div>
-                </div>
-              </div>
+              ))}
             </div>
-          )}
-        </Card>
+          </div>
+        </details>
       </SettingGroup>
 
       <div className="about-footer-copyright">

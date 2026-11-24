@@ -53,7 +53,8 @@
     "picasa_viewer": "Picasa 圖片檢視器",
     "clipboard": "剪貼簿歷史",
     "file_locksmith": "檔案佔用解鎖",
-    "text_expander": "文字擴展器"
+    "text_expander": "文字擴展器",
+    "performance": "效能與記憶體"
   },
   "navSubtitle": {
     "stats": "按鍵與滑鼠活動使用統計",
@@ -77,7 +78,8 @@
     "picasa_viewer": "Rust 復刻經典輕量看圖器（非原版全功能），啟用自動關聯全部支援的圖片格式",
     "clipboard": "持久化剪貼簿記錄、毫秒級檢索與圖片一鍵貼圖／翻譯",
     "file_locksmith": "零常駐檢視檔案佔用程序與一鍵安全解鎖",
-    "text_expander": "在任意視窗輸入簡短觸發詞，自動展開完整片語、動態日期與程式碼範本"
+    "text_expander": "在任意視窗輸入簡短觸發詞，自動展開完整片語、動態日期與程式碼範本",
+    "performance": "即時資源遙測、子系統回應延遲與全鏈路記憶體回收策略看板"
   },
   "extension": {
     "statusRunning": "執行中",
@@ -278,7 +280,25 @@
     "shellMenuFileLocksmithDesc": "在 Windows 檔案與資料夾右鍵選單新增零常駐「檔案佔用解鎖」入口，快速定位並釋放被佔用的檔案鎖（純 HKCU 註冊，免注入）",
     "shellMenuFileLocksmithShiftOnly": "僅按住 Shift + 右鍵時顯示（保持常規右鍵整潔）",
     "shellMenuFileLocksmithShiftOnlyDesc": "勾選後不污染日常右鍵選單；在 Windows 11 下按住 Shift + 右鍵一步直達經典選單並顯示該項",
-    "toastSaved": "設定已儲存"
+    "toastSaved": "設定已儲存",
+    "startupAndPrivilege": "啟動與執行權限",
+    "updatesAndGuide": "版本更新與新手導覽",
+    "backupAndMigration": "設定備份、同步與遷移",
+    "diagnosticsAndLogs": "診斷日誌與排錯",
+    "dangerZone": "重設與還原",
+    "currentVersionLabel": "目前執行版本",
+    "currentVersionDesc": "檢查是否有新版本發布或前往關於頁檢視完整更新說明",
+    "checkUpdateNowBtn": "檢查更新",
+    "reopenOnboardingLabel": "重新檢視新手導覽",
+    "reopenOnboardingDesc": "立即開啟產品核心功能與快捷鍵互動導覽",
+    "reopenOnboardingBtn": "開啟導覽",
+    "localConfigTransfer": "本機設定檔手動匯入與匯出",
+    "localConfigTransferDesc": "將全部設定匯出為單一檔案，或從既有備份檔還原",
+    "viewMemoryLifecycleBtn": "檢視記憶體回收策略表",
+    "hotkeyGroupCore": "核心效率入口",
+    "hotkeyGroupPinOcr": "貼圖與辨識翻譯",
+    "hotkeyGroupRecording": "高畫質錄影與場控",
+    "hotkeyGroupInput": "輸入與手勢控制"
   },
   "plugins": {
     "capabilities": "模組能力",
@@ -303,7 +323,7 @@
     "tabMarketplace": "外掛擴充市集",
     "marketplaceTitle": "官方與社群精選擴充功能",
     "marketplaceDesc": "按需下載更多功能模組，無縫擴展 Tools3000 生產力邊界。",
-    "searchPlaceholder": "搜尋擴充功能名稱、描述或能力關鍵字...",
+    "searchPlaceholder": "搜尋模組名稱或功能描述...",
     "categoryAll": "全部",
     "categoryAi": "AI 智慧",
     "categoryUtility": "實用工具",
@@ -384,7 +404,17 @@
         "description": "原生全域文字縮寫與動態巨集展開引擎，支援日期／剪貼簿／游標定位，內建密碼管理器避讓與零剪貼簿歷史污染；預設開箱即用，關閉即刻卸載掛鉤零記憶體佔用。"
       }
     },
-    "title": "功能模組與擴充外掛"
+    "title": "功能模組與擴充外掛",
+    "filterAll": "全部 ({{count}})",
+    "filterActive": "執行中 ({{count}})",
+    "filterDisabled": "已停用 ({{count}})",
+    "domainCaptureFlow": "擷取與剪貼流轉",
+    "domainInputControl": "鍵鼠操控與輸入提效",
+    "domainFileSystem": "檔案檢索與系統增強",
+    "domainPresentRemote": "簡報教學與遠端協助",
+    "domainExtensions": "外部擴充模組",
+    "includesSubPages": "關聯：{{pages}}",
+    "noMatchSearch": "找不到相符的模組"
   },
   "capture": {
     "title": "擷圖工具設定",
@@ -566,7 +596,18 @@
     "regionPin": "釘選為固定選區（永不淘汰）",
     "regionUnpin": "取消釘選",
     "regionEdit": "編輯名稱與座標尺寸",
-    "regionDelete": "刪除此選區"
+    "regionDelete": "刪除此選區",
+    "tabScreenshot": "截圖與標註",
+    "tabPinRegion": "貼圖與固定選區",
+    "tabRecording": "螢幕錄影",
+    "tabStudioWatermark": "演播室與浮水印",
+    "groupTrigger": "快捷鍵與觸發",
+    "groupOutput": "儲存與輸出策略",
+    "groupAssist": "選區捕捉與視覺輔助",
+    "pinShortcutsTitle": "貼圖全域快捷操控",
+    "reuseCaptureWatermark": "演播室直接套用截圖浮水印設定",
+    "reuseCaptureWatermarkDesc": "開啟後自動同步上方截圖浮水印參數，無需重複維護兩套表單",
+    "subtitleNeedsMicHint": "需先在「螢幕錄影」分頁開啟「錄製麥克風」後方可啟用離線語音字幕對齊"
   },
   "history": {
     "title": "擷圖歷史",
@@ -719,7 +760,12 @@
     "bitrate32": "32 Mbps (極致畫質)",
     "saveDir": "錄影儲存目錄",
     "saveDirDesc": "選擇錄影完成後的儲存位置",
-    "saveDirPlaceholder": "預設：%LOCALAPPDATA%\\Tools3000\\Recordings"
+    "saveDirPlaceholder": "預設：%LOCALAPPDATA%\\Tools3000\\Recordings",
+    "groupShortcutsAndFormat": "錄影快捷鍵與編碼輸出",
+    "groupAudio": "雙路音訊擷取與降噪",
+    "groupCursorAndOsd": "游標特效與按鍵疊加",
+    "groupCleanDesktop": "純淨桌面保護",
+    "gifNoAudioHint": "目前錄製格式為動圖，不支援錄製系統聲音與麥克風音軌。"
   },
   "ocr": {
     "title": "文字辨識設定",
@@ -833,7 +879,15 @@
     "scriptPackCyrillicName": "俄語擴充包（西里爾）",
     "scriptPackCyrillicDesc": "俄語及東歐西里爾字母混排",
     "scriptPackLatinName": "西 / 葡 / 歐文擴充包",
-    "scriptPackLatinDesc": "西班牙語 · 葡萄牙語 · 法德義等拉丁變音符"
+    "scriptPackLatinDesc": "西班牙語 · 葡萄牙語 · 法德義等拉丁變音符",
+    "tabRecognize": "識文與互動",
+    "tabTranslate": "原位與選字翻譯",
+    "tabModels": "離線引擎與模型包",
+    "outputAndLiveTextGroup": "辨識輸出與貼圖實景選字",
+    "manageModelsBtn": "管理離線模型包",
+    "globalTranslateHotkey": "全域選字與剪貼簿翻譯快捷鍵",
+    "globalTranslateHotkeyDesc": "選取文字或複製內容後一鍵呼出輕量翻譯浮窗",
+    "tabModelsDesc": "下載或管理高精度離線辨識包、多國語言擴充包與原位改字紋理修復模型"
   },
   "gesture": {
     "title": "滑鼠手勢設定",
@@ -1206,7 +1260,13 @@
     "pauseCancelMsLong": "1500 毫秒（較長）",
     "pauseCancelMsExtraLong": "2000 毫秒（最長）",
     "runModeShortActivate": "啟用",
-    "runModeShortToggle": "切換"
+    "runModeShortToggle": "切換",
+    "tabRules": "手勢與目標規則",
+    "tabAppearance": "軌跡外觀與示範",
+    "tabAlgorithm": "辨識演算法與防誤觸",
+    "pauseShortcutLabel": "暫停或恢復手勢快捷鍵",
+    "groupAntiMistouch": "防誤觸與中途反悔機制",
+    "groupEngineParams": "幾何辨識引擎參數"
   },
   "hotcorner": {
     "title": "螢幕觸發角",
@@ -1414,7 +1474,9 @@
     "dailyAvg": "日均",
     "peakValue": "峰值",
     "activeDays": "活躍",
-    "daysUnit": "天"
+    "daysUnit": "天",
+    "kpiOverviewTitle": "核心指標總覽",
+    "todayHeatmapTitle": "今日按鍵熱力分佈"
   },
   "about": {
     "title": "關於 Tools3000",
@@ -1498,7 +1560,9 @@
     "versionDismissedHint": "已略過此版本的紅點提示；隨時可點擊檢查更新或下載恢復升級。",
     "versionDismissedToast": "已略過 {{version}} 版本更新提醒",
     "viewChangelogShort": "檢視更新內容",
-    "viewUpdate": "檢視更新"
+    "viewUpdate": "檢視更新",
+    "openPerformancePageBtn": "效能與記憶體看板",
+    "techStackSummary": "微核心原生雙引擎架構 · 點擊展開完整依賴與開源致謝（共 {{count}} 項）"
   },
   "sidebar": {
     "groupSystem": "系統總控",
@@ -1538,7 +1602,8 @@
     "kw_picasa_viewer": "picasa 看圖 圖片 檢視器 幻燈片 關聯 格式 rust",
     "kw_clipboard": "剪貼簿 歷史 複製 貼上 釘選 持久化 clipboard",
     "kw_file_locksmith": "檔案佔用 解鎖 控制代碼 程序 右鍵選單 locksmith unlock",
-    "kw_text_expander": "文字擴展器 片語 縮寫 範本 巨集 自動補全 輸入替換 text expander snippet"
+    "kw_text_expander": "文字擴展器 片語 縮寫 範本 巨集 自動補全 輸入替換 text expander snippet",
+    "kw_performance": "效能 記憶體 工作集 延遲 回收 休眠 釋放 監控 xingneng neicun"
   },
   "onboarding": {
     "welcomeTitle": "歡迎使用 Tools3000",
@@ -2259,7 +2324,15 @@
     "stopServiceFailed": "搜尋服務正在停止中，請稍後點擊立即檢測確認",
     "usnSafetyNote": "無論選擇閒置輕度瘦身或深度休眠，皆基於 NTFS USN 日誌增量追平，絕不遺失任何檔案新建、改名或內容修改。",
     "liveRefreshTitle": "搜尋視窗即時顯示新增與變動檔案",
-    "liveRefreshDesc": "開啟搜尋視窗期間，透過 NTFS USN 日誌即時感知檔案新建、重新命名與刪除並原地無閃重整結果清單。視窗隱藏後完全停止偵測，零背景佔用。"
+    "liveRefreshDesc": "開啟搜尋視窗期間，透過 NTFS USN 日誌即時感知檔案新建、重新命名與刪除並原地無閃重整結果清單。視窗隱藏後完全停止偵測，零背景佔用。",
+    "tabExternal": "命令列與智慧體介面",
+    "tabSyntaxCombined": "搜尋與正規表示式語法",
+    "enableSearchTitle": "啟用快速檔案搜尋",
+    "enableSearchDesc": "按需毫秒級檢索全碟檔名、拼音與文件內容；關閉後卸載搜尋入口與熱鍵",
+    "groupMatchBehavior": "查詢比對與預設行為",
+    "groupMixAndDisplay": "跨源混排與介面呈現",
+    "syntaxSectionOperators": "修飾符與邏輯組合語法",
+    "syntaxSectionRegex": "正規表示式語法速查"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -2477,7 +2550,10 @@
     "saveFailed": "儲存聚光燈設定失敗",
     "resetSuccess": "已恢復預設設定",
     "clickColorsSection": "獨立按鍵色彩體系",
-    "clickColorsSectionDesc": "分別為滑鼠左鍵、右鍵與中鍵設定專屬點擊色彩"
+    "clickColorsSectionDesc": "分別為滑鼠左鍵、右鍵與中鍵設定專屬點擊色彩",
+    "spotlightGroupTitle": "游標聚光燈聚焦",
+    "clickRippleGroupTitle": "滑鼠點擊波紋特效",
+    "mouseTrailGroupTitle": "滑鼠移動流光軌跡"
   },
   "window": {
     "minimize": "最小化",
@@ -2557,7 +2633,10 @@
     "autoContrastBadge": "智慧高對比",
     "autoContrastLabel": "智慧高對比自適應文字色",
     "restoreAutoContrastDesc": "目前為自訂顏色，點擊恢復智慧高對比自適應配字",
-    "restoreAutoContrast": "智慧高對比"
+    "restoreAutoContrast": "智慧高對比",
+    "appearanceSection": "鍵帽視覺外觀與配色",
+    "quickToggleShortcut": "快速開啟或關閉按鍵回顯快捷鍵",
+    "quickToggleShortcutDesc": "在錄課或簡報中途一鍵切換螢幕按鍵回顯狀態"
   },
   "quicklook": {
     "emptyTitle": "在檔案總管中選取檔案並按空白鍵",
@@ -2921,7 +3000,12 @@
     "autoSaved": "已自動儲存",
     "classExists": "該視窗類別名稱已存在於清單中",
     "targetClassesLabel": "受管遠端控制視窗類別名稱清單",
-    "addClassPlaceholder": "輸入遠端控制用戶端視窗類別名稱後按 Enter 新增..."
+    "addClassPlaceholder": "輸入遠端控制用戶端視窗類別名稱後按 Enter 新增...",
+    "coreEnginesGroup": "核心遠端增強引擎",
+    "targetRulesGroup": "遠端用戶端辨識規則",
+    "targetRulesCollapsedSummary": "已內建適配 {{procCount}} 款主流遠端程序與 {{classCount}} 類畫布視窗（點擊展開自訂）",
+    "expandRulesBtn": "展開辨識規則",
+    "collapseRulesBtn": "收起辨識規則"
   },
   "picasaViewer": {
     "heroTitle": "Picasa 圖片檢視器",
@@ -3334,7 +3418,9 @@
     "searchPlaceholder": "搜尋觸發詞、備註或展開內容...",
     "statusActive": "執行中",
     "statusDisabled": "已關閉（零掛鉤）",
-    "tryTriggersLabel": "試試輸入："
+    "tryTriggersLabel": "試試輸入：",
+    "toggleSandboxBtn": "測試沙盒",
+    "hideSandboxBtn": "收起測試沙盒"
   },
   "backup": {
     "title": "雲端與同步資料夾設定備份",
@@ -3391,5 +3477,63 @@
     "restoreSuccess": "設定已安全還原",
     "preRestoreSaved": "覆寫前已自動保留原設定備份",
     "restoreFailed": "還原設定失敗"
+  },
+  "performancePage": {
+    "telemetryGroup": "即時資源與回應延遲監控",
+    "telemetryDesc": "開啟後每秒取樣目前主程序真實實體記憶體、處理器佔用與核心互動延遲",
+    "enableLiveMonitor": "開啟即時遙測取樣",
+    "enableLiveMonitorDesc": "僅在本頁面停留期間按秒輪詢，離開頁面自動停止零開銷",
+    "trimNowBtn": "立即執行靜默回收",
+    "trimNowDone": "已完成堆積緊縮與靜默工作集修剪",
+    "metricPrivateWs": "專用工作集記憶體",
+    "metricTotalWs": "總實體工作集",
+    "metricCpu": "處理器使用率",
+    "metricCaptureLatency": "最近截圖耗時",
+    "metricGestureLatency": "手勢辨識耗時",
+    "metricUiLatency": "介面渲染耗時",
+    "notTriggeredYet": "尚未觸發",
+    "lifecycleGroup": "全鏈路記憶體生命週期與自動回收時間表",
+    "lifecycleSubtitle": "透明展示各子系統閒置回收門檻。帶設定關聯的項目隨對應設定即時更新；底層防抖保護項由核心鎖定不可修改。",
+    "badgeReadonly": "唯讀透明看板",
+    "badgeLinkedSetting": "關聯設定",
+    "badgeKernelLocked": "核心鎖定 · 不可修改",
+    "jumpToSetting": "前往設定",
+    "layerWebView": "一、介面渲染宿主層（WebView2 按需掛起與銷毀）",
+    "layerAiModels": "二、離線視覺與深度學習模型層（用完自動歸零）",
+    "layerSearchService": "三、全碟檔案索引服務層（獨立程序彈性伸縮）",
+    "layerKernelGuard": "四、圖形合成表面與核心堆積防抖保護層",
+    "itemSettingsTitle": "設定中心視窗",
+    "itemSettingsDesc": "關閉視窗立即凍結渲染執行緒；開啟自動釋放後到期徹底銷毀渲染實例",
+    "itemSettingsValEnabled": "關閉即掛起 · 閒置 60秒 銷毀釋放",
+    "itemSettingsValDisabled": "關閉即掛起 · 保留實例秒開",
+    "itemClipboardTitle": "剪貼簿歷史視窗",
+    "itemClipboardDesc": "短時高頻連續貼上保留顯示卡合成幀，逾時自動掛起並徹底回收渲染程序",
+    "itemClipboardVal": "25秒 熱掛起 · 閒置 90秒 銷毀釋放",
+    "itemQuickLookTitle": "空白鍵快速預覽視窗",
+    "itemQuickLookDesc": "關閉檔案預覽窗後延遲銷毀渲染宿主，兼顧連續預覽與零常駐佔用",
+    "itemQuickLookVal": "閒置 60秒 銷毀釋放",
+    "itemSearchWndTitle": "全域搜尋框與系統匣控制艙",
+    "itemSearchWndDesc": "隱藏後自動凍結至數十千位元組實體工作集，全天候保障快捷鍵零白畫面瞬開",
+    "itemSearchWndVal": "搜尋 25秒 掛起 · 系統匣立即掛起（常駐秒開）",
+    "itemOcrWorkerTitle": "獨立離線文字辨識子程序",
+    "itemOcrWorkerDesc": "先收縮視訊記憶體保留算子編譯圖，長時間不用則優雅退出整個子程序使記憶體徹底歸零",
+    "itemOcrWorkerVal": "閒置 60秒 軟修剪 · 15分鐘 退出歸零",
+    "itemDeepOcrTitle": "程序內深度文字辨識備援引擎",
+    "itemDeepOcrDesc": "當執行於程序內推論備援路徑時，閒置到期自動卸載偵測與辨識神經網路權重",
+    "itemDeepOcrVal": "閒置 120秒 自動卸載權重",
+    "itemMiganTitle": "原位無痕改字紋理修復模型",
+    "itemMiganDesc": "完成截圖複雜背景擦除修復後，閒置到期自動釋放推論工作階段與張量快取",
+    "itemMiganVal": "閒置 90秒 自動卸載模型",
+    "itemSearchSvcTitle": "全碟毫秒索引背景服務",
+    "itemSearchSvcDesc": "按需首次呼出才啟動，支援常駐、閒置瘦身與深度休眠寫入磁碟退出三檔策略",
+    "itemSearchSvcValResident": "全速常駐（不主動收縮）",
+    "itemSearchSvcValTrim": "閒置 {{minutes}}分鐘 輕度瘦身",
+    "itemSearchSvcValStop": "閒置 {{minutes}}分鐘 深度休眠退出（0 MB）",
+    "itemMouseDcompTitle": "滑鼠波紋與流光硬體合成表面",
+    "itemMouseDcompDesc": "滑鼠特效靜止到期後自動釋放顯示卡合成目標表面，下次點擊毫秒級無感重建",
+    "itemMouseDcompVal": "靜止 60秒 釋放顯示卡表面",
+    "itemHeapGuardTitle": "主程序堆積緊縮與工作集冷態防抖鎖",
+    "itemHeapGuardDesc": "在大圖入庫或截圖完成後合併歸還空閒堆積區塊，嚴格避開滑鼠鉤子與動畫熱路徑防止分頁錯誤卡頓",
+    "itemHeapGuardVal": "2.5~5.5秒 靜默防抖 · 2.0秒 節流保護鎖"
   }
 }

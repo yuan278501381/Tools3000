@@ -462,11 +462,28 @@ public class ShellIconCache {
                     try {
                         $null = schtasks /query /tn "$taskName" 2>&1
                         if ($LASTEXITCODE -eq 0) {
+                            # 防僵尸阻断：若历史旧实例卡在退出析构导致计划任务仍处于 Running 状态，
+                            # MultipleInstances=IgnoreNew 会静默丢弃 /run 请求；先显式 /end 收割残留任务再拉起新二进制。
+                            $null = schtasks /end /tn "$taskName" 2>&1
+                            for ($w = 0; $w -lt 15; $w++) {
+                                $st = (Get-ScheduledTask -TaskPath "\Tools3000\" -TaskName "Autorun for $currentUserName" -ErrorAction SilentlyContinue).State
+                                if ($st -ne 'Running') { break }
+                                Start-Sleep -Milliseconds 100
+                            }
                             $null = schtasks /run /tn "$taskName" 2>&1
                             if ($LASTEXITCODE -eq 0) {
-                                $launched = $true
-                                Write-CliLog "已通过交互式计划任务 ($taskName) 穿透拉起应用至物理桌面！" "SUCCESS"
-                                break
+                                for ($v = 0; $v -lt 25; $v++) {
+                                    $live = @(Get-Process -Name "Tools3000" -ErrorAction SilentlyContinue | Where-Object { $_.Threads.Count -gt 1 })
+                                    if ($live.Count -gt 0) {
+                                        $launched = $true
+                                        break
+                                    }
+                                    Start-Sleep -Milliseconds 100
+                                }
+                                if ($launched) {
+                                    Write-CliLog "已通过交互式计划任务 ($taskName) 穿透拉起应用至物理桌面！" "SUCCESS"
+                                    break
+                                }
                             }
                         }
                     } catch {

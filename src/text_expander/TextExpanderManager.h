@@ -113,7 +113,6 @@ private:
     void pushStateChangedEvents(bool enabled) const;
 
     static LRESULT CALLBACK lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
-    static LRESULT CALLBACK lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM lParam);
     static void CALLBACK winEventForegroundProc(
         HWINEVENTHOOK hWinEventHook,
         DWORD event,
@@ -158,7 +157,7 @@ private:
     std::thread m_hookThread;
     std::atomic<DWORD> m_hookThreadId{0};
     std::atomic<HHOOK> m_kbHook{nullptr};
-    std::atomic<HHOOK> m_mouseHook{nullptr};
+    uint64_t m_mouseActivitySubId = 0;
 
     std::thread m_workerThread;
     std::mutex m_jobMutex;

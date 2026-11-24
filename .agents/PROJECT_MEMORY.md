@@ -6,6 +6,36 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-24] 五项用户体验与系统稳定性深层根治：搜索打开前台移交、剪贴板跨权限终端/无边框拖放直贴、长时运行截图丝滑度、快捷键四域重排与 Issue #25 弹窗失焦修复
+- **1. 搜索界面打开文件/目录前台激活与单实例焦点移交 (`src/core/utils/WinUtils.{h,cpp}`)**:
+  - *根因*：`SearchWindow` 采用标准独立桌面窗口（失焦不自动隐藏），通过 `Desktop Explorer` COM 代理启动已运行的单实例应用（如 Win11 多标签 `Notepad.exe`、Office、VS Code、已打开的 `CabinetWClass`）时，仅靠 `ShellExecuteEx` 无法将 `Tools3000` 持有的前台令牌传递给既有进程，Windows 防抢焦机制阻断 `SetForegroundWindow` 并退化为任务栏橙色闪烁；
+  - *根治*：新增 `resolveShellTargetAssociatedExe`（`AssocQueryStringW` 解析关联进程）与 `extractShellTargetTitleHint`，启动前执行 `grantForegroundPermissionForLaunch`（`LockSetForegroundWindow(LSFW_UNLOCK)` + `AllowSetForegroundWindow(ASFW_ANY)` + 显式预授权桌面 `Explorer` 与目标单实例 PID，非钉住搜索窗自动解除残余 `TOPMOST`）；同时为 `launchShellTargetBoundedSta` 与 `openFolderAndSelectItem` 挂载 `650ms` 有界 `spawnForegroundHandOffWatchdog` 前台移交看门狗，精准将新建或复用的外部窗口拉至前台并消除任务栏闪烁。
+- **2. 剪贴板拖放直贴跨 UIPI 终端与 Electron 无边框窗口兼容 (`src/clipboard/ClipboardNativeDrag.{h,cpp}`, 感谢 Linux.do `@宫灵紫凝`)**:
+  - *根因*：① 管理员态 `Tools3000` 向普通权限无边框 Electron 应用（如 Clash Party 订阅输入框）拖放时，UIPI 拦截 OLE `DoDragDrop` 转入智能回退引擎，而 Electron 顶部扩展 `-webkit-app-region: drag` 命中 `HTCAPTION` 被旧安全过滤器误拒（或外层容器假接收 `dragover` 却未调用 `IDataObject::GetData` 消费文本）；② 拖向 `Windows Terminal`（`powershell` / `pi` CLI TUI）时，回退引擎发送模拟左键点击触发控制台选区/VT 鼠标捕获，且富文本剪贴板与裸 `Ctrl+V` 在 TUI 下失效；
+  - *根治*：① `ClipboardDragDataObject` 将 `CF_UNICODETEXT` 置于 `HTML Format` 之前并追踪 `wasAnyDataRetrieved()`，未实际读取数据的假接收自动回退智能粘贴；② `resolveSafeExternalDropTarget` 引入 DPI 自适应 `38px` 顶栏高度阈值与右上角三键排除区，安全放行窗体腹地 `HTCAPTION` 及 `Chrome_RenderWidgetHostHWND` / `InputSiteWindowClass` 子宿主；③ 新增 `classifyTerminalPasteTarget` 四分类终端路由（`Windows Terminal`/`WezTerm`/`Alacritty` 走硬件扫描码 `Ctrl+Shift+V`，`mintty`/`PuTTY` 走 `Shift+Insert`，经典 `conhost` 走 `Ctrl+V`），终端目标强制剥离富文本且**跳过虚拟左键点击**，零干扰直贴 CLI TUI。
+- **3. 长时运行后截图卡顿与全局钩子/僵尸进程卫生 (`src/text_expander/TextExpanderManager.{h,cpp}`, `src/main.cpp`, `src/capture/CaptureRenderer*.{h,cpp}`, `src/capture/CaptureInput*.{h,cpp}`, 感谢 Linux.do `@宫灵紫凝`)**:
+  - *根因*：① `TextExpanderManager` 在普通优先级线程重复挂载了全进程第 2 条全局 `WH_MOUSE_LL` 钩子，使 1000Hz 鼠标移动经历双倍跨线程内核钩子跳数；② `main.cpp` 全屏感知 `WinEventHook` 订阅了宽泛的 `0x0003..0x0017`（含全局滚动/捕获/菜单事件）持续轰炸 UI 主线程；③ 旧实例退出偶发卡在 CRT 静态析构/显卡驱动卸载形成单线程僵尸进程；④ `CaptureRenderer` 每帧重建 5 把主题画刷与 `ID2D1Layer`，且 `CaptureInput` 未合并积压 `WM_MOUSEMOVE`；
+  - *根治*：移除 `TextExpanderManager` 冗余 `WH_MOUSE_LL` 改订进程内 `EventBus` `MouseActivityEvent` 并将键盘钩子线程提至 `THREAD_PRIORITY_HIGHEST`；`WinEventHook` 收窄至精确前台/移动缩放/最小化恢复事件且截图遮罩可见时短路；`main()` 尾部增设 `1200ms` 退出看门狗杜绝残留僵尸进程；`CaptureRenderer` 缓存主题画刷并复用持久化 `m_markupClipLayer`，`CaptureInput` 在非自由画笔态合并最多 32 条陈旧 `WM_MOUSEMOVE` 并缓存同屏 DPI。
+- **4. 通用设置「快捷键总览」四域分组与高频优先排序 (`ui/src/config/hotkeyCatalog.ts`, `GeneralPage.{tsx,css}`, `MessageBridge.cpp`, 8 语种词典)**:
+  - 废除原先按英文 Action ID 字母序 `A -> Z` 排列导致「录屏时静音麦克风」排第一而高频「屏幕截图 (`F1`)」沉底的反直觉顺序；在 `hotkeyCatalog.ts` 建立单一事实源优先级权重与四大功能域分组（`高频核心唤起` -> `贴图与图文识别` -> `屏幕录制控制` -> `输入与辅助增强`），前后端 `hotkey.getAll` 同步对齐。
+- **5. 通用弹窗 `<Modal>` 逐字输入自动失焦与输入法 `Escape` 误关根治 (`ui/src/components/UIKit.tsx`, `OnboardingModal.tsx`, `SearchRenameModal.tsx`, 修复 GitHub Issue `#25 @fxzou`)**:
+  - *根因*：`UIKit.Modal` 的焦点捕获与恢复 `useEffect` 依赖了 `[open, onClose]`；当 `TextExpanderPage`（新增/编辑短语弹窗）等父组件传入内联箭头函数 `onClose={() => setEditorOpen(false)}` 时，用户在输入框每敲入 1 个字符触发 `setDraft` 重渲染，都会生成新的 `onClose` 引用，导致 `Modal` 执行 cleanup 扯走焦点并在下一帧 `requestAnimationFrame` 将焦点强行抢到弹窗右上角首个 `<button class="uikit-modal__close">` 关闭按钮上；
+  - *根治*：在 `UIKit.Modal`、`OnboardingModal`、`SearchRenameModal` 全面采用 `onCloseRef` / `onCompleteRef` 解耦回调引用，焦点生命周期严格仅响应 `[open]` 跃迁；首次打开弹窗时优先聚焦 `.uikit-modal__body` 内首个文本输入控件（开窗即输入），并增加 `e.isComposing || e.keyCode === 229` 守卫防止中文输入法按 `Esc` 取消候选词时误关整个弹窗。
+
+### [2026-11-24] 全站 19 个菜单页信息架构（IA）重整、「功能模块」单行高扩展列表与专门一级页面「性能与内存」落地
+- **1. 全站设置信息架构黄金五律与通用原语 (`UIKit.{tsx,css}`, `routes.ts`, `settingsSearchIndex.ts`)**：
+  - 建立全站统一纵向心智漏斗：**「1. 顶栏总控与核心热键（含立即体验） -> 2. 日常高频行为偏好 -> 3. 视觉外观与个性化 -> 4. 进阶参数/离线模型/开发者接口 -> 5. 隐私排除与危险重置沉底」**；
+  - 在 `UIKit` 新增父子依赖缩进原语 `<SubSettingGroup>`（左侧微晶引导竖线与禁用降权）及模块停用级联包裹层 `<DisabledCascade>`，彻底根治数十处条件子项与父开关平铺左对齐的主从混淆；
+  - 四大超长瀑布流重型页面全面接入顶栏一级 `<Tabs>` 分流并与侧边栏细粒度搜索（`tools3000:navigate-deep`）双向联动：`截图与录屏`（4 页签：截图与标注 / 贴图与固定选区 / 屏幕录制 [内拆 4 组] / 演播室与水印）、`鼠标手势`（3 页签：手势与目标规则 [首屏直达工作台，统一 13 药丸单一事实源] / 轨迹外观与演示 / 识别算法与防误触）、`文本识别与翻译`（3 页签：识文与交互 / 原位与划词翻译 / 离线引擎与模型包）、`文件搜索`（4 页签：基础与热键 [补齐模块总开关] / 服务与索引 / CLI 与 MCP 接口 / 搜索与正则语法二合一）；
+  - 其余全部页面同步正置：`通用设置` 拆为 7 组（全局快捷键提至第 3 组，危险重置沉底）、`数据统计` 修复金字塔倒置将 4 宫格 KPI 置顶并持久化热力图配列、`文件占用解锁` 去空壳重复头并将立即检测提至首屏、`文本扩展器` 将短语规则提至首屏、`按键回显` 拆出键帽配色与时序动效、`鼠标演示与特效` 按聚光灯/波纹/轨迹三平行引擎分块并将摇晃阈值紧随摇晃开关缩进、`远程协助增强` 三大核心引擎置顶首屏并将 28 项进程/类名收拢后置。
+- **2. 「功能模块 (`PluginsPage`)」单行高扩展列表架构 (`PluginsPage.{tsx,css}`, `routes.ts`)**：
+  - 画布收敛为 `reading (960px)` 黄金阅读宽，废除双列大高卡片与内置模块重复 11 遍的版本号噪音；
+  - 顶部配备搜索过滤与 `全部 / 运行中 / 已停用` 分段胶囊，下方按 `PLUGIN_DOMAIN_GROUPS` 四大正交业务域渲染单行列表（左图标瓷砖 + 模块名 + 关联子页微标签 + 单行简介；右权限盾牌微按钮 `<details>` 按需全宽展开技术元数据 + 配置跳转 + 垂直对齐 `<Toggle>` 轴），支撑未来 20~30+ 模块平滑扩展。
+- **3. 专门一级页面「性能与内存 (`PerformancePage`)」与全链路只读回收时间表 (`PerformancePage.{tsx,css}`, `AboutPage.tsx`, `MessageBridge.cpp`)**：
+  - 在左侧「洞察与关于」分组下新增专门页面 `performance`（精简剥离原 `AboutPage` 底部简陋监控卡，并将 `AboutPage` 25 项底层依赖收纳为可折叠面板）；
+  - 上半部提供 6 宫格实时遥测（专用工作集 / 总工作集 / CPU / 截图、手势、UI 延迟，仅停留本页时按秒轮询）及 `perf.trimMemory` 一键静默回收；
+  - 下半部构建 **4 层 10 项全链路内存自动回收时间表（只读透明看板）**：动态读取 `general.getSettings` (`autoReleaseSettingsMemory`) 与 `search.getSettings` (`memoryMode` / 阈值) 实时映射关联状态并提供一键跳往设置入口，所有时间参数只读零误改风险，且对主进程堆紧缩与冷态防抖保护项显式标注 `内核锁定 · 不可修改`。
+
 ### [2026-11-24] MECE 四维无损内存与进程外文件对话框隔离治理：常驻专用工作集 42.02 MB -> 1.61 MB (-96.2%)，3 张 2K 大图后 57.00 MB -> 2.20 MB 且 0 .NET CLR 污染
 - **1. 真机内存膨胀四大正交病灶（MECE 取证复盘）**：
   - *病灶 A（第三方外壳扩展与 `.NET 4.0 CLR` 进程内永久寄生）*：在主进程内直接调用 `IFileOpenDialog` / `IFileSaveDialog` / `GetSaveFileNameW` 时，Windows Shell 会将本机安装的网盘同步图标扩展（如百度网盘 `YunShellExtV164.dll`）连同整套 `.NET 4.0 CLR`（`clr.dll` 9.64 MB、`mscorlib.ni.dll` 22.36 MB、`System.ni.dll` 12.47 MB、`System.Core.ni.dll` 10.45 MB）永久加载进 `Tools3000.exe` 且无法卸载，造成 60+ MB 提交内存与 20+ 个后台线程常驻；

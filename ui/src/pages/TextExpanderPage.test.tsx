@@ -227,4 +227,34 @@ describe('TextExpanderPage', () => {
       );
     });
   });
+
+  it('keeps focus inside trigger and replacement inputs while typing character by character (#25)', async () => {
+    render(<TextExpanderPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Current Date')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Snippet' }));
+
+    const triggerInput = document.getElementById('te-rule-trigger') as HTMLInputElement;
+    const replacementArea = document.getElementById('te-rule-replacement') as HTMLTextAreaElement;
+
+    await waitFor(() => {
+      expect(document.activeElement).toBe(triggerInput);
+    });
+
+    for (const partial of [';', ';s', ';si', ';sig']) {
+      fireEvent.change(triggerInput, { target: { value: partial } });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(document.activeElement).toBe(triggerInput);
+    }
+
+    replacementArea.focus();
+    for (const partial of ['H', 'Hi', 'Hi!']) {
+      fireEvent.change(replacementArea, { target: { value: partial } });
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+      expect(document.activeElement).toBe(replacementArea);
+    }
+  });
 });
