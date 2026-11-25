@@ -101,6 +101,11 @@ public:
         return true;
     }
 
+    /// 呼出搜索框时是否需要提前唤醒后台全盘索引服务（默认分类为纯离线 app / bookmark 时不唤醒，省去 100% 服务开销）
+    static constexpr bool shouldWarmUpSearchServiceOnShow(std::string_view defaultCategory) noexcept {
+        return defaultCategory != "app" && defaultCategory != "bookmark";
+    }
+
     /// 计算窗口非客户区命中测试结果（支持按 DPI 比例校准，全高放行边缘拉伸）
     static LRESULT calculateHitTest(const RECT& rc, POINT pt, float scale) {
         const int corner = tools3000::core::dpi::scaleMetric(8, scale);
@@ -139,6 +144,8 @@ private:
     static constexpr UINT FIRST_PAINT_FALLBACK_DELAY_MS = 2000;
     static constexpr UINT_PTR IDT_DEFERRED_BLUR_HIDE = 2113;
     static constexpr UINT DEFERRED_BLUR_HIDE_DELAY_MS = 60;
+    static constexpr UINT_PTR IDT_POST_SHOW_REPAINT_VERIFY = 2114;
+    static constexpr UINT POST_SHOW_REPAINT_VERIFY_MS = 160;
 
     enum class WebViewStatus : uint8_t {
         Loading = 0,
@@ -150,6 +157,7 @@ private:
 
     void setWebViewStatus(WebViewStatus status, HRESULT hr = S_OK);
     void completeFirstPaintReady();
+    void presentWebViewSurface(bool forceCompositorKick);
     void paintStatusBackdrop(HDC hdc, const RECT& clientRect) const;
     void handleStatusSurfaceAction();
 
@@ -174,6 +182,8 @@ private:
     std::atomic<bool> m_inSizeMove{false};
     std::atomic<uint64_t> m_lastMenuCloseTick{0};
     bool m_updatingPlacement = false;
+    bool m_wasSuspended = false;
+    bool m_everPresentedVisible = false;
     uint64_t m_showTimeTick{0};
     std::atomic<uint64_t> m_generation{0};
 };

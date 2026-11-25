@@ -266,11 +266,26 @@ export default function SearchApp() {
       }
       void bridgeRequest('search.firstPaintReady', undefined, { silent: true }).catch(() => undefined);
     };
-    fallbackTimer = setTimeout(notifyReady, 64);
-    raf1 = requestAnimationFrame(() => {
-      raf2 = requestAnimationFrame(notifyReady);
-    });
+    const scheduleVisiblePaintNotify = () => {
+      if (firstPaintNotifiedRef.current || document.hidden) return;
+      if (fallbackTimer === null) {
+        fallbackTimer = setTimeout(notifyReady, 120);
+      }
+      if (!raf1) {
+        raf1 = requestAnimationFrame(() => {
+          raf2 = requestAnimationFrame(notifyReady);
+        });
+      }
+    };
+    const onVisibility = () => {
+      if (!document.hidden) {
+        scheduleVisiblePaintNotify();
+      }
+    };
+    scheduleVisiblePaintNotify();
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
       if (fallbackTimer !== null) clearTimeout(fallbackTimer);

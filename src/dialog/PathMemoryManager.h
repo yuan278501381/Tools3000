@@ -51,6 +51,15 @@ public:
     std::string getRibbonPosition() const;
     void setRibbonPosition(const std::string& pos);
 
+    // 对话框独立可配置快捷键（空字符串表示禁用；默认 QuickJump=Ctrl+G, InlineSearch=Ctrl+Shift+G）
+    std::string getQuickJumpHotkey() const;
+    void setQuickJumpHotkey(const std::string& hotkey);
+
+    std::string getInlineSearchHotkey() const;
+    void setInlineSearchHotkey(const std::string& hotkey);
+
+    static std::string sanitizeHotkeyString(const std::string& raw, const std::string& fallback);
+
     // 应用程序专属记忆与固定母工作区
     void recordAppPath(const std::string& processName, const std::string& folderPath);
     void recordAppSelection(const std::string& processName,
@@ -101,6 +110,8 @@ private:
     bool m_ribbonEnabled{true};
     bool m_inlineSearchEnabled{true};
     std::string m_ribbonPosition{"top-right"};
+    std::string m_quickJumpHotkey{"Ctrl+G"};
+    std::string m_inlineSearchHotkey{"Ctrl+Shift+G"};
 
     std::unordered_map<std::string, AppMemoryItem> m_appMemories;
     std::vector<std::string> m_recentPaths;

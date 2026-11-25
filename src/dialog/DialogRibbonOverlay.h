@@ -84,6 +84,13 @@ public:
     // 展开/收起 Listary 风格内嵌极速搜索框
     void toggleInlineSearch();
 
+    // 支持脱离悬浮胶囊条（ribbonEnabled=false）直接按用户自定义快捷键为当前文件对话框呼出/收起内嵌搜索
+    void toggleInlineSearchForDialog(HWND dialogHwnd,
+                                     const std::string& processName,
+                                     DialogArchitecture architecture,
+                                     DialogMode mode,
+                                     const std::string& cachedFolder);
+
     static bool computeSafeHorizontalPlacement(const RECT& dlgRect, float dpiScale,
                                                int ribbonWidth, const std::string& posConfig,
                                                int& outPosX, int& outMaxAvailableWidth) noexcept;

@@ -84,8 +84,14 @@ void hookWebViewChildWindows(HWND parentHwnd) {
 }
 
 // 索引服务按需启动，预热 WebView 时并不拉起它。窗口真正呼出才是"用户要搜索"
-// 的第一个可靠信号，此时把服务叫醒，启动耗时正好被用户的输入过程盖掉。
+// 的第一个可靠信号，此时把服务叫醒，启动耗时正好被用户的输入过程盖掉；
+// 若用户将默认筛选分类设为纯离线模式（app / bookmark），则跳过提前唤醒，省去 100% 后台索引服务开销。
 void warmUpSearchService() {
+    const std::string defaultCategory =
+        tools3000::core::ConfigManager::instance().get<std::string>("/search/defaultCategory", "all");
+    if (!SearchWindow::shouldWarmUpSearchServiceOnShow(defaultCategory)) {
+        return;
+    }
     tools3000::core::MessageBridge::instance().handleMessageAsync(
         R"({"id":0,"method":"search.warmup","params":{}})", [](std::string) {});
 }
@@ -296,19 +302,46 @@ std::pair<int, int> SearchWindow::getWindowSize() const {
     return {w, h};
 }
 
+void SearchWindow::presentWebViewSurface(bool forceCompositorKick) {
+    if (!m_hwnd || !IsWindow(m_hwnd) || !m_controller) return;
+    if (m_webView) {
+        m_suspendController.resume(m_webView.Get(), "search");
+    }
+    const bool needKick = forceCompositorKick || m_wasSuspended || !m_everPresentedVisible;
+    m_wasSuspended = false;
+
+    RECT rc{};
+    const bool hasRect = (GetClientRect(m_hwnd, &rc) != FALSE) && (rc.right > rc.left) && (rc.bottom > rc.top);
+    if (needKick) {
+        // Win10 LTSC / 核显 / TrySuspend 恢复后 Chromium DirectComposition 表面易卡在未提交帧导致黑屏：
+        // 执行 FALSE -> 1px 脏区脉冲 -> 真实 Bounds -> TRUE + NotifyParentWindowPositionChanged 强制提交新帧。
+        m_controller->put_IsVisible(FALSE);
+        if (hasRect && (rc.bottom - rc.top) > 2) {
+            RECT pulseRc = rc;
+            pulseRc.bottom -= 1;
+            m_controller->put_Bounds(pulseRc);
+        }
+    }
+    if (hasRect) {
+        m_controller->put_Bounds(rc);
+    }
+    syncWebViewDpi(m_controller.Get(), m_hwnd);
+    m_controller->put_IsVisible(TRUE);
+    m_controller->NotifyParentWindowPositionChanged();
+    m_everPresentedVisible = true;
+    SetTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY, POST_SHOW_REPAINT_VERIFY_MS, nullptr);
+}
+
 void SearchWindow::focusSearchIfVisible() {
     if (!isVisible()) return;
-    if (!m_uiFirstPaintReady.load(std::memory_order_acquire)) {
+    if (!m_webViewReady.load(std::memory_order_acquire)) {
         if (m_hwnd && IsWindow(m_hwnd)) {
             InvalidateRect(m_hwnd, nullptr, FALSE);
         }
         return;
     }
+    presentWebViewSurface(false);
     if (m_controller) {
-        m_controller->put_IsVisible(TRUE);
-        if (m_hwnd && IsWindow(m_hwnd)) {
-            syncWebViewDpi(m_controller.Get(), m_hwnd);
-        }
         m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
     }
     if (m_webView) {
@@ -333,15 +366,14 @@ void SearchWindow::markFirstPaintReady() {
 void SearchWindow::completeFirstPaintReady() {
     if (!m_hwnd || !IsWindow(m_hwnd) || !m_controller) return;
     KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
-    const bool alreadyReady = m_uiFirstPaintReady.exchange(true, std::memory_order_acq_rel);
+    m_uiFirstPaintReady.store(true, std::memory_order_release);
     setWebViewStatus(WebViewStatus::Ready, S_OK);
     if (m_visible.load(std::memory_order_acquire)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
-        if (m_webView) m_suspendController.resume(m_webView.Get(), "search");
         focusSearchIfVisible();
-    } else if (!alreadyReady) {
-        // 后台 preload 完成真实 React 首帧渲染后保持隐藏，延迟 25s 再挂起，
-        // 避免机械盘上 0 帧即冻结导致用户首次按 Alt+Space 时露出纯色黑屏。
+    } else if (m_everPresentedVisible) {
+        // 仅在窗口至少完整向用户渲染过一次真实帧后才进入延迟挂起，
+        // 杜绝后台 preload 在 0 帧隐藏态即被 TrySuspend 冻死导致首次 Alt+Space 呼出黑屏。
         m_controller->put_IsVisible(FALSE);
         SetTimer(m_hwnd, IDT_DEFERRED_SUSPEND, DEFERRED_SUSPEND_DELAY_MS, nullptr);
     }
@@ -439,9 +471,11 @@ void SearchWindow::show(HINSTANCE hInstance) {
         m_minimized = false;
         hookWebViewChildWindows(m_hwnd);
         if (m_webView) m_suspendController.resume(m_webView.Get(), "search");
-        if (!m_uiFirstPaintReady.load(std::memory_order_acquire)) {
+        if (!m_webViewReady.load(std::memory_order_acquire)) {
             if (m_controller) m_controller->put_IsVisible(FALSE);
             InvalidateRect(m_hwnd, nullptr, FALSE);
+        } else {
+            presentWebViewSurface(wasHidden || wasMinimized || m_wasSuspended);
         }
         focusSearchIfVisible();
         recordShown();
@@ -487,6 +521,7 @@ void SearchWindow::minimize() {
 void SearchWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
+    KillTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
     if (!m_visible.load() && !IsWindowVisible(m_hwnd)) return;
     persistNormalGeometry();
     ShowWindow(m_hwnd, SW_HIDE);
@@ -519,6 +554,13 @@ bool SearchWindow::isForegroundActive() const {
 
 void SearchWindow::destroy() {
     ++m_generation;
+    m_wasSuspended = false;
+    m_everPresentedVisible = false;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
+        KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
+        KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
+    }
     m_suspendController.abandon();
     if (m_controller) {
         m_controller->Close();
@@ -1024,13 +1066,19 @@ void SearchWindow::initializeWebView2() {
                                             }
                                             warmUpSearchService();
                                         }
-                                        // NavigationCompleted 仅表示外层 HTML 加载完成，此时异步懒加载的 SearchApp JS 与 GPU 首帧
-                                        // 尚未提交。等待前端双 rAF 上报 search.firstPaintReady（或 2000ms 兜底）后再显现或挂起，
-                                        // 避免 0 帧提前冻结或用纯色空面覆盖原生加载提示。
-                                        if (m_uiFirstPaintReady.load(std::memory_order_acquire)) {
-                                            completeFirstPaintReady();
-                                        } else if (m_hwnd && IsWindow(m_hwnd)) {
-                                            SetTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK, FIRST_PAINT_FALLBACK_DELAY_MS, nullptr);
+                                        // 与 SettingsWindow::smoothPresent / ClipboardWindow::revealWindowNow 对齐：
+                                        // 导航完成后若窗口当前可见，立即显露控制器并强制提交首帧，绝不在 put_IsVisible(FALSE)
+                                        // 状态下死等被 Chromium 节流挂起的 JS rAF；若处于后台 preload 隐藏态，则保持隐藏待命且不提前冻结。
+                                        if (m_visible.load(std::memory_order_acquire)) {
+                                            setWebViewStatus(WebViewStatus::Ready, S_OK);
+                                            presentWebViewSurface(true);
+                                            focusSearchIfVisible();
+                                            if (!m_uiFirstPaintReady.load(std::memory_order_acquire) &&
+                                                m_hwnd && IsWindow(m_hwnd)) {
+                                                SetTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK, FIRST_PAINT_FALLBACK_DELAY_MS, nullptr);
+                                            }
+                                        } else {
+                                            if (m_controller) m_controller->put_IsVisible(FALSE);
                                         }
                                         return S_OK;
                                     }).Get(), nullptr);
@@ -1122,6 +1170,7 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                 }
                 if (inst.m_webView) {
                     // 最小化到任务栏期间冻结渲染器零 CPU，同时完整保留当前搜索结果与滚动位置
+                    inst.m_wasSuspended = true;
                     inst.m_suspendController.requestSuspend(inst.m_webView.Get(), "search");
                 }
                 return 0;
@@ -1165,7 +1214,7 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             hookWebViewChildWindows(hwnd);
             if (inst.m_controller) {
                 syncWebViewDpi(inst.m_controller.Get(), hwnd);
-                if (IsWindowVisible(hwnd)) {
+                if (IsWindowVisible(hwnd) && inst.m_webViewReady.load(std::memory_order_acquire)) {
                     inst.m_controller->put_IsVisible(TRUE);
                 }
             }
@@ -1318,6 +1367,23 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                 }
                 return 0;
             }
+            if (wParam == IDT_POST_SHOW_REPAINT_VERIFY) {
+                KillTimer(hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
+                if (inst.isVisible() && inst.m_controller && inst.m_webViewReady.load(std::memory_order_acquire)) {
+                    RECT verifyRc{};
+                    if (GetClientRect(hwnd, &verifyRc) && verifyRc.right > verifyRc.left && verifyRc.bottom > verifyRc.top) {
+                        inst.m_controller->put_Bounds(verifyRc);
+                    }
+                    inst.m_controller->put_IsVisible(TRUE);
+                    inst.m_controller->NotifyParentWindowPositionChanged();
+                    if (inst.m_webView) {
+                        inst.m_webView->ExecuteScript(
+                            L"requestAnimationFrame(() => { void document.documentElement.offsetHeight; });",
+                            nullptr);
+                    }
+                }
+                return 0;
+            }
             if (wParam == IDT_FIRST_PAINT_FALLBACK) {
                 KillTimer(hwnd, IDT_FIRST_PAINT_FALLBACK);
                 inst.completeFirstPaintReady();
@@ -1326,7 +1392,10 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             if (wParam == IDT_DEFERRED_SUSPEND && !inst.m_visible.load()) {
                 KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
                 if (inst.m_controller) inst.m_controller->put_IsVisible(FALSE);
-                if (inst.m_webView) inst.m_suspendController.requestSuspend(inst.m_webView.Get(), "search");
+                if (inst.m_webView && inst.m_everPresentedVisible) {
+                    inst.m_wasSuspended = true;
+                    inst.m_suspendController.requestSuspend(inst.m_webView.Get(), "search");
+                }
                 tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
                 return 0;
             }

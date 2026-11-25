@@ -16,12 +16,14 @@ import {
   ConfirmModal,
   PageSkeleton,
 } from '../components/UIKit';
+import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
   FolderSymlink,
   FolderOpen,
+  Keyboard,
   Sparkles,
   History,
   Star,
@@ -42,6 +44,8 @@ interface DialogConfig {
   ribbonEnabled: boolean;
   inlineSearchEnabled: boolean;
   ribbonPosition: string;
+  quickJumpHotkey: string;
+  inlineSearchHotkey: string;
 }
 
 interface AppMemoryItem {
@@ -59,6 +63,8 @@ const DEFAULT_DIALOG_CONFIG: DialogConfig = {
   ribbonEnabled: true,
   inlineSearchEnabled: true,
   ribbonPosition: 'top-right',
+  quickJumpHotkey: 'Ctrl+G',
+  inlineSearchHotkey: 'Ctrl+Shift+G',
 };
 
 export const DialogEnhancerPage: FC = () => {
@@ -313,7 +319,95 @@ export const DialogEnhancerPage: FC = () => {
 
       <DisabledCascade disabled={!config.enabled}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-          {/* 2. 文件对话框快捷工具条与内嵌即搜 */}
+          {/* 2. 键盘快捷键直达跳转与内嵌搜索（独立于悬浮工具条，始终可用） */}
+          <SettingGroup title={t('dialog.hotkeyGroup', 'Dialog Keyboard Shortcuts & Quick Jump')} icon={<Keyboard size={18} />}>
+            <Card>
+              <Toggle
+                id="dialog-quick-switch"
+                label={t('dialog.quickSwitch')}
+                description={t('dialog.quickSwitchDesc')}
+                checked={config.quickSwitch}
+                disabled={!config.enabled}
+                onChange={(v) => updateConfig({ quickSwitch: v })}
+              />
+              <SubSettingGroup disabled={!config.enabled || !config.quickSwitch}>
+                <SettingRow
+                  label={t('dialog.quickJumpHotkeyLabel', 'Jump to Active File Manager Folder')}
+                  description={t(
+                    'dialog.quickJumpHotkeyDesc',
+                    'Press inside a file dialog to jump straight to the active tab of the most recently used Explorer, Total Commander, Directory Opus, XYplorer, Q-Dir, OneCommander, or Files window (also supports Qt & JetBrains file dialogs). Clear to disable.'
+                  )}
+                >
+                  <HotkeyRecorder
+                    id="dialog-quick-jump-hotkey"
+                    value={config.quickJumpHotkey}
+                    disabled={!config.enabled || !config.quickSwitch}
+                    onChange={(nextKey) => {
+                      if (
+                        nextKey &&
+                        config.inlineSearchHotkey &&
+                        nextKey.toLowerCase() === config.inlineSearchHotkey.toLowerCase()
+                      ) {
+                        toast.warning(
+                          t(
+                            'dialog.hotkeyDuplicateWarn',
+                            'This shortcut is already assigned to the other dialog action; please choose a different combination'
+                          )
+                        );
+                        return;
+                      }
+                      void updateConfig({ quickJumpHotkey: nextKey });
+                    }}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
+
+              <Toggle
+                id="dialog-inline-search"
+                label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump')}
+                description={t(
+                  'dialog.inlineSearchEnabledDesc',
+                  'Click the ribbon search icon or press your shortcut inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
+                )}
+                checked={config.inlineSearchEnabled}
+                disabled={!config.enabled}
+                onChange={(v) => updateConfig({ inlineSearchEnabled: v })}
+              />
+              <SubSettingGroup disabled={!config.enabled || !config.inlineSearchEnabled}>
+                <SettingRow
+                  label={t('dialog.inlineSearchHotkeyLabel', 'Open Inline Quick Search')}
+                  description={t(
+                    'dialog.inlineSearchHotkeyDesc',
+                    'Scoped exclusively to foreground file dialogs so it never interferes with other apps; works even when the floating ribbon is hidden. Clear to disable.'
+                  )}
+                >
+                  <HotkeyRecorder
+                    id="dialog-inline-search-hotkey"
+                    value={config.inlineSearchHotkey}
+                    disabled={!config.enabled || !config.inlineSearchEnabled}
+                    onChange={(nextKey) => {
+                      if (
+                        nextKey &&
+                        config.quickJumpHotkey &&
+                        nextKey.toLowerCase() === config.quickJumpHotkey.toLowerCase()
+                      ) {
+                        toast.warning(
+                          t(
+                            'dialog.hotkeyDuplicateWarn',
+                            'This shortcut is already assigned to the other dialog action; please choose a different combination'
+                          )
+                        );
+                        return;
+                      }
+                      void updateConfig({ inlineSearchHotkey: nextKey });
+                    }}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
+            </Card>
+          </SettingGroup>
+
+          {/* 3. 文件对话框悬浮快捷工具条 */}
           <SettingGroup title={t('dialog.ribbonGroup')} icon={<Sparkles size={18} />}>
             <Card>
               <Toggle
@@ -325,25 +419,6 @@ export const DialogEnhancerPage: FC = () => {
                 onChange={(v) => updateConfig({ ribbonEnabled: v })}
               />
               <SubSettingGroup disabled={!config.enabled || !config.ribbonEnabled}>
-                <Toggle
-                  id="dialog-inline-search"
-                  label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump (Ctrl+G)')}
-                  description={t(
-                    'dialog.inlineSearchEnabledDesc',
-                    'Click the search icon or press Ctrl+G inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
-                  )}
-                  checked={config.inlineSearchEnabled}
-                  disabled={!config.enabled || !config.ribbonEnabled}
-                  onChange={(v) => updateConfig({ inlineSearchEnabled: v })}
-                />
-                <Toggle
-                  id="dialog-quick-switch"
-                  label={t('dialog.quickSwitch')}
-                  description={t('dialog.quickSwitchDesc')}
-                  checked={config.quickSwitch}
-                  disabled={!config.enabled || !config.ribbonEnabled}
-                  onChange={(v) => updateConfig({ quickSwitch: v })}
-                />
                 <SettingRow label={t('dialog.ribbonPosition')}>
                   <Select
                     id="dialog-ribbon-pos"

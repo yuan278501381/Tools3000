@@ -2025,4 +2025,178 @@ bool DialogNavigator::navigateToSearchResultInternal(HWND dialogHwnd,
     return true;
 }
 
+bool DialogNavigator::navigateNonStandardDialog(HWND dialogHwnd,
+                                                NonStandardDialogKind kind,
+                                                const std::string& folderPath) {
+    if (!dialogHwnd || !IsWindow(dialogHwnd) || kind == NonStandardDialogKind::None || folderPath.empty()) {
+        return false;
+    }
+
+    const std::wstring wPath = normalizeComparePathW(tools3000::core::WinUtils::utf8ToWstring(folderPath));
+    if (wPath.empty() || !verifyNavigableDirectoryBounded(wPath)) {
+        return false;
+    }
+
+    struct ScopedComInit {
+        HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        ~ScopedComInit() {
+            if (SUCCEEDED(hr)) CoUninitialize();
+        }
+    } comGuard;
+
+    ComPtr<IUIAutomation> uia;
+    if (FAILED(CoCreateInstance(CLSID_CUIAutomation, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&uia))) || !uia) {
+        return false;
+    }
+    ComPtr<IUIAutomationElement> root;
+    if (FAILED(uia->ElementFromHandle(dialogHwnd, &root)) || !root) {
+        return false;
+    }
+
+    auto hasControlType = [&](CONTROLTYPEID ctrlType) -> bool {
+        VARIANT v;
+        VariantInit(&v);
+        v.vt = VT_I4;
+        v.lVal = ctrlType;
+        ComPtr<IUIAutomationCondition> cond;
+        if (FAILED(uia->CreatePropertyCondition(UIA_ControlTypePropertyId, v, &cond)) || !cond) return false;
+        ComPtr<IUIAutomationElement> found;
+        return SUCCEEDED(root->FindFirst(TreeScope_Descendants, cond.Get(), &found)) && found != nullptr;
+    };
+
+    // 严格二次验证：必须具备按钮及列表/树视图，杜绝误把普通设置弹窗或聊天窗口当成文件对话框
+    if (!hasControlType(UIA_ButtonControlTypeId) ||
+        (!hasControlType(UIA_ListControlTypeId) &&
+         !hasControlType(UIA_TreeControlTypeId) &&
+         !hasControlType(UIA_DataGridControlTypeId) &&
+         !hasControlType(UIA_TableControlTypeId))) {
+        return false;
+    }
+
+    VARIANT varEdit;
+    VariantInit(&varEdit);
+    varEdit.vt = VT_I4;
+    varEdit.lVal = UIA_EditControlTypeId;
+    ComPtr<IUIAutomationCondition> editCond;
+    if (FAILED(uia->CreatePropertyCondition(UIA_ControlTypePropertyId, varEdit, &editCond)) || !editCond) {
+        return false;
+    }
+    ComPtr<IUIAutomationElementArray> edits;
+    if (FAILED(root->FindAll(TreeScope_Descendants, editCond.Get(), &edits)) || !edits) {
+        return false;
+    }
+
+    int editCount = 0;
+    edits->get_Length(&editCount);
+    if (editCount <= 0) return false;
+
+    ComPtr<IUIAutomationElement> targetEdit;
+    ComPtr<IUIAutomationValuePattern> targetValuePat;
+    std::wstring savedOriginalText;
+
+    const int capped = (std::min)(editCount, 16);
+    for (int i = 0; i < capped; ++i) {
+        ComPtr<IUIAutomationElement> elem;
+        if (FAILED(edits->GetElement(i, &elem)) || !elem) continue;
+        BOOL isEnabled = FALSE;
+        BOOL isOffscreen = TRUE;
+        elem->get_CurrentIsEnabled(&isEnabled);
+        elem->get_CurrentIsOffscreen(&isOffscreen);
+        if (!isEnabled || isOffscreen) continue;
+
+        ComPtr<IUIAutomationValuePattern> vp;
+        if (FAILED(elem->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&vp))) || !vp) continue;
+        BOOL isReadOnly = TRUE;
+        vp->get_CurrentIsReadOnly(&isReadOnly);
+        if (isReadOnly) continue;
+
+        BSTR curValBstr = nullptr;
+        std::wstring curVal;
+        if (SUCCEEDED(vp->get_CurrentValue(&curValBstr)) && curValBstr) {
+            curVal.assign(curValBstr);
+            SysFreeString(curValBstr);
+        }
+
+        BSTR nameBstr = nullptr;
+        std::wstring nameLower;
+        if (SUCCEEDED(elem->get_CurrentName(&nameBstr)) && nameBstr) {
+            nameLower = toLowerAsciiW(nameBstr);
+            SysFreeString(nameBstr);
+        }
+
+        if (kind == NonStandardDialogKind::JetBrainsFileDialog) {
+            // JetBrains Open File/Project 顶部路径框通常已包含现有路径（如 C:\... 或 D:/...）
+            const bool looksLikePath =
+                (curVal.size() >= 3 && std::iswalpha(curVal[0]) && curVal[1] == L':' &&
+                 (curVal[2] == L'\\' || curVal[2] == L'/')) ||
+                (curVal.size() >= 2 && curVal[0] == L'\\' && curVal[1] == L'\\');
+            if (looksLikePath || !targetEdit) {
+                targetEdit = elem;
+                targetValuePat = vp;
+                savedOriginalText = curVal;
+                if (looksLikePath) break;
+            }
+        } else {
+            // Qt QFileDialog 优先匹配文件名/路径输入框
+            const bool isFileNameHint =
+                nameLower.find(L"file") != std::wstring::npos ||
+                nameLower.find(L"name") != std::wstring::npos ||
+                nameLower.find(L"path") != std::wstring::npos ||
+                nameLower.find(L"look in") != std::wstring::npos ||
+                nameLower.find(L"文件") != std::wstring::npos ||
+                nameLower.find(L"路径") != std::wstring::npos;
+            if (isFileNameHint || !targetEdit) {
+                targetEdit = elem;
+                targetValuePat = vp;
+                savedOriginalText = curVal;
+                if (isFileNameHint) break;
+            }
+        }
+    }
+
+    if (!targetEdit || !targetValuePat) {
+        return false;
+    }
+
+    std::wstring navigateValue = wPath;
+    if (kind == NonStandardDialogKind::QtFileDialog &&
+        !navigateValue.empty() && navigateValue.back() != L'\\') {
+        navigateValue.push_back(L'\\');
+    }
+
+    targetEdit->SetFocus();
+    BSTR bstrPath = SysAllocString(navigateValue.c_str());
+    if (!bstrPath) return false;
+    const HRESULT hrSet = targetValuePat->SetValue(bstrPath);
+    SysFreeString(bstrPath);
+    if (FAILED(hrSet)) {
+        return false;
+    }
+
+    // 仅向目标对话框自身发送回车以完成目录切换，绝不污染剪贴板
+    const LPARAM keyDown = 1 | (static_cast<LPARAM>(MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC)) << 16);
+    const LPARAM keyUp = keyDown | (static_cast<LPARAM>(1) << 30) | (static_cast<LPARAM>(1) << 31);
+    PostMessageW(dialogHwnd, WM_KEYDOWN, VK_RETURN, keyDown);
+    PostMessageW(dialogHwnd, WM_KEYUP, VK_RETURN, keyUp);
+
+    // Qt QFileDialog 切换完成后恢复用户原文件名（若原本不是路径）
+    if (kind == NonStandardDialogKind::QtFileDialog &&
+        !savedOriginalText.empty() &&
+        savedOriginalText.find(L'\\') == std::wstring::npos &&
+        savedOriginalText.find(L'/') == std::wstring::npos) {
+        Sleep(120);
+        if (IsWindow(dialogHwnd)) {
+            BSTR bstrOrig = SysAllocString(savedOriginalText.c_str());
+            if (bstrOrig) {
+                targetValuePat->SetValue(bstrOrig);
+                SysFreeString(bstrOrig);
+            }
+        }
+    }
+
+    LOG_INFO("DialogNavigator: non-standard dialog navigated safely (kind={}): path={}",
+             static_cast<int>(kind), tools3000::core::WinUtils::wstringToUtf8(wPath));
+    return true;
+}
+
 }  // namespace tools3000::dialog

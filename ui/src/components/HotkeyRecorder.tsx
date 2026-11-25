@@ -98,6 +98,8 @@ interface HotkeyRecorderProps {
   /** 唯一标识 */
   id: string;
   ariaLabel?: string;
+  /** 是否禁用录入与清空 */
+  disabled?: boolean;
   /**
    * 允许录入单个按键（如 Delete / Backspace / Enter / 方向键等），专用于手势发送按键等
    * 目标窗口动作场景；默认 false 保持全局热键防误触校验。
@@ -105,7 +107,7 @@ interface HotkeyRecorderProps {
   allowSingleKey?: boolean;
 }
 
-export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, placeholder, id, ariaLabel, allowSingleKey = false }) => {
+export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, placeholder, id, ariaLabel, disabled = false, allowSingleKey = false }) => {
   const { t } = useTranslation();
   const a11y = useControlA11y();
   const [recording, setRecording] = useState(false);
@@ -141,13 +143,14 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
 
   // ── 进入录入模式 ──────────────────────────────────────────────────────────
   const startRecording = useCallback(() => {
+    if (disabled) return;
     recordingRef.current = true;
     setRecording(true);
     setActiveKeys([]);
     pendingRef.current = null;
     clearWarning();
     lockHotkeyPause();
-  }, [clearWarning, lockHotkeyPause]);
+  }, [clearWarning, disabled, lockHotkeyPause]);
 
   // ── 退出录入模式 (不保存) ─────────────────────────────────────────────────
   const cancelRecording = useCallback(() => {
@@ -180,6 +183,13 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       unlockHotkeyPause();
     };
   }, [clearWarning, unlockHotkeyPause]);
+
+  // 父级级联禁用时自动退出录制态并归还全局热键暂停锁
+  useEffect(() => {
+    if (disabled && recordingRef.current) {
+      cancelRecording();
+    }
+  }, [disabled, cancelRecording]);
 
   // ── 键盘事件监听 ──────────────────────────────────────────────────────────
   useEffect(() => {
@@ -313,10 +323,11 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       <button
         id={id}
         type="button"
+        disabled={disabled}
         className={`hotkey-recorder ${recording ? 'hotkey-recorder--recording' : ''}`}
-        onClick={() => !recording && startRecording()}
+        onClick={() => !disabled && !recording && startRecording()}
         onKeyDown={(e: ReactKeyboardEvent) => {
-          if (!recording && (e.key === 'Enter' || e.key === ' ')) {
+          if (!disabled && !recording && (e.key === 'Enter' || e.key === ' ')) {
             e.preventDefault();
             startRecording();
             return;
@@ -345,7 +356,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
           )}
         </span>
       </button>
-      {value && !recording && (
+      {value && !recording && !disabled && (
         <button
           type="button"
           className="hotkey-recorder__clear"

@@ -1900,3 +1900,18 @@ TEST(WinUtilsOpenProgramAndClipboardContractTest, NonBlockingOpenProgramReturnsQ
     EXPECT_TRUE(launched);
     EXPECT_LT(elapsedMs, 2500);
 }
+
+TEST(SearchWindowNativeAppContractTest, OfflineDefaultCategorySkipsServiceWarmup) {
+    using tools3000::ui::SearchWindow;
+
+    // 默认分类设为纯离线应用或书签时，呼出搜索框绝不提前拉起全盘 NTFS 索引服务
+    EXPECT_FALSE(SearchWindow::shouldWarmUpSearchServiceOnShow("app"));
+    EXPECT_FALSE(SearchWindow::shouldWarmUpSearchServiceOnShow("bookmark"));
+
+    // 其余文件类分类（含全部/文档/文件夹/内容）正常提前预热索引服务
+    EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow("all"));
+    EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow("doc"));
+    EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow("folder"));
+    EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow("code"));
+    EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow(""));
+}

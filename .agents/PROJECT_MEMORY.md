@@ -6,6 +6,20 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] 对话框可配置双热键与多文件管理器/非标准框兼容（Issue `#30`）、搜索框 Win10 LTSC 黑屏再现根治（Issue `#29`）、纯应用模式零唤醒（Issue `#24`）、性能页极简减法与文档内容分类自由排序
+- **1. 快捷键唤起搜索框黑屏复现深度根治（Issue `#29 @xwshan`）（`SearchWindow.{h,cpp}`, `SearchApp.tsx`）**：
+  - *根因*：① 后台 `preload` 在 `SW_HIDE + put_IsVisible(FALSE)` 下被 `SearchApp.tsx` 的 `setTimeout(64ms)` 提前假上报 `firstPaintReady`，导致 `25s` 后 `TrySuspend()` 冻死从未绘制过 1 帧的空壳；② 从 `TrySuspend` 恢复或隐藏切显时 `show()` 缺少 `put_Bounds` 同步与 DirectComposition 合成器刷新；③ `WM_SIZE` 无视 `m_webViewReady` 提前暴露控制器。
+  - *根治*：① 仅在窗口至少完整展示过真实首帧（`m_everPresentedVisible`）后才允许 `IDT_DEFERRED_SUSPEND` 执行 `TrySuspend()`；② `SearchApp.tsx` 改由 `!document.hidden` + `visibilitychange` 门控真实可见双 `rAF` 上报；③ `SearchWindow::presentWebViewSurface` 在从隐藏/挂起恢复时执行 `put_IsVisible(FALSE) -> 1px 合成器脏区脉冲 -> put_Bounds(rc) -> put_IsVisible(TRUE) -> NotifyParentWindowPositionChanged()` 并配 `160ms` 补刷定时器，根治 Win10 LTSC / 核显恢复黑屏。
+- **2. 文件对话框可配置双快捷键 + 多文件管理器 LRU/多标签 + Qt/JetBrains 非标准对话框兼容（Issue `#30 @baowuji` & LINUX DO `#111 @sounder`）**：
+  - *消灭写死 `Ctrl+G` 与胶囊条解耦*：移除 `DialogRibbonOverlay.cpp` 硬编码 `RegisterHotKey(..., 'G')`，将两项作用域快捷键统一上收至 `DialogEngine::hookThreadMain()` 动态按需注册（前台切离对话框即 `UnregisterHotKey` 零全局污染），持久化 `/dialog/quickJumpHotkey`（默认 `Ctrl+G`）与 `/dialog/inlineSearchHotkey`（默认 `Ctrl+Shift+G`），支持 `<HotkeyRecorder />` 任意改键或清空禁用且脱离 `ribbonEnabled` 限制；
+  - *多窗口多标签精准定位与第三方管理器策略路由 (`DialogEventAndLayoutPolicy.h`, `ExplorerTracker.{h,cpp}`)*：前台事件 `EVENT_SYSTEM_FOREGROUND` 零开销维护最近激活文件管理器 LRU（含刚最小化窗口）、Win11 多标签 `findActiveShellTabHwnd` 严格按 `IsWindowVisible` 锁定当前激活 Tab、按键瞬间 `getActiveExplorerPathFresh()` 强制实时刷新、虚拟主页自动顺延次近有效窗口；同步兼容 Total Commander (`TPathPanel` 剥离 `\*.*`)、Directory Opus (`dopus.lister`)、XYplorer、Q-Dir、OneCommander、Files App 等主流第三方管理器；
+  - *非标准文件对话框安全跳转 (`DialogNavigator::navigateNonStandardDialog`)*：仅在显式按跳转快捷键时，经 UIA 二次结构校验支持 Qt (`QFileDialog`) 与 JetBrains (`SunAwtDialog`) 文件对话框，自动备份/恢复原文件名；纯 GPU 黑盒（如 Blender）直接静默跳过绝不盲发按键。
+- **3. 性能与内存页极简减法（回应 LINUX DO `#113 @zg2qxy`）(`PerformancePage.{tsx,test.tsx}`)**：
+  - 移除顶部「实时资源与响应延迟监控」卡片（含 1 秒轮询与手动回收按钮），消除开窗观察 WebView2 造成的口径误解与指标焦虑，只保留干净纯粹的「全链路内存生命周期与自动回收时间表」。
+- **4. 纯离线应用搜索免唤醒全盘服务（Issue `#24 @clollipop`）与解放「文档内容」自由拖拽排序 (`SearchWindow.{h,cpp}`, `searchConstants.ts`, `searchUtils.ts`, `SearchCategoryBar.test.tsx`)**：
+  - `SearchWindow::shouldWarmUpSearchServiceOnShow` 当默认分类为 `app` 或 `bookmark` 时呼出搜索跳过 `warmUpSearchService()`，零后台索引服务唤醒；
+  - `PINNED_SEARCH_CATEGORY_IDS` 收窄为仅锁定 `['all']`，解放 `content`（文档内容）支持自由拖拽排序与键盘微调，并平滑兼容老用户既有自定义排序。
+
 ### [2026-11-25] 搜索 / 剪贴板 / 贴图 9 项高分歧交互习惯自定义设置、剪贴板 `autoPaste` 缺陷修复与跨选项防冲突护栏（分支 `feat/search-auto-hide-options`，回应 LINUX DO `#106 @zg2qxy`）
 - **1. 零破坏默认值原则**：全部 9 项新设置均严格以原行为作为默认值，老用户升级后零感知波动；同时通过设置页、8 套语言包与设置搜索索引统一可配、实时生效。
 - **2. 文件搜索 (`Alt+Space`) 3 项设置与失焦防误关护栏 (`SearchWindow.{h,cpp}`, `SearchPlugin.cpp`, `SearchApp.tsx`, `useSearchActions.ts`, `SearchPage.tsx`)**：

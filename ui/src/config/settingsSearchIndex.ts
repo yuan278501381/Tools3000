@@ -119,6 +119,8 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'spt-focus', navId: 'spotlight', labelKey: 'spotlight.animStyle', descKey: 'spotlight.animStyleDesc', keywords: 'spotlight double ctrl shake cursor juguangdeng' },
   { id: 'spt-ripple', navId: 'spotlight', labelKey: 'spotlight.clickRipple', descKey: 'spotlight.clickRippleDesc', keywords: 'click ripple trail sonar bowen' },
   { id: 'dlg-memory', navId: 'dialog_enhancer', labelKey: 'dialog.perAppMemory', descKey: 'dialog.perAppMemoryDesc', keywords: 'dialog open save explorer favorite folder duihuakuang' },
+  { id: 'dlg-quick-jump', navId: 'dialog_enhancer', labelKey: 'dialog.quickJumpHotkeyLabel', descKey: 'dialog.quickJumpHotkeyDesc', keywords: 'ctrl+g listary quick switch jump explorer total commander opus xyplorer q-dir files qt jetbrains tiaozhuan mulu' },
+  { id: 'dlg-inline-search', navId: 'dialog_enhancer', labelKey: 'dialog.inlineSearchHotkeyLabel', descKey: 'dialog.inlineSearchHotkeyDesc', keywords: 'ctrl+shift+g dialog inline search jump duihuakuang sousuo' },
   { id: 'rmt-tunnel', navId: 'remote_boost', labelKey: 'remoteBoost.hotkeyTunnelTitle', descKey: 'remoteBoost.hotkeyTunnelDesc', keywords: 'remote rdp mstsc tododesk sunlogin win alt tab yuancheng' },
   { id: 'rmt-flush', navId: 'remote_boost', labelKey: 'remoteBoost.emergencyFlushTitle', descKey: 'remoteBoost.emergencyFlushDesc', keywords: 'stuck modifier keyup flush release kajian' },
   { id: 'rmt-ime', navId: 'remote_boost', labelKey: 'remoteBoost.imeSanitizerTitle', descKey: 'remoteBoost.imeSanitizerDesc', keywords: 'ime english input method shurufa' },

@@ -50,8 +50,8 @@ export const CATEGORY_DEFS = [
 
 export type SearchCategoryId = (typeof CATEGORY_DEFS)[number]['id'];
 
-/** 搜索分类栏固定区（永远锁定在最左前两位，不可拖移或被其他分类插队）。 */
-export const PINNED_SEARCH_CATEGORY_IDS: readonly SearchCategoryId[] = ['all', 'content'] as const;
+/** 搜索分类栏固定区（仅锁定「全部」在最左首位，包含「文档内容」在内的其余分类均可自由拖拽排序）。 */
+export const PINNED_SEARCH_CATEGORY_IDS: readonly SearchCategoryId[] = ['all'] as const;
 
 /** 搜索分类栏默认顺序单一事实源（自动从 CATEGORY_DEFS 派生）。 */
 export const DEFAULT_SEARCH_CATEGORY_ORDER: readonly SearchCategoryId[] = CATEGORY_DEFS.map(
