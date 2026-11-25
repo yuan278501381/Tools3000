@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] 搜索 / 剪贴板 / 贴图 9 项高分歧交互习惯自定义设置、剪贴板 `autoPaste` 缺陷修复与跨选项防冲突护栏（分支 `feat/search-auto-hide-options`，回应 LINUX DO `#106 @zg2qxy`）
+- **1. 零破坏默认值原则**：全部 9 项新设置均严格以原行为作为默认值，老用户升级后零感知波动；同时通过设置页、8 套语言包与设置搜索索引统一可配、实时生效。
+- **2. 文件搜索 (`Alt+Space`) 3 项设置与失焦防误关护栏 (`SearchWindow.{h,cpp}`, `SearchPlugin.cpp`, `SearchApp.tsx`, `useSearchActions.ts`, `SearchPage.tsx`)**：
+  - `/search/hideOnBlur`（默认 `false`）：失焦后经 `IDT_DEFERRED_BLUR_HIDE (60ms)` 延迟确认并通过纯函数 `SearchWindow::shouldAutoHideOnBlur` 严格避让置顶态、QuickLook 预览窗、右键/系统菜单（`showSystemMenu` `setMenuActive` + `#32768` 类名）、Owned 子对话框及刚呼出 `250ms` 焦点抖动保护期；
+  - `/search/hideOnOpen`（默认 `false`）：双击/`Enter`/右键「打开所在文件夹」「管理员运行」「记事本打开」成功后自动隐藏，置顶态或打开失败弹出错误提示时保持不关；
+  - `/search/clearQueryOnShow`（默认 `false`）：仅在收到 `tools3000:searchWindowHidden` 后再次触发 `tools3000:focusSearch` 时清空上次关键词，窗口未隐藏直接切回焦点绝不误清。
+- **3. 剪贴板历史 (`Alt+V`) 4 项设置、`autoPaste` 缺陷修复与三大防冲突护栏 (`ClipboardManager.{h,cpp}`, `ClipboardWindow.{h,cpp}`, `src/main.cpp`, `ClipboardApp.tsx`, `ClipboardPage.tsx`)**：
+  - `/clipboard/hideOnBlur`（默认 `true`）、`/clipboard/hideOnPaste`（默认 `true`）、`/clipboard/keepOpenAfterDrag`（默认 `true`）、`/clipboard/singleClickPaste`（默认 `false`）；
+  - *顺手修复缺陷*：`ClipboardApp.tsx` 中双击/`Enter`/`Alt+1..9`/批量合并原硬编码 `autoPaste: true`，现统一严格遵循 `autoPaste` 与 `plainTextByDefault` 配置并通过 `clipboard:settingsChanged` 实时广播；
+  - *冲突护栏 A（`hideOnPaste=false && autoPaste=true && hideOnBlur=true` 零竞态防误杀）*：在 `activateItem` / `activateItemsBatch` 切走前台焦点前同步调用原子 `ClipboardWindow::armPasteKeepOpenGrace()` 预武装 `PASTE_KEEP_OPEN_GRACE_MS (1200ms)` 宽限期，并在主线程 `markPasteKeepOpenSession()` 临时浮顶且挂 `IDT_PASTE_TOPMOST_RELEASE` 到期自然松绑（不压底）；
+  - *冲突护栏 B（`singleClickPaste=true` 防双贴与多选/拖拽隔离）*：仅响应 `e.detail === 1` 并在 `onDoubleClick` 互斥；复选框命中、多选模式、已存在多选、`Ctrl/Shift/Meta` 修饰键、拖拽尾随 click 与编辑态全部自动豁免；
+  - *冲突护栏 C（`!hideOnBlur` 与拖拽驻留前台追踪）*：关闭失焦隐藏时同样维护 `m_previousForegroundHwnd` 追踪，确保下次粘贴目标窗口准确无误；`keepOpenAfterDrag=false` 仅在原生拖拽成功交付（`outcome.delivered()`）且未置顶时隐藏。
+- **4. 桌面贴图 (`F3`) 2 项动作自定义（致敬 Snipaste 肌肉记忆）(`PinWindow.h`, `PinWindowInput.cpp`, `PluginEntry.cpp`, `CapturePage.tsx`)**：
+  - `/capture/pinDoubleClickAction`（默认 `"edit"`，可选 `"fold"` / `"close"`）与 `/capture/pinMiddleClickAction`（默认 `"reset_scale"`，可选 `"close"` / `"fold"`）；
+  - *防误操作护栏*：纯函数 `resolveEffectiveDoubleClickAction` / `resolveEffectiveMiddleClickAction` 强制折叠态双击永远优先展开、原位改字编辑中严禁双击或中键误关；设为 `close`/`fold` 时跳过双击 OCR 选词以防点击文字区关不掉（左键拖选 OCR 仍完整可用）。
+
 ### [2026-11-25] 应用内静默更新「无法自动关闭所有应用程序」弹窗与 `CoUninitialize()` 退出僵死双向根治（`v1.4.11`）
 - **1. 实机现场复盘根因（`main.cpp`, `UpdateChecker.cpp`, `installer.iss`, `install.ps1`）**：
   - *退出僵死*：旧版 `Tools3000.exe` 在打印完 `日志系统正在关闭...` 后进入 `CoUninitialize()`，因 WebView2/COM STA 退出期阻塞而僵死，而原 `1200ms` 防僵尸强杀守护线程误置于 `CoUninitialize()` **之后**永未启动，留下无窗口进程锁死 `Tools3000.exe`；

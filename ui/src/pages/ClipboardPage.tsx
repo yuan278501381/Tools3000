@@ -45,6 +45,10 @@ interface ClipboardSettings {
   captureImages: boolean;
   captureFiles: boolean;
   hidePinnedInOtherCategories: boolean;
+  hideOnBlur: boolean;
+  hideOnPaste: boolean;
+  keepOpenAfterDrag: boolean;
+  singleClickPaste: boolean;
   excludedApps: string;
 }
 
@@ -67,6 +71,10 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   captureImages: true,
   captureFiles: true,
   hidePinnedInOtherCategories: false,
+  hideOnBlur: true,
+  hideOnPaste: true,
+  keepOpenAfterDrag: true,
+  singleClickPaste: false,
   excludedApps: 'KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe',
 };
 
@@ -150,12 +158,19 @@ export const ClipboardPage: FC = () => {
 
   useBridgeEvent('clipboard:settingsChanged', (rawData) => {
     const data = rawData as Partial<ClipboardSettings> | undefined;
-    if (typeof data?.hidePinnedInOtherCategories === 'boolean') {
-      setSettings((prev) => ({
-        ...prev,
-        hidePinnedInOtherCategories: data.hidePinnedInOtherCategories as boolean,
-      }));
-    }
+    if (!data || typeof data !== 'object') return;
+    setSettings((prev) => ({
+      ...prev,
+      ...(typeof data.autoPaste === 'boolean' ? { autoPaste: data.autoPaste } : {}),
+      ...(typeof data.plainTextByDefault === 'boolean' ? { plainTextByDefault: data.plainTextByDefault } : {}),
+      ...(typeof data.hidePinnedInOtherCategories === 'boolean'
+        ? { hidePinnedInOtherCategories: data.hidePinnedInOtherCategories }
+        : {}),
+      ...(typeof data.hideOnBlur === 'boolean' ? { hideOnBlur: data.hideOnBlur } : {}),
+      ...(typeof data.hideOnPaste === 'boolean' ? { hideOnPaste: data.hideOnPaste } : {}),
+      ...(typeof data.keepOpenAfterDrag === 'boolean' ? { keepOpenAfterDrag: data.keepOpenAfterDrag } : {}),
+      ...(typeof data.singleClickPaste === 'boolean' ? { singleClickPaste: data.singleClickPaste } : {}),
+    }));
   });
 
   const patchSettings = async (patch: Partial<ClipboardSettings>) => {
@@ -292,6 +307,50 @@ export const ClipboardPage: FC = () => {
                 id="clipboard-plaintext-toggle"
                 checked={settings.plainTextByDefault}
                 onChange={(v) => void patchSettings({ plainTextByDefault: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.hideOnBlurTitle', 'Auto-Hide When Clicking Outside')}
+              description={t('clipboardPage.hideOnBlurDesc', 'Automatically hide the clipboard panel when focus moves elsewhere. Turn off to keep it open like a floating reference tool until you press Esc or close it.')}
+            >
+              <Toggle
+                id="clipboard-hide-on-blur-toggle"
+                checked={settings.hideOnBlur}
+                onChange={(v) => void patchSettings({ hideOnBlur: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.hideOnPasteTitle', 'Auto-Hide After Pasting or Copying')}
+              description={t('clipboardPage.hideOnPasteDesc', 'Automatically close the panel after activating an entry. Turn off for continuous multi-item pasting without pinning the panel first.')}
+            >
+              <Toggle
+                id="clipboard-hide-on-paste-toggle"
+                checked={settings.hideOnPaste}
+                onChange={(v) => void patchSettings({ hideOnPaste: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.keepOpenAfterDragTitle', 'Keep Panel Open After Drag-Paste')}
+              description={t('clipboardPage.keepOpenAfterDragDesc', 'Keep the panel floating after a drag-to-paste delivery so you can drop multiple items in a row; turn off to auto-hide after one drop.')}
+            >
+              <Toggle
+                id="clipboard-keep-after-drag-toggle"
+                checked={settings.keepOpenAfterDrag}
+                onChange={(v) => void patchSettings({ keepOpenAfterDrag: v })}
+              />
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.singleClickPasteTitle', 'Single-Click Item to Paste Immediately')}
+              description={t('clipboardPage.singleClickPasteDesc', 'Paste immediately on a single left-click (Win + V style) instead of double-clicking. Drag-paste, checkboxes, and Ctrl/Shift multi-select remain unaffected.')}
+            >
+              <Toggle
+                id="clipboard-single-click-paste-toggle"
+                checked={settings.singleClickPaste}
+                onChange={(v) => void patchSettings({ singleClickPaste: v })}
               />
             </SettingRow>
 

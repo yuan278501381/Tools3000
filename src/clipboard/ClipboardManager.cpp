@@ -845,6 +845,10 @@ bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::pa
     loaded.captureImages = cfg.get<bool>("/clipboard/captureImages", true);
     loaded.captureFiles = cfg.get<bool>("/clipboard/captureFiles", true);
     loaded.hidePinnedInOtherCategories = cfg.get<bool>("/clipboard/hidePinnedInOtherCategories", false);
+    loaded.hideOnBlur = cfg.get<bool>("/clipboard/hideOnBlur", true);
+    loaded.hideOnPaste = cfg.get<bool>("/clipboard/hideOnPaste", true);
+    loaded.keepOpenAfterDrag = cfg.get<bool>("/clipboard/keepOpenAfterDrag", true);
+    loaded.singleClickPaste = cfg.get<bool>("/clipboard/singleClickPaste", false);
     loaded.excludedApps = cfg.get<std::string>(
         "/clipboard/excludedApps", loaded.excludedApps);
 
@@ -978,6 +982,10 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
             {"captureImages", clamped.captureImages},
             {"captureFiles", clamped.captureFiles},
             {"hidePinnedInOtherCategories", clamped.hidePinnedInOtherCategories},
+            {"hideOnBlur", clamped.hideOnBlur},
+            {"hideOnPaste", clamped.hideOnPaste},
+            {"keepOpenAfterDrag", clamped.keepOpenAfterDrag},
+            {"singleClickPaste", clamped.singleClickPaste},
             {"excludedApps", clamped.excludedApps}
         }},
         {"plugins", {
@@ -994,7 +1002,15 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
     }
     tools3000::core::MessageBridge::instance().pushEvent(
         "clipboard:settingsChanged",
-        {{"hidePinnedInOtherCategories", clamped.hidePinnedInOtherCategories}});
+        {
+            {"autoPaste", clamped.autoPaste},
+            {"plainTextByDefault", clamped.plainTextByDefault},
+            {"hidePinnedInOtherCategories", clamped.hidePinnedInOtherCategories},
+            {"hideOnBlur", clamped.hideOnBlur},
+            {"hideOnPaste", clamped.hideOnPaste},
+            {"keepOpenAfterDrag", clamped.keepOpenAfterDrag},
+            {"singleClickPaste", clamped.singleClickPaste}
+        });
     return saved;
 }
 

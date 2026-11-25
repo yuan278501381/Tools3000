@@ -109,7 +109,13 @@ interface ClipboardQueryResponse {
 }
 
 interface ClipboardSettingsSnippet {
+  autoPaste?: boolean;
+  plainTextByDefault?: boolean;
   hidePinnedInOtherCategories?: boolean;
+  hideOnBlur?: boolean;
+  hideOnPaste?: boolean;
+  keepOpenAfterDrag?: boolean;
+  singleClickPaste?: boolean;
 }
 
 interface ClipboardGroupsResponse {
@@ -161,6 +167,10 @@ export const ClipboardApp: FC = () => {
   const [windowPinned, setWindowPinned] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
   const [hidePinnedInOtherCategories, setHidePinnedInOtherCategories] = useState(false);
+  const [autoPasteEnabled, setAutoPasteEnabled] = useState(true);
+  const [plainTextByDefault, setPlainTextByDefault] = useState(false);
+  const [hideOnPaste, setHideOnPaste] = useState(true);
+  const [singleClickPaste, setSingleClickPaste] = useState(false);
   const [pinnedCount, setPinnedCount] = useState(0);
   const [draggingItemId, setDraggingItemId] = useState<number | null>(null);
 
@@ -342,10 +352,24 @@ export const ClipboardApp: FC = () => {
           if (!cancelled && groupsRes && Array.isArray(groupsRes.groups)) {
             setGroups(groupsRes.groups);
           }
-          if (!cancelled && typeof settingsRes?.hidePinnedInOtherCategories === 'boolean') {
-            initialHidePinned = settingsRes.hidePinnedInOtherCategories;
-            hidePinnedRef.current = initialHidePinned;
-            setHidePinnedInOtherCategories(initialHidePinned);
+          if (!cancelled && settingsRes) {
+            if (typeof settingsRes.hidePinnedInOtherCategories === 'boolean') {
+              initialHidePinned = settingsRes.hidePinnedInOtherCategories;
+              hidePinnedRef.current = initialHidePinned;
+              setHidePinnedInOtherCategories(initialHidePinned);
+            }
+            if (typeof settingsRes.autoPaste === 'boolean') {
+              setAutoPasteEnabled(settingsRes.autoPaste);
+            }
+            if (typeof settingsRes.plainTextByDefault === 'boolean') {
+              setPlainTextByDefault(settingsRes.plainTextByDefault);
+            }
+            if (typeof settingsRes.hideOnPaste === 'boolean') {
+              setHideOnPaste(settingsRes.hideOnPaste);
+            }
+            if (typeof settingsRes.singleClickPaste === 'boolean') {
+              setSingleClickPaste(settingsRes.singleClickPaste);
+            }
           }
         } catch {
           // 静默兜底
@@ -409,10 +433,24 @@ export const ClipboardApp: FC = () => {
       let latestHidePinned = hidePinnedRef.current;
       try {
         const settingsRes = await bridgeRequest<ClipboardSettingsSnippet>('clipboard.getSettings', undefined, { silent: true });
-        if (typeof settingsRes?.hidePinnedInOtherCategories === 'boolean') {
-          latestHidePinned = settingsRes.hidePinnedInOtherCategories;
-          hidePinnedRef.current = latestHidePinned;
-          setHidePinnedInOtherCategories(latestHidePinned);
+        if (settingsRes) {
+          if (typeof settingsRes.hidePinnedInOtherCategories === 'boolean') {
+            latestHidePinned = settingsRes.hidePinnedInOtherCategories;
+            hidePinnedRef.current = latestHidePinned;
+            setHidePinnedInOtherCategories(latestHidePinned);
+          }
+          if (typeof settingsRes.autoPaste === 'boolean') {
+            setAutoPasteEnabled(settingsRes.autoPaste);
+          }
+          if (typeof settingsRes.plainTextByDefault === 'boolean') {
+            setPlainTextByDefault(settingsRes.plainTextByDefault);
+          }
+          if (typeof settingsRes.hideOnPaste === 'boolean') {
+            setHideOnPaste(settingsRes.hideOnPaste);
+          }
+          if (typeof settingsRes.singleClickPaste === 'boolean') {
+            setSingleClickPaste(settingsRes.singleClickPaste);
+          }
         }
       } catch {
         // 静默兜底
@@ -436,9 +474,22 @@ export const ClipboardApp: FC = () => {
 
   useBridgeEvent('clipboard:settingsChanged', (rawData) => {
     const data = rawData as ClipboardSettingsSnippet | undefined;
-    if (typeof data?.hidePinnedInOtherCategories === 'boolean') {
+    if (!data || typeof data !== 'object') return;
+    if (typeof data.hidePinnedInOtherCategories === 'boolean') {
       hidePinnedRef.current = data.hidePinnedInOtherCategories;
       setHidePinnedInOtherCategories(data.hidePinnedInOtherCategories);
+    }
+    if (typeof data.autoPaste === 'boolean') {
+      setAutoPasteEnabled(data.autoPaste);
+    }
+    if (typeof data.plainTextByDefault === 'boolean') {
+      setPlainTextByDefault(data.plainTextByDefault);
+    }
+    if (typeof data.hideOnPaste === 'boolean') {
+      setHideOnPaste(data.hideOnPaste);
+    }
+    if (typeof data.singleClickPaste === 'boolean') {
+      setSingleClickPaste(data.singleClickPaste);
     }
   });
 
@@ -551,10 +602,10 @@ export const ClipboardApp: FC = () => {
         id: item.id,
         plainTextOnly,
         autoPaste,
-        hideAfter: !windowPinned,
+        hideAfter: hideOnPaste && !windowPinned,
       });
     },
-    [windowPinned],
+    [hideOnPaste, windowPinned],
   );
 
   const handleBatchMergePaste = useCallback(async () => {
@@ -562,11 +613,11 @@ export const ClipboardApp: FC = () => {
     await bridgeRequest('clipboard.pasteItemsBatch', {
       ids: selectedIds,
       separator: mergeSeparator,
-      autoPaste: true,
-      hideAfter: !windowPinned,
+      autoPaste: autoPasteEnabled,
+      hideAfter: hideOnPaste && !windowPinned,
     });
     clearMultiSelection();
-  }, [selectedIds, mergeSeparator, windowPinned, clearMultiSelection]);
+  }, [selectedIds, mergeSeparator, autoPasteEnabled, hideOnPaste, windowPinned, clearMultiSelection]);
 
   const deletingBatchRef = useRef(false);
   const handleBatchDelete = useCallback(async () => {
@@ -844,8 +895,30 @@ export const ClipboardApp: FC = () => {
         ctrlKey: e.ctrlKey || (isCheckboxHit && !e.shiftKey),
         metaKey: e.metaKey,
       });
+      if (
+        singleClickPaste &&
+        e.detail === 1 &&
+        !multiSelectMode &&
+        selectedIds.length === 0 &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !isCheckboxHit &&
+        editingItemId === null
+      ) {
+        void handleActivate(item, plainTextByDefault, autoPasteEnabled);
+      }
     },
-    [applyItemSelection],
+    [
+      applyItemSelection,
+      autoPasteEnabled,
+      editingItemId,
+      handleActivate,
+      multiSelectMode,
+      plainTextByDefault,
+      selectedIds.length,
+      singleClickPaste,
+    ],
   );
 
   const handleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -910,7 +983,7 @@ export const ClipboardApp: FC = () => {
       const target = items[slot];
       if (target) {
         e.preventDefault();
-        void handleActivate(target, e.shiftKey, true);
+        void handleActivate(target, e.shiftKey ? true : plainTextByDefault, autoPasteEnabled);
       }
       return;
     }
@@ -955,7 +1028,7 @@ export const ClipboardApp: FC = () => {
         return;
       }
       if (selectedItem) {
-        void handleActivate(selectedItem, e.shiftKey, true);
+        void handleActivate(selectedItem, e.shiftKey ? true : plainTextByDefault, autoPasteEnabled);
       }
       return;
     }
@@ -1442,8 +1515,13 @@ export const ClipboardApp: FC = () => {
                   onMouseDown={(e) => handleItemMouseDown(item, idx, e)}
                   onClick={(e) => handleItemClick(item, idx, e)}
                   onDoubleClick={() => {
-                    if (!multiSelectMode && selectedIds.length === 0 && suppressClickItemIdRef.current !== item.id) {
-                      void handleActivate(item, false, true);
+                    if (
+                      !singleClickPaste &&
+                      !multiSelectMode &&
+                      selectedIds.length === 0 &&
+                      suppressClickItemIdRef.current !== item.id
+                    ) {
+                      void handleActivate(item, plainTextByDefault, autoPasteEnabled);
                     }
                   }}
                 >
@@ -1618,7 +1696,7 @@ export const ClipboardApp: FC = () => {
                     <button
                       type="button"
                       className="clip-popup__action-btn clip-popup__action-btn--primary"
-                      onClick={() => void handleActivate(selectedItem, false, true)}
+                      onClick={() => void handleActivate(selectedItem, plainTextByDefault, true)}
                     >
                       <CornerDownLeft size={14} aria-hidden="true" />
                       <span>{t('clipboard.actionPaste', 'Paste')}</span>
@@ -1638,7 +1716,7 @@ export const ClipboardApp: FC = () => {
                     <button
                       type="button"
                       className="clip-popup__action-btn"
-                      onClick={() => void handleActivate(selectedItem, false, false)}
+                      onClick={() => void handleActivate(selectedItem, plainTextByDefault, false)}
                     >
                       <Copy size={14} aria-hidden="true" />
                       <span>{t('clipboard.actionCopyOnly', 'Copy')}</span>

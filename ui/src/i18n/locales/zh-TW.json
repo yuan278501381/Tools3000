@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "貼圖全域快捷操控",
     "reuseCaptureWatermark": "演播室直接套用截圖浮水印設定",
     "reuseCaptureWatermarkDesc": "開啟後自動同步上方截圖浮水印參數，無需重複維護兩套表單",
-    "subtitleNeedsMicHint": "需先在「螢幕錄影」分頁開啟「錄製麥克風」後方可啟用離線語音字幕對齊"
+    "subtitleNeedsMicHint": "需先在「螢幕錄影」分頁開啟「錄製麥克風」後方可啟用離線語音字幕對齊",
+    "pinDoubleClickActionTitle": "雙擊貼圖空白處動作",
+    "pinDoubleClickActionDesc": "自訂雙擊桌面貼圖時的行為（設為關閉或摺疊時，仍可直接左鍵拖選辨識出的文字複製；摺疊態雙擊一律優先展開）",
+    "pinMiddleClickActionTitle": "滑鼠中鍵單擊貼圖動作",
+    "pinMiddleClickActionDesc": "自訂中鍵單擊桌面貼圖時的行為（正在原位改字編輯期間自動保護防誤關）",
+    "pinActionEdit": "進入標註編輯（預設）",
+    "pinActionFold": "摺疊 / 展開貼圖",
+    "pinActionClose": "關閉貼圖（Snipaste 習慣）",
+    "pinActionResetScale": "恢復 1:1 原始大小（預設）"
   },
   "history": {
     "title": "擷圖歷史",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "跨源混排與介面呈現",
     "syntaxSectionOperators": "修飾符與邏輯組合語法",
     "syntaxSectionRegex": "正規表示式語法速查",
-    "groupExclusions": "排除資料夾與隱私防護"
+    "groupExclusions": "排除資料夾與隱私防護",
+    "hideOnBlurTitle": "失去焦點時自動隱藏搜尋框",
+    "hideOnBlurDesc": "點選搜尋框外部區域後自動收起（類似 Listary / uTools 習慣）；置頂搜尋框、使用空白鍵預覽或展開右鍵選單時保持開啟",
+    "hideOnOpenTitle": "開啟結果後自動隱藏搜尋框",
+    "hideOnOpenDesc": "雙擊或按 Enter 開啟檔案、資料夾、應用程式、系統指令或書籤後自動收起搜尋框；置頂狀態下保持開啟方便連續尋找",
+    "clearQueryOnShowTitle": "再次呼出時自動清空上次搜尋詞",
+    "clearQueryOnShowDesc": "搜尋框隱藏後再次按快速鍵呼出時，自動清空上次輸入的關鍵字從空白開始（關閉則保留上次搜尋詞並全選高亮度）"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "儲存剪貼簿設定失敗",
     "clearedToast": "已清理 {{count}} 筆剪貼簿歷史",
     "hidePinnedInOtherTitle": "其他分類中不顯示已釘選項目",
-    "hidePinnedInOtherDesc": "開啟後，已釘選記錄僅在「釘選」分類顯示，不再佔用全部、文字、圖片、檔案與色彩清單空間。"
+    "hidePinnedInOtherDesc": "開啟後，已釘選記錄僅在「釘選」分類顯示，不再佔用全部、文字、圖片、檔案與色彩清單空間。",
+    "hideOnBlurTitle": "失去焦點時自動隱藏面板",
+    "hideOnBlurDesc": "點選剪貼簿外部區域後自動收起；關閉後可像懸浮參考工具窗一樣常駐桌面，直到按 Esc 或主動關閉",
+    "hideOnPasteTitle": "貼上或複製項目後自動隱藏面板",
+    "hideOnPasteDesc": "雙擊、按 Enter、Alt+1..9 貼上或點選「僅複製」後自動收起面板；關閉後無需置頂即可連續貼上多筆記錄",
+    "keepOpenAfterDragTitle": "拖曳貼上後保持面板展開",
+    "keepOpenAfterDragDesc": "將項目拖入外部輸入框貼上成功後保持面板浮頂展開，方便連續拖放多筆；關閉則單次拖放完成後自動收起",
+    "singleClickPasteTitle": "單擊項目直接貼上",
+    "singleClickPasteDesc": "左鍵單擊清單項目立即貼上（類似系統 Win + V 習慣），無需雙擊；拖曳直貼、核取方塊與 Ctrl/Shift 多選不受影響"
   },
   "feedback": {
     "attachLogs": "附帶本地去識別化的執行環境資訊與最近 1000 行診斷日誌",

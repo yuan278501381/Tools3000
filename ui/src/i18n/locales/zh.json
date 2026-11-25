@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "贴图全局快捷操控",
     "reuseCaptureWatermark": "演播室直接复用截图水印配置",
     "reuseCaptureWatermarkDesc": "开启后自动同步上方截图水印参数，无需重复维护两套水印表单",
-    "subtitleNeedsMicHint": "需先在「屏幕录制」页签开启「录制麦克风」后方可启用离线语音字幕对齐"
+    "subtitleNeedsMicHint": "需先在「屏幕录制」页签开启「录制麦克风」后方可启用离线语音字幕对齐",
+    "pinDoubleClickActionTitle": "双击贴图空白处动作",
+    "pinDoubleClickActionDesc": "自定义双击桌面贴图时的行为（设为关闭或折叠时，仍可直接左键拖选识别出的文字复制；折叠态双击始终优先展开）",
+    "pinMiddleClickActionTitle": "鼠标中键单击贴图动作",
+    "pinMiddleClickActionDesc": "自定义中键单击桌面贴图时的行为（正在原位改字编辑期间自动保护防误关）",
+    "pinActionEdit": "进入标注编辑（默认）",
+    "pinActionFold": "折叠 / 展开贴图",
+    "pinActionClose": "关闭贴图（Snipaste 习惯）",
+    "pinActionResetScale": "恢复 1:1 原始大小（默认）"
   },
   "history": {
     "title": "截图历史",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "跨源混排与界面呈现",
     "syntaxSectionOperators": "修饰符与逻辑组合语法",
     "syntaxSectionRegex": "正则表达式语法速查",
-    "groupExclusions": "排除文件夹与隐私屏蔽"
+    "groupExclusions": "排除文件夹与隐私屏蔽",
+    "hideOnBlurTitle": "失去焦点时自动隐藏搜索框",
+    "hideOnBlurDesc": "点击搜索框外部区域后自动收起（类似 Listary / uTools 习惯）；置顶搜索框、使用空格预览或展开右键菜单时保持打开",
+    "hideOnOpenTitle": "打开结果后自动隐藏搜索框",
+    "hideOnOpenDesc": "双击或按 Enter 打开文件、文件夹、应用、系统命令或书签后自动收起搜索框；置顶状态下保持打开方便连续查找",
+    "clearQueryOnShowTitle": "再次呼出时自动清空上次搜索词",
+    "clearQueryOnShowDesc": "搜索框隐藏后再次按热键呼出时，自动清空上次输入的关键词从空白开始（关闭则保留上次搜索词并全选高亮）"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "保存剪贴板设置失败",
     "clearedToast": "已清理 {{count}} 条剪贴板历史",
     "hidePinnedInOtherTitle": "其他分类中不显示已置顶条目",
-    "hidePinnedInOtherDesc": "开启后，已置顶记录仅在「置顶」分类展示，不再占用全部、文本、图片、文件与颜色列表视野。"
+    "hidePinnedInOtherDesc": "开启后，已置顶记录仅在「置顶」分类展示，不再占用全部、文本、图片、文件与颜色列表视野。",
+    "hideOnBlurTitle": "失去焦点时自动隐藏面板",
+    "hideOnBlurDesc": "点击剪贴板外部区域后自动收起；关闭后可像悬浮参考工具窗一样常驻桌面，直到按 Esc 或主动关闭",
+    "hideOnPasteTitle": "粘贴或复制条目后自动隐藏面板",
+    "hideOnPasteDesc": "双击、按 Enter、Alt+1..9 粘贴或点击「仅复制」后自动收起面板；关闭后无需置顶即可连续粘贴多条记录",
+    "keepOpenAfterDragTitle": "拖拽粘贴后保持面板展开",
+    "keepOpenAfterDragDesc": "将条目拖入外部输入框粘贴成功后保持面板浮顶展开，方便连续拖放多条；关闭则单次拖放交付后自动收起",
+    "singleClickPasteTitle": "单击条目直接粘贴",
+    "singleClickPasteDesc": "左键单击列表条目立即粘贴（类似系统 Win + V 习惯），无需双击；拖拽直贴、复选框及 Ctrl/Shift 多选不受影响"
   },
   "feedback": {
     "attachLogs": "附带本地脱敏的运行环境信息与最近 1000 行诊断日志",

@@ -1827,6 +1827,9 @@ public:
             bool excludeHidden = cfg.get<bool>("/search/excludeHidden", false);
             bool excludeSystem = cfg.get<bool>("/search/excludeSystem", false);
             bool autoBypassFullscreen = cfg.get<bool>("/search/autoBypassFullscreen", true);
+            bool hideOnBlur = cfg.get<bool>("/search/hideOnBlur", false);
+            bool hideOnOpen = cfg.get<bool>("/search/hideOnOpen", false);
+            bool clearQueryOnShow = cfg.get<bool>("/search/clearQueryOnShow", false);
             bool catDoc = cfg.get<bool>("/search/contentCategory_doc", true);
             bool catCode = cfg.get<bool>("/search/contentCategory_code", true);
             bool catDesign = cfg.get<bool>("/search/contentCategory_design", true);
@@ -1906,6 +1909,9 @@ public:
                 {"excludeHidden", excludeHidden},
                 {"excludeSystem", excludeSystem},
                 {"autoBypassFullscreen", autoBypassFullscreen},
+                {"hideOnBlur", hideOnBlur},
+                {"hideOnOpen", hideOnOpen},
+                {"clearQueryOnShow", clearQueryOnShow},
                 {"iconStyle", iconStyle},
                 {"includeBookmarks", includeBookmarks},
                 {"externalApiEnabled", externalApiEnabled},
@@ -2011,6 +2017,15 @@ public:
             }
             if (params.contains("autoBypassFullscreen") && params["autoBypassFullscreen"].is_boolean()) {
                 searchPatch["autoBypassFullscreen"] = params["autoBypassFullscreen"].get<bool>();
+            }
+            if (params.contains("hideOnBlur") && params["hideOnBlur"].is_boolean()) {
+                searchPatch["hideOnBlur"] = params["hideOnBlur"].get<bool>();
+            }
+            if (params.contains("hideOnOpen") && params["hideOnOpen"].is_boolean()) {
+                searchPatch["hideOnOpen"] = params["hideOnOpen"].get<bool>();
+            }
+            if (params.contains("clearQueryOnShow") && params["clearQueryOnShow"].is_boolean()) {
+                searchPatch["clearQueryOnShow"] = params["clearQueryOnShow"].get<bool>();
             }
             if (params.contains("iconStyle") && params["iconStyle"].is_string()) {
                 searchPatch["iconStyle"] = params["iconStyle"].get<std::string>();

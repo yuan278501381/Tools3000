@@ -1940,6 +1940,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                             }
                         }
                     }
+                    const auto configuredDbl = PinWindow::parseDoubleClickAction(
+                        tools3000::core::ConfigManager::instance().get<std::string>(
+                            "/capture/pinDoubleClickAction", "edit"));
+                    const auto effectiveDbl = PinWindow::resolveEffectiveDoubleClickAction(
+                        configuredDbl, self->m_folded, self->m_editingTextReplaceIdx >= 0);
+                    if (effectiveDbl == PinWindow::DoubleClickAction::Close) {
+                        self->close();
+                        return 0;
+                    }
+                    if (effectiveDbl == PinWindow::DoubleClickAction::Fold) {
+                        self->toggleFold();
+                        return 0;
+                    }
                     if (self->selectWordAtClientPoint(dblX, dblY)) {
                         return 0;
                     }
@@ -1950,13 +1963,24 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         }
 
         case WM_MBUTTONUP: {
-            // 鼠标中键单击：快速恢复 1:1 原始物理像素尺寸
+            // 鼠标中键单击：默认恢复 1:1 原始物理像素尺寸，支持按用户偏好配置为关闭或折叠（原位改字编辑中防误关）
             if (self) {
                 if (self->m_zoomAnimating || self->m_zoomStageActive) {
                     self->stopZoomAnimation(false);
                 }
-                self->focusWindow();
-                self->resetScale();
+                const auto configuredMid = PinWindow::parseMiddleClickAction(
+                    tools3000::core::ConfigManager::instance().get<std::string>(
+                        "/capture/pinMiddleClickAction", "reset_scale"));
+                const auto effectiveMid = PinWindow::resolveEffectiveMiddleClickAction(
+                    configuredMid, self->m_editingTextReplaceIdx >= 0);
+                if (effectiveMid == PinWindow::MiddleClickAction::Close) {
+                    self->close();
+                } else if (effectiveMid == PinWindow::MiddleClickAction::Fold) {
+                    self->toggleFold();
+                } else {
+                    self->focusWindow();
+                    self->resetScale();
+                }
             }
             return 0;
         }

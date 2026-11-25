@@ -77,6 +77,30 @@ public:
             : ToggleAction::ShowOrFocus;
     }
 
+    struct BlurHideContext {
+        bool hideOnBlurEnabled = false;
+        bool visible = false;
+        bool minimized = false;
+        bool foregroundActive = false;
+        bool pinned = false;
+        bool menuOrDragActive = false;
+        bool quickLookVisible = false;
+        bool foregroundOwnedBySearchOrMenu = false;
+        uint64_t elapsedSinceShowMs = 0;
+    };
+
+    static constexpr uint64_t BlurHideShowGraceMs = 250;
+
+    /// 失焦自动隐藏纯函数决策（严防置顶、QuickLook 预览、右键/系统菜单、子对话框与刚呼出焦点抖动误关）
+    static constexpr bool shouldAutoHideOnBlur(const BlurHideContext& ctx) noexcept {
+        if (!ctx.hideOnBlurEnabled) return false;
+        if (!ctx.visible || ctx.minimized || ctx.foregroundActive) return false;
+        if (ctx.pinned || ctx.menuOrDragActive || ctx.quickLookVisible) return false;
+        if (ctx.foregroundOwnedBySearchOrMenu) return false;
+        if (ctx.elapsedSinceShowMs < BlurHideShowGraceMs) return false;
+        return true;
+    }
+
     /// 计算窗口非客户区命中测试结果（支持按 DPI 比例校准，全高放行边缘拉伸）
     static LRESULT calculateHitTest(const RECT& rc, POINT pt, float scale) {
         const int corner = tools3000::core::dpi::scaleMetric(8, scale);
@@ -113,6 +137,8 @@ private:
     static constexpr UINT COLD_WARMUP_FALLBACK_DELAY_MS = 1500;
     static constexpr UINT_PTR IDT_FIRST_PAINT_FALLBACK = 2112;
     static constexpr UINT FIRST_PAINT_FALLBACK_DELAY_MS = 2000;
+    static constexpr UINT_PTR IDT_DEFERRED_BLUR_HIDE = 2113;
+    static constexpr UINT DEFERRED_BLUR_HIDE_DELAY_MS = 60;
 
     enum class WebViewStatus : uint8_t {
         Loading = 0,

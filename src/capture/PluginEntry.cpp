@@ -1251,7 +1251,13 @@ public:
                     static_cast<int>(CaptureRegionHistory::kMaxConfigurableEntries))},
                 {"regionHistoryKey", CaptureRegionHistory::normalizeCycleKeyName(
                     config.get<std::string>("/capture/regionHistoryKey", "R"))},
-                {"regionHistoryCount", static_cast<int>(CaptureRegionHistory::instance().size())}
+                {"regionHistoryCount", static_cast<int>(CaptureRegionHistory::instance().size())},
+                {"pinDoubleClickAction", PinWindow::doubleClickActionToString(
+                    PinWindow::parseDoubleClickAction(
+                        config.get<std::string>("/capture/pinDoubleClickAction", "edit")))},
+                {"pinMiddleClickAction", PinWindow::middleClickActionToString(
+                    PinWindow::parseMiddleClickAction(
+                        config.get<std::string>("/capture/pinMiddleClickAction", "reset_scale")))}
             };
         });
 
@@ -1412,6 +1418,8 @@ public:
             };
             static const std::unordered_set<std::string> sizeUnits = {"px", "dp"};
             static const std::unordered_set<std::string> regionKeys = {"", "R", "`", "F2", "F4"};
+            static const std::unordered_set<std::string> pinDoubleClickActions = {"edit", "fold", "close"};
+            static const std::unordered_set<std::string> pinMiddleClickActions = {"reset_scale", "close", "fold"};
             static const std::unordered_set<std::string> boolKeys = {
                 "saveToFile", "copyToClipboard", "includeCursor", "showCrosshair", "autoDetectWindow",
                 "showShortcutHints", "autoBypassFullscreen", "beautyShellEnabled",
@@ -1455,6 +1463,10 @@ public:
                 if (key == "regionHistoryKey" && (!value.is_string() || !regionKeys.contains(
                     CaptureRegionHistory::normalizeCycleKeyName(value.get<std::string>()))))
                     return {{"success", false}, {"error", "invalid region history shortcut key"}};
+                if (key == "pinDoubleClickAction" && (!value.is_string() || !pinDoubleClickActions.contains(value.get<std::string>())))
+                    return {{"success", false}, {"error", "invalid pinDoubleClickAction"}};
+                if (key == "pinMiddleClickAction" && (!value.is_string() || !pinMiddleClickActions.contains(value.get<std::string>())))
+                    return {{"success", false}, {"error", "invalid pinMiddleClickAction"}};
                 if (boolKeys.contains(key) && !value.is_boolean())
                     return {{"success", false}, {"error", key + " must be boolean"}};
                 if (key != "format" && key != "quality" && key != "saveDirectory" &&
@@ -1462,6 +1474,7 @@ public:
                     key != "watermarkMode" && key != "watermarkAnchor" && key != "watermarkImagePath" &&
                     key != "watermarkText" && key != "watermarkScale" && key != "watermarkOpacity" &&
                     key != "sizeUnit" && key != "regionHistoryLimit" && key != "regionHistoryKey" &&
+                    key != "pinDoubleClickAction" && key != "pinMiddleClickAction" &&
                     !boolKeys.contains(key))
                     return {{"success", false}, {"error", "unsupported setting: " + key}};
             }

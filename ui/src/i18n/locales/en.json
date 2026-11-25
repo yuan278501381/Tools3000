@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "Double-Click Pin Action",
+    "pinDoubleClickActionDesc": "Choose what happens when double-clicking a desktop pin (when set to Close or Fold, you can still drag-select OCR text with the left mouse button; folded pins always unfold first)",
+    "pinMiddleClickActionTitle": "Middle-Click Pin Action",
+    "pinMiddleClickActionDesc": "Choose what happens when middle-clicking a desktop pin (protected against accidental close while editing in-place text)",
+    "pinActionEdit": "Enter Markup Editor (Default)",
+    "pinActionFold": "Fold / Unfold Pin",
+    "pinActionClose": "Close Pin (Snipaste Style)",
+    "pinActionResetScale": "Reset to 1:1 Size (Default)"
   },
   "history": {
     "title": "Capture History",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "Excluded Folders & Privacy Shield"
+    "groupExclusions": "Excluded Folders & Privacy Shield",
+    "hideOnBlurTitle": "Auto-Hide When Clicking Outside",
+    "hideOnBlurDesc": "Automatically hide the search window when focus moves elsewhere (Listary / uTools style). Stays open while pinned, previewing via QuickLook, or using menus.",
+    "hideOnOpenTitle": "Auto-Hide After Opening Result",
+    "hideOnOpenDesc": "Automatically hide the search window right after opening a file, folder, app, command, or bookmark via double-click or Enter. Stays open when pinned.",
+    "clearQueryOnShowTitle": "Clear Previous Query on Re-Open",
+    "clearQueryOnShowDesc": "Start with a fresh empty search box whenever you summon Search again after hiding it (instead of keeping and selecting the last query)."
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "Failed to save clipboard settings",
     "clearedToast": "Removed {{count}} clipboard items",
     "hidePinnedInOtherTitle": "Hide Pinned Items in Other Categories",
-    "hidePinnedInOtherDesc": "Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors."
+    "hidePinnedInOtherDesc": "Keep pinned entries exclusively in the Pinned tab so they do not occupy space in All, Text, Images, Files, or Colors.",
+    "hideOnBlurTitle": "Auto-Hide When Clicking Outside",
+    "hideOnBlurDesc": "Automatically hide the clipboard panel when focus moves elsewhere. Turn off to keep it open like a floating reference window until you press Esc or close it.",
+    "hideOnPasteTitle": "Auto-Hide After Pasting or Copying",
+    "hideOnPasteDesc": "Automatically close the panel after activating an entry. Turn off for continuous multi-item pasting without pinning the panel first.",
+    "keepOpenAfterDragTitle": "Keep Panel Open After Drag-Paste",
+    "keepOpenAfterDragDesc": "Keep the panel floating after a drag-to-paste delivery so you can drop multiple items in a row; turn off to auto-hide after one drop.",
+    "singleClickPasteTitle": "Single-Click Item to Paste Immediately",
+    "singleClickPasteDesc": "Paste immediately on a single left-click (Win + V style) instead of double-clicking. Drag-paste, checkboxes, and Ctrl/Shift multi-select remain unaffected."
   },
   "feedback": {
     "attachLogs": "Attach locally redacted environment info and latest 1000 log lines",

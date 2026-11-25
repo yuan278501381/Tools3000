@@ -75,6 +75,8 @@ interface CaptureSettings {
   regionHistoryLimit?: number;
   regionHistoryKey?: string;
   regionHistoryCount?: number;
+  pinDoubleClickAction?: 'edit' | 'fold' | 'close';
+  pinMiddleClickAction?: 'reset_scale' | 'close' | 'fold';
 }
 
 interface RecordingSettings {
@@ -190,6 +192,7 @@ export const CapturePage: FC = () => {
     watermarkAnchor: 3, watermarkScale: 1.0, watermarkOpacity: 0.16,
     watermarkPolicyForced: false,
     regionHistoryLimit: 10, regionHistoryKey: 'R', regionHistoryCount: 0,
+    pinDoubleClickAction: 'edit', pinMiddleClickAction: 'reset_scale',
   });
   const [recording, setRecording] = useState<RecordingSettings>({
     format: 'mp4_h264', fps: 30, bitrate: 8, includeCursor: true, showClickEffects: false,
@@ -857,6 +860,36 @@ export const CapturePage: FC = () => {
               checked={liveTextOnPin}
               onChange={(v) => updateLiveTextOnPin(v)}
             />
+            <SettingRow
+              label={t('capture.pinDoubleClickActionTitle', 'Double-Click Pin Action')}
+              description={t('capture.pinDoubleClickActionDesc', 'Choose what happens when double-clicking a desktop pin (when set to Close or Fold, you can still drag-select OCR text with the left mouse button)')}
+            >
+              <Select
+                id="capture-pin-dblclick-action"
+                value={capture.pinDoubleClickAction ?? 'edit'}
+                onChange={(v) => updateCapture('pinDoubleClickAction', v as 'edit' | 'fold' | 'close')}
+                options={[
+                  { value: 'edit', label: t('capture.pinActionEdit', 'Enter Markup Editor (Default)') },
+                  { value: 'fold', label: t('capture.pinActionFold', 'Fold / Unfold Pin') },
+                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin (Snipaste Style)') },
+                ]}
+              />
+            </SettingRow>
+            <SettingRow
+              label={t('capture.pinMiddleClickActionTitle', 'Middle-Click Pin Action')}
+              description={t('capture.pinMiddleClickActionDesc', 'Choose what happens when middle-clicking a desktop pin (protected against accidental close while editing in-place text)')}
+            >
+              <Select
+                id="capture-pin-midclick-action"
+                value={capture.pinMiddleClickAction ?? 'reset_scale'}
+                onChange={(v) => updateCapture('pinMiddleClickAction', v as 'reset_scale' | 'close' | 'fold')}
+                options={[
+                  { value: 'reset_scale', label: t('capture.pinActionResetScale', 'Reset to 1:1 Size (Default)') },
+                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin (Snipaste Style)') },
+                  { value: 'fold', label: t('capture.pinActionFold', 'Fold / Unfold Pin') },
+                ]}
+              />
+            </SettingRow>
           </Card>
         </SettingGroup>
 

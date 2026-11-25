@@ -74,6 +74,9 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
 
   // Search & Sub-tabs
   { id: 'srch-hotkey', navId: 'search', tabId: 'settings', labelKey: 'searchPage.toggleHotkey', descKey: 'searchPage.toggleHotkeyDesc', keywords: 'alt space summon search shortcut' },
+  { id: 'srch-hide-blur', navId: 'search', tabId: 'settings', labelKey: 'searchPage.hideOnBlurTitle', descKey: 'searchPage.hideOnBlurDesc', keywords: 'blur hide close outside focus listary utools shijiao zidong yincang guanbi' },
+  { id: 'srch-hide-open', navId: 'search', tabId: 'settings', labelKey: 'searchPage.hideOnOpenTitle', descKey: 'searchPage.hideOnOpenDesc', keywords: 'open launch enter double click hide close dakai zidong yincang guanbi' },
+  { id: 'srch-clear-show', navId: 'search', tabId: 'settings', labelKey: 'searchPage.clearQueryOnShowTitle', descKey: 'searchPage.clearQueryOnShowDesc', keywords: 'clear empty reset query reopen summon qingkong shangci sousuoci' },
   { id: 'srch-pinyin', navId: 'search', tabId: 'settings', labelKey: 'searchPage.pinyinTitle', descKey: 'searchPage.pinyinDesc', keywords: 'pinyin initials fuzzy chinese' },
   { id: 'srch-excluded-paths', navId: 'search', tabId: 'settings', labelKey: 'searchPage.groupExclusions', descKey: 'search.customExcludedPathsDesc', keywords: 'exclude folder directory path hide block privacy shield paichu wenjianjia pingbi yinsi' },
   { id: 'srch-syntax', navId: 'search', tabId: 'syntax', labelKey: 'searchPage.tabSyntax', descKey: 'searchPage.modifiersTitle', keywords: 'syntax manual wildcard operator ext folder' },
@@ -83,6 +86,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
 
   // Clipboard
   { id: 'clip-history', navId: 'clipboard', labelKey: 'clipboardPage.enableTitle', descKey: 'clipboardPage.enableDesc', keywords: 'clipboard copy paste history pin ditto alt v rust jiantieban fuzhi zhantie' },
+  { id: 'clip-window-behavior', navId: 'clipboard', labelKey: 'clipboardPage.hideOnBlurTitle', descKey: 'clipboardPage.hideOnPasteDesc', keywords: 'clipboard blur hide paste drag single click keep open copyq shijiao zhantie danji tuozhuai zidong yincang' },
 
   // Text Expander
   { id: 'te-enable', navId: 'text_expander', labelKey: 'textExpander.heroTitle', descKey: 'textExpander.heroDesc', keywords: 'text expander snippet espanso beeftext macro template shortcut date time cursor duanyu wenben kuozhan tihuan' },
@@ -101,6 +105,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'cap-savedir', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.saveDir', descKey: 'capture.saveDirDesc', keywords: 'save folder directory path png jpg webp baocun' },
   { id: 'cap-beauty', navId: 'capture', tabId: 'screenshot', labelKey: 'capture.beautyShellTitle', descKey: 'capture.beautyShellDefaultDesc', keywords: 'beauty gradient shadow rounded padding meihua' },
   { id: 'cap-pin-ocr', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinAutoOcrTitle', descKey: 'capture.pinAutoOcrDesc', keywords: 'pin auto ocr live text memory tietu zidong shibie wenzi' },
+  { id: 'cap-pin-mouse', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinDoubleClickActionTitle', descKey: 'capture.pinMiddleClickActionDesc', keywords: 'pin double click middle click close fold edit snipaste shuangji zhongjian guanbi zhedie tietu' },
   { id: 'cap-pingroup', navId: 'capture', tabId: 'pin_region', labelKey: 'capture.pinGroupsSectionTitle', descKey: 'capture.pinGroupsCardSubtitle', keywords: 'pin group desktop color tietu fenzu' },
   { id: 'rec-video', navId: 'capture', tabId: 'recording', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
   { id: 'rec-autozoom', navId: 'capture', tabId: 'studio', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
