@@ -6,6 +6,15 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] 应用内静默更新「无法自动关闭所有应用程序」弹窗与 `CoUninitialize()` 退出僵死双向根治（`v1.4.11`）
+- **1. 实机现场复盘根因（`main.cpp`, `UpdateChecker.cpp`, `installer.iss`, `install.ps1`）**：
+  - *退出僵死*：旧版 `Tools3000.exe` 在打印完 `日志系统正在关闭...` 后进入 `CoUninitialize()`，因 WebView2/COM STA 退出期阻塞而僵死，而原 `1200ms` 防僵尸强杀守护线程误置于 `CoUninitialize()` **之后**永未启动，留下无窗口进程锁死 `Tools3000.exe`；
+  - *Restart Manager 抢先阻断*：`UpdateChecker::buildInstallerParameters()` 曾向安装器传入 `/CLOSEAPPLICATIONS /RESTARTAPPLICATIONS`，强行覆盖 `installer.iss` 的 `CloseApplications=no` 并在 `PrepareToInstall()` 之前激活 Windows Restart Manager；后者向已无消息循环的僵死进程发关闭消息失败，直接弹出「安装程序无法自动关闭所有应用程序」错误框。
+- **2. 三端双向闭环根治**：
+  - **`src/main.cpp`**：退出消息循环后立即挂载 `8000ms` 顶层退场熔断守卫；在 `shutdownSubsystems() + releaseHostHotkeysAndMessageWindow() + releaseSingleInstanceMutex()` 全部完成后、**`CoUninitialize()` 之前**启动 `1200ms` 防僵尸守护线程，彻底杜绝退出僵死；
+  - **`src/core/update/UpdateChecker.cpp` & `packaging/installer/install.ps1`**：升级参数改为 `/SILENT /NOCLOSEAPPLICATIONS /NORESTARTAPPLICATIONS /AUTOUPDATE`，不再触发 Restart Manager，交由 `installer.iss` 统一精准清场与自动拉起；
+  - **`packaging/installer/installer.iss`（向下兼容全部存量老版本 `<= v1.4.10` 一键更新）**：新增 `PreClearProcessesBeforeRestartManager(WizardDirValue)` 并在 `InitializeWizard`（静默/自动更新态）与 `NextButtonClick(wpReady)`（交互态）调用，抢在 `wpPreparing` / Restart Manager 扫描前优雅等待 2.5s 并精准清场僵死旧进程与残留 PFRO，确保老版升级到 `v1.4.11+` 同样 100% 零弹窗无缝通关。
+
 ### [2026-11-25] 演播室全格式高压缩与运镜输入防裁切、截图文本框 8 向独立拉伸、性能页真实工作集与即时静默回收（Issue `#29`）、HDD 搜索首帧防黑屏及剪贴板批量删除根治（`v1.4.10`）
 - **1. 演播室全 6 格式导出修复与世界级桌面高压缩（`vcpkg.json`, `StudioVideoCompositor*.{h,cpp}`, `StudioExportWorker.{h,cpp}`, `StudioPreviewWindowExport.cpp`, 6 套 `resources/locales/native/*.json`）**：
   - *根因*：`vcpkg.json` 此前仅启用 `ffmpeg[openh264]`，导致 `WebM_VP9` 在构建物中无 `libvpx-vp9`/`libopus` 编码器 71ms 必败且 UI 只弹出泛化失败提示；H.264 固定 ABR 与 GIF/WebP 固定每帧写出导致成片体积偏大；

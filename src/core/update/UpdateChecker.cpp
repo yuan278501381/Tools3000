@@ -753,7 +753,10 @@ bool UpdateChecker::isPortableDirectory(const std::filesystem::path& exeDir) noe
 }
 
 std::wstring UpdateChecker::buildInstallerParameters() {
-    return L"/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS /AUTOUPDATE";
+    // 严禁传 /CLOSEAPPLICATIONS（会覆盖 installer.iss 的 CloseApplications=no 并唤醒 Windows Restart Manager，
+    // 在旧进程退场空窗期抢先弹出“无法自动关闭所有应用程序”错误框）；
+    // 进程优雅等待、僵尸清场与升级后自动拉起均由 installer.iss (/AUTOUPDATE) 统一毫秒级精准接管。
+    return L"/SILENT /NOCLOSEAPPLICATIONS /NORESTARTAPPLICATIONS /AUTOUPDATE";
 }
 
 std::wstring UpdateChecker::buildInstallerParametersForDir(const std::filesystem::path& installDir) {

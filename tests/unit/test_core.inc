@@ -847,12 +847,14 @@ TEST(UpdateCheckerTest, InstallerSilentAutoRestartParametersAndNoSelfKillContrac
     using tools3000::core::UpdateChecker;
     const std::wstring params = UpdateChecker::buildInstallerParameters();
     EXPECT_NE(params.find(L"/SILENT"), std::wstring::npos);
-    EXPECT_NE(params.find(L"/CLOSEAPPLICATIONS"), std::wstring::npos);
-    EXPECT_NE(params.find(L"/RESTARTAPPLICATIONS"), std::wstring::npos);
+    EXPECT_NE(params.find(L"/NOCLOSEAPPLICATIONS"), std::wstring::npos);
+    EXPECT_NE(params.find(L"/NORESTARTAPPLICATIONS"), std::wstring::npos);
     EXPECT_NE(params.find(L"/AUTOUPDATE"), std::wstring::npos);
+    // 严禁传裸 /CLOSEAPPLICATIONS 覆盖 installer.iss 的 CloseApplications=no 触发 Restart Manager 弹窗
+    EXPECT_EQ(params.find(L" /CLOSEAPPLICATIONS"), std::wstring::npos);
 
     // 防回退门禁：当存在源码树 installer.iss 时，断言绝不对 Tools3000.exe 使用 taskkill /t（否则应用内升级时安装程序会杀死自己）
-    // 且静默自动更新必须配置 ShouldAutoLaunchAfterSilentUpgrade 自动拉起新版。
+    // 且静默自动更新必须配置 ShouldAutoLaunchAfterSilentUpgrade 自动拉起新版，并在 InitializeWizard 抢先清场兼容老版本更新。
     std::filesystem::path issPath;
     auto probe = tools3000::core::WinUtils::getExeDirectory();
     for (int depth = 0; depth < 6 && !probe.empty(); ++depth) {
@@ -868,6 +870,8 @@ TEST(UpdateCheckerTest, InstallerSilentAutoRestartParametersAndNoSelfKillContrac
         const std::string content((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
         EXPECT_EQ(content.find("/f /t /im Tools3000.exe"), std::string::npos)
             << "installer.iss must never pass /t when killing Tools3000.exe (would self-terminate in-app updater)";
+        EXPECT_NE(content.find("PreClearProcessesBeforeRestartManager"), std::string::npos)
+            << "installer.iss must pre-clear stale processes before wpPreparing/RestartManager for legacy updaters";
         EXPECT_NE(content.find("ShouldAutoLaunchAfterSilentUpgrade"), std::string::npos)
             << "installer.iss must auto-relaunch Tools3000.exe after in-app silent upgrade";
     }
