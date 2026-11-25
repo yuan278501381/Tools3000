@@ -13,6 +13,9 @@
 - **2. 搜索服务浏览器敏感凭据文件零句柄触碰护栏（Issue `#28 @aungkokomm`）(`src/service/SensitivePathGuard.h`, `MftParser.cpp`, `MftParserQuery.cpp`, `src/service/main.cpp`, `test_search.inc`)**：
   - *根因*：浏览器更新 `Login Data` / `logins.json` 时产生 NTFS USN 事件，`MftParser::UsnListenerLoop` 此前对其发起 `OpenFileById(..., FILE_READ_ATTRIBUTES, ...)` 刷新文件大小/时间戳，被杀软「浏览器密码保护盾」Minifilter 拦截并误报为访问浏览器保存密码；
   - *根治*：抽象单一事实源 `SensitivePathGuard`，在 `UsnListenerLoop` 属性刷新、`BackgroundHydrateLoop` 后台目录水合、`hydrateResultProperties` 搜索结果属性查询与 `CollectContentCandidates`/`main.cpp` 全文内容搜索全部 4 条链路中严格跳过主流浏览器（Chrome/Edge/Brave/Opera/Vivaldi/Firefox 等）密码/Cookie/密钥文件与 Windows 凭据目录，做到内核 I/O 零句柄触碰。
+- **3. PP-OCRv6 实机全量 40 项 OCR 回归暴露的两处通用增强 (`DeepOcrEnginePostprocess.cpp`, `OcrEngine.cpp`)**：
+  - *红章压黑字光学反混合*：`suppressRedStampForOcr` 统计印章区 R 通道 85 分位 `stampBgR` 与周边纸面亮底 `paperLum`，对 R 通道暗谷按 `2.85x` 反混合还原为锐利深黑笔画，彻底解决半透明红章压黑字在 `PP-OCRv6_det_small` 下被漂淡断行（如 `INV-2026-8899` 断成两段）；
+  - *代码编辑器左侧孤立行号槽隔离*：`OcrEngine::clusterAlignedRowsInRegion` 在左块为 1–4 位数字、存在槽隙、右块为长代码行且紧邻下方存在与正文左对齐且行号槽留白的软折行续行时自动分离，避免行号 `1\t` 污染代码/JSON 拖选复制（同时 100% 保护普通多行序号表格）。
 
 ### [2026-11-25] Win10 LTSC 搜索黑屏与机械盘 100% I/O 卡死根治、多路径精确排除文件夹、OCR 通用非过拟合双护栏、全目录原位翻译阿/泰/越语解锁与零剪贴板污染截图交付策略
 - **1. Win10 LTSC 搜索黑屏 + 机械盘 100% 磁盘占用根治（Linux.do `@zg2qxy` *薛定谔的狗子*）**：

@@ -12,6 +12,7 @@ Welcome to **Tools3000 v1.4.9** (compared against **v1.4.8**). This rapid mainte
    - Fixed a verification bug in `v1.4.8` where `PP-OCRv6_rec_small.onnx` and `PP-OCRv6_rec_medium.onnx` failed integrity checks right after downloading (`Failed to download or verify PP-OCRv6_rec_small.onnx`).
    - Replaced the legacy OpenCV DNN probe with full ONNX `ModelProto` structural validation, embedded dictionary verification, and exact HTTP `Content-Length` truncation checks across all four downloadable packs (**PP-OCRv6 Small**, **PP-OCRv6 Rec Medium**, **4 Multilingual Extension Packs**, and **MI-GAN 512 AI Inpaint**).
    - Fixed a UI feedback gap where a failed upgrade from legacy `PP-OCRv4` to `PP-OCRv6` silently hid the error toast.
+   - Improved red-stamp inverse alpha unblending (preventing black text under translucent stamps from splitting) and isolated standalone code-editor line-number gutters so copying wrapped JSON/code never pulls leading line numbers into the selection.
 2. **Zero Handle Touch on Browser Credential Files (`#28`, `@aungkokomm`)**
    - Hardened `Tools3000_Service.exe` (local NTFS filename indexing service) to explicitly skip metadata handles (`OpenFileById` / `GetFileAttributesExW`) and full-text content scanning for browser credential/session files (`Login Data`, `Web Data`, `Cookies`, `Local State`, `logins.json`, `key4.db`, `cookies.sqlite`, etc.) and browser profile / Windows credential directories across Chrome, Edge, Brave, Opera, Vivaldi, Firefox, and derivatives.
    - Completely eliminates antivirus "browser password shield" false-positive alerts while keeping normal file search unaffected.
@@ -27,7 +28,8 @@ Welcome to **Tools3000 v1.4.9** (compared against **v1.4.8**). This rapid mainte
 ### 1. 彻底修复 `PP-OCRv6` 离线模型下载校验失败并加固全部 4 类模型包下载
 - **修复 `PP-OCRv6_rec_small.onnx` / `PP-OCRv6_rec_medium.onnx` 下载后误判损坏**：根治 `v1.4.8` 下载完成识别模型后误调用旧版 OpenCV DNN 试解析导致报错 `Failed to download or verify PP-OCRv6_rec_small.onnx` 的问题，全新安装、从旧版 `v4` 一键升级至 `PP-OCRv6` 以及下载高精度增强包均可在国内直连秒速稳定完成；
 - **全 4 类模型包完整防截断校验**：为 **PP-OCRv6 核心包**、**+73 MB 高精度增强包**、**韩/俄/阿/泰 4 国扩展包** 与 **MI-GAN 512 原位改字修复模型** 全面补齐 HTTP `Content-Length` 精确字节防截断断言与完整 ONNX `ModelProto` 结构校验（同时消除校验瞬间约 200 MB 内存峰值）；
-- **修复升级失败静默吞错提示**：修复老版 `v4` 用户点击「升级至 PP-OCRv6」遇到异常时错误 Toast 未弹出的问题。
+- **修复升级失败静默吞错提示**：修复老版 `v4` 用户点击「升级至 PP-OCRv6」遇到异常时错误 Toast 未弹出的问题；
+- **红章压字与代码行号槽识别优化**：升级红章穿透为光学反混合还原（避免半透明红章覆盖的黑字被漂淡断行），并新增代码编辑器左侧孤立行号槽隔离，拖选折行 JSON/代码复制不再夹带行号。
 
 ### 2. 搜索服务对浏览器敏感凭据文件零句柄触碰（`#28`, `@aungkokomm`）
 - 在本地 NTFS 索引服务 `Tools3000_Service.exe` 的 USN 实时属性刷新、后台目录水合、搜索结果属性查询与全文内容搜索 4 条全链路中，显式跳过主流浏览器（Chrome / Edge / Brave / Opera / Vivaldi / Firefox 等）的密码、Cookie、密钥库文件（`Login Data`、`Web Data`、`Cookies`、`Local State`、`logins.json`、`key4.db`、`cookies.sqlite` 等）及 Windows 凭据目录；
