@@ -5250,6 +5250,94 @@ TEST(TranslationServiceTest, LiveNetworkFreeChannelsSmokeWhenEnabled) {
     EXPECT_FALSE(googleRes.translations[1].empty());
 }
 
+#include "core/utils/WindowImeGuard.h"
+#include <imm.h>
+
+TEST(WindowImeGuardTest, ResolvesProcessKeyViaImmAndScanCodeAndFiltersNonTextImeMessages) {
+    using tools3000::core::WindowImeGuard;
+
+    // 1. 非文字输入态下，优先使用 ImmGetVirtualKey 返回值反解 VK_PROCESSKEY (0xE5)
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, 0, 'R', /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, 0, VK_LSHIFT, /*allowTextInput=*/false),
+        static_cast<WPARAM>(VK_SHIFT));
+
+    // 2. 当 ImmGetVirtualKey 无效(0 或仍为 0xE5)时，按 lParam 硬件扫描码精准还原物理键（如 'R' / 'C'）
+    const UINT scanR = MapVirtualKeyW('R', MAPVK_VK_TO_VSC);
+    ASSERT_NE(scanR, 0u);
+    const LPARAM lParamR = static_cast<LPARAM>(scanR) << 16;
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, 0, /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, VK_PROCESSKEY, /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+
+    // 3. 文字编辑态下绝不篡改 VK_PROCESSKEY，确保 CJK 输入法正常组词上屏
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, 'R', /*allowTextInput=*/true),
+        static_cast<WPARAM>(VK_PROCESSKEY));
+
+    // 4. 非 VK_PROCESSKEY 普通键原样透传
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey('S', 0, 'R', /*allowTextInput=*/false),
+        static_cast<WPARAM>('S'));
+
+    // 5. 第三层视觉护栏：非输入态剥离 WM_IME_SETCONTEXT 组合窗/候选窗标志并拦截孤立组合消息
+    LPARAM setCtxLParam = ISC_SHOWUICOMPOSITIONWINDOW | ISC_SHOWUIALLCANDIDATEWINDOW | 0x1;
+    LRESULT outRes = -1;
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_SETCONTEXT, TRUE, setCtxLParam, /*allowTextInput=*/false, outRes));
+    EXPECT_EQ(setCtxLParam & ISC_SHOWUICOMPOSITIONWINDOW, 0);
+    EXPECT_EQ(setCtxLParam & ISC_SHOWUIALLCANDIDATEWINDOW, 0);
+
+    outRes = -1;
+    EXPECT_TRUE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_STARTCOMPOSITION, 0, setCtxLParam, /*allowTextInput=*/false, outRes));
+    EXPECT_EQ(outRes, 0);
+
+    // 文字输入态放行一切 IME 消息
+    LPARAM editCtxLParam = ISC_SHOWUICOMPOSITIONWINDOW | ISC_SHOWUIALLCANDIDATEWINDOW;
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_SETCONTEXT, TRUE, editCtxLParam, /*allowTextInput=*/true, outRes));
+    EXPECT_NE(editCtxLParam & ISC_SHOWUICOMPOSITIONWINDOW, 0);
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_STARTCOMPOSITION, 0, editCtxLParam, /*allowTextInput=*/true, outRes));
+
+    // 6. 真实 Win32 窗口级 ImmAssociateContextEx 动态卸载/恢复与幂等状态机校验
+    HWND testHwnd = CreateWindowExW(
+        0, L"STATIC", L"T3K_ImeGuard_Test", WS_POPUP,
+        0, 0, 16, 16, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(testHwnd, nullptr);
+
+    WindowImeGuard guard;
+    EXPECT_EQ(guard.cachedState(), -1);
+
+    guard.sync(testHwnd, /*allowTextInput=*/false, /*force=*/true);
+    EXPECT_EQ(guard.cachedState(), 0);
+    HIMC detachedImc = ImmGetContext(testHwnd);
+    EXPECT_EQ(detachedImc, nullptr);
+    if (detachedImc) ImmReleaseContext(testHwnd, detachedImc);
+
+    guard.sync(testHwnd, /*allowTextInput=*/true);
+    EXPECT_EQ(guard.cachedState(), 1);
+    HIMC restoredImc = ImmGetContext(testHwnd);
+    EXPECT_NE(restoredImc, nullptr);
+    if (restoredImc) ImmReleaseContext(testHwnd, restoredImc);
+
+    guard.sync(testHwnd, /*allowTextInput=*/false);
+    EXPECT_EQ(guard.cachedState(), 0);
+    HIMC detachedAgain = ImmGetContext(testHwnd);
+    EXPECT_EQ(detachedAgain, nullptr);
+    if (detachedAgain) ImmReleaseContext(testHwnd, detachedAgain);
+
+    guard.reset();
+    EXPECT_EQ(guard.cachedState(), -1);
+    DestroyWindow(testHwnd);
+}
+
 #include "clipboard/ClipboardManager.h"
 #include "clipboard/ClipboardNativeDrag.h"
 #include "clipboard/ClipboardRustFfi.h"

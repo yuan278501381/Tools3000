@@ -22,6 +22,9 @@
 - **5. 截图/划词翻译内置 Bilibili Index-Translate 免费免密钥一键预设与全局思考链剥离 (`TranslationTypes.h`, `TranslationService.{h,cpp}`, `InPlaceTranslateCard.{tsx,css,test.tsx}`)**：
   - *定位权衡*：保留 `Edge / Google` 作为开箱默认极速通道（300~900ms 级，无公益公网单点风险）；将 `https://index-translate.bilibili.com/v1` 作为 OpenAI 兼容通道的一键免费免密钥预设，并提供 `Index-Translate-2B`（极速）/ `Index-Translate-9B`（均衡默认）/ `Index-Translate-35B-A3B`（旗舰）快捷切换；
   - *安全与协议护栏*：`TranslationService::isKeylessPublicOpenAiUrl` 严格校验 `https://` + 精确主机名 `index-translate.bilibili.com`，放行无 API Key 且**绝不透传本地历史保存的私有 API Key**（防私钥外泄至第三方公益站），自动注入 `chat_template_kwargs: { enable_thinking: false }` 与 `temperature: 0.0`；`stripReasoningThinkBlocks` 全局剥离 `<think>/<thought>` 块，一并保护所有推理模型（含 DeepSeek-R1 / 本地 Qwen3）不被思维链花括号干扰 JSON 解析。
+- **6. 原生快捷键画布窗口三层纵深 IME 免疫架构 (`WindowImeGuard.{h,cpp}`, `CaptureOverlay.cpp`, `CaptureInput*.cpp`, `PinWindow*.cpp`, `StudioPreviewWindow*.cpp`)**：
+  - *痛点与铁律*：中文/日文/韩文输入法在非文字编辑态会劫持 `R` / `Shift+R` / `C` / `E` / `S` 等单键快捷键为 `VK_PROCESSKEY (0xE5)` 并弹出孤立候选框；严格禁止修改用户系统全局输入法状态（避免退出截图后其他软件输入法被改乱）。
+  - *三层纵深实现*：① 窗口级按态动态 `ImmAssociateContextEx` 状态机（非文字输入态先 `CPS_CANCEL` 清草稿再卸载本窗 IME，显式进入文字编辑态毫秒级 `IACE_DEFAULT` 恢复，并在消息尾部与 `WM_SETFOCUS`/`WM_ACTIVATE` 幂等同步防漂移）；② `WM_KEYDOWN`/`WM_KEYUP` 兜底通过 `ImmGetVirtualKey` + `lParam` 硬件扫描码 `MapVirtualKeyW` 反解残余 `VK_PROCESSKEY`；③ 非输入态剥离 `WM_IME_SETCONTEXT` 视觉标志并消费孤立组合消息。全域覆盖截图/长截图浮层、桌面贴图与原位改字窗、录屏演播室三大原生工作台。
 
 ### [2026-11-25] 搜索 / 剪贴板 / 贴图 9 项高分歧交互习惯自定义设置、剪贴板 `autoPaste` 缺陷修复与跨选项防冲突护栏（分支 `feat/search-auto-hide-options`，回应 LINUX DO `#106 @zg2qxy`）
 - **1. 零破坏默认值原则**：全部 9 项新设置均严格以原行为作为默认值，老用户升级后零感知波动；同时通过设置页、8 套语言包与设置搜索索引统一可配、实时生效。

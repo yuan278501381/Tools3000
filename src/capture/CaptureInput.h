@@ -5,6 +5,7 @@
 #include "capture/CaptureState.h"
 #include "capture/CaptureRenderer.h"
 #include "capture/WindowElementDetector.h"
+#include "core/utils/WindowImeGuard.h"
 #include <windows.h>
 #include <functional>
 
@@ -31,6 +32,9 @@ public:
     bool applyHistoryRegionSelection(HWND hwnd, bool stepNewer);
     bool applyExplicitRegionSelection(HWND hwnd, const RECT& rawScreenRect, const std::string& labelUtf8 = {});
     void showNoHistoryRegionToast(HWND hwnd);
+    bool isTextInputActive() const noexcept;
+    void syncImeState(HWND hwnd, bool force = false) noexcept;
+    void resetImeState() noexcept;
     static void ensureCursorVisible();
     static HCURSOR getBeautifulCrosshairCursor(float dpiScale = 1.0f);
     static HCURSOR getCornerRadiusLiveCursor(int cornerIndex = 0, float dpiScale = 1.0f, bool isDragging = false);
@@ -87,8 +91,7 @@ private:
     POINT m_lastDetectScreenPt{INT_MIN, INT_MIN};
     bool m_hasAsyncRefinedActive = false;
     
-    void enableIME(bool enable);
-    HIMC m_defaultImc = nullptr;
+    tools3000::core::WindowImeGuard m_imeGuard;
     bool m_lastTextCaretVisible = true;
     uint32_t m_lastEditedElementId = 0;
 };

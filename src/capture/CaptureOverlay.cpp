@@ -195,6 +195,8 @@ bool CaptureOverlay::createOverlayWindow(HINSTANCE hInstance, const RECT* custom
         [this](){ this->realCancel(); },
         [this](CaptureCompletion completion){ this->confirmSelection(std::move(completion)); }
     );
+    // 窗口级默认卸载 IME（零全局输入法污染），仅在点击文字工具编辑时动态恢复
+    m_input.syncImeState(m_hwnd, true);
 
     return true;
 }
@@ -1355,6 +1357,7 @@ LRESULT CALLBACK CaptureOverlay::staticWndProc(HWND hwnd, UINT msg, WPARAM wPara
                      toolbarUiaActions(hwnd, self->m_state));
             }
             if (msg == WM_NCDESTROY) {
+                self->m_input.resetImeState();
                 if (self->m_hwnd == hwnd) {
                     self->m_hwnd = nullptr;
                 }

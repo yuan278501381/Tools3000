@@ -2110,6 +2110,15 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
         return ncResult;
     }
 
+    if (msg == WM_SETFOCUS || msg == WM_ACTIVATE) {
+        self->m_imeGuard.sync(hwnd, self->isTextInputActive(), true);
+    }
+    LRESULT imeResult = 0;
+    if (tools3000::core::WindowImeGuard::filterNonTextImeMessage(
+            hwnd, msg, wParam, lParam, self->isTextInputActive(), imeResult)) {
+        return imeResult;
+    }
+
     switch (msg) {
         case WM_STUDIO_CUSTOM_BG_PICKED:
             self->onCustomWallpaperPicked();
@@ -2304,16 +2313,19 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
         case WM_LBUTTONDOWN: {
             const float s = (std::max)(1.0f, self->m_dpiScale);
             self->handleMouseDown(GET_X_LPARAM(lParam) / s, GET_Y_LPARAM(lParam) / s, false);
+            self->m_imeGuard.sync(hwnd, self->isTextInputActive(), false);
             return 0;
         }
         case WM_LBUTTONDBLCLK: {
             const float s = (std::max)(1.0f, self->m_dpiScale);
             self->handleMouseDown(GET_X_LPARAM(lParam) / s, GET_Y_LPARAM(lParam) / s, true);
+            self->m_imeGuard.sync(hwnd, self->isTextInputActive(), false);
             return 0;
         }
         case WM_RBUTTONDOWN: {
             const float s = (std::max)(1.0f, self->m_dpiScale);
             self->handleRightMouseDown(GET_X_LPARAM(lParam) / s, GET_Y_LPARAM(lParam) / s);
+            self->m_imeGuard.sync(hwnd, self->isTextInputActive(), false);
             return 0;
         }
         case WM_SETCURSOR: {
@@ -2337,9 +2349,19 @@ LRESULT CALLBACK StudioPreviewWindow::wndProc(HWND hwnd, UINT msg, WPARAM wParam
         case WM_CHAR:
             self->handleCharInput(static_cast<wchar_t>(wParam));
             return 0;
-        case WM_KEYDOWN:
-            self->handleKeyDown(wParam);
+        case WM_SYSKEYDOWN:
+        case WM_KEYDOWN: {
+            const bool allowText = self->isTextInputActive();
+            self->m_imeGuard.sync(hwnd, allowText, false);
+            const WPARAM resolvedVk = tools3000::core::WindowImeGuard::resolveShortcutVirtualKey(
+                hwnd, wParam, lParam, allowText);
+            self->handleKeyDown(resolvedVk);
+            self->m_imeGuard.sync(hwnd, self->isTextInputActive(), false);
             return 0;
+        }
+        case WM_NCDESTROY:
+            self->m_imeGuard.reset();
+            break;
         case WM_CLOSE:
             if (!self->m_exporting.load(std::memory_order_acquire)) {
                 self->requestCloseWithConfirm();

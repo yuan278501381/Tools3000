@@ -2718,6 +2718,7 @@ bool PinWindow::initWindow(HINSTANCE hInstance, int x, int y, int w, int h) {
     SetLayeredWindowAttributes(m_hwnd, 0, 255, LWA_ALPHA);
     m_dpiScale = tools3000::core::dpi::scaleForWindow(m_hwnd);
     applySharpWindowCorners();
+    syncImeState(true);
 
     return true;
 }
