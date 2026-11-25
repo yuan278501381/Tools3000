@@ -54,7 +54,13 @@ public:
         return visible && !pendingReveal && foregroundActive;
     }
 
-    /// 判定失焦时是否允许自动隐藏剪贴板窗口（置顶、缩放、原生拖拽、拖拽会话驻留期及拖拽结束后 1200ms 内严禁自动隐藏）
+    /// 在任意线程原子预武装不关闭粘贴宽限期（必须在 activateItem 切走前台焦点之前调用，彻底消除跨线程竞态）
+    void armPasteKeepOpenGrace() noexcept;
+
+    /// 在主线程标记本次粘贴后保持面板打开并临时浮顶（用于 hideOnPaste=false && autoPaste=true 期间防压底与误杀）
+    void markPasteKeepOpenSession();
+
+    /// 判定失焦时是否允许自动隐藏剪贴板窗口（受 hideOnBlur 总控；置顶、缩放、原生拖拽、拖拽驻留期、拖拽及不关粘贴宽限期内严禁误隐藏）
     static bool shouldAutoHideOnDeactivate(
         bool visible,
         bool pendingReveal,
@@ -64,8 +70,10 @@ public:
         uint64_t nowTick,
         uint64_t showTick,
         uint64_t lastNativeDragEndTick,
-        bool dragSessionHold = false) noexcept {
-        if (!visible || pendingReveal || pinned || inSizeMove || inNativeDrag || dragSessionHold) {
+        bool dragSessionHold = false,
+        bool hideOnBlurEnabled = true,
+        uint64_t lastPasteKeepOpenTick = 0) noexcept {
+        if (!hideOnBlurEnabled || !visible || pendingReveal || pinned || inSizeMove || inNativeDrag || dragSessionHold) {
             return false;
         }
         if (nowTick >= showTick && (nowTick - showTick) <= 200) {
@@ -74,6 +82,11 @@ public:
         if (lastNativeDragEndTick != 0 &&
             nowTick >= lastNativeDragEndTick &&
             (nowTick - lastNativeDragEndTick) < NATIVE_DRAG_HIDE_GRACE_MS) {
+            return false;
+        }
+        if (lastPasteKeepOpenTick != 0 &&
+            nowTick >= lastPasteKeepOpenTick &&
+            (nowTick - lastPasteKeepOpenTick) < PASTE_KEEP_OPEN_GRACE_MS) {
             return false;
         }
         return true;
@@ -112,6 +125,7 @@ private:
     static constexpr UINT_PTR IDT_IDLE_DESTROY = 2102;
     static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 2103;
     static constexpr UINT_PTR IDT_REVEAL_FALLBACK = 2104;
+    static constexpr UINT_PTR IDT_PASTE_TOPMOST_RELEASE = 2105;
     // 高频热保活宽限期 (25s)：隐藏后 25 秒内保留 GPU 合成帧不立刻 TrySuspend/trimWorkingSet，
     // 连续呼出 <16ms 零黑屏瞬开；超 25s 软挂起降内存，超 5 分钟彻底销毁归还全部物理内存。
     static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
@@ -119,6 +133,7 @@ private:
     static constexpr UINT REVEAL_FALLBACK_WARM_MS = 450;
     static constexpr UINT REVEAL_FALLBACK_COLD_MS = 1200;
     static constexpr uint64_t NATIVE_DRAG_HIDE_GRACE_MS = 1200;
+    static constexpr uint64_t PASTE_KEEP_OPEN_GRACE_MS = 1200;
     static constexpr UINT WM_CLIPBOARD_VERIFY_DEACTIVATED = WM_APP + 29;
     static constexpr UINT WM_CLIPBOARD_CAPTURE_FOREGROUND = WM_APP + 30;
 
@@ -144,6 +159,8 @@ private:
     RECT m_customBounds{};
     uint64_t m_showTimeTick = 0;
     uint64_t m_lastNativeDragEndTick = 0;
+    std::atomic<uint64_t> m_lastPasteKeepOpenTick{0};
+    bool m_pasteTopmostHold = false;
 };
 
 }  // namespace tools3000::ui

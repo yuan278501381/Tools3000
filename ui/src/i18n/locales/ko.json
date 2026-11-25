@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "핀 더블 클릭 동작",
+    "pinDoubleClickActionDesc": "화면 고정(핀)을 더블 클릭할 때의 동작을 선택합니다 (닫기/접기 설정 시에도 왼쪽 드래그로 OCR 텍스트 선택 가능, 접힌 상태에서는 항상 펼치기 우선).",
+    "pinMiddleClickActionTitle": "핀 마우스 휠 클릭 동작",
+    "pinMiddleClickActionDesc": "화면 고정(핀)을 가운데 버튼으로 클릭할 때의 동작을 선택합니다 (원위치 텍스트 편집 중 실수 닫기 자동 방지).",
+    "pinActionEdit": "주석 편집 모드 진입 (기본값)",
+    "pinActionFold": "핀 접기 / 펼치기",
+    "pinActionClose": "핀 닫기 (Snipaste 방식)",
+    "pinActionResetScale": "1:1 원본 크기로 복원 (기본값)"
   },
   "history": {
     "title": "캡처 기록",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "제외 폴더 및 개인정보 보호"
+    "groupExclusions": "제외 폴더 및 개인정보 보호",
+    "hideOnBlurTitle": "포커스를 잃으면 자동으로 숨기기",
+    "hideOnBlurDesc": "검색 창 바깥을 클릭하면 자동으로 닫습니다 (Listary / uTools 방식). 고정(Pin) 상태, QuickLook 미리보기 또는 메뉴 사용 중에는 유지됩니다.",
+    "hideOnOpenTitle": "결과를 연 후 자동으로 숨기기",
+    "hideOnOpenDesc": "더블 클릭이나 Enter로 파일, 폴더, 앱, 명령 또는 북마크를 연 직후 검색 창을 자동으로 닫습니다 (고정 시 유지).",
+    "clearQueryOnShowTitle": "다시 열 때 이전 검색어 자동 지우기",
+    "clearQueryOnShowDesc": "숨겼다가 검색 창을 다시 호출할 때 이전 검색어를 비우고 빈 입력창으로 시작합니다 (끄면 이전 검색어를 유지하고 전체 선택)."
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "클립보드 설정 저장에 실패했습니다",
     "clearedToast": "{{count}}개의 클립보드 기록을 삭제했습니다",
     "hidePinnedInOtherTitle": "다른 분류에서 고정 항목 숨기기",
-    "hidePinnedInOtherDesc": "고정된 항목을 고정 탭에만 표시하여 전체·텍스트·이미지·파일·색상 목록을 깔끔하게 유지합니다."
+    "hidePinnedInOtherDesc": "고정된 항목을 고정 탭에만 표시하여 전체·텍스트·이미지·파일·색상 목록을 깔끔하게 유지합니다.",
+    "hideOnBlurTitle": "포커스를 잃으면 자동으로 숨기기",
+    "hideOnBlurDesc": "클립보드 패널 바깥을 클릭하면 자동으로 숨깁니다. 끄면 Esc나 닫기를 누를 때까지 참조 창처럼 열려 있습니다.",
+    "hideOnPasteTitle": "붙여넣기 또는 복사 후 자동으로 숨기기",
+    "hideOnPasteDesc": "항목을 붙여넣거나 복사한 뒤 패널을 자동으로 닫습니다. 끄면 고정하지 않아도 여러 항목을 연속 붙여넣기할 수 있습니다.",
+    "keepOpenAfterDragTitle": "드래그 붙여넣기 후 패널 열어 두기",
+    "keepOpenAfterDragDesc": "드래그하여 붙여넣은 뒤에도 패널을 띄워 두어 연속 드래그를 돕습니다. 끄면 한 번 드롭한 뒤 자동으로 숨깁니다.",
+    "singleClickPasteTitle": "한 번 클릭으로 바로 붙여넣기",
+    "singleClickPasteDesc": "더블 클릭 대신 왼쪽 한 번 클릭으로 즉시 붙여넣습니다 (Win + V 방식). 드래그 붙여넣기, 체크박스 및 Ctrl/Shift 다중 선택은 영향을 받지 않습니다."
   },
   "feedback": {
     "attachLogs": "로컬 익명화된 환경 정보 및 최근 1000줄 진단 로그 첨부",

@@ -2160,6 +2160,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 {"captureImages", s.captureImages},
                 {"captureFiles", s.captureFiles},
                 {"hidePinnedInOtherCategories", s.hidePinnedInOtherCategories},
+                {"hideOnBlur", s.hideOnBlur},
+                {"hideOnPaste", s.hideOnPaste},
+                {"keepOpenAfterDrag", s.keepOpenAfterDrag},
+                {"singleClickPaste", s.singleClickPaste},
                 {"excludedApps", s.excludedApps}
             };
         });
@@ -2178,6 +2182,18 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             if (params.contains("captureFiles") && params["captureFiles"].is_boolean()) s.captureFiles = params["captureFiles"].get<bool>();
             if (params.contains("hidePinnedInOtherCategories") && params["hidePinnedInOtherCategories"].is_boolean()) {
                 s.hidePinnedInOtherCategories = params["hidePinnedInOtherCategories"].get<bool>();
+            }
+            if (params.contains("hideOnBlur") && params["hideOnBlur"].is_boolean()) {
+                s.hideOnBlur = params["hideOnBlur"].get<bool>();
+            }
+            if (params.contains("hideOnPaste") && params["hideOnPaste"].is_boolean()) {
+                s.hideOnPaste = params["hideOnPaste"].get<bool>();
+            }
+            if (params.contains("keepOpenAfterDrag") && params["keepOpenAfterDrag"].is_boolean()) {
+                s.keepOpenAfterDrag = params["keepOpenAfterDrag"].get<bool>();
+            }
+            if (params.contains("singleClickPaste") && params["singleClickPaste"].is_boolean()) {
+                s.singleClickPaste = params["singleClickPaste"].get<bool>();
             }
             if (params.contains("excludedApps") && params["excludedApps"].is_string()) s.excludedApps = params["excludedApps"].get<std::string>();
 
@@ -2231,11 +2247,17 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             const bool autoPaste = params.is_object()
                 ? params.value("autoPaste", settings.autoPaste)
                 : settings.autoPaste;
-            const bool hideAfter = params.is_object() ? params.value("hideAfter", true) : true;
+            const bool defaultHideAfter = settings.hideOnPaste && !tools3000::ui::ClipboardWindow::instance().isPinned();
+            const bool hideAfter = params.is_object() ? params.value("hideAfter", defaultHideAfter) : defaultHideAfter;
             const HWND prevHwnd = tools3000::ui::ClipboardWindow::instance().previousForegroundHwnd();
             if (hideAfter) {
                 tools3000::core::MainThreadDispatcher::instance().post([]() {
                     tools3000::ui::ClipboardWindow::instance().hide();
+                });
+            } else if (autoPaste) {
+                tools3000::ui::ClipboardWindow::instance().armPasteKeepOpenGrace();
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().markPasteKeepOpenSession();
                 });
             }
             const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItem(
@@ -2271,11 +2293,17 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             const auto settings = tools3000::clipboard::ClipboardManager::instance().getSettings();
             const std::string separator = params.is_object() ? params.value("separator", "\n") : "\n";
             const bool autoPaste = params.is_object() ? params.value("autoPaste", settings.autoPaste) : settings.autoPaste;
-            const bool hideAfter = params.is_object() ? params.value("hideAfter", true) : true;
+            const bool defaultHideAfter = settings.hideOnPaste && !tools3000::ui::ClipboardWindow::instance().isPinned();
+            const bool hideAfter = params.is_object() ? params.value("hideAfter", defaultHideAfter) : defaultHideAfter;
             const HWND prevHwnd = tools3000::ui::ClipboardWindow::instance().previousForegroundHwnd();
             if (hideAfter) {
                 tools3000::core::MainThreadDispatcher::instance().post([]() {
                     tools3000::ui::ClipboardWindow::instance().hide();
+                });
+            } else if (autoPaste) {
+                tools3000::ui::ClipboardWindow::instance().armPasteKeepOpenGrace();
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().markPasteKeepOpenSession();
                 });
             }
             const bool ok = tools3000::clipboard::ClipboardManager::instance().activateItemsBatch(

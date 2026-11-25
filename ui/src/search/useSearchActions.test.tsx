@@ -27,6 +27,7 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
+import { bridgeRequest } from '../hooks/useBridge';
 import { useSearchActions } from './useSearchActions';
 import type { PropertyCacheMap, SearchResult } from './searchTypes';
 
@@ -122,5 +123,93 @@ describe('useSearchActions CSV export', () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]).toBe('"File Name","Type","Dimensions, ""Px""","Size"');
     expect(lines[1]).toBe('"hero, ""v1"".png","PNG Image","1920 x 1080","2.0 KB"');
+  });
+});
+
+describe('useSearchActions hideOnOpen behavior', () => {
+  const sampleItem: SearchResult = {
+    name: 'readme.md',
+    path: 'C:\\repo\\readme.md',
+    isDirectory: false,
+    size: 512,
+  };
+
+  beforeEach(() => {
+    vi.mocked(bridgeRequest).mockReset();
+  });
+
+  it('hides after opening a result when hideOnOpen is enabled and window is not pinned', async () => {
+    vi.mocked(bridgeRequest).mockResolvedValue({ success: true });
+    const hide = vi.fn();
+
+    const { result } = renderHook(() =>
+      useSearchActions({
+        isPinned: false,
+        hideOnOpen: true,
+        hide,
+        setActionError: vi.fn(),
+        setContextMenu: vi.fn(),
+        renameTarget: { visible: false, newName: '' },
+        setRenameTarget: vi.fn(),
+        renameInputRef: { current: null },
+        setResults: vi.fn(),
+        query: 'readme',
+        sortedResults: [sampleItem],
+      }),
+    );
+
+    await act(async () => {
+      await result.current.openResult(sampleItem);
+    });
+
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps window open when pinned, when hideOnOpen is false, or when open fails', async () => {
+    vi.mocked(bridgeRequest).mockResolvedValue({ success: true });
+    const hidePinned = vi.fn();
+    const { result: pinnedHook } = renderHook(() =>
+      useSearchActions({
+        isPinned: true,
+        hideOnOpen: true,
+        hide: hidePinned,
+        setActionError: vi.fn(),
+        setContextMenu: vi.fn(),
+        renameTarget: { visible: false, newName: '' },
+        setRenameTarget: vi.fn(),
+        renameInputRef: { current: null },
+        setResults: vi.fn(),
+        query: 'readme',
+        sortedResults: [sampleItem],
+      }),
+    );
+    await act(async () => {
+      await pinnedHook.current.openResult(sampleItem);
+    });
+    expect(hidePinned).not.toHaveBeenCalled();
+
+    vi.mocked(bridgeRequest).mockResolvedValue({ success: false, error: 'not found' });
+    const hideOnFail = vi.fn();
+    const setActionError = vi.fn();
+    const { result: failHook } = renderHook(() =>
+      useSearchActions({
+        isPinned: false,
+        hideOnOpen: true,
+        hide: hideOnFail,
+        setActionError,
+        setContextMenu: vi.fn(),
+        renameTarget: { visible: false, newName: '' },
+        setRenameTarget: vi.fn(),
+        renameInputRef: { current: null },
+        setResults: vi.fn(),
+        query: 'readme',
+        sortedResults: [sampleItem],
+      }),
+    );
+    await act(async () => {
+      await failHook.current.openResult(sampleItem);
+    });
+    expect(hideOnFail).not.toHaveBeenCalled();
+    expect(setActionError).toHaveBeenCalled();
   });
 });

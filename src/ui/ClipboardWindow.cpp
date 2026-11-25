@@ -266,8 +266,11 @@ void ClipboardWindow::enterDeferredSuspend() {
 void ClipboardWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
+    KillTimer(m_hwnd, IDT_PASTE_TOPMOST_RELEASE);
     m_pendingReveal = false;
     m_dragSessionHold = false;
+    m_pasteTopmostHold = false;
+    m_lastPasteKeepOpenTick.store(0, std::memory_order_release);
     uninstallForegroundTracker();
     if (!m_pinned) {
         SetWindowPos(
@@ -286,6 +289,8 @@ void ClipboardWindow::hide() {
 void ClipboardWindow::destroy() {
     uninstallForegroundTracker();
     m_dragSessionHold = false;
+    m_pasteTopmostHold = false;
+    m_lastPasteKeepOpenTick.store(0, std::memory_order_release);
     tools3000::core::MessageBridge::instance().unregisterEventPusher("clipboard_window");
     m_suspendController.abandon();
     ++m_generation;
@@ -293,6 +298,7 @@ void ClipboardWindow::destroy() {
         KillTimer(m_hwnd, IDT_IDLE_DESTROY);
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
         KillTimer(m_hwnd, IDT_REVEAL_FALLBACK);
+        KillTimer(m_hwnd, IDT_PASTE_TOPMOST_RELEASE);
     }
     if (m_controller) {
         m_controller->Close();
@@ -345,6 +351,10 @@ void ClipboardWindow::setPinned(bool pinned) {
     m_pinned = pinned;
     if (!m_pinned) {
         m_dragSessionHold = false;
+        m_pasteTopmostHold = false;
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            KillTimer(m_hwnd, IDT_PASTE_TOPMOST_RELEASE);
+        }
     }
     if (m_hwnd && IsWindow(m_hwnd)) {
         SetWindowPos(
@@ -354,6 +364,28 @@ void ClipboardWindow::setPinned(bool pinned) {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
     notifyWindowStateToWeb();
+}
+
+void ClipboardWindow::armPasteKeepOpenGrace() noexcept {
+    m_lastPasteKeepOpenTick.store(GetTickCount64(), std::memory_order_release);
+}
+
+void ClipboardWindow::markPasteKeepOpenSession() {
+    armPasteKeepOpenGrace();
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    if (!m_pinned) {
+        m_pasteTopmostHold = true;
+        SetWindowPos(
+            m_hwnd,
+            HWND_TOPMOST,
+            0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        SetTimer(
+            m_hwnd,
+            IDT_PASTE_TOPMOST_RELEASE,
+            static_cast<UINT>(PASTE_KEEP_OPEN_GRACE_MS),
+            nullptr);
+    }
 }
 
 void ClipboardWindow::toggleMaximize() {
@@ -619,7 +651,6 @@ void ClipboardWindow::initializeWebView2() {
                                                             if (outcome.delivered() &&
                                                                 generation == m_generation.load() &&
                                                                 m_hwnd && IsWindow(m_hwnd)) {
-                                                                m_dragSessionHold = true;
                                                                 if (outcome.targetRootHwnd) {
                                                                     const HWND validTarget = resolveValidTargetForegroundHwnd(
                                                                         outcome.targetRootHwnd, m_hwnd);
@@ -627,14 +658,21 @@ void ClipboardWindow::initializeWebView2() {
                                                                         m_previousForegroundHwnd = validTarget;
                                                                     }
                                                                 }
-                                                                if (!m_pinned) {
-                                                                    // 拖放成功后保持剪贴板面板无激活浮于目标窗之上，
-                                                                    // 杜绝 Chrome 地址栏延迟异步抢焦点导致面板消失或被压底。
-                                                                    SetWindowPos(
-                                                                        m_hwnd,
-                                                                        HWND_TOPMOST,
-                                                                        0, 0, 0, 0,
-                                                                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                                                                const bool keepOpenAfterDrag =
+                                                                    tools3000::clipboard::ClipboardManager::instance().getSettings().keepOpenAfterDrag;
+                                                                if (m_pinned || keepOpenAfterDrag) {
+                                                                    m_dragSessionHold = true;
+                                                                    if (!m_pinned) {
+                                                                        // 拖放成功后保持剪贴板面板无激活浮于目标窗之上，
+                                                                        // 杜绝 Chrome 地址栏延迟异步抢焦点导致面板消失或被压底。
+                                                                        SetWindowPos(
+                                                                            m_hwnd,
+                                                                            HWND_TOPMOST,
+                                                                            0, 0, 0, 0,
+                                                                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                                                                    }
+                                                                } else {
+                                                                    hide();
                                                                 }
                                                             }
                                                         });
@@ -922,7 +960,10 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                     return 0;
                 }
 
-                // 窗口失焦时同步追踪新激活窗口（含置顶常驻与拖拽驻留态切到其他应用窗口的场景）
+                const bool hideOnBlurEnabled =
+                    tools3000::clipboard::ClipboardManager::instance().getSettings().hideOnBlur;
+
+                // 窗口失焦时同步追踪新激活窗口（含置顶常驻、拖拽驻留与关闭失焦自动隐藏的场景）
                 if (!self->m_inSizeMove && !self->m_inNativeDrag.load(std::memory_order_acquire)) {
                     if (lParam != 0) {
                         const HWND gainedRoot = resolveValidTargetForegroundHwnd(
@@ -930,9 +971,21 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                         if (gainedRoot) {
                             self->m_previousForegroundHwnd = gainedRoot;
                         }
-                    } else if (self->m_pinned || self->m_dragSessionHold) {
+                    } else if (self->m_pinned || self->m_dragSessionHold || !hideOnBlurEnabled) {
                         PostMessageW(hwnd, WM_CLIPBOARD_CAPTURE_FOREGROUND, 0, 0);
                     }
+                }
+
+                const uint64_t nowTick = GetTickCount64();
+                const uint64_t lastPasteKeepOpenTick =
+                    self->m_lastPasteKeepOpenTick.load(std::memory_order_acquire);
+                if (self->m_pasteTopmostHold && !self->m_pinned && !self->m_dragSessionHold &&
+                    (lastPasteKeepOpenTick == 0 ||
+                     nowTick < lastPasteKeepOpenTick ||
+                     (nowTick - lastPasteKeepOpenTick) >= PASTE_KEEP_OPEN_GRACE_MS)) {
+                    self->m_pasteTopmostHold = false;
+                    KillTimer(hwnd, IDT_PASTE_TOPMOST_RELEASE);
+                    SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
                 }
 
                 if (shouldAutoHideOnDeactivate(
@@ -941,15 +994,21 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                         self->m_pinned,
                         self->m_inSizeMove,
                         self->m_inNativeDrag.load(std::memory_order_acquire),
-                        GetTickCount64(),
+                        nowTick,
                         self->m_showTimeTick,
                         self->m_lastNativeDragEndTick,
-                        self->m_dragSessionHold)) {
+                        self->m_dragSessionHold,
+                        hideOnBlurEnabled,
+                        lastPasteKeepOpenTick)) {
                     PostMessageW(hwnd, WM_CLIPBOARD_VERIFY_DEACTIVATED, 0, 0);
                 }
                 return 0;
             }
             case WM_CLIPBOARD_VERIFY_DEACTIVATED: {
+                const bool hideOnBlurEnabled =
+                    tools3000::clipboard::ClipboardManager::instance().getSettings().hideOnBlur;
+                const uint64_t lastPasteKeepOpenTick =
+                    self->m_lastPasteKeepOpenTick.load(std::memory_order_acquire);
                 if (shouldAutoHideOnDeactivate(
                         self->m_visible.load(std::memory_order_acquire),
                         self->m_pendingReveal,
@@ -959,7 +1018,9 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                         GetTickCount64(),
                         self->m_showTimeTick,
                         self->m_lastNativeDragEndTick,
-                        self->m_dragSessionHold)) {
+                        self->m_dragSessionHold,
+                        hideOnBlurEnabled,
+                        lastPasteKeepOpenTick)) {
                     const HWND fg = GetForegroundWindow();
                     if (fg != hwnd && (!fg || !IsChild(hwnd, fg))) {
                         self->hide();
@@ -977,6 +1038,14 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_TIMER: {
+                if (wParam == IDT_PASTE_TOPMOST_RELEASE) {
+                    KillTimer(hwnd, IDT_PASTE_TOPMOST_RELEASE);
+                    if (self->m_pasteTopmostHold && !self->m_pinned && !self->m_dragSessionHold) {
+                        self->m_pasteTopmostHold = false;
+                        SetWindowPos(hwnd, HWND_NOTOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                    }
+                    return 0;
+                }
                 if (wParam == IDT_REVEAL_FALLBACK) {
                     KillTimer(hwnd, IDT_REVEAL_FALLBACK);
                     if (self->m_visible.load(std::memory_order_acquire) && self->m_pendingReveal) {

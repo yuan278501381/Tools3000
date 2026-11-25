@@ -456,4 +456,51 @@ describe('ClipboardApp', () => {
     expect(icons.length).toBe(3);
     expect(icons[0].getAttribute('src')).toBe(fakePng);
   });
+
+  it('respects hideOnPaste=false, autoPaste=false, and singleClickPaste=true without double-pasting or breaking multi-select', async () => {
+    const baseImpl = bridgeRequestMock.getMockImplementation();
+    bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>, opts?: unknown) => {
+      if (method === 'clipboard.getSettings') {
+        return {
+          hidePinnedInOtherCategories: false,
+          autoPaste: false,
+          plainTextByDefault: true,
+          hideOnBlur: true,
+          hideOnPaste: false,
+          keepOpenAfterDrag: true,
+          singleClickPaste: true,
+        };
+      }
+      return baseImpl ? baseImpl(method, params, opts) : { success: true };
+    });
+
+    render(<ClipboardApp />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rich formatted note')).toBeTruthy();
+    });
+
+    const options = screen.getAllByRole('option');
+    // 1. 开启 singleClickPaste 时，单击触发一次 pasteItem 且透传 hideAfter=false、autoPaste=false、plainTextOnly=true
+    fireEvent.click(options[1], { detail: 1 });
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.pasteItem', {
+        id: 102,
+        plainTextOnly: true,
+        autoPaste: false,
+        hideAfter: false,
+      });
+    });
+
+    // 2. 紧随其后的 dblclick 与 detail=2 绝不触发二次重复粘贴
+    const callsAfterFirst = bridgeRequestMock.mock.calls.filter((c) => c[0] === 'clipboard.pasteItem').length;
+    fireEvent.click(options[1], { detail: 2 });
+    fireEvent.doubleClick(options[1]);
+    expect(bridgeRequestMock.mock.calls.filter((c) => c[0] === 'clipboard.pasteItem').length).toBe(callsAfterFirst);
+
+    // 3. 按住 Ctrl 单击进入多选模式时，绝不触发单选粘贴
+    fireEvent.mouseDown(options[2], { button: 0, ctrlKey: true });
+    fireEvent.click(options[2], { detail: 1, ctrlKey: true });
+    expect(bridgeRequestMock.mock.calls.filter((c) => c[0] === 'clipboard.pasteItem').length).toBe(callsAfterFirst);
+  });
 });

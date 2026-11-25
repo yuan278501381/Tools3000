@@ -71,6 +71,9 @@ interface SearchSettings {
   idleStopMinutes?: number;
   iconStyle?: 'native' | 'vector';
   autoBypassFullscreen?: boolean;
+  hideOnBlur?: boolean;
+  hideOnOpen?: boolean;
+  clearQueryOnShow?: boolean;
   customExcludedPaths?: string[];
   externalApiEnabled?: boolean;
   externalApiExcludePaths?: string;
@@ -145,6 +148,9 @@ export const SearchPage: FC = () => {
     idleStopMinutes: 30,
     iconStyle: 'native',
     autoBypassFullscreen: true,
+    hideOnBlur: false,
+    hideOnOpen: false,
+    clearQueryOnShow: false,
     customExcludedPaths: [],
     externalApiEnabled: false,
     externalApiExcludePaths: '',
@@ -361,6 +367,10 @@ export const SearchPage: FC = () => {
       safeStorageSetItem('tools3000_search_default_category', String(value));
     } else if (key === 'iconStyle' && value) {
       safeStorageSetItem('tools3000_search_icon_style', String(value));
+    } else if (key === 'hideOnOpen' && typeof value === 'boolean') {
+      safeStorageSetItem('tools3000_search_hide_on_open', String(value));
+    } else if (key === 'clearQueryOnShow' && typeof value === 'boolean') {
+      safeStorageSetItem('tools3000_search_clear_query_on_show', String(value));
     } else if (key === 'customExcludedPaths' && Array.isArray(value)) {
       safeStorageSetItem(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, JSON.stringify(value));
     }
@@ -641,6 +651,39 @@ export const SearchPage: FC = () => {
                     id="search-auto-bypass-toggle"
                     checked={settings.autoBypassFullscreen ?? true}
                     onChange={(v) => void saveSetting('autoBypassFullscreen', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.hideOnBlurTitle', 'Auto-Hide When Clicking Outside')}
+                  description={t('searchPage.hideOnBlurDesc', 'Automatically hide the search window when focus moves elsewhere (Listary / uTools style). Stays open while pinned, previewing via QuickLook, or using menus.')}
+                >
+                  <Toggle
+                    id="search-hide-on-blur-toggle"
+                    checked={settings.hideOnBlur ?? false}
+                    onChange={(v) => void saveSetting('hideOnBlur', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.hideOnOpenTitle', 'Auto-Hide After Opening Result')}
+                  description={t('searchPage.hideOnOpenDesc', 'Automatically hide the search window right after opening a file, folder, app, command, or bookmark via double-click or Enter. Stays open when pinned.')}
+                >
+                  <Toggle
+                    id="search-hide-on-open-toggle"
+                    checked={settings.hideOnOpen ?? false}
+                    onChange={(v) => void saveSetting('hideOnOpen', v)}
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('searchPage.clearQueryOnShowTitle', 'Clear Previous Query on Re-Open')}
+                  description={t('searchPage.clearQueryOnShowDesc', 'Start with a fresh empty search box whenever you summon Search again after hiding it (instead of keeping and selecting the last query).')}
+                >
+                  <Toggle
+                    id="search-clear-query-on-show-toggle"
+                    checked={settings.clearQueryOnShow ?? false}
+                    onChange={(v) => void saveSetting('clearQueryOnShow', v)}
                   />
                 </SettingRow>
 

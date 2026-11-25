@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "Ação ao clicar duas vezes no pin",
+    "pinDoubleClickActionDesc": "Escolha o que acontece ao dar clique duplo em um pin na área de trabalho (ao escolher Fechar ou Recolher, você ainda pode arrastar para selecionar texto OCR; pins recolhidos sempre expandem primeiro).",
+    "pinMiddleClickActionTitle": "Ação ao clicar com o botão do meio no pin",
+    "pinMiddleClickActionDesc": "Escolha o que acontece ao clicar com o botão do meio no pin (protegido contra fechamento acidental durante edição de texto no local).",
+    "pinActionEdit": "Abrir editor de anotações (Padrão)",
+    "pinActionFold": "Recolher / Expandir pin",
+    "pinActionClose": "Fechar pin (Estilo Snipaste)",
+    "pinActionResetScale": "Redefinir para tamanho 1:1 (Padrão)"
   },
   "history": {
     "title": "Histórico de Capturas",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "Pastas excluídas e privacidade"
+    "groupExclusions": "Pastas excluídas e privacidade",
+    "hideOnBlurTitle": "Ocultar automaticamente ao clicar fora",
+    "hideOnBlurDesc": "Oculta a janela de busca quando o foco vai para outro aplicativo (estilo Listary / uTools). Permanece aberta quando fixada, durante o QuickLook ou com menus abertos.",
+    "hideOnOpenTitle": "Ocultar automaticamente após abrir resultado",
+    "hideOnOpenDesc": "Oculta a janela de busca logo após abrir um arquivo, pasta, aplicativo, comando ou favorito por clique duplo ou Enter (permanece aberta quando fixada).",
+    "clearQueryOnShowTitle": "Limpar consulta anterior ao reabrir",
+    "clearQueryOnShowDesc": "Inicia com a barra de busca vazia sempre que reabrir após ocultar, em vez de manter e selecionar a pesquisa anterior."
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "Falha ao salvar configurações",
     "clearedToast": "{{count}} itens removidos do histórico",
     "hidePinnedInOtherTitle": "Ocultar itens fixados nas outras categorias",
-    "hidePinnedInOtherDesc": "Mantém itens fixados apenas na aba Fixados para liberar espaço em Todos, Texto, Imagens, Arquivos e Cores."
+    "hidePinnedInOtherDesc": "Mantém itens fixados apenas na aba Fixados para liberar espaço em Todos, Texto, Imagens, Arquivos e Cores.",
+    "hideOnBlurTitle": "Ocultar painel ao clicar fora",
+    "hideOnBlurDesc": "Oculta o painel da área de transferência quando perde o foco. Desative para mantê-lo aberto como janela de referência até pressionar Esc ou fechar.",
+    "hideOnPasteTitle": "Ocultar painel após colar ou copiar",
+    "hideOnPasteDesc": "Fecha o painel automaticamente após ativar um item. Desative para colar vários itens em sequência sem precisar fixar a janela.",
+    "keepOpenAfterDragTitle": "Manter painel aberto após arrastar e colar",
+    "keepOpenAfterDragDesc": "Mantém o painel flutuando após soltar um item em outro app para facilitar múltiplos envios; desative para ocultar após o primeiro envio.",
+    "singleClickPasteTitle": "Colar imediatamente com um clique",
+    "singleClickPasteDesc": "Cola com um único clique esquerdo (estilo Win + V) em vez de clique duplo. Arrastar, caixas de seleção e seleção múltipla com Ctrl/Shift continuam normais."
   },
   "feedback": {
     "attachLogs": "Anexar informações de ambiente e últimas 1000 linhas de log redigidas localmente",

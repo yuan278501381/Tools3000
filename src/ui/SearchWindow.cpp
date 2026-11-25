@@ -259,10 +259,12 @@ void SearchWindow::showSystemMenu(int screenX, int screenY) {
     }
 
     SetForegroundWindow(m_hwnd);
+    setMenuActive(true);
     const int cmd = TrackPopupMenu(
         hMenu,
         TPM_RETURNCMD | TPM_TOPALIGN | TPM_LEFTALIGN | TPM_RIGHTBUTTON,
         screenX, screenY, 0, m_hwnd, nullptr);
+    setMenuActive(false);
     if (cmd > 0) {
         PostMessageW(m_hwnd, WM_SYSCOMMAND, cmd, 0);
     }
@@ -402,6 +404,7 @@ void SearchWindow::show(HINSTANCE hInstance) {
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+        KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
         // 若此前 WebView2 初始化曾失败或渲染器崩溃且当前未在初始化，立即自动重试恢复，杜绝永久黑屏死胡同
         if (!m_webView && !m_webViewInitializing.load(std::memory_order_acquire)) {
             m_autoRecoverAttempted.store(false, std::memory_order_release);
@@ -483,6 +486,7 @@ void SearchWindow::minimize() {
 
 void SearchWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
     if (!m_visible.load() && !IsWindowVisible(m_hwnd)) return;
     persistNormalGeometry();
     ShowWindow(m_hwnd, SW_HIDE);
@@ -1237,15 +1241,24 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             }
             return 0;
         case WM_ACTIVATE: {
-            // 纯独立桌面窗口模式：失焦时停留在后台和任务栏，不再自动隐藏；切回前台时抢跑唤醒渲染器、恢复控制器可见与焦点同步，
-            // 并通知前端感知前后台切换以对重型全盘内容扫描执行失焦软暂停，绝不拖慢前台其他应用或 OCR。
+            // 独立桌面窗口模式默认失焦保留在后台；当用户显式开启 /search/hideOnBlur 时，
+            // 通过 60ms 延迟确认并严格避让置顶态、QuickLook 预览、右键/系统菜单与子对话框后再自动收起。
             const bool active = (LOWORD(wParam) != WA_INACTIVE);
+            if (active) {
+                KillTimer(hwnd, IDT_DEFERRED_BLUR_HIDE);
+            }
             if (active && IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
                 if (inst.m_webView) {
                     inst.m_suspendController.resume(inst.m_webView.Get(), "search");
                 }
                 if (inst.m_controller && inst.m_uiFirstPaintReady.load(std::memory_order_acquire)) {
                     inst.m_controller->put_IsVisible(TRUE);
+                }
+            } else if (!active && IsWindowVisible(hwnd) && !IsIconic(hwnd)) {
+                const bool hideOnBlur = tools3000::core::ConfigManager::instance().get<bool>(
+                    "/search/hideOnBlur", false);
+                if (hideOnBlur && !inst.m_isPinned.load() && !inst.isMenuActive()) {
+                    SetTimer(hwnd, IDT_DEFERRED_BLUR_HIDE, DEFERRED_BLUR_HIDE_DELAY_MS, nullptr);
                 }
             }
             if (inst.m_webView) {
@@ -1263,6 +1276,41 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             }
             return 0;
         case WM_TIMER: {
+            if (wParam == IDT_DEFERRED_BLUR_HIDE) {
+                KillTimer(hwnd, IDT_DEFERRED_BLUR_HIDE);
+                const HWND fg = GetForegroundWindow();
+                const HWND quickLookHwnd = QuickLookWindow::instance().getHwnd();
+                bool fgOwnedBySearchOrMenu = false;
+                if (fg) {
+                    if (fg == hwnd || IsChild(hwnd, fg) || GetWindow(fg, GW_OWNER) == hwnd ||
+                        (quickLookHwnd && (fg == quickLookHwnd || IsChild(quickLookHwnd, fg)))) {
+                        fgOwnedBySearchOrMenu = true;
+                    } else {
+                        wchar_t clsName[64]{};
+                        if (GetClassNameW(fg, clsName, 64) > 0 && wcscmp(clsName, L"#32768") == 0) {
+                            fgOwnedBySearchOrMenu = true;
+                        }
+                    }
+                }
+                const uint64_t nowTick = GetTickCount64();
+                BlurHideContext ctx{};
+                ctx.hideOnBlurEnabled = tools3000::core::ConfigManager::instance().get<bool>(
+                    "/search/hideOnBlur", false);
+                ctx.visible = inst.isVisible();
+                ctx.minimized = inst.isMinimized();
+                ctx.foregroundActive = inst.isForegroundActive();
+                ctx.pinned = inst.m_isPinned.load();
+                ctx.menuOrDragActive = inst.isMenuActive();
+                ctx.quickLookVisible = QuickLookWindow::instance().isVisible();
+                ctx.foregroundOwnedBySearchOrMenu = fgOwnedBySearchOrMenu;
+                ctx.elapsedSinceShowMs = (nowTick >= inst.m_showTimeTick)
+                    ? (nowTick - inst.m_showTimeTick)
+                    : 0;
+                if (shouldAutoHideOnBlur(ctx)) {
+                    inst.hide();
+                }
+                return 0;
+            }
             if (wParam == IDT_COLD_WARMUP_FALLBACK) {
                 KillTimer(hwnd, IDT_COLD_WARMUP_FALLBACK);
                 if (inst.m_pendingServiceWarmup.exchange(false, std::memory_order_acq_rel)) {

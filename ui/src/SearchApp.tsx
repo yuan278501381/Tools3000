@@ -291,6 +291,18 @@ export default function SearchApp() {
   const renameInputRef = useRef<HTMLInputElement | null>(null);
   const [isPinned, setIsPinned] = useState(false);
   const [isMaximized, setIsMaximized] = useState(false);
+  const [hideOnOpen, setHideOnOpen] = useState<boolean>(() =>
+    safeStorageGetBoolean('tools3000_search_hide_on_open', false),
+  );
+  const [clearQueryOnShow, setClearQueryOnShow] = useState<boolean>(() =>
+    safeStorageGetBoolean('tools3000_search_clear_query_on_show', false),
+  );
+  const clearQueryOnShowRef = useRef(clearQueryOnShow);
+  const wasHiddenSinceLastShowRef = useRef(false);
+  const clearQueryForFreshShowRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    clearQueryOnShowRef.current = clearQueryOnShow;
+  }, [clearQueryOnShow]);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [isComposing, setIsComposing] = useState(false);
@@ -885,6 +897,8 @@ export default function SearchApp() {
         includeBookmarks?: boolean;
         enableAppsAndCommands?: boolean;
         liveRefreshEnabled?: boolean;
+        hideOnOpen?: boolean;
+        clearQueryOnShow?: boolean;
         rankingProfile?: string;
         defaultCategory?: string;
         maxResults?: number;
@@ -902,6 +916,14 @@ export default function SearchApp() {
           if (typeof res.liveRefreshEnabled === 'boolean') {
             setLiveRefreshEnabled(res.liveRefreshEnabled);
             safeStorageSetItem('tools3000_search_live_refresh', String(res.liveRefreshEnabled));
+          }
+          if (typeof res.hideOnOpen === 'boolean') {
+            setHideOnOpen(res.hideOnOpen);
+            safeStorageSetItem('tools3000_search_hide_on_open', String(res.hideOnOpen));
+          }
+          if (typeof res.clearQueryOnShow === 'boolean') {
+            setClearQueryOnShow(res.clearQueryOnShow);
+            safeStorageSetItem('tools3000_search_clear_query_on_show', String(res.clearQueryOnShow));
           }
           if (typeof res.defaultCategory === 'string' && res.defaultCategory) {
             const normalizedCat = res.defaultCategory === 'content' ? 'all' : res.defaultCategory;
@@ -1048,6 +1070,10 @@ export default function SearchApp() {
         setIconStyle(e.newValue);
       } else if (e.key === 'tools3000_search_live_refresh' && (e.newValue === 'true' || e.newValue === 'false')) {
         setLiveRefreshEnabled(e.newValue === 'true');
+      } else if (e.key === 'tools3000_search_hide_on_open' && (e.newValue === 'true' || e.newValue === 'false')) {
+        setHideOnOpen(e.newValue === 'true');
+      } else if (e.key === 'tools3000_search_clear_query_on_show' && (e.newValue === 'true' || e.newValue === 'false')) {
+        setClearQueryOnShow(e.newValue === 'true');
       } else if (e.key === CUSTOM_EXCLUDED_PATHS_STORAGE_KEY) {
         const synced = safeStorageGetJsonArray<string>(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, isNonEmptyString, []);
         setCustomExcludedPaths(mergeExcludedPaths([], synced).paths);
@@ -1961,9 +1987,19 @@ export default function SearchApp() {
 
     scheduleInitialFocusAndSelect();
 
+    const onHiddenEvt = () => {
+      wasHiddenSinceLastShowRef.current = true;
+    };
     const onFocusEvt = () => {
+      if (wasHiddenSinceLastShowRef.current) {
+        wasHiddenSinceLastShowRef.current = false;
+        if (clearQueryOnShowRef.current) {
+          clearQueryForFreshShowRef.current();
+        }
+      }
       scheduleInitialFocusAndSelect();
     };
+    window.addEventListener('tools3000:searchWindowHidden', onHiddenEvt);
     window.addEventListener('tools3000:focusSearch', onFocusEvt);
 
     const onEarlyKeyDown = (e: KeyboardEvent) => {
@@ -1987,6 +2023,7 @@ export default function SearchApp() {
         window.clearTimeout(tid);
       }
       pendingSelectTimersRef.current = [];
+      window.removeEventListener('tools3000:searchWindowHidden', onHiddenEvt);
       window.removeEventListener('tools3000:focusSearch', onFocusEvt);
       window.removeEventListener('keydown', onEarlyKeyDown, true);
       window.removeEventListener('click', handleGlobalClick);
@@ -2154,6 +2191,12 @@ export default function SearchApp() {
     }
   }, [setIsServiceStarting, setLoading, setResults, setSelectedIndex]);
 
+  useEffect(() => {
+    clearQueryForFreshShowRef.current = () => {
+      updateQuery('');
+    };
+  }, [updateQuery]);
+
   const selectCategory = useCallback((cat: CategoryFilter) => {
     if (cat.id === 'content') {
       startTransition(() => {
@@ -2281,6 +2324,7 @@ export default function SearchApp() {
     exportResultsToCsv,
   } = useSearchActions({
     isPinned,
+    hideOnOpen,
     hide,
     setActionError,
     setContextMenu,

@@ -17000,6 +17000,41 @@ TEST(InPlaceTranslateEngineTest, IsTranslatableTextSupportsArabicThaiVietnameseA
     EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("12px"));
 }
 
+TEST(PinWindowActionPreferenceTest, ParsesAndProtectsDoubleClickAndMiddleClickActions) {
+    using tools3000::capture::PinWindow;
+
+    // 默认与非法值均安全回退既有默认行为
+    EXPECT_EQ(PinWindow::parseDoubleClickAction(""), PinWindow::DoubleClickAction::Edit);
+    EXPECT_EQ(PinWindow::parseDoubleClickAction("edit"), PinWindow::DoubleClickAction::Edit);
+    EXPECT_EQ(PinWindow::parseDoubleClickAction("fold"), PinWindow::DoubleClickAction::Fold);
+    EXPECT_EQ(PinWindow::parseDoubleClickAction("close"), PinWindow::DoubleClickAction::Close);
+    EXPECT_EQ(PinWindow::parseDoubleClickAction("unknown"), PinWindow::DoubleClickAction::Edit);
+
+    EXPECT_EQ(PinWindow::parseMiddleClickAction(""), PinWindow::MiddleClickAction::ResetScale);
+    EXPECT_EQ(PinWindow::parseMiddleClickAction("reset_scale"), PinWindow::MiddleClickAction::ResetScale);
+    EXPECT_EQ(PinWindow::parseMiddleClickAction("close"), PinWindow::MiddleClickAction::Close);
+    EXPECT_EQ(PinWindow::parseMiddleClickAction("fold"), PinWindow::MiddleClickAction::Fold);
+    EXPECT_EQ(PinWindow::parseMiddleClickAction("unknown"), PinWindow::MiddleClickAction::ResetScale);
+
+    // 折叠态贴图双击永远优先展开；原位改字编辑中严防双击/中键误关贴图
+    EXPECT_EQ(
+        PinWindow::resolveEffectiveDoubleClickAction(PinWindow::DoubleClickAction::Close, /*isFolded=*/true, false),
+        PinWindow::DoubleClickAction::Fold);
+    EXPECT_EQ(
+        PinWindow::resolveEffectiveDoubleClickAction(PinWindow::DoubleClickAction::Close, false, /*isEditingTextReplace=*/true),
+        PinWindow::DoubleClickAction::Edit);
+    EXPECT_EQ(
+        PinWindow::resolveEffectiveDoubleClickAction(PinWindow::DoubleClickAction::Close, false, false),
+        PinWindow::DoubleClickAction::Close);
+
+    EXPECT_EQ(
+        PinWindow::resolveEffectiveMiddleClickAction(PinWindow::MiddleClickAction::Close, /*isEditingTextReplace=*/true),
+        PinWindow::MiddleClickAction::ResetScale);
+    EXPECT_EQ(
+        PinWindow::resolveEffectiveMiddleClickAction(PinWindow::MiddleClickAction::Close, false),
+        PinWindow::MiddleClickAction::Close);
+}
+
 
 
 

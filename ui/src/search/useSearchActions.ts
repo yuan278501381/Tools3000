@@ -60,6 +60,7 @@ async function requestNativeActionWithFallback(
 
 export interface UseSearchActionsProps {
   isPinned: boolean;
+  hideOnOpen?: boolean;
   hide: () => void;
   setActionError: (err: string) => void;
   setContextMenu: React.Dispatch<React.SetStateAction<{ visible: boolean; x: number; y: number; result?: SearchResult }>>;
@@ -83,6 +84,7 @@ export interface UseSearchActionsProps {
 
 export function useSearchActions({
   isPinned,
+  hideOnOpen = false,
   hide,
   setActionError,
   setContextMenu,
@@ -99,10 +101,14 @@ export function useSearchActions({
   ensureColumnLoadedForSort,
   onRecordSearch,
 }: UseSearchActionsProps) {
-  void isPinned;
-  void hide;
   const { t } = useTranslation();
   const exportingCsvRef = useRef(false);
+
+  const maybeHideAfterOpen = useCallback(() => {
+    if (hideOnOpen && !isPinned) {
+      hide();
+    }
+  }, [hide, hideOnOpen, isPinned]);
 
   const bumpLocalRunCount = useCallback((targetPath: string) => {
     if (!targetPath) return;
@@ -123,10 +129,11 @@ export function useSearchActions({
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFile', 'system.openFile', result.path);
       bumpLocalRunCount(result.path);
+      maybeHideAfterOpen();
     } catch {
       setActionError(t('search.openFailed', 'Could not open this result'));
     }
-  }, [bumpLocalRunCount, onRecordSearch, query, setActionError, t]);
+  }, [bumpLocalRunCount, maybeHideAfterOpen, onRecordSearch, query, setActionError, t]);
 
   const openFolderResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
@@ -136,10 +143,11 @@ export function useSearchActions({
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFolder', 'system.openFolder', result.path);
       bumpLocalRunCount(result.path);
+      maybeHideAfterOpen();
     } catch {
       setActionError(t('search.openFolderFailed', 'Could not open containing folder'));
     }
-  }, [bumpLocalRunCount, onRecordSearch, query, setActionError, t]);
+  }, [bumpLocalRunCount, maybeHideAfterOpen, onRecordSearch, query, setActionError, t]);
 
   const copyPathResult = useCallback((result: SearchResult | undefined) => {
     if (!result) return;
@@ -213,10 +221,11 @@ export function useSearchActions({
       onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openFileAsAdmin', 'system.openFileAsAdmin', result.path);
+      maybeHideAfterOpen();
     } catch {
       setActionError(t('search.errRunAsAdmin', 'Failed to run as administrator'));
     }
-  }, [onRecordSearch, query, setActionError, t]);
+  }, [maybeHideAfterOpen, onRecordSearch, query, setActionError, t]);
 
   const showFileProperties = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
@@ -261,10 +270,11 @@ export function useSearchActions({
       onRecordSearch?.(query);
       void bridgeRequest('search.recordRun', { path: result.path });
       await requestNativeActionWithFallback('search.openWithNotepad', 'system.openWithNotepad', result.path);
+      maybeHideAfterOpen();
     } catch {
       setActionError(t('search.errOpenNotepad', 'Unable to open file with Notepad'));
     }
-  }, [onRecordSearch, query, setActionError, t]);
+  }, [maybeHideAfterOpen, onRecordSearch, query, setActionError, t]);
 
   const startRename = useCallback((result: SearchResult | undefined) => {
     if (!result) return;

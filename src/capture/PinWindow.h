@@ -31,6 +31,7 @@
 #include <mutex>
 #include <atomic>
 #include <string>
+#include <string_view>
 
 namespace tools3000::capture {
 
@@ -67,6 +68,72 @@ public:
 
     /// 关闭此贴图窗口
     void close();
+
+    /// 贴图空白处双击动作偏好（默认 Edit 保持现有行为，可选 Fold/Close 适配 Snipaste 肌肉记忆）
+    enum class DoubleClickAction : uint8_t {
+        Edit = 0,
+        Fold = 1,
+        Close = 2,
+    };
+
+    /// 贴图鼠标中键单击动作偏好（默认 ResetScale 保持 1:1 复原，可选 Close/Fold）
+    enum class MiddleClickAction : uint8_t {
+        ResetScale = 0,
+        Close = 1,
+        Fold = 2,
+    };
+
+    static constexpr DoubleClickAction parseDoubleClickAction(std::string_view value) noexcept {
+        if (value == "fold") return DoubleClickAction::Fold;
+        if (value == "close") return DoubleClickAction::Close;
+        return DoubleClickAction::Edit;
+    }
+
+    static constexpr const char* doubleClickActionToString(DoubleClickAction action) noexcept {
+        switch (action) {
+            case DoubleClickAction::Fold: return "fold";
+            case DoubleClickAction::Close: return "close";
+            case DoubleClickAction::Edit:
+            default: return "edit";
+        }
+    }
+
+    static constexpr MiddleClickAction parseMiddleClickAction(std::string_view value) noexcept {
+        if (value == "close") return MiddleClickAction::Close;
+        if (value == "fold") return MiddleClickAction::Fold;
+        return MiddleClickAction::ResetScale;
+    }
+
+    static constexpr const char* middleClickActionToString(MiddleClickAction action) noexcept {
+        switch (action) {
+            case MiddleClickAction::Close: return "close";
+            case MiddleClickAction::Fold: return "fold";
+            case MiddleClickAction::ResetScale:
+            default: return "reset_scale";
+        }
+    }
+
+    /// 决策双击空白处后的实际行为（处于折叠态时优先展开，原位改字编辑中绝不误关或折叠）
+    static constexpr DoubleClickAction resolveEffectiveDoubleClickAction(
+        DoubleClickAction configured,
+        bool isFolded,
+        bool isEditingTextReplace) noexcept {
+        if (isFolded) return DoubleClickAction::Fold;
+        if (isEditingTextReplace && configured != DoubleClickAction::Edit) {
+            return DoubleClickAction::Edit;
+        }
+        return configured;
+    }
+
+    /// 决策鼠标中键单击后的实际行为（原位改字编辑中绝不误关闭，退回 ResetScale 保护未保存编辑）
+    static constexpr MiddleClickAction resolveEffectiveMiddleClickAction(
+        MiddleClickAction configured,
+        bool isEditingTextReplace) noexcept {
+        if (isEditingTextReplace && configured == MiddleClickAction::Close) {
+            return MiddleClickAction::ResetScale;
+        }
+        return configured;
+    }
 
     /// 设置透明度 (0.0~1.0)
     void setOpacity(float opacity);

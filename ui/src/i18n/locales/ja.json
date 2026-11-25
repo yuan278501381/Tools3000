@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "ピン留めダブルクリック時の動作",
+    "pinDoubleClickActionDesc": "デスクトップピン留めをダブルクリックしたときの動作を選択します（閉じる／折りたたみ設定時も左ドラッグで OCR テキスト選択可能、折りたたみ中は展開優先）。",
+    "pinMiddleClickActionTitle": "ピン留め中クリック時の動作",
+    "pinMiddleClickActionDesc": "デスクトップピン留めを中クリックしたときの動作を選択します（その場文字編集中の誤終了を自動防止）。",
+    "pinActionEdit": "注釈編集に入る（既定）",
+    "pinActionFold": "折りたたみ / 展開",
+    "pinActionClose": "ピン留めを閉じる（Snipaste 風）",
+    "pinActionResetScale": "1:1 原寸に戻す（既定）"
   },
   "history": {
     "title": "キャプチャ履歴",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "除外フォルダーとプライバシー保護"
+    "groupExclusions": "除外フォルダーとプライバシー保護",
+    "hideOnBlurTitle": "フォーカス喪失時に自動で隠す",
+    "hideOnBlurDesc": "検索ウィンドウの外側をクリックすると自動で閉じます（Listary / uTools 風）。ピン留め中、QuickLook プレビュー中、またはメニュー表示中は開いたままになります。",
+    "hideOnOpenTitle": "結果を開いた後に自動で隠す",
+    "hideOnOpenDesc": "ダブルクリックや Enter でファイル・フォルダー・アプリ・コマンド・ブックマークを開いた直後に検索窓を自動で閉じます（ピン留め時は維持）。",
+    "clearQueryOnShowTitle": "再呼び出し時に前回の検索語をクリア",
+    "clearQueryOnShowDesc": "非表示から再び検索を呼び出した際、前回の入力をクリアして空の状態から開始します（オフ時は前回の検索語を全選択して保持）。"
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "クリップボード設定の保存に失敗しました",
     "clearedToast": "{{count}} 件の履歴を削除しました",
     "hidePinnedInOtherTitle": "他カテゴリでピン留め項目を非表示",
-    "hidePinnedInOtherDesc": "ピン留め項目を「ピン留め」タブ専用にし、すべて・テキスト・画像・ファイル・カラー一覧をすっきり保ちます。"
+    "hidePinnedInOtherDesc": "ピン留め項目を「ピン留め」タブ専用にし、すべて・テキスト・画像・ファイル・カラー一覧をすっきり保ちます。",
+    "hideOnBlurTitle": "フォーカス喪失時に自動で隠す",
+    "hideOnBlurDesc": "パネルの外側をクリックすると自動で閉じます。オフにすると Esc や閉じるボタンを押すまで画面上に留まります。",
+    "hideOnPasteTitle": "貼り付け・コピー後に自動で隠す",
+    "hideOnPasteDesc": "項目を貼り付けまたはコピーした後に自動でパネルを閉じます。オフにするとピン留めなしで連続貼り付けできます。",
+    "keepOpenAfterDragTitle": "ドラッグ貼り付け後にパネルを開いたままにする",
+    "keepOpenAfterDragDesc": "ドラッグ＆ドロップで貼り付けた後もパネルを表示したままにし、連続ドラッグしやすくします。オフにすると 1 回のドロップ後に自動で閉じます。",
+    "singleClickPasteTitle": "シングルクリックで即貼り付け",
+    "singleClickPasteDesc": "左シングルクリックで即座に貼り付けます（Win + V 風）。ドラッグ貼り付け、チェックボックス、Ctrl/Shift 複数選択には影響しません。"
   },
   "feedback": {
     "attachLogs": "ローカル匿名化済みの環境情報と直近 1000 行の診断ログを添付",

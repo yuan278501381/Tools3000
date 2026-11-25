@@ -116,6 +116,88 @@ TEST(SearchWindowNativeAppContractTest, NativeAppWindowStylesAndTogglePolicy) {
     EXPECT_EQ(SearchWindow::resolveToggleAction(false, false, false), SearchWindow::ToggleAction::ShowOrFocus);
 }
 
+TEST(SearchWindowNativeAppContractTest, AutoHideOnBlurRespectsPinnedMenusQuickLookAndShowGrace) {
+    using tools3000::ui::SearchWindow;
+
+    SearchWindow::BlurHideContext base{};
+    base.hideOnBlurEnabled = true;
+    base.visible = true;
+    base.minimized = false;
+    base.foregroundActive = false;
+    base.pinned = false;
+    base.menuOrDragActive = false;
+    base.quickLookVisible = false;
+    base.foregroundOwnedBySearchOrMenu = false;
+    base.elapsedSinceShowMs = SearchWindow::BlurHideShowGraceMs;
+
+    // 正常外部失焦且开关打开 -> 允许自动隐藏
+    EXPECT_TRUE(SearchWindow::shouldAutoHideOnBlur(base));
+
+    // 默认关闭开关 -> 保持独立窗口不自动隐藏
+    {
+        auto c = base;
+        c.hideOnBlurEnabled = false;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    // 置顶态优先权最高 -> 绝不自动隐藏
+    {
+        auto c = base;
+        c.pinned = true;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    // QuickLook 预览、右键/系统菜单、子对话框、刚呼出保护期内 -> 绝不误关
+    {
+        auto c = base;
+        c.quickLookVisible = true;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    {
+        auto c = base;
+        c.menuOrDragActive = true;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    {
+        auto c = base;
+        c.foregroundOwnedBySearchOrMenu = true;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    {
+        auto c = base;
+        c.elapsedSinceShowMs = SearchWindow::BlurHideShowGraceMs - 1;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+    {
+        auto c = base;
+        c.foregroundActive = true;
+        EXPECT_FALSE(SearchWindow::shouldAutoHideOnBlur(c));
+    }
+}
+
+TEST(ClipboardWindowAutoHideContractTest, RespectsHideOnBlurSettingAndPasteKeepOpenGrace) {
+    using tools3000::ui::ClipboardWindow;
+
+    // 默认开启 hideOnBlur 且非置顶/非拖拽 -> 失焦后允许自动隐藏
+    EXPECT_TRUE(ClipboardWindow::shouldAutoHideOnDeactivate(
+        /*visible=*/true, /*pendingReveal=*/false, /*pinned=*/false,
+        /*inSizeMove=*/false, /*inNativeDrag=*/false,
+        /*nowTick=*/5000, /*showTick=*/1000, /*lastNativeDragEndTick=*/0,
+        /*dragSessionHold=*/false, /*hideOnBlurEnabled=*/true, /*lastPasteKeepOpenTick=*/0));
+
+    // 关闭 hideOnBlur -> 失焦保持打开不自动隐藏
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(
+        true, false, false, false, false,
+        5000, 1000, 0, false, /*hideOnBlurEnabled=*/false, 0));
+
+    // 开启 hideOnBlur 但刚发生「不关闭面板的自动粘贴」(hideOnPaste=false && autoPaste=true)：
+    // 1200ms 切焦宽限期内严禁被 hideOnBlur 误杀，超时后恢复正常失焦判定
+    EXPECT_FALSE(ClipboardWindow::shouldAutoHideOnDeactivate(
+        true, false, false, false, false,
+        5500, 1000, 0, false, /*hideOnBlurEnabled=*/true, /*lastPasteKeepOpenTick=*/5000));
+    EXPECT_TRUE(ClipboardWindow::shouldAutoHideOnDeactivate(
+        true, false, false, false, false,
+        6250, 1000, 0, false, /*hideOnBlurEnabled=*/true, /*lastPasteKeepOpenTick=*/5000));
+}
+
 
 TEST(WebViewSuspendTest, DistinguishesRefusalFromFailure) {
     using tools3000::ui::WebViewSuspendOutcome;

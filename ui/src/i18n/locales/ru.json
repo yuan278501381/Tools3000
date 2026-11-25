@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "Действие при двойном клике по закреплению",
+    "pinDoubleClickActionDesc": "Выберите действие для двойного клика по закрепленному снимку (при выборе закрытия или сворачивания выделение OCR-текста перетаскиванием сохраняется; свернутый снимок всегда сначала разворачивается).",
+    "pinMiddleClickActionTitle": "Действие при клике средней кнопкой по закреплению",
+    "pinMiddleClickActionDesc": "Выберите действие для клика колесиком по закрепленному снимку (с защитой от случайного закрытия во время редактирования текста на месте).",
+    "pinActionEdit": "Открыть редактор разметки (по умолчанию)",
+    "pinActionFold": "Свернуть / развернуть закрепление",
+    "pinActionClose": "Закрыть закрепление (стиль Snipaste)",
+    "pinActionResetScale": "Сбросить масштаб до 1:1 (по умолчанию)"
   },
   "history": {
     "title": "История снимков",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "Исключённые папки и защита приватности"
+    "groupExclusions": "Исключённые папки и защита приватности",
+    "hideOnBlurTitle": "Скрывать при потере фокуса",
+    "hideOnBlurDesc": "Автоматически скрывать окно поиска при клике вне его (как в Listary / uTools). Окно остается открытым при закреплении, предпросмотре QuickLook или открытом меню.",
+    "hideOnOpenTitle": "Скрывать после открытия результата",
+    "hideOnOpenDesc": "Автоматически скрывать окно поиска сразу после открытия файла, папки, приложения, команды или закладки двойным кликом или клавишей Enter (при закреплении остается открытым).",
+    "clearQueryOnShowTitle": "Очищать прошлый запрос при повторном открытии",
+    "clearQueryOnShowDesc": "Открывать поиск с пустой строкой после скрытия вместо сохранения и выделения предыдущего запроса."
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "Не удалось сохранить настройки буфера обмена",
     "clearedToast": "Удалено записей: {{count}}",
     "hidePinnedInOtherTitle": "Скрывать закреплённые в других категориях",
-    "hidePinnedInOtherDesc": "Оставлять закреплённые записи только во вкладке «Закреплённые», чтобы не занимать место в «Все», «Текст», «Изображения», «Файлы» и «Цвета»."
+    "hidePinnedInOtherDesc": "Оставлять закреплённые записи только во вкладке «Закреплённые», чтобы не занимать место в «Все», «Текст», «Изображения», «Файлы» и «Цвета».",
+    "hideOnBlurTitle": "Скрывать панель при потере фокуса",
+    "hideOnBlurDesc": "Автоматически скрывать панель буфера обмена при клике вне окна. Отключите, чтобы держать панель открытой до нажатия Esc или закрытия.",
+    "hideOnPasteTitle": "Скрывать панель после вставки или копирования",
+    "hideOnPasteDesc": "Автоматически закрывать панель после активации записи. Отключите для последовательной вставки нескольких записей без закрепления окна.",
+    "keepOpenAfterDragTitle": "Оставлять панель открытой после перетаскивания",
+    "keepOpenAfterDragDesc": "Удерживать панель поверх окон после вставки перетаскиванием для серийной отправки; отключите для автоскрытия после одного перетаскивания.",
+    "singleClickPasteTitle": "Вставлять запись одним кликом",
+    "singleClickPasteDesc": "Мгновенно вставлять по одному левому клику (как в Win + V) вместо двойного клика. Перетаскивание, флажки и множественный выбор Ctrl/Shift работают как обычно."
   },
   "feedback": {
     "attachLogs": "Прикрепить локально очищенные данные среды и последние 1000 строк журнала",

@@ -50,6 +50,10 @@ struct ClipboardSettings {
     bool captureImages = true;
     bool captureFiles = true;
     bool hidePinnedInOtherCategories = false;
+    bool hideOnBlur = true;
+    bool hideOnPaste = true;
+    bool keepOpenAfterDrag = true;
+    bool singleClickPaste = false;
     std::string excludedApps =
         "KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe";
 };

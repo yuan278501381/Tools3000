@@ -610,7 +610,15 @@
     "pinShortcutsTitle": "Global Pin Controls",
     "reuseCaptureWatermark": "Reuse Screenshot Watermark Settings in Studio",
     "reuseCaptureWatermarkDesc": "Automatically apply the screenshot watermark configuration above without maintaining a duplicate form",
-    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment"
+    "subtitleNeedsMicHint": "Enable \"Record Microphone\" under the Screen Recording tab first to unlock offline voice subtitle alignment",
+    "pinDoubleClickActionTitle": "Acción al hacer doble clic en el pin",
+    "pinDoubleClickActionDesc": "Elige qué ocurre al hacer doble clic en un pin del escritorio (al elegir Cerrar o Plegar aún puedes arrastrar para seleccionar texto OCR; los pines plegados siempre se despliegan primero).",
+    "pinMiddleClickActionTitle": "Acción al hacer clic central en el pin",
+    "pinMiddleClickActionDesc": "Elige qué ocurre al pulsar el botón central en un pin del escritorio (protegido contra cierres accidentales al editar texto en el lugar).",
+    "pinActionEdit": "Entrar al editor de anotaciones (Predeterminado)",
+    "pinActionFold": "Plegar / Desplegar pin",
+    "pinActionClose": "Cerrar pin (Estilo Snipaste)",
+    "pinActionResetScale": "Restablecer tamaño 1:1 (Predeterminado)"
   },
   "history": {
     "title": "Historial de capturas",
@@ -2370,7 +2378,13 @@
     "groupMixAndDisplay": "Cross-Source Ranking & Appearance",
     "syntaxSectionOperators": "Operators & Filter Modifiers",
     "syntaxSectionRegex": "Regular Expression Quick Reference",
-    "groupExclusions": "Carpetas excluidas y privacidad"
+    "groupExclusions": "Carpetas excluidas y privacidad",
+    "hideOnBlurTitle": "Ocultar automáticamente al hacer clic fuera",
+    "hideOnBlurDesc": "Oculta la ventana de búsqueda cuando el foco pasa a otra aplicación (estilo Listary / uTools). Se mantiene abierta si está fijada, con QuickLook o con menús activos.",
+    "hideOnOpenTitle": "Ocultar automáticamente tras abrir un resultado",
+    "hideOnOpenDesc": "Oculta la búsqueda justo después de abrir un archivo, carpeta, aplicación, comando o marcador con doble clic o Enter (permanece abierta si está fijada).",
+    "clearQueryOnShowTitle": "Borrar la búsqueda anterior al volver a abrir",
+    "clearQueryOnShowDesc": "Comienza con el cuadro de búsqueda vacío cada vez que lo vuelves a invocar tras ocultarlo, en lugar de conservar y seleccionar la última consulta."
   },
   "tray": {
     "brandName": "Tools3000",
@@ -3326,7 +3340,15 @@
     "saveFailedToast": "Error al guardar la configuración del portapapeles",
     "clearedToast": "Se eliminaron {{count}} elementos del historial",
     "hidePinnedInOtherTitle": "Ocultar elementos fijados en otras categorías",
-    "hidePinnedInOtherDesc": "Mantiene los elementos fijados únicamente en la pestaña Fijados para no ocupar espacio en Todo, Texto, Imágenes, Archivos o Colores."
+    "hidePinnedInOtherDesc": "Mantiene los elementos fijados únicamente en la pestaña Fijados para no ocupar espacio en Todo, Texto, Imágenes, Archivos o Colores.",
+    "hideOnBlurTitle": "Ocultar panel al hacer clic fuera",
+    "hideOnBlurDesc": "Oculta el panel del portapapeles cuando pierde el foco. Desactívalo para mantenerlo visible como ventana de referencia hasta pulsar Esc o cerrarlo.",
+    "hideOnPasteTitle": "Ocultar panel tras pegar o copiar",
+    "hideOnPasteDesc": "Cierra el panel automáticamente tras activar un elemento. Desactívalo para pegar varios elementos seguidos sin fijar el panel.",
+    "keepOpenAfterDragTitle": "Mantener panel abierto tras arrastrar y pegar",
+    "keepOpenAfterDragDesc": "Mantiene el panel flotando tras entregar un elemento arrastrando para soltar varios seguidos; desactívalo para ocultarlo tras el primer envío.",
+    "singleClickPasteTitle": "Pegar inmediatamente con un solo clic",
+    "singleClickPasteDesc": "Pega con un solo clic izquierdo (estilo Win + V) en lugar de doble clic. El arrastre, las casillas y la selección múltiple con Ctrl/Shift siguen intactos."
   },
   "feedback": {
     "attachLogs": "Adjuntar información del entorno y las últimas 1000 líneas de registro redactadas",
