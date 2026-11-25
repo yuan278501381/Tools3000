@@ -503,6 +503,7 @@
   "Pen Annotation": "펜 주석",
   "Pin": "고정",
   "Pin Group": "핀 그룹",
+  "Clipboard pin {0}/{1}": "클립보드 고정 {0}/{1}",
   "Pin history {0}/{1}": "고정 기록 {0}/{1}",
   "Pin to Screen": "화면에 고정(핀)",
   "Pine & Emerald": "파인 에메랄드",
@@ -967,5 +968,19 @@
   "Copy & save": "복사 및 저장",
   "Save & finish": "저장 후 완료",
   "Done & Copy (Enter)": "완료 및 복사 (Enter)",
-  "Copy & finish": "복사 후 완료"
+  "Copy & finish": "복사 후 완료",
+  "50+": "50+",
+  "AR": "AR",
+  "TH": "TH",
+  "CJK / EN / JA / European (50+)": "중/영/일/유럽어 (50+ 언어)",
+  "Arabic / Persian": "아랍어 / 페르시아어",
+  "Thai": "태국어",
+  "Cyrillic / Russian": "키릴 문자 / 러시아어",
+  "Arabic": "아랍어",
+  "European Latin": "유럽 라틴어",
+  "Refined {0} lines": "고정밀 보정 {0}줄",
+  "Auto script: {0}": "자동 전환: {0}",
+  "Refining {0} low-confidence text lines...": "낮은 신뢰도 텍스트 {0}건을 고정밀 모델로 보정 중...",
+  "Refining": "고정밀 보정 중",
+  "Detected {0}, re-recognizing with script pack...": "{0} 감지됨, 전용 언어 팩으로 재인식 중..."
 }

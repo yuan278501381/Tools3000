@@ -23,6 +23,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <opencv2/core.hpp>
@@ -34,6 +35,12 @@
 namespace tools3000::ocr {
 
 namespace DeepOcrConstants {
+    // 新一代 PP-OCRv6 Small 主引擎 + PP-OCRv6 Medium Rec 混搭高精度档（原生 50 语种，全内嵌字典，零外部 txt）
+    inline constexpr const wchar_t* kV6DetModelFileName = L"PP-OCRv6_det_small.onnx";
+    inline constexpr const wchar_t* kV6RecModelFileName = L"PP-OCRv6_rec_small.onnx";
+    inline constexpr const wchar_t* kV6RecMediumModelFileName = L"PP-OCRv6_rec_medium.onnx";
+
+    // 旧代 PP-OCRv4 兼容文件名（保留向后兼容老用户本地缓存与离线单测，升级至 v6 后自动清理）
     inline constexpr const wchar_t* kDetModelFileName = L"ch_PP-OCRv4_det.onnx";
     inline constexpr const wchar_t* kClsModelFileName = L"ch_ppocr_mobile_v2.0_cls.onnx";
     inline constexpr const wchar_t* kRecModelFileName = L"ch_PP-OCRv4_rec.onnx";
@@ -41,15 +48,20 @@ namespace DeepOcrConstants {
     inline constexpr const wchar_t* kKeysDictFileName = L"ppocr_keys_v1.txt";
 
     // 多语种按需扩展识别模型包（复用同一套 det + cls，内置 character 字典 0 外部文件）
+    // v6 活跃 4 大按需包：korean / cyrillic / arabic / thai；japan / latin 仅作旧 v4 兼容保留
     inline constexpr const wchar_t* kScriptJapanRecFileName    = L"japan_PP-OCRv4_rec_mobile.onnx";
     inline constexpr const wchar_t* kScriptKoreanRecFileName   = L"korean_PP-OCRv5_rec_mobile.onnx";
     inline constexpr const wchar_t* kScriptCyrillicRecFileName = L"cyrillic_PP-OCRv5_rec_mobile.onnx";
     inline constexpr const wchar_t* kScriptLatinRecFileName    = L"latin_PP-OCRv5_rec_mobile.onnx";
+    inline constexpr const wchar_t* kScriptArabicRecFileName   = L"arabic_PP-OCRv5_rec_mobile.onnx";
+    inline constexpr const wchar_t* kScriptThaiRecFileName     = L"th_PP-OCRv5_rec_mobile.onnx";
 
-    inline constexpr uint64_t kEstimatedScriptJapanBytes    = 9753344ULL;  // ~9.30 MiB
+    inline constexpr uint64_t kEstimatedScriptJapanBytes    = 9753344ULL;  // ~9.30 MiB (v4 legacy)
     inline constexpr uint64_t kEstimatedScriptKoreanBytes   = 13484032ULL; // ~12.86 MiB
     inline constexpr uint64_t kEstimatedScriptCyrillicBytes = 8074035ULL;  // ~7.70 MiB
-    inline constexpr uint64_t kEstimatedScriptLatinBytes    = 7906263ULL;  // ~7.54 MiB
+    inline constexpr uint64_t kEstimatedScriptLatinBytes    = 7906263ULL;  // ~7.54 MiB (v4 legacy)
+    inline constexpr uint64_t kEstimatedScriptArabicBytes   = 8021606ULL;  // ~7.65 MiB
+    inline constexpr uint64_t kEstimatedScriptThaiBytes     = 7916748ULL;  // ~7.55 MiB
 
     inline constexpr int kDetMaxSideLen = 1280;
     inline constexpr int kDetStrideAlign = 32;
@@ -78,6 +90,10 @@ namespace DeepOcrConstants {
     // 双阶混合精度级联（极速 Mobile 主力 + 按需单一甜点 Server 会话疑难行精准复核）阈值与闲置内存回收常量
     inline constexpr float kServerRefineAvgConfThresh = 0.85f;
     inline constexpr float kServerRefineMinCharConfThresh = 0.68f;
+    // 通用信噪比门控（非样本特化）：当整行均值已达高清置信区间 (>= 0.94) 且无极低字符 (< 0.45) 时，
+    // 属于常规清晰文本行，避免单个轻微波动标点拉起整行重型精修并打扰正常极速体验。
+    inline constexpr float kServerRefineHighAvgSkipLowCharThresh = 0.94f;
+    inline constexpr float kServerRefineExtremeMinCharConfThresh = 0.45f;
     inline constexpr float kServerRefineShortLineConfThresh = 0.88f;
     inline constexpr size_t kServerRefineMaxPiecesPerImage = 12;
     inline constexpr size_t kServerRefineMaxPiecesCpuFallback = 6;
@@ -97,12 +113,13 @@ namespace DeepOcrConstants {
     inline constexpr size_t kMinRecModelBytes = 1024 * 1024;     // >= 1 MiB
     inline constexpr size_t kMinRecServerModelBytes = 20ULL * 1024ULL * 1024ULL; // >= 20 MiB
     inline constexpr size_t kMinDictKeyLines  = 1000;
-    inline constexpr uint64_t kEstimatedBundleBytes = 16600000ULL;       // ~16.6 MB (mobile)
-    inline constexpr uint64_t kEstimatedServerAddOnBytes = 90530732ULL;  // ~90.5 MB (server rec)
+    inline constexpr uint64_t kEstimatedBundleBytes = 31750000ULL;       // ~30.3 MiB (PP-OCRv6 Small + cls)
+    inline constexpr uint64_t kEstimatedServerAddOnBytes = 76630000ULL;  // ~73.1 MiB (PP-OCRv6 Medium Rec)
+    inline constexpr uint64_t kMaxServerModelBytes = 120ULL * 1024ULL * 1024ULL; // 允许兼容 86MB v4 server 与 73MB v6 medium
 } // namespace DeepOcrConstants
 
 struct DeepOcrScriptPackStatus {
-    std::string id;            // "japan" | "korean" | "cyrillic" | "latin"
+    std::string id;            // "korean" | "cyrillic" | "arabic" | "thai"
     bool installed = false;
     bool downloading = false;
     uint64_t fileBytes = 0;
@@ -114,14 +131,16 @@ struct DeepOcrModelStatus {
     bool serverInstalled = false;
     bool downloading = false;
     bool downloadingServer = false;
-    std::string downloadingScriptPack; // "" | "japan" | "korean" | "cyrillic" | "latin" | "all"
+    std::string downloadingScriptPack; // "" | "korean" | "cyrillic" | "arabic" | "thai" | "all"
     int progressPercent = 0;
     uint64_t downloadedBytes = 0;
     uint64_t totalBytes = DeepOcrConstants::kEstimatedBundleBytes;
     uint64_t serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
+    std::string engineGeneration;           // "v6" | "v4" | ""
+    bool upgradeAvailable = false;          // true when legacy v4 is installed but v6 is not yet installed
     std::string modelTier = "mobile";       // "mobile" | "server" (configured preference)
     std::string activeModelTier = "mobile"; // "mobile" | "server" (actually effective tier)
-    std::string scriptMode = "auto";        // "auto" | "cjk" | "japan" | "korean" | "cyrillic" | "latin"
+    std::string scriptMode = "auto";        // "auto" | "cjk" | "korean" | "cyrillic" | "arabic" | "thai" (+ legacy "japan"|"latin")
     std::vector<DeepOcrScriptPackStatus> scriptPacks;
     std::string state; // "installed" | "downloading" | "not_installed" | "error"
     std::string currentFile;
@@ -138,11 +157,21 @@ struct DeepOcrRunStats {
     long long refineMs = 0;
     size_t detectedQuads = 0;
     size_t stripCount = 0;
+    size_t serverRefineCandidateCount = 0;
     size_t serverRefinedCount = 0;
     size_t activeSessions = 0;
+    bool autoScriptSwitched = false;
     std::string bucketProfile;
-    std::string detectedScript = "cjk"; // "cjk" | "japan" | "korean" | "cyrillic" | "latin"
+    std::string detectedScript = "cjk"; // "cjk" | "japan" | "korean" | "cyrillic" | "latin" | "arabic" | "thai"
 };
+
+/// 仅在进入慢路径（低置信度精修 / 自动扩展语种重识）时触发的阶段回调类型；常规快速识别绝不触发
+enum class OcrRecognitionStage : uint32_t {
+    LowConfidenceRefining = 1u,
+    AutoScriptSwitching   = 2u,
+};
+
+using OcrStageCallback = std::function<void(OcrRecognitionStage stage, uint32_t count, const std::string& detail)>;
 
 struct DbDetectedQuad {
     std::array<cv::Point2f, 4> corners{}; // [TL, TR, BR, BL]
@@ -169,10 +198,13 @@ class DeepOcrEngine {
 public:
     static DeepOcrEngine& instance();
 
-    /// 检查本地是否已完整安装 PP-OCRv4 基础模型包 (4 个核心文件齐全且合法)
+    /// 检查本地是否已完整安装 PP-OCR 基础模型包（优先 PP-OCRv6，向后兼容旧版 PP-OCRv4）
     bool isModelInstalled() const;
 
-    /// 检查本地是否已安装高精度 Server 识别增强模型 (ch_PP-OCRv4_rec_server.onnx)
+    /// 返回当前生效本地模型的引擎代数 ("v6" | "v4" | "")
+    std::string installedEngineGeneration() const;
+
+    /// 检查本地是否已安装高精度增强识别模型（v6 为 PP-OCRv6_rec_medium，v4 为 ch_PP-OCRv4_rec_server）
     bool isServerModelInstalled() const;
 
     /// 读取当前配置的模型精度档位偏好 ("mobile" | "server")
@@ -246,6 +278,13 @@ public:
 
     /// 查询最近一次端到端 OCR 识别的分阶段耗时与复核统计
     DeepOcrRunStats lastRunStats() const noexcept;
+    /// 每次真实执行 DeepOCR 识别并写入 lastRunStats 时单调递增，用于调用方区分本次是否真实走了 DeepOCR
+    uint64_t runSequence() const noexcept { return m_runSequence.load(std::memory_order_acquire); }
+
+    /// 注册/清除慢路径阶段回调（仅进入低置信度精修或扩展语种切换时回调，常规快识静默零打扰）
+    void setStageCallback(OcrStageCallback cb);
+    OcrStageCallback currentStageCallback() const;
+    void notifyStage(OcrRecognitionStage stage, uint32_t count, const std::string& detail) const;
 
     /// 独立 OCR Worker 进程安全模式：强制跳过 DirectML GPU，使用纯 CPU SIMD / OpenCV DNN 稳定推理
     void setForceCpuOnlyModeForWorker(bool forceCpu) noexcept;
@@ -397,6 +436,7 @@ private:
     bool m_useWinMl = false;
     std::filesystem::path m_loadedModelDir;
     std::string m_loadedModelTier;
+    std::string m_loadedEngineGen;
     std::unique_ptr<WinMlContext> m_winMl;
     cv::dnn::Net m_detNet;
     cv::dnn::Net m_clsNet;
@@ -422,6 +462,9 @@ private:
 
     mutable std::mutex m_statsMutex;
     DeepOcrRunStats m_lastRunStats{};
+    std::atomic<uint64_t> m_runSequence{0};
+    mutable std::mutex m_stageCbMutex;
+    OcrStageCallback m_stageCallback;
 
     mutable std::mutex m_downloadMutex;
     std::jthread m_downloadThread;

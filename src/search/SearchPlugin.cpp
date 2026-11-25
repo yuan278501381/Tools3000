@@ -33,6 +33,7 @@
 #include <optional>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -1031,6 +1032,76 @@ static std::vector<std::string> normalizeFormatListJson(const nlohmann::json& ra
     return out;
 }
 
+static std::vector<std::string> normalizeExcludedPathListJson(const nlohmann::json& raw) {
+    std::vector<std::string> out;
+    std::unordered_set<std::string> seenLower;
+
+    const auto pushClean = [&](std::string_view token) {
+        while (!token.empty() &&
+               (token.front() == ' ' || token.front() == '\t' || token.front() == '\r' || token.front() == '\n')) {
+            token.remove_prefix(1);
+        }
+        while (!token.empty() &&
+               (token.back() == ' ' || token.back() == '\t' || token.back() == '\r' || token.back() == '\n')) {
+            token.remove_suffix(1);
+        }
+        if (token.size() >= 2 && token.front() == '"' && token.back() == '"') {
+            token.remove_prefix(1);
+            token.remove_suffix(1);
+        }
+        if (token.empty() || token.size() > tools3000::service::search_limits::MaxExcludeUtf8Bytes) {
+            return;
+        }
+        std::string cleaned(token);
+        std::replace(cleaned.begin(), cleaned.end(), '/', '\\');
+        while (cleaned.size() > 3 && cleaned.back() == '\\') {
+            cleaned.pop_back();
+        }
+        if (cleaned.empty()) return;
+        std::string key = cleaned;
+        std::transform(key.begin(), key.end(), key.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (seenLower.insert(key).second &&
+            out.size() < tools3000::service::search_limits::MaxExcludeItems) {
+            out.push_back(std::move(cleaned));
+        }
+    };
+
+    if (raw.is_array()) {
+        for (const auto& item : raw) {
+            if (item.is_string()) {
+                pushClean(item.get_ref<const std::string&>());
+            }
+        }
+    } else if (raw.is_string()) {
+        const auto& text = raw.get_ref<const std::string&>();
+        std::size_t start = 0;
+        while (start <= text.size()) {
+            const std::size_t sep = text.find_first_of(";\r\n", start);
+            if (sep == std::string::npos) {
+                pushClean(std::string_view(text).substr(start));
+                break;
+            }
+            pushClean(std::string_view(text).substr(start, sep - start));
+            start = sep + 1;
+        }
+    }
+    return out;
+}
+
+static std::vector<std::string> getCustomExcludedPathsFromConfig() {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    auto paths = normalizeExcludedPathListJson(
+        cfg.get<nlohmann::json>("/search/customExcludedPaths", nlohmann::json::array()));
+    if (paths.empty()) {
+        const auto uiPrefs = cfg.get<nlohmann::json>("/search/uiPreferences", nlohmann::json::object());
+        if (uiPrefs.is_object() && uiPrefs.contains("customExcludedPaths")) {
+            paths = normalizeExcludedPathListJson(uiPrefs["customExcludedPaths"]);
+        }
+    }
+    return paths;
+}
+
 static std::vector<std::string> getCustomContentExtsFromConfig() {
     auto& cfg = tools3000::core::ConfigManager::instance();
     auto custom = normalizeFormatListJson(cfg.get<nlohmann::json>("/search/customContentFormats", nlohmann::json::array()));
@@ -1222,13 +1293,40 @@ public:
             }
 
             nlohmann::json normalized = params;
-            if (normalized.contains("excludes") && normalized["excludes"].is_array()) {
-                for (auto& exItem : normalized["excludes"]) {
-                    if (exItem.is_string()) {
-                        exItem = expandClientUserEnvUtf8(
-                            exItem.get<std::string>(),
-                            tools3000::service::search_limits::MaxExcludeUtf8Bytes);
+            {
+                std::vector<std::string> mergedExcludes;
+                std::unordered_set<std::string> seenLowerEx;
+                const auto appendExclude = [&](const std::string& rawItem) {
+                    const std::string expanded = expandClientUserEnvUtf8(
+                        rawItem,
+                        tools3000::service::search_limits::MaxExcludeUtf8Bytes);
+                    if (expanded.empty() ||
+                        expanded.size() > tools3000::service::search_limits::MaxExcludeUtf8Bytes) {
+                        return;
                     }
+                    std::string key = expanded;
+                    std::replace(key.begin(), key.end(), '/', '\\');
+                    while (key.size() > 3 && key.back() == '\\') key.pop_back();
+                    std::transform(key.begin(), key.end(), key.begin(),
+                                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+                    if (seenLowerEx.insert(key).second &&
+                        mergedExcludes.size() < tools3000::service::search_limits::MaxExcludeItems) {
+                        mergedExcludes.push_back(expanded);
+                    }
+                };
+                if (normalized.contains("excludes") && normalized["excludes"].is_array()) {
+                    for (const auto& exItem : normalized["excludes"]) {
+                        if (exItem.is_string()) {
+                            appendExclude(exItem.get<std::string>());
+                        }
+                    }
+                }
+                // 服务端兜底合并全局持久化自定义排除文件夹，确保所有入口（搜索框/全文搜索/外部 API）全域屏蔽一致
+                for (const auto& customPath : getCustomExcludedPathsFromConfig()) {
+                    appendExclude(customPath);
+                }
+                if (!mergedExcludes.empty()) {
+                    normalized["excludes"] = std::move(mergedExcludes);
                 }
             }
             {
@@ -1726,6 +1824,7 @@ public:
                 defaultSearchMode = (uiMode == "name" || uiMode == "both" || uiMode == "content") ? uiMode : "name";
             }
 
+            const auto customExcludedPaths = getCustomExcludedPathsFromConfig();
             const auto customFormats = getCustomContentExtsFromConfig();
             std::vector<std::string> disabledFormats = normalizeFormatListJson(
                 cfg.get<nlohmann::json>("/search/disabledContentFormats", nlohmann::json::array()));
@@ -1741,6 +1840,9 @@ public:
             }
             if (!uiPreferences.contains("excludeHidden")) {
                 uiPreferences["excludeHidden"] = excludeHidden;
+            }
+            if (!uiPreferences.contains("customExcludedPaths")) {
+                uiPreferences["customExcludedPaths"] = customExcludedPaths;
             }
             if (!uiPreferences.contains("customContentFormats")) {
                 uiPreferences["customContentFormats"] = customFormats;
@@ -1769,6 +1871,7 @@ public:
                 {"pinyinEnabled", pinyinEnabled},
                 {"enabledDrives", enabledDrives},
                 {"excludePatterns", excludePatterns},
+                {"customExcludedPaths", customExcludedPaths},
                 {"excludeHidden", excludeHidden},
                 {"excludeSystem", excludeSystem},
                 {"autoBypassFullscreen", autoBypassFullscreen},
@@ -1849,6 +1952,11 @@ public:
             }
             if (params.contains("excludePatterns") && params["excludePatterns"].is_string()) {
                 searchPatch["excludePatterns"] = params["excludePatterns"].get<std::string>();
+            }
+            if (params.contains("customExcludedPaths")) {
+                const auto cleanPaths = normalizeExcludedPathListJson(params["customExcludedPaths"]);
+                searchPatch["customExcludedPaths"] = cleanPaths;
+                uiPrefPatch["customExcludedPaths"] = cleanPaths;
             }
             if (params.contains("excludeHidden") && params["excludeHidden"].is_boolean()) {
                 const bool exHidden = params["excludeHidden"].get<bool>();
@@ -1980,6 +2088,11 @@ public:
                 }
                 if (incomingUi.contains("excludeHidden") && incomingUi["excludeHidden"].is_boolean()) {
                     searchPatch["excludeHidden"] = incomingUi["excludeHidden"].get<bool>();
+                }
+                if (incomingUi.contains("customExcludedPaths")) {
+                    const auto cleanPaths = normalizeExcludedPathListJson(incomingUi["customExcludedPaths"]);
+                    searchPatch["customExcludedPaths"] = cleanPaths;
+                    uiPrefPatch["customExcludedPaths"] = cleanPaths;
                 }
                 if (incomingUi.contains("customContentFormats")) {
                     const auto clean = normalizeFormatListJson(incomingUi["customContentFormats"]);

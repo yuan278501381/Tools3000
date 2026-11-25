@@ -38,7 +38,7 @@ public:
     /// 当前运行环境是否启用进程外 OCR Worker
     bool isOutOfProcessAvailable() const;
 
-    /// 通过独立短命子进程执行 PP-OCRv4 识别并返回精细隔离状态（Worker 崩溃时自动切纯 CPU 隔离重试，绝不拖垮主进程）
+    /// 通过独立短命子进程执行 PP-OCR 识别并返回精细隔离状态（Worker 崩溃时自动切纯 CPU 隔离重试，绝不拖垮主进程）
     OcrWorkerExtractStatus extractTextEx(
         const cv::Mat& bgrImage,
         const std::filesystem::path& modelDir,
@@ -46,7 +46,8 @@ public:
         const std::string& scriptMode,
         std::vector<OcrResult>& outResults,
         DeepOcrRunStats& outStats,
-        std::string& outActiveTier);
+        std::string& outActiveTier,
+        const OcrStageCallback& onStage = {});
 
     /// 兼容旧签名封装：仅在 Worker 识别成功时返回 true
     bool extractText(
@@ -97,7 +98,8 @@ private:
         const std::string& scriptMode,
         std::vector<OcrResult>& outResults,
         DeepOcrRunStats& outStats,
-        std::string& outActiveTier);
+        std::string& outActiveTier,
+        const OcrStageCallback& onStage = {});
 
     mutable std::mutex m_mutex;
     worker::ScopedHandle m_pipe;

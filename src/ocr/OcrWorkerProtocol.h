@@ -21,6 +21,13 @@ inline constexpr uint32_t kProtocolMagic   = 0x54334F52u; // "T3OR"
 inline constexpr uint32_t kProtocolVersion = 3u;
 inline constexpr uint32_t kMaxOcrLines     = 100000u;
 inline constexpr uint32_t kMaxCharBoxes    = 100000u;
+inline constexpr uint32_t kStatusOk         = 0u;
+inline constexpr uint32_t kStatusStageEvent = 100u; // 可选前导慢路径阶段通知帧（常规快识别不发送）
+
+struct WireStageEvent {
+    uint32_t stage = 0;
+    uint32_t count = 0;
+};
 
 enum class Command : uint32_t {
     Ping      = 1u,
@@ -59,8 +66,10 @@ struct WireRunStats {
     int64_t refineMs = 0;
     uint32_t detectedQuads = 0;
     uint32_t stripCount = 0;
+    uint32_t serverRefineCandidateCount = 0;
     uint32_t serverRefinedCount = 0;
     uint32_t activeSessions = 0;
+    uint32_t flags = 0; // bit0: autoScriptSwitched
 };
 
 struct WireRect {
@@ -79,6 +88,23 @@ struct WireLineHeader {
     uint32_t charBoxCount = 0;
 };
 
+inline bool writeStageEvent(
+    HANDLE pipe,
+    OcrRecognitionStage stage,
+    uint32_t count,
+    const std::string& detail,
+    bool overlappedHandle = false) {
+    ResponseHeader hdr{};
+    hdr.status = kStatusStageEvent;
+    hdr.lineCount = 0;
+    if (!worker::writePod(pipe, hdr, overlappedHandle)) return false;
+    WireStageEvent ev{};
+    ev.stage = static_cast<uint32_t>(stage);
+    ev.count = count;
+    if (!worker::writePod(pipe, ev, overlappedHandle)) return false;
+    return worker::writeString(pipe, detail, overlappedHandle);
+}
+
 inline bool writeOcrResults(
     HANDLE pipe,
     const std::vector<OcrResult>& lines,
@@ -87,7 +113,7 @@ inline bool writeOcrResults(
     bool overlappedHandle = false) {
     if (lines.size() > kMaxOcrLines) return false;
     ResponseHeader hdr{};
-    hdr.status = 0;
+    hdr.status = kStatusOk;
     hdr.lineCount = static_cast<uint32_t>(lines.size());
     if (!worker::writePod(pipe, hdr, overlappedHandle)) return false;
 
@@ -100,8 +126,10 @@ inline bool writeOcrResults(
     wireStats.refineMs = stats.refineMs;
     wireStats.detectedQuads = static_cast<uint32_t>(stats.detectedQuads);
     wireStats.stripCount = static_cast<uint32_t>(stats.stripCount);
+    wireStats.serverRefineCandidateCount = static_cast<uint32_t>(stats.serverRefineCandidateCount);
     wireStats.serverRefinedCount = static_cast<uint32_t>(stats.serverRefinedCount);
     wireStats.activeSessions = static_cast<uint32_t>(stats.activeSessions);
+    wireStats.flags = stats.autoScriptSwitched ? 1u : 0u;
     if (!worker::writePod(pipe, wireStats, overlappedHandle)) return false;
     if (!worker::writeString(pipe, stats.bucketProfile, overlappedHandle)) return false;
     if (!worker::writeString(pipe, stats.detectedScript, overlappedHandle)) return false;
@@ -142,14 +170,33 @@ inline bool readOcrResults(
     std::string& outActiveTier,
     bool overlappedHandle = false,
     DWORD timeoutMs = INFINITE,
-    HANDLE abortEvent = nullptr) {
+    HANDLE abortEvent = nullptr,
+    const OcrStageCallback& onStage = {}) {
     outLines.clear();
     outStats = {};
     outActiveTier.clear();
 
     ResponseHeader hdr{};
-    if (!worker::readPod(pipe, hdr, overlappedHandle, timeoutMs, abortEvent)) return false;
-    if (hdr.magic != kProtocolMagic || hdr.version != kProtocolVersion || hdr.status != 0 || hdr.lineCount > kMaxOcrLines) {
+    while (true) {
+        if (!worker::readPod(pipe, hdr, overlappedHandle, timeoutMs, abortEvent)) return false;
+        if (hdr.magic != kProtocolMagic || hdr.version != kProtocolVersion) {
+            return false;
+        }
+        if (hdr.status == kStatusStageEvent) {
+            WireStageEvent ev{};
+            std::string detail;
+            if (!worker::readPod(pipe, ev, overlappedHandle, timeoutMs, abortEvent) ||
+                !worker::readString(pipe, detail, overlappedHandle, timeoutMs, abortEvent)) {
+                return false;
+            }
+            if (onStage) {
+                onStage(static_cast<OcrRecognitionStage>(ev.stage), ev.count, detail);
+            }
+            continue;
+        }
+        break;
+    }
+    if (hdr.status != kStatusOk || hdr.lineCount > kMaxOcrLines) {
         return false;
     }
 
@@ -163,8 +210,10 @@ inline bool readOcrResults(
     outStats.refineMs = wireStats.refineMs;
     outStats.detectedQuads = wireStats.detectedQuads;
     outStats.stripCount = wireStats.stripCount;
+    outStats.serverRefineCandidateCount = wireStats.serverRefineCandidateCount;
     outStats.serverRefinedCount = wireStats.serverRefinedCount;
     outStats.activeSessions = wireStats.activeSessions;
+    outStats.autoScriptSwitched = ((wireStats.flags & 1u) != 0u);
     if (!worker::readString(pipe, outStats.bucketProfile, overlappedHandle, timeoutMs, abortEvent)) return false;
     if (!worker::readString(pipe, outStats.detectedScript, overlappedHandle, timeoutMs, abortEvent)) return false;
     if (!worker::readString(pipe, outActiveTier, overlappedHandle, timeoutMs, abortEvent)) return false;

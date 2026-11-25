@@ -1192,6 +1192,7 @@ std::chrono::steady_clock::duration asyncJobTimeoutForMethod(std::string_view me
         method == "config.import" ||
         method == "capture.browseDirectory" ||
         method == "backup.browseDirectory" ||
+        method == "search.browseExcludeDirectory" ||
         method == "system.browseFileLocksmithTarget" ||
         method == "app.exportLogs" ||
         method == "capture.saveHistoryItemAs" ||
@@ -2965,6 +2966,10 @@ void MessageBridge::registerBuiltinHandlers() {
         return {{"success", true}};
     });
     registerAsyncHostHandler("capture.browseDirectory", [](const json&) -> json {
+        const auto selected = choosePath(false, true);
+        return selected ? json(WinUtils::wstringToUtf8(selected->wstring())) : json(nullptr);
+    });
+    registerAsyncHostHandler("search.browseExcludeDirectory", [](const json&) -> json {
         const auto selected = choosePath(false, true);
         return selected ? json(WinUtils::wstringToUtf8(selected->wstring())) : json(nullptr);
     });

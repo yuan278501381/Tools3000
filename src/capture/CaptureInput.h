@@ -63,6 +63,9 @@ private:
     void prepareMarkupBase();
     void rebuildMarkupBase();
     void ensureSelectionOcrForTextMarkup();
+    float syncTextElementWrapWidth(MarkupElement& elem) const;
+    void ensureActiveTextBoundsAfterEdit(MarkupElement& elem);
+    void syncImeCompositionWindow(HWND hwnd) const;
     
     RECT detectWindowUnderCursor(POINT cursorPos);
     std::vector<RECT> detectWindowHierarchy(POINT cursorPos);

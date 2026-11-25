@@ -1000,14 +1000,19 @@ void PinWindow::setOcrScriptModeOverride(const std::string& scriptMode) {
     if (m_sourceImage.empty()) return;
     const bool isZh = tools3000::core::isUiLanguageChinese();
 
+    const bool isV6 = (tools3000::ocr::DeepOcrEngine::instance().installedEngineGeneration() == "v6");
     std::string normalized = scriptMode;
     if (normalized != "cjk" && normalized != "japan" && normalized != "korean" &&
-        normalized != "cyrillic" && normalized != "latin") {
+        normalized != "cyrillic" && normalized != "latin" &&
+        normalized != "arabic" && normalized != "thai") {
         normalized = "auto";
     }
 
-    if (normalized == "japan" || normalized == "korean" ||
-        normalized == "cyrillic" || normalized == "latin") {
+    const bool needsExtPack =
+        (normalized == "korean" || normalized == "cyrillic" ||
+         normalized == "arabic" || normalized == "thai" ||
+         (!isV6 && (normalized == "japan" || normalized == "latin")));
+    if (needsExtPack) {
         if (!tools3000::ocr::DeepOcrEngine::instance().isScriptPackInstalled(normalized)) {
             tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                 tools3000::core::trWCstrFor(
@@ -1037,7 +1042,9 @@ void PinWindow::setOcrScriptModeOverride(const std::string& scriptMode) {
 
     std::wstring scriptLabel;
     if (normalized == "cjk") {
-        scriptLabel = tools3000::core::trWCstrFor(isZh, L"中文与英文", L"Chinese & English");
+        scriptLabel = isV6
+            ? tools3000::core::trWCstrFor(isZh, L"中 / 英 / 日 / 欧文 (50 语种)", L"CJK / EN / JA / European (50+)")
+            : tools3000::core::trWCstrFor(isZh, L"中文与英文", L"Chinese & English");
     } else if (normalized == "japan") {
         scriptLabel = tools3000::core::trWCstrFor(isZh, L"日语", L"Japanese");
     } else if (normalized == "korean") {
@@ -1046,6 +1053,10 @@ void PinWindow::setOcrScriptModeOverride(const std::string& scriptMode) {
         scriptLabel = tools3000::core::trWCstrFor(isZh, L"俄语 (西里尔)", L"Russian (Cyrillic)");
     } else if (normalized == "latin") {
         scriptLabel = tools3000::core::trWCstrFor(isZh, L"西 / 葡 / 欧文 (拉丁)", L"Spanish / Portuguese (Latin)");
+    } else if (normalized == "arabic") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"阿拉伯语 / 波斯语", L"Arabic / Persian");
+    } else if (normalized == "thai") {
+        scriptLabel = tools3000::core::trWCstrFor(isZh, L"泰语", L"Thai");
     } else {
         scriptLabel = tools3000::core::trWCstrFor(isZh, L"自动识别", L"Auto Detect");
     }

@@ -64,10 +64,13 @@ PinContextMenuSnapshot buildPinContextMenuSnapshot(const PinWindow* self) {
     snap.hasOcrScriptOverride = self->hasOcrScriptModeOverride();
     {
         const auto& deepOcr = tools3000::ocr::DeepOcrEngine::instance();
+        snap.engineIsV6 = (deepOcr.installedEngineGeneration() == "v6");
         snap.scriptPackJapanInstalled = deepOcr.isScriptPackInstalled("japan");
         snap.scriptPackKoreanInstalled = deepOcr.isScriptPackInstalled("korean");
         snap.scriptPackCyrillicInstalled = deepOcr.isScriptPackInstalled("cyrillic");
         snap.scriptPackLatinInstalled = deepOcr.isScriptPackInstalled("latin");
+        snap.scriptPackArabicInstalled = deepOcr.isScriptPackInstalled("arabic");
+        snap.scriptPackThaiInstalled = deepOcr.isScriptPackInstalled("thai");
     }
     snap.scale = self->scale();
     snap.opacity = self->opacity();

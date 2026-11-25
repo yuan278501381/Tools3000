@@ -503,6 +503,7 @@
   "Pen Annotation": "ペン注釈",
   "Pin": "ピン留め",
   "Pin Group": "ピングループ",
+  "Clipboard pin {0}/{1}": "クリップボードピン {0}/{1}",
   "Pin history {0}/{1}": "ピン履歴 {0}/{1}",
   "Pin to Screen": "画面にピン留め",
   "Pine & Emerald": "深緑パイン",
@@ -967,5 +968,19 @@
   "Copy & save": "コピーして保存",
   "Save & finish": "保存して完了",
   "Done & Copy (Enter)": "完了してコピー (Enter)",
-  "Copy & finish": "コピーして完了"
+  "Copy & finish": "コピーして完了",
+  "50+": "50+",
+  "AR": "AR",
+  "TH": "TH",
+  "CJK / EN / JA / European (50+)": "日・中・英・欧州 (50 言語)",
+  "Arabic / Persian": "アラビア語 / ペルシア語",
+  "Thai": "タイ語",
+  "Cyrillic / Russian": "キリル文字 / ロシア語",
+  "Arabic": "アラビア語",
+  "European Latin": "ヨーロッパ言語",
+  "Refined {0} lines": "高精度再認識 {0} 行",
+  "Auto script: {0}": "自動切替: {0}",
+  "Refining {0} low-confidence text lines...": "低信頼テキスト {0} 件を高精度モデルで再認識中...",
+  "Refining": "高精度再認識中",
+  "Detected {0}, re-recognizing with script pack...": "{0} を検出しました。専用モデルで再認識中..."
 }

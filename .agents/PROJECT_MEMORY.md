@@ -6,6 +6,59 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] Win10 LTSC 搜索黑屏与机械盘 100% I/O 卡死根治、多路径精确排除文件夹、OCR 通用非过拟合双护栏、全目录原位翻译阿/泰/越语解锁与零剪贴板污染截图交付策略
+- **1. Win10 LTSC 搜索黑屏 + 机械盘 100% 磁盘占用根治（Linux.do `@zg2qxy` *薛定谔的狗子*）**：
+  - *机械盘物理拓扑感知与低优串行化 (`src/service/MftParser.{h,cpp}`, `src/service/main.cpp`, `src/service/db/DatabaseManager.cpp`)*：
+    - 新增 `detectVolumeStorageTopology()`（`IOCTL_STORAGE_GET_DEVICE_NUMBER` + `IOCTL_STORAGE_QUERY_PROPERTY`/`StorageDeviceSeekPenaltyProperty`），本机实测准确识别 `rotationalHdd` 与 `physicalDisk`；
+    - 新增 `groupVolumesByPhysicalDisk()` 将同一物理盘上的多分区（如单块机械盘的 `C:/D:/E:`）严格串行扫描（跨物理盘仍并发），消灭磁头并发随机寻道撕裂；
+    - 索引扫描/目录回退/后台快照全部切入 Windows 原生 `THREAD_MODE_BACKGROUND_BEGIN`（`IoPriorityVeryLow`），绝不抢占前台与系统 I/O；
+    - **机械盘直接跳过全盘随机寻道 `BackgroundHydrateLoop`**（文件大小/时间改由查询展示按需惰性读取），并修正 `importSnapshot` 对已有元数据的 `metadataHydrated` 保留；移除 `DatabaseManager::saveSnapshot` 逐块 `FILE_FLAG_WRITE_THROUGH`（保留 `FILE_FLAG_SEQUENTIAL_SCAN` + 末尾单次 `FlushFileBuffers` + `MOVEFILE_WRITE_THROUGH`）。
+  - *`SearchWindow` 消除纯黑死屏与冷启错峰 (`src/ui/WebViewEnvironmentManager.{h,cpp}`, `src/ui/SearchWindow.{h,cpp}`)*：
+    - 引入 5 态原生状态机 `WebViewStatus`（`Loading / Ready / MissingRuntime / InitFailed / RenderCrashed`）与 `paintStatusBackdrop()` 主题/DPI 自适应原生界面（支持 `Enter`/`R`/点击自愈或引导安装 Evergreen WebView2 Runtime）；新增 `NavigationCompleted` `IsSuccess` 检查、`ProcessFailed` 自动重载自愈、`show()` 失败态自动重试；冷启阶段将 `warmUpSearchService()` 延后至 `NavigationCompleted`（或 `1500ms` 兜底定时器），避免冷启瞬间与 WebView2 在机械盘上互抢 I/O。
+- **2. 搜索自定义多路径排除文件夹全栈 SSOT 方案（Linux.do `@sandxyz` *我会送你红色玫瑰*）**：
+  - *内核精确路径边界匹配 (`src/service/PathExclusionMatcher.h`, `MftParserQuery.cpp`, `SearchPlugin.cpp`, `MessageBridge.cpp`, `src/cli/src/config.rs`)*：
+    - 抽象统一 `PathExclusionMatcher`：绝对路径按精确边界前缀匹配（排除 `D:\动作片` 及其全部深层子目录，绝不误伤 `D:\动作片2`），多段相对路径按 `\seg1\seg2\` 边界匹配，并同步覆盖 `MftParser::Search`（文件名搜索）、`MftParser::CollectContentCandidates`（全文内容搜索）与 `tools3000-cli`（外部 CLI/MCP 双端屏蔽）；
+    - 配置单一事实源 `/search/customExcludedPaths`（最多 48 条），`search.query` 服务端自动合并持久化排除列表，新增 `search.browseExcludeDirectory` 原生系统目录选择器 IPC；
+  - *双端管理 UI + 右键一键屏蔽与撤销 (`SearchExcludedPathsManager.{tsx,css,test.tsx}`, `excludedPathsUtils.ts`, `useSearchEngine.{ts,test.tsx}`, `SearchApp.tsx`, `SearchViewSettingsModal.tsx`, `SearchContextMenu.tsx`, `SearchPage.tsx`, `settingsSearchIndex.ts`, 8 套 `locales/*.json`)*：
+    - 支持系统目录选择器 + 分号/换行批量粘贴（保护路径内空格与逗号）+ 跨窗口 `storage` 实时同步 + 搜索结果右键一键「排除此文件夹/所在文件夹」及 0ms 乐观移除与撤销 Toast。
+- **3. OCR 低置信度精修通用非过拟合双护栏与全目录 145 图原位翻译实测 (`DeepOcrEngine.{h,cpp}`, `InPlaceTranslateEngine.cpp`, `tests/unit/test_capture.inc`, `tests/benchmark/web_corpus_urls.json`)**：
+  - *通用非过拟合双护栏*：① 通用信噪比门控（均值 `>= 0.94` 且 `minCharConf >= 0.45` 时跳过单点 `lowChar` 误触发）；② 通用几何保真护栏（`> 640px` 宽条跳过 640px GPU 固定桶压缩保底，且拒绝相对 `>= 0.90` 主识发生截断缺失却无 `>= 0.04` 置信提升的精修覆盖）。45 张真实业务图实测：`v6_hybrid` 均耗时由 **`885.9ms -> 758.9ms (-14.3%)`**，`p90` 由 **`1497.0ms -> 1182.0ms (-21.0%)`**，无效精修降 20%，`apifox_json_compact.jpg` 空串 `""` 100% 保全；
+  - *原位翻译全语种脚本解锁*：全目录 145 图端到端实测暴露 `InPlaceTranslateEngine::isTranslatableText()` 遗漏阿拉伯语 (`0x0600..0x06FF` 等)、泰语 (`0x0E00..0x0E7F`) 与越南语拉丁扩展 (`0x1E00..0x1EFF`) 导致阿/泰语样本返回 `0` 翻译段；补齐 Unicode 全语种字母与组合变音符识别（同时隔离阿/泰文数字）后，`desktop_office` 10 场景原位翻译由 `8/10 -> 10/10 (100%)`（`260 -> 323` 段），全目录 145 图 `0` 崩溃、`0` 原图污染、`0` 越界、`0` 二维码侵入；
+  - *语料治理*：27 张含企业信息的实测图归档至 `.gitignore` 忽略的 `tests/fixtures/ocr/local_private/`；`web_benchmark/` 保持 `.gitignore` 不入库二进制图片，仅在 Git 内固化纯文本 URL 清单 `tests/benchmark/web_corpus_urls.json` 与相对路径化 `fetch_ocr_web_corpus.py`。
+- **4. 截图「双关不污染剪贴板」诚实交付策略 (`CaptureState.h`, `ScreenCapture.cpp`, `CaptureInputCommands.cpp`, `CaptureToolbarLayout.cpp`, `ShortcutHintOverlay.cpp`, 8 套 `locales/*.json`)**：
+  - 移除 `resolveCaptureDeliveryDecision` 的 `fallbackCopyWhenBothOff`、`finishScrollCaptureDelivery` 的 `fallbackCopyOnConfirm` 以及 `ToolbarCommand::Pin` 的无条件 `copyImageToClipboard`；
+  - 确立严格零打扰契约：关闭「自动复制到剪贴板」后，无论「自动保存到文件」开或关，点击「完成」/「保存」/「贴图」/「原位翻译」均 **100% 绝不覆写用户原有剪贴板**（仅用户显式按 `Ctrl+C` 或点击「复制」时写入）；双关态工具栏「完成」提示同步精确显示为「完成并关闭 (Enter)」。
+- **5. 剪贴板图片文件直贴（`Ctrl+C` -> `F3` / `CF_HDROP` 全格式解码）(`ClipboardUtils.{h,cpp}`, `PinPasteCoordinator.cpp`, `PinWindow.cpp`, `test_capture.inc`)**：
+  - 采用纯 `CF_HDROP` 剪贴板解析架构（避免侵入资源管理器 `IShellWindows` 跨进程 COM 与误触发冲突），覆盖 Windows 资源管理器、桌面、Tools3000 搜索框、Everything、微信/QQ 与第三方文件管理器全生态 `Ctrl+C` 复制图片文件后按 `F3` 直接贴图；
+  - 锁剪贴板临界区仅微秒级拷贝路径数组后立即 `CloseClipboard()`，锁外通过宽路径 OpenCV `imdecode`（JPEG 自动纠正 EXIF 旋转）+ Windows WIC 双通道解码（支持 PNG/JPG/WebP/BMP/TIFF/GIF 首帧/ICO/HEIC/AVIF，保留透明通道，64 MiB 体积与 32768px 尺寸安全上限）；
+  - 统一 `ClipboardUtils::inspectClipboardContent()` 单一事实源：含有效 `CF_HDROP` 图片文件时即使第三方工具附带路径文本也优先贴出图片（绝不破坏 Office 富文本优先字签）；支持多选图片文件按序展开为 `F3` 候选队列（连续按 `F3` 逐张贴出并自动过滤非图片/目录）。
+
+### [2026-11-25] PP-OCRv6 Small + Medium 混合架构全栈升级（Issue `#26`）、低置信度慢路径透明反馈与截图文字标注遇边界自动换行 SSOT 引擎（Linux.do `@zcx233`）
+- **1. 离线 OCR 跨代升级至 `PP-OCRv6 Small` + `PP-OCRv6 Rec Medium` 混搭与 65+ 语种生态（分支 `feat/ppocr-v6-and-multilingual`）**：
+  - **基础引擎与混合高精度档 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `DeepOcrEngineInternal.h`, `OcrPage.tsx`, `PinContextMenuModel.{h,cpp}`)**:
+    - 默认包由 `PP-OCRv4 Mobile (15.5 MB)` 升级至 **`PP-OCRv6 Small`（`PP-OCRv6_det_small.onnx` 9.47 MB + `PP-OCRv6_rec_small.onnx` 20.25 MB + `cls` 0.56 MB ≈ 30.3 MB，原生覆盖 50 语种）**；可选高精度精修包由 `ch_PP-OCRv4_rec_server.onnx (86.3 MB)` 升级至 **`PP-OCRv6_rec_medium.onnx (73.1 MB)`**（严禁下载 `PP-OCRv6_det_medium 59.2 MB` 避免 108s CPU 卡死与 3.78 GB Commit）；
+    - 下载与主模型加载全链路接入 `ensureOnnxWinMlIr8CompatiblePath` 无感钳位 `IR=10 -> IR=8`；支持旧版 `v4` 本地目录 100% 兼容并在 UI 提示一键无痛升级至 `PP-OCRv6`（装完自动清理残留旧 `v4`/`japan`/`latin` 文件）；
+    - 4 个按需扩展语种包更新为纯 Apache-2.0 的 **`korean` (12.9 MB) / `cyrillic` (7.7 MB) / `arabic` (7.7 MB) / `thai` (7.6 MB)**；Windows OCR 下拉同步新增 `fr-FR`、`de-DE`、`vi-VN`、`ar-SA`、`th-TH`。
+  - **协议合规红线（越南语专包审计结论）**：所有 Apache-2.0 通用 PP-OCR 权重均缺越南语预组合声调字母，`Vphuc/PP-OCRv5-mobile-rec-vi` 为 HuggingFace `gated=auto`（匿名 `401` 且 32.3% WER），而社区 `meomeo163`/`viesvtr` 均为 `CC-BY-NC-4.0`（与 GPL-3.0 冲突，严禁打包），`tieubaoca` 无开源协议声明；因此不捆绑非合规权重，通过 Windows OCR `vi-VN` 通道合规支持越南语。
+  - **实机验证揪出并根治的两大扩展语种真缺陷 (`DeepOcrEngine.cpp`)**：
+    1. *泰语在 4 包全装时被探测预算饿死*：原 `kAutoProbeBudgetMs = 650+250=900ms` 在冷试前 3 包后提前跳出导致排第 4 的 `thai` 永不执行；改为未命中胜者预算 `2200ms`（命中高置信胜者仍立即早停），实机 `auto` 识别泰语 `conf=0.9951` 100% 一字不差；
+    2. *阿拉伯语 RTL 视觉序反转*：新增 `normalizeArabicRtlLine`，在保留嵌入 ASCII 英文/数字正序（如 `2026`/`Tools3000`）与 `CtcDecodedChar` 物理选框 1:1 映射前提下将阿拉伯语视觉左→右输出还原为标准逻辑阅读序，实机 `auto` 识别阿拉伯语 `conf=0.9892` 100% 一字不差；同时 `proj_ru_bento.png` 在 `v6` 下 `auto` 精确切至 `cyrillic`（`mainScore=0.705 -> extScore=0.938`）。
+- **2. 低置信度精修/跨语种复核的「快识静默 · 慢路径可见」UI 反馈与结构化过程日志 (`DeepOcrEngine.{h,cpp}`, `OcrWorkerProtocol.h`, `OcrWorkerHost.cpp`, `OcrWorkerClient.{h,cpp}`, `OcrResultWindow.{h,cpp}`, `PluginEntry.cpp`)**：
+  - **结构化过程日志（带 `TraceID`）**：常规快速识别仅保留单条汇总 `LOG_INFO`（`refineCandidates=0, serverRefined=0, refine=0 ms`）；仅当进入低置信度精修时输出入口成因明细日志（`lowAvg/lowChar/short/empty` 候选数）与结算收益日志（`checked/accepted/avgConf before->after/backend/elapsed`）；自动语种探针切换记 `LOG_INFO`，探针未切换记 `LOG_DEBUG`；
+  - **跨进程零打扰 UI 轻反馈**：在 `OcrWorkerProtocol` 扩展前导 `kStatusStageEvent (100u)` 阶段帧（常规快识别 0 字节发送），仅在进入低置信度精修或自动切语种时实时刷新 `OcrResultWindow::updateLoadingStatus`（或直复制模式 Toast），并在结果窗标题栏以轻量后缀（如 `· 高精度精修 3 处`）呈现；引入 `DeepOcrEngine::runSequence()` 杜绝缓存命中或 Windows OCR 脏读旧徽标。
+- **3. 截图文字标注遇边界自动换行 SSOT 引擎（微信同款 + 超越微信，感谢 Linux.do `@zcx233`）(`CaptureTextEditor.h`, `MarkupEngine.{h,cpp}`, `MarkupEngineEffects.cpp`, `CaptureInput.{h,cpp}`, `CaptureInputKeyboard.cpp`, `CaptureInputMouse.cpp`)**：
+  - **纯软换行不污染原文**：`elem.text` 永不注入假 `\n`，在 `MarkupElement` 新增 `textMaxWidth`；`CaptureTextEditor::buildLayout(wtext, fontSize, maxContentWidth)` 基于二分度量实现中英文混排自动软换行（英文/数字单词不断腰、超长 URL 字符级折断保底、中文避头标点保护、行尾空格吸附不撑爆右边界）；
+  - **100% 像素级同构**：`measureSnipasteText`、`renderSnipasteStyleText`（逐视觉行写入 `FillModeWinding` 单一路径）、鼠标点击/划词命中、蓝底选区高亮（软换行无冗余 `+6px` 假换行尾）、`Up/Down/Home/End` 视觉行导航及 `ImmSetCompositionWindow` 中文输入法候选框 100% 共用同一份 `buildLayout`；
+  - **半透明 ROI 防坑与三大贴心细节**：`MarkupEngine` 在半透明文字裁切局部 `layerRoi` 之前先按整图 `canvas.cols` 锁死 `textMaxWidth`；支持贴近右/下边缘点击温和礼让（`computeSmartTextStartPoint`）、输入/粘贴/放大字号触底自动上抬（`computeBottomSafeStartY`），以及拖动文本框或拉宽/收窄选区（`updateBaseImage`）时实时流式折行与自然舒展；全套 65/65 原生回归单测与视觉拼图 `text_autowrap_verify.png` 实机验收全绿。
+
+### [2026-11-25] 离线 OCR 引擎跨代选型实机大考结论（PP-OCRv4 vs v5 vs v6 Tiny/Small/Medium/混搭 vs `<200MB` VLM，分支 `perf/ocr-v6-benchmark`，对应 Issue `#26`）
+- **1. `< 200 MB` VLM 路线实证淘汰**：`PaddleOCR-VL (0.9B)` INT4 ONNX 达 `991 MB` / Q4 GGUF 达 `1,127 MB`（超红线 5 倍），`LightOnOCR`/`DeepSeek-OCR` 均 `> 800 MB`，`SmolDocling-256M`（~180 MB Q4）仅偏英语且逐 Token 耗时数秒无 CJK/越/韩/俄支持；桌面端 200 MB 红线内多语种离线秒出 OCR 仍由 CTC 检测+识别管线绝对统治。
+- **2. 原生 WinML DirectML 零 DLL 膨胀实机通关与 `IR=10` 暗坑**：RapidOCR 官方 `PP-OCRv5` 与 `PP-OCRv6` 全部标记 `ir_version=10`，直接传入 WinML 触发 `hr=0x80070057` 输出 `0` 行；但其新增算子仅为标准 opset-11 的 `Erf/MaxPool/Identity/Unsqueeze`，经 `DeepOcrEngine::clampOnnxIrVersionForWinMl` 无损钳位至 `IR=8` 后，**全系列 100% 原生跑通 WinML DirectML GPU + CompactBatchCascade 与 WinML CPU SIMD（0 字节额外推理 DLL 膨胀）**，且 `trimIdleMemory()` 后 `PrivWS` 全部跌至 `0.1~0.4 MB`、`releaseLoadedModels()` 后回落至 `1.5~3.5 MB`。
+- **3. 110 张语料（15 项目实图 + 80 张 8 语种 Wikimedia 实拍 + 10 精确真值卡 + 5 档分辨率阶梯）实测黄金帕累托结论**：
+  - **默认基础包唯一赢家 — `PP-OCRv6 Small` (`30.3 MB`: `det_small 9.47MB + rec_small 20.25MB + cls 0.56MB`)**：核心 7 语精确准确率由 `v4_mobile` `84.3% -> 97.4%`（繁中 `83.3% -> 97.6%`、日语 `54.2% -> 96.6%`、法语 `83.6% -> 95.8%`、德西葡 `84.9% -> 99.1%`、倾斜发票 `93.3% -> 98.3%`），且 **反向提速**（105 图 GPU 均耗时 `466.9ms` vs `v4_mobile 641.9ms` 快 27%，纯 CPU 5 尺寸阶梯 `20.24s` vs `v4_mobile 35.88s` 快 44%）；同时可直接淘汰 `9.30 MB japan_v4` 扩展包与默认 `7.54 MB latin_v5` 包。
+  - **否定整套拉入 `PP-OCRv6_det_medium (59.24 MB)` — 采用「`v6 Det Small` + `v6 Rec Medium (73.08 MB)`」混搭高精度档**：全套 `v6_medium_full (132.9 MB)` 在纯 CPU 模式下 4K 图卡死 **`108.3 秒`**（5 图 `287.4 秒`）且 GPU DirectML 提交飙至 **`3,785 MB`**；而仅下载 `PP-OCRv6_rec_medium (73.08 MB)`（比现 `v4_rec_server 86.34 MB` 更小！）混搭 `v6_det_small`：`v6_sdet_mrec (83.1 MB)` 10 语均分 `80.7%` 反超全套 Medium `80.5%`、省 `50 MB` 体积与 `1.52 GB` Commit；级联复核形态 `v6_hybrid_cascade (103.4 MB)` GPU 4K 仅 `2.96s`（快 42%）、纯 CPU 5 图仅 `29.2s`（快 9.8 倍）、Commit 仅 `2,038 MB`（省 `1.75 GB`）。
+- **4. 越南语官方字典盲区与多语种扩展槽终局方案**：拆解 ONNX 内嵌字典与实图双实证，`PP-OCRv6` 字典（`18,708` 字）与现 `latin_v5` 均缺失 `88~99/134` 个越南语预组合声调字母（`U+1EA0-U+1EF9`，Combining Marks 为 `0`），导致 `PP-OCRv6` 遇到越南语直接吞掉带调元音（`tiếng Việt -> ting Vit`），且 `v6` 不含韩语与俄语。终局扩展槽架构：**退役 `japan_v4` 与默认 `latin_v5`，保留 `korean_v5 (12.9 MB)` 与 `cyrillic_v5 (7.7 MB)`（并适配 `v6` 的 `auto` 俄/韩探针），新增 ~8 MB 越南语全声调专包（Apache-2.0 `Vphuc/PP-OCRv5-mobile-rec-vi` 转 ONNX）及可选 `arabic`/`thai` 槽位**。
+
 ### [2026-11-24] 永久 Git 分支治理铁律：主干开发 + 短期语义分支用完即删（Trunk-Based / GitHub Flow，已固化至 `.agents/rules/agent.md` 第 7 节与 `scripts/release.ps1`）
 - **1. 问题复盘**：早期 `scripts/release.ps1` 发版合并 `main` 后默认切回原分支并推送，导致历史专题分支 `feature/rust-picasa-viewer` 在 Picasa 模块结束后被长期当作通用开发分支复用，持续产生名不副实的 `merge(feature/rust-picasa-viewer)` 记录。
 - **2. 确立的工程铁律（方案 B · 业界世界级标准）**：

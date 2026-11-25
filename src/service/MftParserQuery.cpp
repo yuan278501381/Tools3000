@@ -1,4 +1,5 @@
 #include "MftParser.h"
+#include "PathExclusionMatcher.h"
 #include "PinyinEngine.h"
 #include "QueryThreadPool.h"
 #include "content/ContentSearchEngine.h"
@@ -192,17 +193,9 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         return false;
     };
 
-    std::vector<std::wstring> lowerExcludePatterns;
-    bool allExcludePatternsSingleSegment = true;
-    lowerExcludePatterns.reserve(excludeOpts.patterns.size());
-    for (const auto& pat : excludeOpts.patterns) {
-        if (pat.empty()) continue;
-        std::wstring lp = normalize(pat);
-        if (lp.find(L'\\') != std::wstring::npos || lp.find(L'/') != std::wstring::npos) {
-            allExcludePatternsSingleSegment = false;
-        }
-        lowerExcludePatterns.push_back(std::move(lp));
-    }
+    tools3000::service::PathExclusionMatcher excludeMatcher;
+    excludeMatcher.compile(excludeOpts.patterns);
+    const bool allExcludePatternsSingleSegment = excludeMatcher.hasOnlySingleSegmentPatterns();
 
     struct DirExcludeCacheMeta {
         bool excluded = false;
@@ -312,7 +305,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                                            DWORDLONG& lastExParentFrn,
                                            bool& lastExResult,
                                            std::unordered_map<DWORDLONG, bool>& exCache) -> bool {
-        if (lowerExcludePatterns.empty() || parentFrn == 0) {
+        if (excludeMatcher.singleSegmentPatterns().empty() || parentFrn == 0) {
             return false;
         }
         if (parentFrn == lastExParentFrn) {
@@ -359,13 +352,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 const auto* node = m_Store.find(stepFrn);
                 if (node) {
                     const FileRecord dirRec = m_Store.view(*node);
-                    for (const auto& lp : lowerExcludePatterns) {
-                        if (lp.find(L'\\') == std::wstring::npos && lp.find(L'/') == std::wstring::npos) {
-                            if (containsLower(dirRec.fileName, lp)) {
-                                excluded = true;
-                                break;
-                            }
-                        }
+                    if (excludeMatcher.matchesSingleSegmentName(dirRec.fileName)) {
+                        excluded = true;
                     }
                 }
             }
@@ -514,24 +502,18 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             (dirClassFlags & tools3000::service::kDirClassRecentDir) != 0) {
             return CandidateEvalResult::Rejected;
         }
-        if (!lowerExcludePatterns.empty()) {
+        if (!excludeMatcher.empty()) {
             if (isAncestorExcludedByPattern(record.parentFileReferenceNumber, lastExParentFrn, lastExResult, localExCache)) {
                 return CandidateEvalResult::Rejected;
             }
-            if (allExcludePatternsSingleSegment) {
-                for (const auto& lowerPat : lowerExcludePatterns) {
-                    if (containsLower(record.fileName, lowerPat)) {
-                        return CandidateEvalResult::Rejected;
-                    }
-                }
-            } else {
+            if (excludeMatcher.matchesSingleSegmentName(record.fileName)) {
+                return CandidateEvalResult::Rejected;
+            }
+            if (!allExcludePatternsSingleSegment) {
                 const std::wstring& p = getPath();
-                const std::wstring lowerP = normalize(p);
-                for (const auto& lowerPat : lowerExcludePatterns) {
-                    if (lowerP.find(lowerPat) != std::wstring::npos ||
-                        containsLower(record.fileName, lowerPat)) {
-                        return CandidateEvalResult::Rejected;
-                    }
+                const std::wstring lowerP = tools3000::service::PathExclusionMatcher::normalizePathForMatch(p);
+                if (excludeMatcher.matchesNormalizedFullPath(lowerP, /*checkSingleSegmentInPath=*/false)) {
+                    return CandidateEvalResult::Rejected;
                 }
             }
         }
@@ -1168,13 +1150,8 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                                normQuery.find(L"obj") != std::wstring::npos;
     const bool explicitLock = normQuery.find(L"lock") != std::wstring::npos;
 
-    std::vector<std::wstring> lowerExcludes;
-    lowerExcludes.reserve(options.excludeOpts.patterns.size());
-    for (const auto& pat : options.excludeOpts.patterns) {
-        if (!pat.empty()) {
-            lowerExcludes.push_back(normalize(pat));
-        }
-    }
+    tools3000::service::PathExclusionMatcher contentExcludeMatcher;
+    contentExcludeMatcher.compile(options.excludeOpts.patterns);
 
     struct NormalizedDialogPriority {
         std::wstring pathLower;
@@ -1427,14 +1404,10 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             return folderCache.emplace(parentFrn, std::move(node)).first->second;
         }
 
-        if (!lowerExcludes.empty()) {
-            std::wstring dirWithTrail = node.lowerDirPath;
-            dirWithTrail.push_back(L'\\');
-            for (const auto& exPat : lowerExcludes) {
-                if (dirWithTrail.find(exPat) != std::wstring::npos) {
-                    node.pruned = true;
-                    return folderCache.emplace(parentFrn, std::move(node)).first->second;
-                }
+        if (!contentExcludeMatcher.empty()) {
+            if (contentExcludeMatcher.matchesNormalizedFullPath(node.lowerDirPath, /*checkSingleSegmentInPath=*/true)) {
+                node.pruned = true;
+                return folderCache.emplace(parentFrn, std::move(node)).first->second;
             }
         }
 
@@ -1583,16 +1556,17 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 }
 
                 std::wstring finalPath = std::move(buildFullPathNow());
-                if (!lowerExcludes.empty()) {
-                    const std::wstring lowerFileName = normalize(record.fileName);
-                    bool excludedByName = false;
-                    for (const auto& exPat : lowerExcludes) {
-                        if (lowerFileName.find(exPat) != std::wstring::npos) {
-                            excludedByName = true;
-                            break;
+                if (!contentExcludeMatcher.empty()) {
+                    if (contentExcludeMatcher.matchesSingleSegmentName(record.fileName)) {
+                        continue;
+                    }
+                    if (!contentExcludeMatcher.hasOnlySingleSegmentPatterns()) {
+                        const std::wstring lowerFinal =
+                            tools3000::service::PathExclusionMatcher::normalizePathForMatch(finalPath);
+                        if (contentExcludeMatcher.matchesNormalizedFullPath(lowerFinal, /*checkSingleSegmentInPath=*/false)) {
+                            continue;
                         }
                     }
-                    if (excludedByName) continue;
                 }
 
                 double extOffset = computeExtensionSignalOffset(extView, normName, explicitLock);

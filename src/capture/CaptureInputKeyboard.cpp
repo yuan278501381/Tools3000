@@ -264,24 +264,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
     switch (msg) {
         case WM_IME_STARTCOMPOSITION: {
             if (this && m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text && m_state->activeElement->isEditing) {
-                HIMC hImc = ImmGetContext(hwnd);
-                if (hImc) {
-                    const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
-                    const auto layout = CaptureTextEditor::buildLayout(
-                        wstr, static_cast<int>(m_state->activeElement->fontSize));
-                    const auto vis = CaptureTextEditor::computeCaretVisual(
-                        layout, wstr, m_state->activeElement->textCaret);
-                    COMPOSITIONFORM cf{};
-                    cf.dwStyle = CFS_POINT;
-                    auto selRect = currentSelectionRect();
-                    const auto scrCaret = m_state->docToScreen(
-                        selRect.left + static_cast<float>(m_state->activeElement->startPt.x) + vis.x,
-                        selRect.top + static_cast<float>(m_state->activeElement->startPt.y) + vis.y + vis.height + 2.0f);
-                    cf.ptCurrentPos.x = static_cast<LONG>(std::round(scrCaret.x));
-                    cf.ptCurrentPos.y = static_cast<LONG>(std::round(scrCaret.y));
-                    ImmSetCompositionWindow(hImc, &cf);
-                    ImmReleaseContext(hwnd, hImc);
-                }
+                syncImeCompositionWindow(hwnd);
             }
             return DefWindowProcW(hwnd, msg, wParam, lParam);
         }
@@ -306,11 +289,12 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             m_state->activeElement->text = tools3000::core::WinUtils::wstringToUtf8(wstr);
                             m_state->activeElement->textLastCaretTick = GetTickCount();
                             m_state->textPreferredCaretX = -1.0f;
-                            m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                            ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                             m_renderer->markMarkupDirty();
                             m_renderer->invalidate();
                         }
                         ImmReleaseContext(hwnd, hImc);
+                        syncImeCompositionWindow(hwnd);
                         return 0; // 消费输入法上屏文字，防止 DefWindowProcW 再次派发导致重复
                     }
                 }
@@ -336,10 +320,11 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             m_state->activeElement->textSelAnchor,
                             ch == 0x7F)) {
                         m_state->activeElement->text = tools3000::core::WinUtils::wstringToUtf8(wstr);
-                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                        ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                     }
                     m_state->activeElement->textLastCaretTick = GetTickCount();
                     m_state->textPreferredCaretX = -1.0f;
+                    syncImeCompositionWindow(hwnd);
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
                 } else if (ch == 0x0D) { // Enter: 在当前光标处插入换行符（或替换选区为换行）
@@ -353,7 +338,8 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     m_state->activeElement->text = tools3000::core::WinUtils::wstringToUtf8(wstr);
                     m_state->activeElement->textLastCaretTick = GetTickCount();
                     m_state->textPreferredCaretX = -1.0f;
-                    m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                    ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
+                    syncImeCompositionWindow(hwnd);
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
                 } else if (ch == 0x0A) { // Ctrl+Enter: 结束文本编辑
@@ -373,7 +359,8 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     m_state->activeElement->text = tools3000::core::WinUtils::wstringToUtf8(wstr);
                     m_state->activeElement->textLastCaretTick = GetTickCount();
                     m_state->textPreferredCaretX = -1.0f;
-                    m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                    ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
+                    syncImeCompositionWindow(hwnd);
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
                 }
@@ -481,6 +468,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         tools3000::core::ConfigManager::instance().set<int>(
                             "/capture/markup/spotlightDim", outcome.intValue);
                     } else if (outcome.kind == WheelAdjustedKind::TextFontSize) {
+                        ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                         tools3000::core::ConfigManager::instance().set<double>(
                             "/capture/markup/text/fontSize", static_cast<double>(outcome.floatValue));
                     }
@@ -738,7 +726,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             m_state->activeElement->fontSize + static_cast<float>(delta * 2),
                             10.0f, 144.0f * curDpi);
                         m_state->activeElement->fontSize = newPhysSize;
-                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                        ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                         const double logicalSize = std::clamp(static_cast<double>(newPhysSize / curDpi), 10.0, 144.0);
                         tools3000::core::ConfigManager::instance().set<double>(
                             "/capture/markup/text/fontSize", logicalSize);
@@ -1675,9 +1663,10 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                             }
                             CaptureTextEditor::insertText(wstr, elem.textCaret, elem.textSelAnchor, normalized);
                             elem.text = tools3000::core::WinUtils::wstringToUtf8(wstr);
-                            elem.textRenderSize = cv::Size(0, 0);
+                            ensureActiveTextBoundsAfterEdit(elem);
                             elem.textLastCaretTick = GetTickCount();
                             m_state->textPreferredCaretX = -1.0f;
+                            syncImeCompositionWindow(hwnd);
                             m_renderer->markMarkupDirty();
                             m_renderer->invalidate();
                         }
@@ -1688,6 +1677,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         CaptureTextEditor::moveLeft(wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;
@@ -1697,35 +1687,47 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         CaptureTextEditor::moveRight(wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;
                     }
 
                     if (wParam == VK_HOME) {
-                        CaptureTextEditor::moveHome(wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
+                        const float maxContentW = syncTextElementWrapWidth(elem);
+                        const auto layout = CaptureTextEditor::buildLayout(
+                            wstr, static_cast<int>(elem.fontSize), maxContentW);
+                        CaptureTextEditor::moveHomeInLayout(layout, wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;
                     }
 
                     if (wParam == VK_END) {
-                        CaptureTextEditor::moveEnd(wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
+                        const float maxContentW = syncTextElementWrapWidth(elem);
+                        const auto layout = CaptureTextEditor::buildLayout(
+                            wstr, static_cast<int>(elem.fontSize), maxContentW);
+                        CaptureTextEditor::moveEndInLayout(layout, wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;
                     }
 
                     if (wParam == VK_UP || wParam == VK_DOWN) {
-                        const auto layout = CaptureTextEditor::buildLayout(wstr, static_cast<int>(elem.fontSize));
+                        const float maxContentW = syncTextElementWrapWidth(elem);
+                        const auto layout = CaptureTextEditor::buildLayout(
+                            wstr, static_cast<int>(elem.fontSize), maxContentW);
                         CaptureTextEditor::moveVertical(
                             layout, wstr, elem.textCaret, elem.textSelAnchor,
                             (wParam == VK_UP) ? -1 : 1, shift, m_state->textPreferredCaretX);
                         elem.textLastCaretTick = GetTickCount();
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;
@@ -1737,10 +1739,11 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         }
                         if (CaptureTextEditor::deleteForward(wstr, elem.textCaret, elem.textSelAnchor, ctrl)) {
                             elem.text = tools3000::core::WinUtils::wstringToUtf8(wstr);
-                            elem.textRenderSize = cv::Size(0, 0);
+                            ensureActiveTextBoundsAfterEdit(elem);
                         }
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         return 0;

@@ -87,7 +87,23 @@ bool loadDictionaryLines(const std::filesystem::path& dictPath, std::vector<std:
     return outKeys.size() >= 16;
 }
 
-bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir) {
+bool isV6BaseBundlePresent(const std::filesystem::path& dir) {
+    std::error_code ec;
+    if (dir.empty() || !std::filesystem::is_directory(dir, ec) || ec) {
+        return false;
+    }
+    const auto checkFileMinSize = [&](const wchar_t* name, size_t minSize) {
+        const auto p = dir / name;
+        if (!std::filesystem::is_regular_file(p, ec) || ec) return false;
+        const auto fsz = std::filesystem::file_size(p, ec);
+        return !ec && fsz >= minSize;
+    };
+    return checkFileMinSize(DeepOcrConstants::kV6DetModelFileName, 256) &&
+           checkFileMinSize(DeepOcrConstants::kClsModelFileName, 256) &&
+           checkFileMinSize(DeepOcrConstants::kV6RecModelFileName, 256);
+}
+
+bool isV4BaseBundlePresent(const std::filesystem::path& dir) {
     std::error_code ec;
     if (dir.empty() || !std::filesystem::is_directory(dir, ec) || ec) {
         return false;
@@ -105,12 +121,19 @@ bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir) {
             checkFileMinSize(DeepOcrConstants::kRecModelFileName, DeepOcrConstants::kMinRecModelBytes));
 }
 
+bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir) {
+    return isV6BaseBundlePresent(dir) || isV4BaseBundlePresent(dir);
+}
+
 bool isServerRecModelPresent(const std::filesystem::path& dir) {
     std::error_code ec;
     if (dir.empty() || !std::filesystem::is_directory(dir, ec) || ec) {
         return false;
     }
-    const auto p = dir / DeepOcrConstants::kRecServerModelFileName;
+    const wchar_t* targetName = isV6BaseBundlePresent(dir)
+        ? DeepOcrConstants::kV6RecMediumModelFileName
+        : DeepOcrConstants::kRecServerModelFileName;
+    const auto p = dir / targetName;
     if (!std::filesystem::is_regular_file(p, ec) || ec) {
         return false;
     }
@@ -119,7 +142,7 @@ bool isServerRecModelPresent(const std::filesystem::path& dir) {
 }
 
 const std::array<const char*, 4>& allScriptPackIds() noexcept {
-    static constexpr std::array<const char*, 4> kIds = {"japan", "korean", "cyrillic", "latin"};
+    static constexpr std::array<const char*, 4> kIds = {"korean", "cyrillic", "arabic", "thai"};
     return kIds;
 }
 
@@ -131,8 +154,11 @@ std::string normalizeScriptMode(std::string_view rawMode) {
     if (lower == "cjk" || lower == "zh" || lower == "ch" || lower == "en") return "cjk";
     if (lower == "japan" || lower == "ja" || lower == "jp") return "japan";
     if (lower == "korean" || lower == "ko" || lower == "kr") return "korean";
-    if (lower == "cyrillic" || lower == "ru" || lower == "eslav") return "cyrillic";
-    if (lower == "latin" || lower == "es" || lower == "pt" || lower == "pt-br") return "latin";
+    if (lower == "cyrillic" || lower == "ru" || lower == "uk" || lower == "bg" || lower == "eslav") return "cyrillic";
+    if (lower == "latin" || lower == "es" || lower == "pt" || lower == "pt-br" ||
+        lower == "fr" || lower == "de" || lower == "it") return "latin";
+    if (lower == "arabic" || lower == "ar" || lower == "fa" || lower == "ur") return "arabic";
+    if (lower == "thai" || lower == "th") return "thai";
     return "auto";
 }
 
@@ -142,6 +168,8 @@ std::filesystem::path resolveScriptPackModelPath(const std::filesystem::path& di
     if (packId == "korean")   return dir / DeepOcrConstants::kScriptKoreanRecFileName;
     if (packId == "cyrillic") return dir / DeepOcrConstants::kScriptCyrillicRecFileName;
     if (packId == "latin")    return dir / DeepOcrConstants::kScriptLatinRecFileName;
+    if (packId == "arabic")   return dir / DeepOcrConstants::kScriptArabicRecFileName;
+    if (packId == "thai")     return dir / DeepOcrConstants::kScriptThaiRecFileName;
     return {};
 }
 
@@ -161,6 +189,55 @@ bool isScriptPackModelPresent(const std::filesystem::path& dir, std::string_view
     return true;
 }
 
+std::filesystem::path ensureOnnxWinMlIr8CompatiblePath(const std::filesystem::path& onnxPath) {
+    if (onnxPath.empty()) return onnxPath;
+    // 快速 64B 头部零拷贝嗅探：已为 IR<=8 时零整文件读盘开销直通
+    std::ifstream probeIfs(onnxPath, std::ios::binary);
+    if (!probeIfs) return onnxPath;
+    std::vector<uint8_t> head(64, 0);
+    probeIfs.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size()));
+    const size_t got = static_cast<size_t>(probeIfs.gcount());
+    probeIfs.close();
+    if (got < 16) return onnxPath;
+    head.resize(got);
+    if (!DeepOcrEngine::clampOnnxIrVersionForWinMl(head)) {
+        return onnxPath;
+    }
+
+    // 检测到手动放入的 IR>8 (如 IR=10 的 PP-OCRv5/v6) 模型：无损原位钳位至 IR 8，失败则落入临时兼容路径
+    std::vector<uint8_t> fullBytes;
+    if (!readFileBytes(onnxPath, fullBytes)) {
+        return onnxPath;
+    }
+    if (!DeepOcrEngine::clampOnnxIrVersionForWinMl(fullBytes)) {
+        return onnxPath;
+    }
+    try {
+        std::ofstream ofs(onnxPath, std::ios::binary | std::ios::trunc);
+        if (ofs) {
+            ofs.write(reinterpret_cast<const char*>(fullBytes.data()),
+                      static_cast<std::streamsize>(fullBytes.size()));
+            ofs.flush();
+            if (ofs) return onnxPath;
+        }
+    } catch (...) {
+    }
+
+    std::error_code ec;
+    const auto tmpDir = std::filesystem::temp_directory_path(ec);
+    if (!ec && !tmpDir.empty()) {
+        const auto compatPath = tmpDir / (L"t3k_ocr_" + onnxPath.filename().wstring());
+        std::ofstream ofs(compatPath, std::ios::binary | std::ios::trunc);
+        if (ofs) {
+            ofs.write(reinterpret_cast<const char*>(fullBytes.data()),
+                      static_cast<std::streamsize>(fullBytes.size()));
+            ofs.flush();
+            if (ofs) return compatPath;
+        }
+    }
+    return onnxPath;
+}
+
 } // namespace deep_ocr_detail
 
 namespace {
@@ -170,6 +247,7 @@ struct ModelDownloadSpec {
     const char* displayName;
     size_t minValidBytes;
     bool isOnnx;
+    bool requiresEmbeddedDict;
     bool isScriptExtOnnx;
     std::array<const wchar_t*, 4> mirrorUrls;
 };
@@ -180,18 +258,20 @@ struct ScriptPackDownloadMeta {
     ModelDownloadSpec spec;
 };
 
-constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
+// 新一代 PP-OCRv6 Small 核心底座（原生 50 语种：中简/繁/英/日/法/德/西/葡等，全内嵌字典，零外部 txt）
+constexpr std::array<ModelDownloadSpec, 3> kModelSpecs = {{
     {
-        DeepOcrConstants::kDetModelFileName,
-        "ch_PP-OCRv4_det.onnx",
+        DeepOcrConstants::kV6DetModelFileName,
+        "PP-OCRv6_det_small.onnx",
         DeepOcrConstants::kMinDetModelBytes,
         true,
         false,
+        false,
         {
-            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
-            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/det/ch_PP-OCRv4_det_mobile.onnx",
-            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx",
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_det_infer.onnx"
+            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+            nullptr,
+            nullptr
         }
     },
     {
@@ -199,6 +279,7 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         "ch_ppocr_mobile_v2.0_cls.onnx",
         DeepOcrConstants::kMinClsModelBytes,
         true,
+        false,
         false,
         {
             L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
@@ -208,65 +289,39 @@ constexpr std::array<ModelDownloadSpec, 4> kModelSpecs = {{
         }
     },
     {
-        DeepOcrConstants::kRecModelFileName,
-        "ch_PP-OCRv4_rec.onnx",
+        DeepOcrConstants::kV6RecModelFileName,
+        "PP-OCRv6_rec_small.onnx",
         DeepOcrConstants::kMinRecModelBytes,
+        true,
         true,
         false,
         {
-            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx",
-            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile.onnx",
-            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx",
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_infer.onnx"
-        }
-    },
-    {
-        DeepOcrConstants::kKeysDictFileName,
-        "ppocr_keys_v1.txt",
-        4096,
-        false,
-        false,
-        {
-            L"https://ghfast.top/https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
-            L"https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt",
+            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
+            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
             nullptr,
             nullptr
         }
     }
 }};
 
+// 高精度混搭增强包：仅按需下载 PP-OCRv6 Medium Rec (~73.1 MB)，复用轻量 det_small 省 50MB 体积与 1.75GB Commit
 constexpr ModelDownloadSpec kServerRecModelSpec = {
-    DeepOcrConstants::kRecServerModelFileName,
-    "ch_PP-OCRv4_rec_server.onnx",
+    DeepOcrConstants::kV6RecMediumModelFileName,
+    "PP-OCRv6_rec_medium.onnx",
     DeepOcrConstants::kMinRecServerModelBytes,
+    true,
     true,
     false,
     {
-        L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_server.onnx",
-        L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/ch_PP-OCRv4_rec_server.onnx",
-        L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_server_infer.onnx",
-        L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv4/ch_PP-OCRv4_rec_server_infer.onnx"
+        L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
+        L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
+        nullptr,
+        nullptr
     }
 };
 
+// 4 大官方 Apache-2.0 精选按需多语种扩展包（与 PP-OCRv6 50 语种互补，覆盖全球 65+ 主流语言）
 constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
-    {
-        "japan",
-        DeepOcrConstants::kEstimatedScriptJapanBytes,
-        {
-            DeepOcrConstants::kScriptJapanRecFileName,
-            "japan_PP-OCRv4_rec_mobile.onnx",
-            DeepOcrConstants::kMinRecModelBytes,
-            true,
-            true,
-            {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
-                nullptr,
-                nullptr
-            }
-        }
-    },
     {
         "korean",
         DeepOcrConstants::kEstimatedScriptKoreanBytes,
@@ -274,6 +329,7 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kScriptKoreanRecFileName,
             "korean_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
+            true,
             true,
             true,
             {
@@ -293,6 +349,7 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kMinRecModelBytes,
             true,
             true,
+            true,
             {
                 L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
                 L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
@@ -302,17 +359,36 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
         }
     },
     {
-        "latin",
-        DeepOcrConstants::kEstimatedScriptLatinBytes,
+        "arabic",
+        DeepOcrConstants::kEstimatedScriptArabicBytes,
         {
-            DeepOcrConstants::kScriptLatinRecFileName,
-            "latin_PP-OCRv5_rec_mobile.onnx",
+            DeepOcrConstants::kScriptArabicRecFileName,
+            "arabic_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
             true,
             true,
+            true,
             {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/latin_PP-OCRv5_rec_mobile.onnx",
+                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx",
+                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx",
+                nullptr,
+                nullptr
+            }
+        }
+    },
+    {
+        "thai",
+        DeepOcrConstants::kEstimatedScriptThaiBytes,
+        {
+            DeepOcrConstants::kScriptThaiRecFileName,
+            "th_PP-OCRv5_rec_mobile.onnx",
+            DeepOcrConstants::kMinRecModelBytes,
+            true,
+            true,
+            true,
+            {
+                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx",
+                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx",
                 nullptr,
                 nullptr
             }
@@ -501,6 +577,15 @@ bool DeepOcrEngine::isModelInstalled() const {
     return installed;
 }
 
+std::string DeepOcrEngine::installedEngineGeneration() const {
+    bool installed = false;
+    const auto dir = resolveModelDirectory(&installed);
+    if (!installed) return {};
+    if (isV6BaseBundlePresent(dir)) return "v6";
+    if (isV4BaseBundlePresent(dir)) return "v4";
+    return {};
+}
+
 bool DeepOcrEngine::isServerModelInstalled() const {
     bool installed = false;
     const auto dir = resolveModelDirectory(&installed);
@@ -570,6 +655,7 @@ bool DeepOcrEngine::isScriptPackInstalled(const std::string& packId) const {
 std::string DeepOcrEngine::installedScriptPacksSignature() const {
     bool baseInstalled = false;
     const auto dir = resolveModelDirectory(&baseInstalled);
+    const std::string gen = isV6BaseBundlePresent(dir) ? "v6" : (isV4BaseBundlePresent(dir) ? "v4" : "none");
     std::string sig;
     for (const char* id : allScriptPackIds()) {
         if (isScriptPackModelPresent(dir, id)) {
@@ -577,7 +663,15 @@ std::string DeepOcrEngine::installedScriptPacksSignature() const {
             sig += id;
         }
     }
-    return sig.empty() ? "none" : sig;
+    if (gen == "v4") {
+        for (const char* legacyId : {"japan", "latin"}) {
+            if (isScriptPackModelPresent(dir, legacyId)) {
+                if (!sig.empty()) sig.push_back(',');
+                sig += legacyId;
+            }
+        }
+    }
+    return gen + ":" + (sig.empty() ? "none" : sig);
 }
 
 bool DeepOcrEngine::clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) noexcept {
@@ -1001,7 +1095,11 @@ DeepOcrModelStatus DeepOcrEngine::getModelStatus() const {
     DeepOcrModelStatus st;
     bool installed = false;
     const auto dir = resolveModelDirectory(&installed);
+    const bool v6Installed = installed && isV6BaseBundlePresent(dir);
+    const bool v4OnlyInstalled = installed && !v6Installed && isV4BaseBundlePresent(dir);
     st.installed = installed;
+    st.engineGeneration = v6Installed ? "v6" : (v4OnlyInstalled ? "v4" : "");
+    st.upgradeAvailable = v4OnlyInstalled;
     st.serverInstalled = installed && isServerRecModelPresent(dir);
     st.modelTier = configuredModelTier();
     st.activeModelTier = (st.serverInstalled && st.modelTier == "server") ? "server" : "mobile";
@@ -1052,7 +1150,7 @@ bool DeepOcrEngine::startModelDownload(const std::string& tier) {
 
     const bool includeServerRec = (tier == "server");
     const std::filesystem::path targetDir = defaultInstallDirectory();
-    const bool baseAlreadyPresent = isDirectoryCompleteModelBundle(targetDir);
+    const bool baseAlreadyPresent = isV6BaseBundlePresent(targetDir);
     const uint64_t initialEstTotal = includeServerRec
         ? (baseAlreadyPresent
                ? DeepOcrConstants::kEstimatedServerAddOnBytes
@@ -1203,16 +1301,19 @@ bool DeepOcrEngine::deleteServerModel() {
     // 先释放已加载的 WinML/OpenCV 会话，避免 Windows 文件映射句柄锁死导致删除失败
     releaseLoadedModels();
 
-    const std::filesystem::path serverPath = targetDir / DeepOcrConstants::kRecServerModelFileName;
-    const std::filesystem::path partPath = targetDir / (std::wstring(DeepOcrConstants::kRecServerModelFileName) + L".part");
     std::error_code ec;
-    std::filesystem::remove(partPath, ec);
-    ec.clear();
-    if (std::filesystem::exists(serverPath, ec) && !ec) {
-        std::filesystem::remove(serverPath, ec);
+    for (const wchar_t* fileName : {DeepOcrConstants::kV6RecMediumModelFileName, DeepOcrConstants::kRecServerModelFileName}) {
+        const std::filesystem::path serverPath = targetDir / fileName;
+        const std::filesystem::path partPath = targetDir / (std::wstring(fileName) + L".part");
+        std::filesystem::remove(partPath, ec);
+        ec.clear();
+        if (std::filesystem::exists(serverPath, ec) && !ec) {
+            std::filesystem::remove(serverPath, ec);
+        }
+        ec.clear();
     }
 
-    const bool removed = !std::filesystem::exists(serverPath, ec) && !ec;
+    const bool removed = !isServerRecModelPresent(targetDir);
     if (removed && configuredModelTier() == "server") {
         try {
             auto& cfg = tools3000::core::ConfigManager::instance();
@@ -1298,21 +1399,23 @@ void DeepOcrEngine::downloadWorkerLoop(
                     !isValidOnnxBuffer(verifyBytes.data(), verifyBytes.size(), spec.minValidBytes)) {
                     return false;
                 }
-                if (spec.isScriptExtOnnx) {
-                    // 多语种扩展包 (PP-OCRv4/v5) 必须内嵌有效字符词典，且落盘前自动钳位 ir_version <= 8 确保 Win10/11 WinML 直通
-                    std::vector<std::string> extKeys;
-                    if (!extractEmbeddedCharacterDictFromOnnx(verifyBytes.data(), verifyBytes.size(), extKeys) ||
-                        extKeys.size() < 100) {
+                if (spec.requiresEmbeddedDict) {
+                    std::vector<std::string> embeddedKeys;
+                    const size_t minKeys = spec.isScriptExtOnnx ? 100u : DeepOcrConstants::kMinDictKeyLines;
+                    if (!extractEmbeddedCharacterDictFromOnnx(verifyBytes.data(), verifyBytes.size(), embeddedKeys) ||
+                        embeddedKeys.size() < minKeys) {
                         return false;
                     }
-                    if (normalizeIrInPlace && clampOnnxIrVersionForWinMl(verifyBytes)) {
-                        std::ofstream out(candidatePath, std::ios::binary | std::ios::trunc);
-                        if (!out) return false;
-                        out.write(reinterpret_cast<const char*>(verifyBytes.data()),
-                                  static_cast<std::streamsize>(verifyBytes.size()));
-                        out.flush();
-                        if (!out) return false;
-                    }
+                }
+                if (normalizeIrInPlace && clampOnnxIrVersionForWinMl(verifyBytes)) {
+                    std::ofstream out(candidatePath, std::ios::binary | std::ios::trunc);
+                    if (!out) return false;
+                    out.write(reinterpret_cast<const char*>(verifyBytes.data()),
+                              static_cast<std::streamsize>(verifyBytes.size()));
+                    out.flush();
+                    if (!out) return false;
+                }
+                if (spec.isScriptExtOnnx) {
                     if (outByteLen) *outByteLen = static_cast<uint64_t>(verifyBytes.size());
                     return true;
                 }
@@ -1342,7 +1445,7 @@ void DeepOcrEngine::downloadWorkerLoop(
 
         // 断点续传加速：若本地目标文件已完整且通过 ONNX 图解析/字典校验，直接复用跳过重复下载
         uint64_t existingValidBytes = 0;
-        if (verifyCandidatePath(finalPath, &existingValidBytes, /*normalizeIrInPlace=*/spec.isScriptExtOnnx)) {
+        if (verifyCandidatePath(finalPath, &existingValidBytes, /*normalizeIrInPlace=*/spec.isOnnx)) {
             const bool isIncrementalSkip =
                 (includeServerRec && idx < kModelSpecs.size() && expectedTotalBytes <= DeepOcrConstants::kEstimatedServerAddOnBytes) ||
                 (!scriptPackTarget.empty() && spec.isScriptExtOnnx && scriptPackTarget == "all");
@@ -1422,8 +1525,8 @@ void DeepOcrEngine::downloadWorkerLoop(
                 continue;
             }
 
-            // 严格验证文件完整性 (ONNX 魔数 + 扩展包 IR<=8 无损钳位与内嵌词典校验 / OpenCV DNN 试解析)
-            if (!verifyCandidatePath(partPath, nullptr, /*normalizeIrInPlace=*/spec.isScriptExtOnnx)) {
+            // 严格验证文件完整性 (ONNX 魔数 + 全模型 IR<=8 无损钳位 + 内嵌词典校验 / OpenCV DNN 试解析)
+            if (!verifyCandidatePath(partPath, nullptr, /*normalizeIrInPlace=*/spec.isOnnx)) {
                 LOG_WARN("DeepOcrEngine: downloaded file failed integrity check: {}", spec.displayName);
                 std::filesystem::remove(partPath, ec);
                 continue;
@@ -1470,7 +1573,7 @@ void DeepOcrEngine::downloadWorkerLoop(
                 LOG_INFO("DeepOcrEngine: multilingual script pack installed successfully (pack={})",
                          scriptPackTarget);
             } else {
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 offline model bundle installed successfully (tier={})",
+                LOG_INFO("DeepOcrEngine: PP-OCRv6 offline model bundle installed successfully (tier={})",
                          includeServerRec ? "server" : "mobile");
             }
         } else if (failReason == "cancelled") {
@@ -1488,6 +1591,27 @@ void DeepOcrEngine::downloadWorkerLoop(
     if (allSucceeded && !m_shuttingDown.load(std::memory_order_acquire)) {
         // 清空旧档位驻留会话，下次识别自动按新档位/扩展包按需懒加载，杜绝后台空占显存
         releaseLoadedModels();
+
+        // 平滑升级自清理：当新一代 PP-OCRv6 Small 主包已完整落盘后，自动清理已淘汰的旧 v4 冗余文件及退役扩展包，释放磁盘空间
+        if (scriptPackTarget.empty() && isV6BaseBundlePresent(targetDir)) {
+            static constexpr std::array<const wchar_t*, 6> kLegacyFiles = {{
+                DeepOcrConstants::kDetModelFileName,
+                DeepOcrConstants::kRecModelFileName,
+                DeepOcrConstants::kRecServerModelFileName,
+                DeepOcrConstants::kKeysDictFileName,
+                DeepOcrConstants::kScriptJapanRecFileName,
+                DeepOcrConstants::kScriptLatinRecFileName,
+            }};
+            for (const wchar_t* legacyName : kLegacyFiles) {
+                std::error_code rmEc;
+                const auto lp = targetDir / legacyName;
+                if (std::filesystem::exists(lp, rmEc) && !rmEc) {
+                    std::filesystem::remove(lp, rmEc);
+                }
+                rmEc.clear();
+                std::filesystem::remove(targetDir / (std::wstring(legacyName) + L".part"), rmEc);
+            }
+        }
     } else {
         deep_ocr_detail::cleanupDeepOcrWorkingSet();
     }

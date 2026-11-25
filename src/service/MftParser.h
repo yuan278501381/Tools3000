@@ -151,6 +151,9 @@ public:
 
     char getDriveLetter() const { return m_DriveLetter; }
     UINT getDriveType() const { return m_DriveType; }
+    bool isRotationalDisk() const noexcept { return m_IsRotationalDisk; }
+    uint32_t getPhysicalDiskNumber() const noexcept { return m_PhysicalDiskNumber; }
+    bool hasPhysicalDiskNumber() const noexcept { return m_HasPhysicalDiskNumber; }
     uint64_t getCurrentUsn() const;
     uint32_t getVolumeSerialNumber() const;
     size_t getFileCount() const;
@@ -216,6 +219,9 @@ private:
 
     bool m_IsFallbackDirectoryWalk{false};
     bool m_Initialized{false};
+    bool m_IsRotationalDisk{false};
+    bool m_HasPhysicalDiskNumber{false};
+    uint32_t m_PhysicalDiskNumber{0};
     std::atomic<bool> m_RescannedDuringCatchUp{false};
     uint32_t m_VolumeSerial{0};
     std::wstring m_VolumeLabel;

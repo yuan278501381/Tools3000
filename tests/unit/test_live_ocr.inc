@@ -2898,6 +2898,7 @@ TEST(LiveTextOcrTest, RealWorldOcrFixtureCatalogIntegrity) {
     const auto dir = resolveRealWorldOcrFixtureDir();
     ASSERT_FALSE(dir.empty()) << "Failed to locate tests/fixtures/ocr directory from executable or working dir";
 
+    // 统一合并后的 18 张真实场景 OCR & 原位翻译回归样本（均位于 tests/fixtures/ocr/）
     constexpr const char* kFixtures[] = {
         "sap_form_table.jpg",
         "release_notes_dense_doc.png",
@@ -2907,27 +2908,6 @@ TEST(LiveTextOcrTest, RealWorldOcrFixtureCatalogIntegrity) {
         "packing_card_photo.jpg",
         "apifox_json_pretty.png",
         "apifox_json_compact.jpg",
-    };
-
-    for (const char* name : kFixtures) {
-        const auto p = dir / name;
-        std::error_code ec;
-        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing OCR regression fixture: " << name;
-        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
-        ASSERT_FALSE(img.empty()) << "Failed to decode OCR regression fixture: " << name;
-        EXPECT_GT(img.cols, 200) << name;
-        EXPECT_GT(img.rows, 200) << name;
-    }
-}
-
-TEST(LiveTextOcrTest, TranslateFixtureCatalogIntegrity) {
-    const auto ocrDir = resolveRealWorldOcrFixtureDir();
-    ASSERT_FALSE(ocrDir.empty());
-    const auto trDir = ocrDir.parent_path() / "translate";
-    std::error_code ec;
-    ASSERT_TRUE(std::filesystem::is_directory(trDir, ec)) << "Missing tests/fixtures/translate directory";
-
-    constexpr const char* kTranslateFixtures[] = {
         "dark_sidebar_list.png",
         "nytimes_homepage.png",
         "yahoo_portal_cards.png",
@@ -2940,13 +2920,44 @@ TEST(LiveTextOcrTest, TranslateFixtureCatalogIntegrity) {
         "postman_api_dark_sanitized.png",
     };
 
-    for (const char* name : kTranslateFixtures) {
-        const auto p = trDir / name;
-        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing translate regression fixture: " << name;
+    for (const char* name : kFixtures) {
+        const auto p = dir / name;
+        std::error_code ec;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing OCR/Translate regression fixture: " << name;
         const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
-        ASSERT_FALSE(img.empty()) << "Failed to decode translate regression fixture: " << name;
+        ASSERT_FALSE(img.empty()) << "Failed to decode OCR/Translate regression fixture: " << name;
         EXPECT_GT(img.cols, 200) << name;
         EXPECT_GT(img.rows, 200) << name;
+    }
+}
+
+TEST(LiveTextOcrTest, DesktopOfficeAndMultilingualWebFixtureCatalogIntegrity) {
+    const auto ocrDir = resolveRealWorldOcrFixtureDir();
+    ASSERT_FALSE(ocrDir.empty());
+    const auto deskDir = ocrDir / "desktop_office";
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::is_directory(deskDir, ec)) << "Missing tests/fixtures/ocr/desktop_office directory";
+
+    constexpr const char* kDesktopFixtures[] = {
+        "excel_finance_sheet_zh.png",
+        "erp_purchase_order_dense.png",
+        "office_doc_bilingual_review.png",
+        "ide_terminal_logs_dark.png",
+        "web_docs_fr_de_es.png",
+        "web_erp_ja_dashboard.png",
+        "web_erp_ko_dashboard.png",
+        "web_portal_ru_cyrillic.png",
+        "web_portal_ar_rtl.png",
+        "web_portal_th_erp.png",
+    };
+
+    for (const char* name : kDesktopFixtures) {
+        const auto p = deskDir / name;
+        ASSERT_TRUE(std::filesystem::is_regular_file(p, ec)) << "Missing desktop office/web fixture: " << name;
+        const cv::Mat img = cv::imread(tools3000::core::WinUtils::wstringToUtf8(p.wstring()), cv::IMREAD_COLOR);
+        ASSERT_FALSE(img.empty()) << "Failed to decode desktop office/web fixture: " << name;
+        EXPECT_GT(img.cols, 800) << name;
+        EXPECT_GT(img.rows, 400) << name;
     }
 }
 
@@ -2987,27 +2998,27 @@ TEST(LiveTextOcrTest, Full18FixturesOcrAccuracyLatencyMemoryBenchmark) {
         {"ocr/apifox_json_compact.jpg", "OCR-Apifox超宽单行JSON",
          {"U_PLM_Categ2", "BCP0300", "ItemPrices", "RMB", "PriceList", "Internal error"}, 0},
 
-        // 10 张新增原位翻译全场景原图集（8 张已升级为 2K/1080p 原生无损高清原图）
-        {"translate/dark_sidebar_list.png", "TR-暗色双语侧边栏",
+        // 10 张合并自原 translate/ 的高密度桌面网页与客户端原图集（均位于 tests/fixtures/ocr/）
+        {"ocr/dark_sidebar_list.png", "TR-暗色双语侧边栏",
          {"Pinned Conversations", "Tools3000", "SAP_B1_10.0", "民间借贷纠纷法律咨询", "Subproject Migration", "SSL Certificate Renewal Failure"}, 0},
-        {"translate/nytimes_homepage.png", "TR-NYTimes多栏报纸",
+        {"ocr/nytimes_homepage.png", "TR-NYTimes多栏报纸",
          {"Business", "Lifestyle", "Alice Huang", "Nvidia", "Democrats", "House of Representatives"}, 0},
-        {"translate/yahoo_portal_cards.png", "TR-Yahoo卡片+大图",
+        {"ocr/yahoo_portal_cards.png", "TR-Yahoo卡片+大图",
          {"Search the web", "Trending", "Alaska", "Seattle", "Los Angeles", "Advertisement"}, 0},
-        {"translate/sap_b1_form_designer.png", "TR-SAP高密小字ERP",
+        {"ocr/sap_b1_form_designer.png", "TR-SAP高密小字ERP",
          {"平台注册", "基本设置", "单据对象控制", "自定义窗口", "字段权限", "624"}, 0},
-        {"translate/hackernews_nested_comments.png", "TR-HN多级嵌套评论",
+        {"ocr/hackernews_nested_comments.png", "TR-HN多级嵌套评论",
          {"Hacker News", "Show HN", "LLM", "reply", "add comment", "factory"}, 0},
-        {"translate/alternativeto_web_grid.png", "TR-AlternativeTo网格",
+        {"ocr/alternativeto_web_grid.png", "TR-AlternativeTo网格",
          {"AlternativeTo", "Planner", "NGINX", "PostgreSQL", "Cryptomator", "More tech news"}, 0},
-        {"translate/dark_markdown_codebadges.png", "TR-暗色Markdown胶囊",
+        {"ocr/dark_markdown_codebadges.png", "TR-暗色Markdown胶囊",
          {"侧边栏信息架构", "MECE", "App.tsx", "standardPluginIds", "Sidebar.tsx", "OCR"}, 0},
-        {"translate/gnway_admin_dialog.jpg", "TR-Win32管理端弹窗",
+        {"ocr/gnway_admin_dialog.jpg", "TR-Win32管理端弹窗",
          {"V8.6.0.724", "用户管理", "安全配置", "AS0002", "创建新用户失败", "确定"}, 0},
         // 注：该手持实拍图二维码仅 ~85px 且左下定位点受强反光物理缺损，不作 QR 强门禁（QR 硬门禁由 ocr/packing_card_photo.jpg 守护）
-        {"translate/packing_card_handheld.jpg", "TR-手持装箱卡+强反光QR",
+        {"ocr/packing_card_handheld.jpg", "TR-手持装箱卡+强反光QR",
          {"瑞鹄浩博产品装箱卡", "ZZ00445707", "501023856AA", "HB0502000441", "奇瑞T1Q项目", "原材料箱"}, 0},
-        {"translate/postman_api_dark_sanitized.png", "TR-暗色Postman脱敏",
+        {"ocr/postman_api_dark_sanitized.png", "TR-暗色Postman脱敏",
          {"COLLECTIONS", "BaseUrl", "CmpnyDB", "DEMO_SAP", "Demo@24Pass", "UserObjectsMD"}, 0},
     };
 
@@ -4118,64 +4129,146 @@ TEST(LiveTextOcrTest, OnnxIrClampAndMultilingualScriptPackContract) {
     std::vector<uint8_t> tinyBuf = {0x08, 0x0A};
     EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(tinyBuf));
 
-    // 2. 验证模型状态契约返回完整 4 个轻量语种扩展包元数据
+    // 2. 验证模型状态契约返回最新 4 个活跃轻量语种扩展包元数据（PP-OCRv6 时代：韩/俄/阿/泰）
     const auto status = DeepOcrEngine::instance().getModelStatus();
     ASSERT_EQ(status.scriptPacks.size(), 4u);
-    EXPECT_EQ(status.scriptPacks[0].id, "japan");
-    EXPECT_EQ(status.scriptPacks[1].id, "korean");
-    EXPECT_EQ(status.scriptPacks[2].id, "cyrillic");
-    EXPECT_EQ(status.scriptPacks[3].id, "latin");
+    EXPECT_EQ(status.scriptPacks[0].id, "korean");
+    EXPECT_EQ(status.scriptPacks[1].id, "cyrillic");
+    EXPECT_EQ(status.scriptPacks[2].id, "arabic");
+    EXPECT_EQ(status.scriptPacks[3].id, "thai");
     for (const auto& sp : status.scriptPacks) {
         EXPECT_GT(sp.estimatedBytes, 5ULL * 1024ULL * 1024ULL) << sp.id;
     }
 
-    // 3. 验证 OcrWorkerProtocol 协议升级至 v3
+    // 3. 验证 OcrWorkerProtocol 协议版本与阶段回调契约
     EXPECT_EQ(worker_proto::kProtocolVersion, 3u);
-
-    // 4. 验证贴图右键「文字划选与翻译 -> 识字语种」3 级子菜单结构与状态微标回显
-    PinContextMenuSnapshot snap;
-    snap.isChinese = true;
-    snap.activeOcrScriptMode = "korean";
-    snap.hasOcrScriptOverride = true;
-    snap.scriptPackJapanInstalled = true;
-    snap.scriptPackKoreanInstalled = true;
-    snap.scriptPackCyrillicInstalled = false;
-    snap.scriptPackLatinInstalled = false;
-
-    const auto rootMenu = PinContextMenuBuilder::buildRootMenu(snap);
-    const PinMenuItem* ocrSub = nullptr;
-    for (const auto& item : rootMenu.items) {
-        if (item.hasSubmenu() && item.icon == CaptureIconId::ActionExtractText) {
-            ocrSub = &item;
-            break;
-        }
+    {
+        uint32_t receivedStage = 0;
+        uint32_t receivedCount = 0;
+        std::string receivedDetail;
+        DeepOcrEngine::instance().setStageCallback(
+            [&](OcrRecognitionStage stage, uint32_t count, const std::string& detail) {
+                receivedStage = static_cast<uint32_t>(stage);
+                receivedCount = count;
+                receivedDetail = detail;
+            });
+        DeepOcrEngine::instance().notifyStage(OcrRecognitionStage::LowConfidenceRefining, 4u, "v6_medium");
+        EXPECT_EQ(receivedStage, static_cast<uint32_t>(OcrRecognitionStage::LowConfidenceRefining));
+        EXPECT_EQ(receivedCount, 4u);
+        EXPECT_EQ(receivedDetail, "v6_medium");
+        DeepOcrEngine::instance().setStageCallback({});
     }
-    ASSERT_NE(ocrSub, nullptr);
 
-    const PinMenuItem* scriptSub = nullptr;
-    for (const auto& sub : ocrSub->submenu) {
-        if (sub.hasSubmenu() && sub.submenu.size() >= 6u) {
-            scriptSub = &sub;
-            break;
-        }
-    }
-    ASSERT_NE(scriptSub, nullptr);
-    EXPECT_FALSE(scriptSub->statusBadge.empty());
+    // 4. 验证 PP-OCRv6 / 旧版 v4 双代际模型目录探测与一键升级标记契约
+    {
+        const auto tmpBase = std::filesystem::temp_directory_path() /
+            ("tools3000_ocr_gen_test_" + std::to_string(GetCurrentProcessId()));
+        std::error_code ec;
+        std::filesystem::remove_all(tmpBase, ec);
+        std::filesystem::create_directories(tmpBase, ec);
 
-    int checkedKorean = 0;
-    int missingPackBadges = 0;
-    for (const auto& opt : scriptSub->submenu) {
-        if (opt.isSeparator) continue;
-        if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
-            opt.command.param == PinOcrScriptParam::kKorean && opt.isChecked) {
-            ++checkedKorean;
+        auto writeFakeOnnx = [&](const std::filesystem::path& p, size_t sizeBytes) {
+            std::ofstream ofs(p, std::ios::binary);
+            std::vector<uint8_t> buf(sizeBytes, 0x00);
+            buf[0] = 0x08;
+            buf[1] = 0x08; // ir_version = 8
+            buf[2] = 0x12;
+            buf[3] = 0x04;
+            buf[4] = 't'; buf[5] = 'e'; buf[6] = 's'; buf[7] = 't';
+            ofs.write(reinterpret_cast<const char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+        };
+
+        auto& deep = DeepOcrEngine::instance();
+        struct RestoreModelDirGuard {
+            DeepOcrEngine& eng;
+            ~RestoreModelDirGuard() { eng.setCustomModelDirectoryForTest({}); }
+        } restoreGuard{deep};
+
+        // 4a. 仅存在旧版 PP-OCRv4 基础三件套 + 词表 -> engineGeneration=="v4" 且 upgradeAvailable==true
+        writeFakeOnnx(tmpBase / DeepOcrConstants::kDetModelFileName, 2048);
+        writeFakeOnnx(tmpBase / DeepOcrConstants::kRecModelFileName, 2048);
+        writeFakeOnnx(tmpBase / DeepOcrConstants::kClsModelFileName, 2048);
+        {
+            std::ofstream dictOfs(tmpBase / DeepOcrConstants::kKeysDictFileName, std::ios::binary);
+            for (int k = 0; k < 32; ++k) dictOfs << "a\n";
         }
-        if (!opt.statusBadge.empty()) {
-            ++missingPackBadges;
-        }
+        deep.setCustomModelDirectoryForTest(tmpBase);
+        const auto v4Status = deep.getModelStatus();
+        EXPECT_TRUE(v4Status.installed);
+        EXPECT_EQ(v4Status.engineGeneration, "v4");
+        EXPECT_TRUE(v4Status.upgradeAvailable);
+
+        // 4b. 写入 PP-OCRv6 Small 模型 -> 优先识别为 v6 且 upgradeAvailable==false
+        writeFakeOnnx(tmpBase / DeepOcrConstants::kV6DetModelFileName, 2048);
+        writeFakeOnnx(tmpBase / DeepOcrConstants::kV6RecModelFileName, 2048);
+        const auto v6Status = deep.getModelStatus();
+        EXPECT_TRUE(v6Status.installed);
+        EXPECT_EQ(v6Status.engineGeneration, "v6");
+        EXPECT_FALSE(v6Status.upgradeAvailable);
+
+        deep.setCustomModelDirectoryForTest({});
+        std::filesystem::remove_all(tmpBase, ec);
     }
-    EXPECT_EQ(checkedKorean, 1);
-    EXPECT_EQ(missingPackBadges, 2); // cyrillic + latin marked as not installed
+
+    // 5. 验证贴图右键「文字划选与翻译 -> 识字语种」3 级子菜单在 PP-OCRv6 与 v4 兼容态下的结构与状态微标回显
+    {
+        PinContextMenuSnapshot snapV6;
+        snapV6.isChinese = true;
+        snapV6.engineIsV6 = true;
+        snapV6.activeOcrScriptMode = "korean";
+        snapV6.hasOcrScriptOverride = true;
+        snapV6.scriptPackKoreanInstalled = true;
+        snapV6.scriptPackCyrillicInstalled = false;
+        snapV6.scriptPackArabicInstalled = false;
+        snapV6.scriptPackThaiInstalled = true;
+
+        const auto rootMenu = PinContextMenuBuilder::buildRootMenu(snapV6);
+        const PinMenuItem* ocrSub = nullptr;
+        for (const auto& item : rootMenu.items) {
+            if (item.hasSubmenu() && item.icon == CaptureIconId::ActionExtractText) {
+                ocrSub = &item;
+                break;
+            }
+        }
+        ASSERT_NE(ocrSub, nullptr);
+
+        const PinMenuItem* scriptSub = nullptr;
+        for (const auto& sub : ocrSub->submenu) {
+            if (sub.hasSubmenu() && sub.submenu.size() >= 6u) {
+                scriptSub = &sub;
+                break;
+            }
+        }
+        ASSERT_NE(scriptSub, nullptr);
+        EXPECT_FALSE(scriptSub->statusBadge.empty());
+
+        int checkedKorean = 0;
+        int missingPackBadges = 0;
+        bool sawArabic = false;
+        bool sawThai = false;
+        for (const auto& opt : scriptSub->submenu) {
+            if (opt.isSeparator) continue;
+            if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
+                opt.command.param == PinOcrScriptParam::kKorean && opt.isChecked) {
+                ++checkedKorean;
+            }
+            if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
+                opt.command.param == PinOcrScriptParam::kArabic) {
+                sawArabic = true;
+            }
+            if (opt.command.action == PinMenuAction::SetOcrScriptMode &&
+                opt.command.param == PinOcrScriptParam::kThai) {
+                sawThai = true;
+            }
+            if (!opt.statusBadge.empty()) {
+                ++missingPackBadges;
+            }
+        }
+        EXPECT_EQ(checkedKorean, 1);
+        EXPECT_TRUE(sawArabic);
+        EXPECT_TRUE(sawThai);
+        EXPECT_EQ(missingPackBadges, 2); // cyrillic + arabic marked as not installed
+    }
 }
 
 TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
@@ -4197,16 +4290,17 @@ TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
         }
         ASSERT_TRUE(finished) << "Timed out downloading multilingual script packs";
         EXPECT_TRUE(deep.isModelInstalled());
-        EXPECT_TRUE(deep.isScriptPackInstalled("japan"));
         EXPECT_TRUE(deep.isScriptPackInstalled("korean"));
         EXPECT_TRUE(deep.isScriptPackInstalled("cyrillic"));
-        EXPECT_TRUE(deep.isScriptPackInstalled("latin"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("arabic"));
+        EXPECT_TRUE(deep.isScriptPackInstalled("thai"));
     }
 
     if (!deep.isModelInstalled()) {
-        GTEST_SKIP() << "Base PP-OCRv4 model bundle not installed";
+        GTEST_SKIP() << "Base PP-OCR model bundle not installed";
     }
 
+    const bool isV6Installed = (deep.installedEngineGeneration() == "v6");
     const auto ocrDir = resolveRealWorldOcrFixtureDir();
     ASSERT_FALSE(ocrDir.empty());
     const auto multiDir = ocrDir / "multilang";
@@ -4219,10 +4313,10 @@ TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
     };
     const std::vector<MultiSpec> specs = {
         {"zh_tw_settings_card.png", "cjk", false, {"繁體中文", "Tools3000", "95.2%"}},
-        {"ja_settings_card.png", "japan", true, {"オフライン文字認識", "スクリーンショット", "Tools3000", "キャンセル"}},
+        {"ja_settings_card.png", isV6Installed ? "cjk" : "japan", !isV6Installed, {"オフライン文字認識", "スクリーンショット", "Tools3000", "キャンセル"}},
         {"ko_dark_settings_card.png", "korean", true, {"오프라인", "스크린샷을", "네트워크", "v1.4.0"}},
         {"ru_settings_card.png", "cyrillic", true, {"Автономное", "русский", "DirectML GPU", "26%"}},
-        {"es_pt_settings_card.png", "latin", true, {"Configuración", "Español", "Português", "¿Desea"}},
+        {"es_pt_settings_card.png", isV6Installed ? "cjk" : "latin", !isV6Installed, {"Configuración", "Español", "Português", "¿Desea"}},
     };
 
     auto queryPrivMb = []() -> double {

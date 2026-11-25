@@ -8,6 +8,11 @@ import { AppToaster } from './components/AppToaster';
 import { bridgeRequest } from './hooks/useBridge';
 import { useAppearance } from './hooks/useAppearance';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
+import {
+  CUSTOM_EXCLUDED_PATHS_STORAGE_KEY,
+  mergeExcludedPaths,
+  normalizeExcludedPath,
+} from './search/excludedPathsUtils';
 import { VirtualSearchResults } from './search/VirtualSearchResults';
 import { SearchTableHeader } from './search/SearchTableHeader';
 import { SearchContextMenu } from './search/SearchContextMenu';
@@ -281,6 +286,12 @@ export default function SearchApp() {
   const [excludeHidden, setExcludeHidden] = useState<boolean>(() =>
     safeStorageGetBoolean('tools3000_search_exclude_hidden', false),
   );
+  const [customExcludedPaths, setCustomExcludedPaths] = useState<string[]>(() =>
+    mergeExcludedPaths(
+      [],
+      safeStorageGetJsonArray<string>(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, isNonEmptyString, []),
+    ).paths,
+  );
   const [isRebuilding, setIsRebuilding] = useState(false);
   const rebuildingRef = useRef(false);
 
@@ -399,9 +410,72 @@ export default function SearchApp() {
     maxResultLimit,
     excludeGitAndModules,
     excludeHidden,
+    customExcludedPaths,
     customContentFormats,
     disabledContentFormats,
   });
+
+  const updateCustomExcludedPaths = useCallback(
+    (nextPaths: string[]) => {
+      const clean = mergeExcludedPaths([], nextPaths).paths;
+      setCustomExcludedPaths(clean);
+      safeStorageSetItem(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, JSON.stringify(clean));
+      void bridgeRequest('search.saveSettings', { customExcludedPaths: clean }).catch(() => undefined);
+      clearResultCache();
+    },
+    [clearResultCache],
+  );
+
+  const handleExcludeFolderFromResult = useCallback(
+    (res: SearchResult) => {
+      const rawDir = res.isDirectory ? res.path : extractParentDirectoryPath(res.path);
+      const folderPath = normalizeExcludedPath(rawDir);
+      if (!folderPath) return;
+
+      const prevPaths = customExcludedPaths;
+      const merged = mergeExcludedPaths(prevPaths, [folderPath]);
+      if (merged.added.length === 0) {
+        if (merged.capped) {
+          toast.warning(
+            t('search.customExcludedLimitReached', 'Maximum of {{max}} excluded folders reached', {
+              max: 48,
+            }),
+          );
+        } else {
+          toast.info(t('search.customExcludedDuplicate', 'This folder is already in the exclusion list'));
+        }
+        return;
+      }
+
+      updateCustomExcludedPaths(merged.paths);
+      const lowerPrefix = folderPath.toLowerCase();
+      const isDriveRoot = /^[a-z]:\\$/.test(lowerPrefix);
+      startTransition(() => {
+        setResults((current) =>
+          current.filter((item) => {
+            const normItem = (item.path || '').replace(/\//g, '\\').toLowerCase();
+            if (isDriveRoot) return !normItem.startsWith(lowerPrefix);
+            if (normItem === lowerPrefix) return false;
+            return !normItem.startsWith(`${lowerPrefix}\\`);
+          }),
+        );
+      });
+
+      toast.success(
+        t('search.excludedFolderToast', 'Excluded folder: {{path}}', { path: folderPath }),
+        {
+          action: {
+            label: t('search.undoAction', 'Undo'),
+            onClick: () => {
+              updateCustomExcludedPaths(prevPaths);
+              refreshQuery();
+            },
+          },
+        },
+      );
+    },
+    [customExcludedPaths, refreshQuery, setResults, t, updateCustomExcludedPaths],
+  );
 
   useEffect(() => {
     bridgeRequest<{ pinned: boolean }>('search.isPinned')
@@ -788,6 +862,7 @@ export default function SearchApp() {
         defaultCategory?: string;
         maxResults?: number;
         excludeHidden?: boolean;
+        customExcludedPaths?: string[];
         enabledDrives?: string;
         uiPreferences?: Record<string, unknown>;
       }>('search.getSettings')
@@ -809,6 +884,18 @@ export default function SearchApp() {
           if (typeof res.excludeHidden === 'boolean') {
             setExcludeHidden(res.excludeHidden);
             safeStorageSetItem('tools3000_search_exclude_hidden', String(res.excludeHidden));
+          }
+          const remoteExcludedRaw = Array.isArray(res.customExcludedPaths)
+            ? res.customExcludedPaths.filter(isNonEmptyString)
+            : (Array.isArray(res.uiPreferences?.customExcludedPaths)
+                ? (res.uiPreferences.customExcludedPaths as unknown[]).filter(isNonEmptyString)
+                : null);
+          const remoteExcludedClean = remoteExcludedRaw !== null
+            ? mergeExcludedPaths([], remoteExcludedRaw).paths
+            : null;
+          if (remoteExcludedClean !== null) {
+            setCustomExcludedPaths(remoteExcludedClean);
+            safeStorageSetItem(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, JSON.stringify(remoteExcludedClean));
           }
           if (typeof res.enabledDrives === 'string' && res.enabledDrives.trim()) {
             const parsedDrives = res.enabledDrives.split(',').map(s => s.trim()).filter(Boolean);
@@ -906,7 +993,8 @@ export default function SearchApp() {
             }
           }
           const defaultPyByLang = (i18n.resolvedLanguage ?? i18n.language ?? '').toLowerCase().startsWith('zh');
-          const nextSig = `${Boolean(res.pinyinEnabled ?? defaultPyByLang)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}:${Boolean(res.includeBookmarks ?? true)}:${Boolean(res.enableAppsAndCommands ?? true)}:${res.rankingProfile ?? 'balanced_frecency'}`;
+          const excludedSig = remoteExcludedClean ? remoteExcludedClean.map((p) => p.toLowerCase()).join('|') : '';
+          const nextSig = `${Boolean(res.pinyinEnabled ?? defaultPyByLang)}:${Boolean(res.matchPath ?? false)}:${Boolean(res.caseSensitive ?? false)}:${Boolean(res.includeBookmarks ?? true)}:${Boolean(res.enableAppsAndCommands ?? true)}:${res.rankingProfile ?? 'balanced_frecency'}:${excludedSig}`;
           const prevSig = searchSettingsSigRef.current;
           searchSettingsSigRef.current = nextSig;
           if (triggerRefreshOnDiff && prevSig !== null && prevSig !== nextSig) {
@@ -933,6 +1021,10 @@ export default function SearchApp() {
         setIconStyle(e.newValue);
       } else if (e.key === 'tools3000_search_live_refresh' && (e.newValue === 'true' || e.newValue === 'false')) {
         setLiveRefreshEnabled(e.newValue === 'true');
+      } else if (e.key === CUSTOM_EXCLUDED_PATHS_STORAGE_KEY) {
+        const synced = safeStorageGetJsonArray<string>(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, isNonEmptyString, []);
+        setCustomExcludedPaths(mergeExcludedPaths([], synced).paths);
+        clearResultCache();
       }
     };
     window.addEventListener('tools3000:focusSearch', onSyncEvt);
@@ -946,7 +1038,7 @@ export default function SearchApp() {
       window.removeEventListener('storage', onStorageSync);
       document.removeEventListener('visibilitychange', onVisibilitySync);
     };
-  }, [refreshQuery, persistUiPreferencesPatch, i18n.resolvedLanguage, i18n.language]);
+  }, [clearResultCache, refreshQuery, persistUiPreferencesPatch, i18n.resolvedLanguage, i18n.language]);
 
   const fetchNativeIcon = useCallback(async (
     ext: string,
@@ -2256,8 +2348,8 @@ export default function SearchApp() {
       }, 20);
       return;
     }
-    const menuWidth = 240;
-    const menuHeight = 310;
+    const menuWidth = 248;
+    const menuHeight = 356;
     const x = Math.min(event.clientX, window.innerWidth - menuWidth - 10);
     const y = Math.min(event.clientY, window.innerHeight - menuHeight - 10);
     setContextMenu({
@@ -2459,6 +2551,8 @@ export default function SearchApp() {
             void bridgeRequest('search.saveSettings', { excludeHidden: val, excludeSystem: val }).catch(() => undefined);
             persistUiPreferencesPatch({ excludeHidden: val });
           }}
+          customExcludedPaths={customExcludedPaths}
+          onChangeCustomExcludedPaths={updateCustomExcludedPaths}
           disabledContentFormats={disabledContentFormats}
           onToggleContentFormat={toggleContentFormat}
           onToggleCategoryFormats={toggleCategoryFormats}
@@ -2722,6 +2816,7 @@ export default function SearchApp() {
           onCopyPath={(res) => copyPathResult(res)}
           onCopyFile={(res) => void copyFileResult(res)}
           onQuickLook={(res) => void quickLookResult(res)}
+          onExcludeFolder={handleExcludeFolderFromResult}
           onCopyText={(text) => copyText(text)}
           onShowProperties={(res) => void showFileProperties(res)}
         />

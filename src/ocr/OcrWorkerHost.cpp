@@ -209,6 +209,10 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
         DeepOcrRunStats stats{};
         std::string activeTier = "mobile";
         bool inferFailed = false;
+        DeepOcrEngine::instance().setStageCallback(
+            [pipeHandle = pipe.get()](OcrRecognitionStage stage, uint32_t count, const std::string& detail) {
+                worker_proto::writeStageEvent(pipeHandle, stage, count, detail, /*overlapped=*/true);
+            });
         try {
             results = DeepOcrEngine::instance().extractText(sharedView, scriptMode);
             stats = DeepOcrEngine::instance().lastRunStats();
@@ -220,6 +224,7 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
         } catch (...) {
             inferFailed = true;
         }
+        DeepOcrEngine::instance().setStageCallback({});
 
         view.reset();
         shm.reset();

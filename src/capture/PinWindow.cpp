@@ -2506,45 +2506,9 @@ std::shared_ptr<PinWindow> PinWindow::createFromClipboard() {
     POINT pt;
     GetCursorPos(&pt);
 
-    std::wstring text;
-    bool preferTextOverImage = false;
-    {
-        bool opened = false;
-        for (int retry = 0; retry < 10; ++retry) {
-            if (OpenClipboard(nullptr)) {
-                opened = true;
-                break;
-            }
-            Sleep(5);
-        }
-        if (opened) {
-            const UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
-            const UINT formatPng = RegisterClipboardFormatW(L"PNG");
-            const bool hasPinMeta = (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta));
-            if (!hasPinMeta) {
-                for (UINT fmt = EnumClipboardFormats(0); fmt != 0; fmt = EnumClipboardFormats(fmt)) {
-                    if (fmt == CF_UNICODETEXT || fmt == CF_TEXT || fmt == CF_OEMTEXT) {
-                        preferTextOverImage = true;
-                        break;
-                    }
-                    if ((formatPng != 0 && fmt == formatPng) ||
-                        fmt == CF_DIBV5 || fmt == CF_DIB || fmt == CF_BITMAP) {
-                        preferTextOverImage = false;
-                        break;
-                    }
-                }
-            }
-            if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-                if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
-                    if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
-                        text = p;
-                        GlobalUnlock(h);
-                    }
-                }
-            }
-            CloseClipboard();
-        }
-    }
+    const ClipboardContentProbe probe = ClipboardUtils::inspectClipboardContent();
+    const std::wstring& text = probe.text;
+    const bool preferTextOverImage = probe.preferTextOverImage;
 
     Tools3000PinMetadata meta{};
     meta.magic = 0;
@@ -2710,7 +2674,9 @@ std::shared_ptr<PinWindow> PinWindow::pasteNextHistoryOrClipboard() {
     if (d.totalCount > 1 && d.targetIndex > 0) {
         const std::wstring idxStr = std::to_wstring(d.targetIndex + 1);
         const std::wstring totStr = std::to_wstring(d.totalCount);
-        std::wstring toastMsg = tools3000::core::trFmtW(L"历史贴图 {0}/{1}", L"Pin history {0}/{1}", {idxStr, totStr});
+        std::wstring toastMsg = d.candidate.isFromClipboard
+            ? tools3000::core::trFmtW(L"剪贴板贴图 {0}/{1}", L"Clipboard pin {0}/{1}", {idxStr, totStr})
+            : tools3000::core::trFmtW(L"历史贴图 {0}/{1}", L"Pin history {0}/{1}", {idxStr, totStr});
         tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
     }
 

@@ -67,7 +67,7 @@ const TECH_STACK: DependencyInfo[] = [
   // 第二梯队：垂直业务引擎与多媒体管线 (Domain Engines & Multimedia)
   { name: 'NTFS MFT & USN Journal',         version: 'Kernel I/O',                   purpose: 'about.depPurpose.ntfsEngine' },
   { name: 'PinyinEngine',                   version: 'Built-in',                     purpose: 'about.depPurpose.pinyin' },
-  { name: 'PP-OCRv4 & DirectML / WinML',    version: 'GPU · 100% Offline',           purpose: 'about.depPurpose.ppocrDirectml' },
+  { name: 'PP-OCRv6 & DirectML / WinML',    version: 'GPU · 100% Offline',           purpose: 'about.depPurpose.ppocrDirectml' },
   { name: 'OpenCV',                         version: '4.12',                         purpose: 'about.depPurpose.opencv' },
   { name: 'FFmpeg & WASAPI',                version: '8.1',                          purpose: 'about.depPurpose.ffmpeg' },
   { name: 'Windows.Media.Ocr & Pdf',        version: '100% Offline',                 purpose: 'about.depPurpose.windowsOcr' },

@@ -23,6 +23,7 @@ interface UseSearchEngineOptions {
   maxResultLimit: number;
   excludeGitAndModules: boolean;
   excludeHidden: boolean;
+  customExcludedPaths?: string[];
   customContentFormats: string[];
   disabledContentFormats: string[];
 }
@@ -128,6 +129,7 @@ export function useSearchEngine({
   maxResultLimit,
   excludeGitAndModules,
   excludeHidden,
+  customExcludedPaths = [],
   customContentFormats,
   disabledContentFormats,
 }: UseSearchEngineOptions): UseSearchEngineResult {
@@ -702,11 +704,16 @@ export function useSearchEngine({
   }, [runContentProgressiveLoop]);
 
   const enabledDrivesKey = enabledDrives.join('\u0000');
+  const customExcludedPathsKey = customExcludedPaths.join('\u0000');
   const customFormatsKey = customContentFormats.join('\u0000');
   const disabledFormatsKey = disabledContentFormats.join('\u0000');
   const stableEnabledDrives = useMemo(
     () => (enabledDrivesKey ? enabledDrivesKey.split('\u0000') : []),
     [enabledDrivesKey],
+  );
+  const stableCustomExcludedPaths = useMemo(
+    () => (customExcludedPathsKey ? customExcludedPathsKey.split('\u0000') : []),
+    [customExcludedPathsKey],
   );
   const stableCustomFormats = useMemo(
     () => (customFormatsKey ? customFormatsKey.split('\u0000') : []),
@@ -807,6 +814,7 @@ export function useSearchEngine({
             maxResultLimit,
             excludeGitAndModules ? 'exDev' : 'all',
             excludeHidden ? 'exHidden' : 'showHidden',
+            stableCustomExcludedPaths.slice().map((p) => p.toLowerCase()).sort().join('|'),
             stableDisabledFormats.slice().sort().join(','),
             stableCustomFormats.slice().sort().join(','),
           ].join(':')
@@ -832,9 +840,19 @@ export function useSearchEngine({
       }
       if (cached && cacheKey) resultCacheRef.current.delete(cacheKey);
 
-      const excludes = excludeGitAndModules
+      const baseExcludes = excludeGitAndModules
         ? ['$Recycle.Bin', 'System Volume Information', 'node_modules', '.git', '__pycache__', 'npm-cache', 'go-build', '.gradle', 'pip\\cache']
         : [];
+      const excludesSeen = new Set<string>(baseExcludes.map((item) => item.toLowerCase()));
+      const excludes = [...baseExcludes];
+      for (const rawPath of stableCustomExcludedPaths) {
+        const clean = rawPath.trim();
+        if (!clean) continue;
+        const lower = clean.toLowerCase();
+        if (excludesSeen.has(lower)) continue;
+        excludesSeen.add(lower);
+        excludes.push(clean);
+      }
 
       const parsedKeywords = parseQueryKeywords(trimmedQuery);
 
@@ -1035,6 +1053,7 @@ export function useSearchEngine({
     refreshCounter,
     runContentProgressiveLoop,
     searchMode,
+    stableCustomExcludedPaths,
     stableCustomFormats,
     stableDisabledFormats,
     stableEnabledDrives,

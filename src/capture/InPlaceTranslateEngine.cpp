@@ -2270,15 +2270,44 @@ bool InPlaceTranslateEngine::isTranslatableText(std::string_view utf8Text) noexc
     size_t maxLatinWordLen = 0;
     for (wchar_t ch : w) {
         const uint32_t cp = static_cast<uint32_t>(ch);
-        if (isCjkWideChar(ch) || (cp >= 0x0400 && cp <= 0x04FF)) {
+        const bool isArabicDigit = (cp >= 0x0660 && cp <= 0x0669) || (cp >= 0x06F0 && cp <= 0x06F9);
+        const bool isThaiDigit = (cp >= 0x0E50 && cp <= 0x0E59);
+        const bool isArabicLetter =
+            !isArabicDigit &&
+            ((cp >= 0x0600 && cp <= 0x06FF) ||
+             (cp >= 0x0750 && cp <= 0x077F) ||
+             (cp >= 0x08A0 && cp <= 0x08FF) ||
+             (cp >= 0xFB50 && cp <= 0xFDFF) ||
+             (cp >= 0xFE70 && cp <= 0xFEFF));
+        const bool isThaiLetter = !isThaiDigit && (cp >= 0x0E00 && cp <= 0x0E7F);
+        const bool isOtherNonLatinLetter =
+            isCjkWideChar(ch) ||
+            (cp >= 0x0370 && cp <= 0x03FF) || // Greek & Coptic
+            (cp >= 0x0400 && cp <= 0x052F) || // Cyrillic + Supplement
+            (cp >= 0x0530 && cp <= 0x05FF) || // Armenian + Hebrew
+            isArabicLetter ||
+            (cp >= 0x0900 && cp <= 0x0DFF) || // Indic scripts (Devanagari..Sinhala)
+            isThaiLetter ||
+            (cp >= 0x0E80 && cp <= 0x10FF) || // Lao, Tibetan, Myanmar, Georgian
+            (cp >= 0x1780 && cp <= 0x17FF) || // Khmer
+            (cp >= 0x1F00 && cp <= 0x1FFF);   // Greek Extended
+        const bool isLatinLetter =
+            (cp >= 'A' && cp <= 'Z') ||
+            (cp >= 'a' && cp <= 'z') ||
+            (cp >= 0x00C0 && cp <= 0x024F) || // Latin-1 Supplement + Extended-A/B
+            (cp >= 0x1E00 && cp <= 0x1EFF);   // Latin Extended Additional (Vietnamese)
+
+        if (isOtherNonLatinLetter) {
             ++alphaOrCjk;
             ++nonLatinAlphaOrCjk;
             curLatinRun = 0;
-        } else if ((cp >= 'A' && cp <= 'Z') || (cp >= 'a' && cp <= 'z') || (cp >= 0x00C0 && cp <= 0x024F)) {
+        } else if (isLatinLetter) {
             ++alphaOrCjk;
             ++curLatinRun;
             if (curLatinRun > maxLatinWordLen) maxLatinWordLen = curLatinRun;
-        } else if (cp >= '0' && cp <= '9') {
+        } else if (cp >= 0x0300 && cp <= 0x036F) {
+            // 组合变音符号（NFD 越南语/法语/德语重音）不打断拉丁词连续计数
+        } else if ((cp >= '0' && cp <= '9') || isArabicDigit || isThaiDigit) {
             ++digits;
             curLatinRun = 0;
         } else {

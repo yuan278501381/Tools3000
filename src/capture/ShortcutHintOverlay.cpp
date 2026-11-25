@@ -217,7 +217,9 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                     ? tools3000::core::trWCstrFor(zh, L"复制并保存", L"Copy & save")
                     : (confirmDecision.shouldSaveAutomatically && !confirmDecision.shouldCopyToClipboard)
                         ? tools3000::core::trWCstrFor(zh, L"保存并完成", L"Save & finish")
-                        : tools3000::core::trWCstrFor(zh, L"完成并复制", L"Copy & finish");
+                        : confirmDecision.shouldCopyToClipboard
+                            ? tools3000::core::trWCstrFor(zh, L"完成并复制", L"Copy & finish")
+                            : tools3000::core::trWCstrFor(zh, L"完成", L"Done");
             std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
                       {L"Enter", enterActionLabel},

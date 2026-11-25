@@ -134,6 +134,8 @@ namespace PinOcrScriptParam {
     inline constexpr int kKorean = 3;
     inline constexpr int kCyrillic = 4;
     inline constexpr int kLatin = 5;
+    inline constexpr int kArabic = 6;
+    inline constexpr int kThai = 7;
 
     inline const char* toModeString(int param) noexcept {
         switch (param) {
@@ -142,6 +144,8 @@ namespace PinOcrScriptParam {
             case kKorean:   return "korean";
             case kCyrillic: return "cyrillic";
             case kLatin:    return "latin";
+            case kArabic:   return "arabic";
+            case kThai:     return "thai";
             case kAuto:
             default:        return "auto";
         }
@@ -174,10 +178,13 @@ struct PinContextMenuSnapshot {
     bool isTranslationInFlight = false;
     std::string activeOcrScriptMode = "auto";
     bool hasOcrScriptOverride = false;
+    bool engineIsV6 = false;
     bool scriptPackJapanInstalled = false;
     bool scriptPackKoreanInstalled = false;
     bool scriptPackCyrillicInstalled = false;
     bool scriptPackLatinInstalled = false;
+    bool scriptPackArabicInstalled = false;
+    bool scriptPackThaiInstalled = false;
     float scale = 1.0f;
     float opacity = 1.0f;
 

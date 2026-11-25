@@ -319,4 +319,54 @@ describe('useSearchEngine service wakeup stopwatch & recovery', () => {
     const pendingResolve = resolveSlice2 as ((val: unknown) => void) | undefined;
     pendingResolve?.({ cancelled: true });
   });
+
+  it('merges customExcludedPaths into search.query excludes payload and re-queries when updated', async () => {
+    const receivedExcludes: Array<string[] | undefined> = [];
+    bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'search.query') {
+        receivedExcludes.push(params?.excludes as string[] | undefined);
+        return {
+          results: [],
+          available: true,
+          status: 'ready',
+          totalIndexedFiles: 1000,
+          elapsedMs: 4,
+        };
+      }
+      return {};
+    });
+
+    const { rerender } = renderHook(
+      ({ customExcludedPaths }) =>
+        useSearchEngine({
+          query: 'video',
+          isComposing: false,
+          activeCategory: 'all',
+          searchMode: 'name',
+          enabledDrives: [],
+          maxResultLimit: 100,
+          excludeGitAndModules: false,
+          excludeHidden: false,
+          customExcludedPaths,
+          customContentFormats: [],
+          disabledContentFormats: [],
+        }),
+      { initialProps: { customExcludedPaths: ['D:\\PrivateMovies', 'E:\\Archive\\Clips'] } },
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+
+    expect(receivedExcludes).toHaveLength(1);
+    expect(receivedExcludes[0]).toEqual(['D:\\PrivateMovies', 'E:\\Archive\\Clips']);
+
+    rerender({ customExcludedPaths: ['D:\\PrivateMovies'] });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+
+    expect(receivedExcludes).toHaveLength(2);
+    expect(receivedExcludes[1]).toEqual(['D:\\PrivateMovies']);
+  });
 });

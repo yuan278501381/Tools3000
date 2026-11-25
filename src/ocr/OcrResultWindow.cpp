@@ -1008,19 +1008,20 @@ OcrResultWindow::TextPosition OcrResultWindow::hitTestTextPosition(POINT clientP
     return {lineIdx, 0};
 }
 
-void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect) {
+void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect,
+                                 const std::wstring& statusBadge) {
     const bool hasAnchor = (anchorRect != nullptr && anchorRect->right > anchorRect->left && anchorRect->bottom > anchorRect->top);
     const RECT capturedAnchor = hasAnchor ? *anchorRect : RECT{};
     auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
     if (m_hwnd && GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
-        dispatcher.post([this, text, hasAnchor, capturedAnchor]() {
-            showResult(text, hasAnchor ? &capturedAnchor : nullptr);
+        dispatcher.post([this, text, hasAnchor, capturedAnchor, statusBadge]() {
+            showResult(text, hasAnchor ? &capturedAnchor : nullptr, statusBadge);
         });
         return;
     }
     if (!m_hwnd && dispatcher.isInitialized() && !dispatcher.isOwnerThread()) {
-        dispatcher.post([this, text, hasAnchor, capturedAnchor]() {
-            showResult(text, hasAnchor ? &capturedAnchor : nullptr);
+        dispatcher.post([this, text, hasAnchor, capturedAnchor, statusBadge]() {
+            showResult(text, hasAnchor ? &capturedAnchor : nullptr, statusBadge);
         });
         return;
     }
@@ -1038,6 +1039,10 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
 
     m_rawUnmergedText = text;
     m_rawUnmergedWide = tools3000::core::WinUtils::utf8ToWstring(text);
+    m_statusBadge = statusBadge;
+    const bool isZh = tools3000::core::isUiLanguageChinese();
+    const std::string loadingLabel = tools3000::core::trUtf8CstrFor(isZh, "正在识别...", "Recognizing...");
+    m_isLoadingState = (text == loadingLabel);
     m_mergeParagraphs = false;
     m_editedSinceModeSwitch = false;
     m_editUndoStack.clear();
@@ -1085,6 +1090,26 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
     }
     SetForegroundWindow(m_hwnd);
     SetFocus(m_hwnd);
+    render();
+}
+
+void OcrResultWindow::updateLoadingStatus(const std::string& statusText, const std::wstring& statusBadge) {
+    auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+    if (m_hwnd && GetWindowThreadProcessId(m_hwnd, nullptr) != GetCurrentThreadId()) {
+        dispatcher.post([this, statusText, statusBadge]() {
+            updateLoadingStatus(statusText, statusBadge);
+        });
+        return;
+    }
+    if (!m_hwnd || !IsWindow(m_hwnd) || !IsWindowVisible(m_hwnd) || !m_isLoadingState) {
+        return;
+    }
+    m_rawUnmergedText = statusText;
+    m_rawUnmergedWide = tools3000::core::WinUtils::utf8ToWstring(statusText);
+    m_text = m_rawUnmergedText;
+    m_wideText = m_rawUnmergedWide;
+    m_statusBadge = statusBadge;
+    rebuildTextLayout();
     render();
 }
 
@@ -1343,6 +1368,8 @@ void OcrResultWindow::render(int retryDepth) {
         } else if (m_copiedSelection) {
             title += chinese ? L"  ·  已复制选中文字" : L"  ·  Copied selection";
         }
+    } else if (!m_statusBadge.empty()) {
+        title += L"  ·  " + m_statusBadge;
     }
     const float titleRight = (std::max)(padding, m_btnMergeRect.left - 8.0f * scale);
     m_renderTarget->DrawTextW(

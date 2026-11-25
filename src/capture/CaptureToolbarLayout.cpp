@@ -1140,10 +1140,16 @@ std::wstring tooltipForButton(
                     L"完成并保存 (Enter)",
                     L"Done & Save (Enter)");
             }
+            if (decision.shouldCopyToClipboard) {
+                return tools3000::core::trWCstrFor(
+                    chinese,
+                    L"完成并复制 (Enter)",
+                    L"Done & Copy (Enter)");
+            }
             return tools3000::core::trWCstrFor(
                 chinese,
-                L"完成并复制 (Enter)",
-                L"Done & Copy (Enter)");
+                L"完成并关闭 (Enter)",
+                L"Done & Close (Enter)");
         }
         case ToolbarCommand::Cancel: return chinese ? L"取消 (Esc)" : L"Cancel (Esc)";
         case ToolbarCommand::ToggleFill:

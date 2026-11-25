@@ -1128,6 +1128,70 @@ cv::Point CaptureInput::toMarkupPoint(POINT point) const {
     return toMarkupPointFromDoc(m_state->screenToDocPoint(point));
 }
 
+float CaptureInput::syncTextElementWrapWidth(MarkupElement& elem) const {
+    if (elem.tool != MarkupTool::Text || !m_state) return 0.0f;
+    int canvasW = m_state->markup.baseWidth();
+    if (canvasW <= 0) {
+        const auto selRect = currentSelectionRect();
+        canvasW = std::max(0, static_cast<int>(std::round(selRect.right - selRect.left)));
+    }
+    const int fontSizePx = static_cast<int>(elem.fontSize);
+    const float maxBoxW = CaptureTextEditor::computeAvailableBoxWidth(canvasW, elem.startPt.x, fontSizePx);
+    if (std::abs(elem.textMaxWidth - maxBoxW) > 0.5f) {
+        elem.textMaxWidth = maxBoxW;
+        elem.textRenderSize = cv::Size(0, 0);
+    }
+    return CaptureTextEditor::computeContentWidthFromBoxWidth(maxBoxW, fontSizePx);
+}
+
+void CaptureInput::ensureActiveTextBoundsAfterEdit(MarkupElement& elem) {
+    if (elem.tool != MarkupTool::Text || !m_state) return;
+    const float maxContentW = syncTextElementWrapWidth(elem);
+    int canvasH = m_state->markup.baseHeight();
+    if (canvasH <= 0) {
+        const auto selRect = currentSelectionRect();
+        canvasH = std::max(0, static_cast<int>(std::round(selRect.bottom - selRect.top)));
+    }
+    if (canvasH > 0) {
+        const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
+        const int fontSizePx = static_cast<int>(elem.fontSize);
+        const auto layout = CaptureTextEditor::buildLayout(wstr, fontSizePx, maxContentW);
+        const auto [bw, bh] = CaptureTextEditor::computeBoxSize(layout, fontSizePx, elem.textMaxWidth);
+        (void)bw;
+        const int safeY = CaptureTextEditor::computeBottomSafeStartY(elem.startPt.y, bh, canvasH);
+        if (safeY < elem.startPt.y) {
+            elem.moveBy(0, safeY - elem.startPt.y);
+        }
+    }
+    elem.textRenderSize = cv::Size(0, 0);
+}
+
+void CaptureInput::syncImeCompositionWindow(HWND hwnd) const {
+    if (!hwnd || !m_state || !m_state->activeElement ||
+        m_state->activeElement->tool != MarkupTool::Text ||
+        !m_state->activeElement->isEditing) {
+        return;
+    }
+    HIMC hImc = ImmGetContext(hwnd);
+    if (!hImc) return;
+    auto& elem = *m_state->activeElement;
+    const float maxContentW = syncTextElementWrapWidth(elem);
+    const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
+    const auto layout = CaptureTextEditor::buildLayout(
+        wstr, static_cast<int>(elem.fontSize), maxContentW);
+    const auto vis = CaptureTextEditor::computeCaretVisual(layout, wstr, elem.textCaret);
+    COMPOSITIONFORM cf{};
+    cf.dwStyle = CFS_POINT;
+    const auto selRect = currentSelectionRect();
+    const auto scrCaret = m_state->docToScreen(
+        selRect.left + static_cast<float>(elem.startPt.x) + vis.x,
+        selRect.top + static_cast<float>(elem.startPt.y) + vis.y + vis.height + 2.0f);
+    cf.ptCurrentPos.x = static_cast<LONG>(std::round(scrCaret.x));
+    cf.ptCurrentPos.y = static_cast<LONG>(std::round(scrCaret.y));
+    ImmSetCompositionWindow(hImc, &cf);
+    ImmReleaseContext(hwnd, hImc);
+}
+
 void CaptureInput::beginMarkup(POINT point) {
     if (!isPointInSelection(point)) return;
     prepareMarkupBase();
@@ -1146,7 +1210,14 @@ void CaptureInput::beginMarkup(POINT point) {
         }
         float defaultFontSize = static_cast<float>(tools3000::core::ConfigManager::instance().get<double>("/capture/markup/text/fontSize", 18.0));
         if (defaultFontSize < 10.0f || defaultFontSize > 144.0f) defaultFontSize = 18.0f;
-        auto* elem = m_state->markup.addText(local, "", m_state->currentColor, defaultFontSize * currentDpiScale,
+        const float physFontSize = defaultFontSize * currentDpiScale;
+        // 贴近截图右/底边界点击创建文字框时温和礼让，避免首行被压成单字宽列或掉出底边
+        const auto [smartX, smartY] = CaptureTextEditor::computeSmartTextStartPoint(
+            local.x, local.y,
+            m_state->markup.baseWidth(),
+            m_state->markup.baseHeight(),
+            static_cast<int>(physFontSize));
+        auto* elem = m_state->markup.addText(cv::Point(smartX, smartY), "", m_state->currentColor, physFontSize,
                                              m_state->currentTextOutline, m_state->currentTextOutlineColor);
         m_state->activeElement = elem;
         if (m_state->activeElement) {
@@ -1158,10 +1229,14 @@ void CaptureInput::beginMarkup(POINT point) {
             m_state->activeElement->textCaret = 0;
             m_state->activeElement->textSelAnchor = 0;
             m_state->activeElement->textLastCaretTick = GetTickCount();
+            syncTextElementWrapWidth(*m_state->activeElement);
             m_state->lastCoalescedUndoElemId = m_state->activeElement->id;
             m_state->lastCoalescedUndoTick = m_state->activeElement->textLastCaretTick;
             m_state->textPreferredCaretX = -1.0f;
-            if (m_hwnd) SetTimer(m_hwnd, RENDER_TIMER_ID, 16, nullptr);
+            if (m_hwnd) {
+                SetTimer(m_hwnd, RENDER_TIMER_ID, 16, nullptr);
+                syncImeCompositionWindow(m_hwnd);
+            }
         }
         m_state->state = OverlayState::Selected;
         m_renderer->markMarkupDirty();

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import {
   Folder,
   FolderOpen,
+  FolderX,
   HardDrive,
   FileCode,
   Pencil,
@@ -38,6 +39,7 @@ export interface SearchContextMenuProps {
   onCopyPath: (result: SearchResult) => void;
   onCopyFile?: (result: SearchResult) => void;
   onQuickLook?: (result: SearchResult) => void;
+  onExcludeFolder?: (result: SearchResult) => void;
   onCopyText: (text: string) => void;
   onShowProperties: (result: SearchResult) => void;
 }
@@ -54,6 +56,7 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
   onCopyPath,
   onCopyFile,
   onQuickLook,
+  onExcludeFolder,
   onCopyText,
   onShowProperties,
 }) => {
@@ -248,6 +251,30 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
           >
             <Unlock size={14} className="menu-icon" />
             <span className="menu-label">{t('search.menuFileLocksmith', 'Check File Locks / Unlock')}</span>
+          </button>
+        )}
+
+        {/* 一键从搜索中排除该文件夹/所在目录 */}
+        {isFileItem && onExcludeFolder && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              onExcludeFolder(res);
+            }}
+            title={
+              res.isDirectory
+                ? t('search.menuExcludeThisFolderTip', 'Hide this folder and all nested files from future search results')
+                : t('search.menuExcludeParentFolderTip', 'Hide the containing folder and all nested files from future search results')
+            }
+          >
+            <FolderX size={14} className="menu-icon" />
+            <span className="menu-label">
+              {res.isDirectory
+                ? t('search.menuExcludeThisFolder', 'Exclude This Folder from Search')
+                : t('search.menuExcludeParentFolder', 'Exclude Containing Folder from Search')}
+            </span>
           </button>
         )}
 

@@ -3,6 +3,7 @@
 #include <opencv2/opencv.hpp>
 #include <windows.h>
 #include <string>
+#include <vector>
 
 namespace tools3000::capture {
 
@@ -32,6 +33,13 @@ struct Tools3000PinMetadata {
     uint32_t sequenceNumber = 0;
 };
 
+/// 剪贴板可贴内容探测摘要（由 ClipboardUtils 统一提供，避免多处重复开关剪贴板）
+struct ClipboardContentProbe {
+    std::wstring text;
+    bool preferTextOverImage = false;
+    bool hasImageDropFiles = false;
+};
+
 class ClipboardUtils {
 public:
     /**
@@ -53,7 +61,34 @@ public:
                                      int padY = 0);
 
     /**
-     * @brief 从系统剪贴板读取图像（优先读取保留透明通道的 PNG 与 CF_DIBV5，失败时回退至 CF_BITMAP）
+     * @brief 判断本地文件路径扩展名是否属于受支持的可贴图片格式（不区分大小写）
+     */
+    static bool isSupportedImageFilePath(const std::wstring& filePath) noexcept;
+
+    /**
+     * @brief 宽路径安全解码本地图片文件（支持 PNG/JPG/WebP/BMP/TIFF/GIF/ICO/HEIC/AVIF 等，保留透明通道与 JPEG EXIF 方向）
+     */
+    static cv::Mat loadImageFromFile(const std::wstring& filePath);
+
+    /**
+     * @brief 探测当前系统剪贴板的文本、图片文件与图文优先级（毫秒级锁外校验，不阻塞系统剪贴板）
+     */
+    static ClipboardContentProbe inspectClipboardContent();
+
+    /**
+     * @brief 从系统剪贴板读取一组图像：
+     * 1. 优先读取内存位图（PNG / CF_DIBV5 / CF_BITMAP），此时返回单张图像；
+     * 2. 若无内存位图但存在 CF_HDROP 文件列表，则按序解码其中受支持的本地图片文件（最多 maxFiles 张）。
+     *
+     * @param outMeta 若剪贴板包含 Tools3000 截图元数据，填充至此
+     * @param maxFiles CF_HDROP 多图模式最大解码张数上限
+     * @return std::vector<cv::Mat> 解码成功的图像列表（CV_8UC3 或 CV_8UC4）
+     */
+    static std::vector<cv::Mat> readImagesFromClipboard(Tools3000PinMetadata* outMeta = nullptr,
+                                                        size_t maxFiles = 16);
+
+    /**
+     * @brief 从系统剪贴板读取单张图像（优先读取保留透明通道的 PNG 与 CF_DIBV5，失败时回退至 CF_BITMAP 或 CF_HDROP 首张图片文件）
      * 
      * @param outMeta 若剪贴板包含 Tools3000 截图元数据，填充至此
      * @return cv::Mat 读取到的图像（支持 4 通道透明 BGRA 与 3 通道 BGR）

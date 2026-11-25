@@ -62,6 +62,14 @@ WebViewEnvironmentManager& WebViewEnvironmentManager::instance() {
     return s_instance;
 }
 
+bool WebViewEnvironmentManager::isRuntimeInstalled() noexcept {
+    return isWebView2RuntimeInstalled();
+}
+
+const wchar_t* WebViewEnvironmentManager::evergreenDownloadUrl() noexcept {
+    return kWebView2EvergreenDownloadUrl;
+}
+
 void WebViewEnvironmentManager::acquire(ReadyCallback callback) {
     if (!callback) return;
 
