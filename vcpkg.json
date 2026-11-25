@@ -14,7 +14,11 @@
     {
       "name": "ffmpeg",
       "features": [
-        "openh264"
+        "gpl",
+        "openh264",
+        "x264",
+        "vpx",
+        "opus"
       ]
     },
     "gtest",

@@ -1130,12 +1130,21 @@ cv::Point CaptureInput::toMarkupPoint(POINT point) const {
 
 float CaptureInput::syncTextElementWrapWidth(MarkupElement& elem) const {
     if (elem.tool != MarkupTool::Text || !m_state) return 0.0f;
+    const int fontSizePx = static_cast<int>(elem.fontSize);
+    if (elem.hasCustomTextWidth && elem.textMaxWidth > 0.0f) {
+        const int padW = CaptureTextEditor::computeBoxHorizontalPadding((std::max)(12, fontSizePx));
+        const float minW = (std::max)(44.0f, static_cast<float>((std::max)(12, fontSizePx)) * 1.4f + static_cast<float>(padW));
+        if (elem.textMaxWidth < minW) {
+            elem.textMaxWidth = minW;
+            elem.textRenderSize = cv::Size(0, 0);
+        }
+        return CaptureTextEditor::computeContentWidthFromBoxWidth(elem.textMaxWidth, fontSizePx);
+    }
     int canvasW = m_state->markup.baseWidth();
     if (canvasW <= 0) {
         const auto selRect = currentSelectionRect();
         canvasW = std::max(0, static_cast<int>(std::round(selRect.right - selRect.left)));
     }
-    const int fontSizePx = static_cast<int>(elem.fontSize);
     const float maxBoxW = CaptureTextEditor::computeAvailableBoxWidth(canvasW, elem.startPt.x, fontSizePx);
     if (std::abs(elem.textMaxWidth - maxBoxW) > 0.5f) {
         elem.textMaxWidth = maxBoxW;
@@ -1156,7 +1165,8 @@ void CaptureInput::ensureActiveTextBoundsAfterEdit(MarkupElement& elem) {
         const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
         const int fontSizePx = static_cast<int>(elem.fontSize);
         const auto layout = CaptureTextEditor::buildLayout(wstr, fontSizePx, maxContentW);
-        const auto [bw, bh] = CaptureTextEditor::computeBoxSize(layout, fontSizePx, elem.textMaxWidth);
+        const auto [bw, bh] = CaptureTextEditor::computeBoxSize(
+            layout, fontSizePx, elem.textMaxWidth, elem.hasCustomTextWidth, elem.customTextBoxHeight);
         (void)bw;
         const int safeY = CaptureTextEditor::computeBottomSafeStartY(elem.startPt.y, bh, canvasH);
         if (safeY < elem.startPt.y) {

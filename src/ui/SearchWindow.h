@@ -38,6 +38,7 @@ public:
     void showSystemMenu(int screenX = -1, int screenY = -1);
     HWND getHwnd() const { return m_hwnd; }
     void focusSearchIfVisible();
+    void markFirstPaintReady();
     void triggerQuickLookForSelection();
     void syncQuickLookForSelection();
     void stepQuickLookSelection(int delta);
@@ -110,6 +111,8 @@ private:
     static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
     static constexpr UINT_PTR IDT_COLD_WARMUP_FALLBACK = 2111;
     static constexpr UINT COLD_WARMUP_FALLBACK_DELAY_MS = 1500;
+    static constexpr UINT_PTR IDT_FIRST_PAINT_FALLBACK = 2112;
+    static constexpr UINT FIRST_PAINT_FALLBACK_DELAY_MS = 2000;
 
     enum class WebViewStatus : uint8_t {
         Loading = 0,
@@ -120,6 +123,7 @@ private:
     };
 
     void setWebViewStatus(WebViewStatus status, HRESULT hr = S_OK);
+    void completeFirstPaintReady();
     void paintStatusBackdrop(HDC hdc, const RECT& clientRect) const;
     void handleStatusSurfaceAction();
 
@@ -132,6 +136,7 @@ private:
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_minimized{false};
     std::atomic<bool> m_webViewReady{false};
+    std::atomic<bool> m_uiFirstPaintReady{false};
     std::atomic<bool> m_webViewInitializing{false};
     std::atomic<bool> m_pendingServiceWarmup{false};
     std::atomic<uint8_t> m_webViewStatus{static_cast<uint8_t>(WebViewStatus::Loading)};

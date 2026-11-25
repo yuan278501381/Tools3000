@@ -1762,6 +1762,31 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
                         if (activeElemHit) {
                             if (m_state->activeElement->tool == MarkupTool::Text) {
+                                const HitArea dblHit = m_state->activeElement->hitTestEx(local);
+                                // 双击四边中点胶囊手柄：一键恢复自动贴合文字内容（Figma / Keynote 级微交互）
+                                if (dblHit == HitArea::L || dblHit == HitArea::R ||
+                                    dblHit == HitArea::T || dblHit == HitArea::B) {
+                                    auto snapBefore = m_state->markup.captureSnapshot();
+                                    bool changed = false;
+                                    if ((dblHit == HitArea::L || dblHit == HitArea::R) &&
+                                        m_state->activeElement->hasCustomTextWidth) {
+                                        m_state->activeElement->hasCustomTextWidth = false;
+                                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                                        syncTextElementWrapWidth(*m_state->activeElement);
+                                        changed = true;
+                                    } else if ((dblHit == HitArea::T || dblHit == HitArea::B) &&
+                                               m_state->activeElement->customTextBoxHeight > 0.0f) {
+                                        m_state->activeElement->customTextBoxHeight = 0.0f;
+                                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                                        changed = true;
+                                    }
+                                    if (changed) {
+                                        m_state->markup.commitUndoSnapshot(std::move(snapBefore));
+                                        m_renderer->markMarkupDirty();
+                                        m_renderer->invalidate();
+                                    }
+                                    return 0;
+                                }
                                 enterTextWordSelection(*m_state->activeElement);
                                 m_state->currentTool = MarkupTool::Text;
                                 m_state->currentColor = m_state->activeElement->color;

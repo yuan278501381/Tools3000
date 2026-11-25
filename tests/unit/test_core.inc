@@ -1821,6 +1821,36 @@ TEST(PerformanceRegressionBenchmarkTest, FileIndexStoreMemoryAndThroughputGate) 
     EXPECT_LT(scanDurationMs, 50);
 }
 
+// 门禁 1B: 真实冷 MFT 扫描（85% ASCII + 15% 中文, creationTime=0, bulkImport=true）内存压降门禁 (< 90 B/file)
+TEST(PerformanceRegressionBenchmarkTest, FileIndexStoreColdMftCompact1BMemoryGate) {
+    static_assert(sizeof(tools3000::service::StoredFileRecord) == 40, "StoredFileRecord must stay 40 bytes");
+    tools3000::service::FileIndexStore store;
+    constexpr size_t kFileCount = 50000;
+    store.reserve(kFileCount);
+
+    for (uint64_t i = 1; i <= kFileCount; ++i) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = i;
+        r.parentFileReferenceNumber = (i > 20) ? (i % 20 + 1) : 0;
+        if (i % 7 == 0) {
+            r.fileName = L"项目归档文档_2026_" + std::to_wstring(i) + L".docx";
+        } else {
+            r.fileName = L"module_asset_" + std::to_wstring(i) + L".ts";
+        }
+        r.fileSize = (i <= 20) ? 0ULL : (4096ULL * (i % 100 + 1));
+        r.creationTime = 0ULL;
+        r.lastWriteTime = 134000000000000000ULL + (i % 1000) * 10000000ULL;
+        r.isDirectory = (i <= 20);
+        store.upsert(r, /*metadataHydrated=*/false, /*bulkImport=*/true);
+    }
+    store.recomputeHierarchyMetadata();
+    store.shrinkExcessCapacity();
+
+    const uint64_t totalBytes = store.approximateBytes();
+    const uint64_t bytesPerFile = totalBytes / store.size();
+    EXPECT_LT(bytesPerFile, 90u) << "Cold MFT 1B compact index exceeded 90 B/file budget: " << bytesPerFile;
+}
+
 // 门禁 2: 父子 FRN 链向上回溯解析 10,000 次耗时门禁 (< 20ms)
 TEST(PerformanceRegressionBenchmarkTest, ParentChainFastWalkBenchmark) {
     tools3000::service::FileIndexStore store;
@@ -6656,4 +6686,28 @@ TEST(FeedbackTailPreservationTest, KeepsUrlWithinSafeLimitWithEffectiveLocaleAnd
     EXPECT_LE(preview.githubIssueUrl.size(), 7600u);
     EXPECT_NE(preview.githubIssueUrl.find("Ctrl%2BV"), std::string::npos);
     EXPECT_EQ(preview.githubIssueUrl.find("please%20attach%20the%20exported"), std::string::npos);
+}
+
+TEST(PerformanceMonitorPrivateWorkingSetTest, ReportsTruePrivateWorkingSetAndImmediateTrimMetrics) {
+    using namespace tools3000::core;
+    auto& monitor = PerformanceMonitor::instance();
+    const PerfMetrics snap = monitor.sampleNow();
+    EXPECT_GT(snap.memoryMB, 0.0);
+    EXPECT_GT(snap.privateMemoryMB, 0.0);
+    // 真实专用工作集绝不可超过总物理工作集（彻底杜绝将 PrivateUsage 虚拟提交量误报为专用工作集）
+    EXPECT_LE(snap.privateMemoryMB, snap.memoryMB + 0.05);
+
+    auto& bridge = MessageBridge::instance();
+    const std::string respStr = bridge.handleMessage(
+        R"({"id":9401,"method":"perf.trimMemory","params":{}})");
+    const auto resp = nlohmann::json::parse(respStr);
+    ASSERT_TRUE(resp.contains("result"));
+    const auto& res = resp["result"];
+    EXPECT_TRUE(res.value("success", false));
+    ASSERT_TRUE(res.contains("metrics"));
+    EXPECT_GT(res["metrics"].value("memoryMB", 0.0), 0.0);
+    EXPECT_GT(res["metrics"].value("privateMemoryMB", 0.0), 0.0);
+    EXPECT_LE(res["metrics"].value("privateMemoryMB", 0.0), res["metrics"].value("memoryMB", 0.0) + 0.05);
+    EXPECT_TRUE(res.contains("beforePrivateMemoryMB"));
+    EXPECT_TRUE(res.contains("afterPrivateMemoryMB"));
 }

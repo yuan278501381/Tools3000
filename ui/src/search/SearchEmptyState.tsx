@@ -22,6 +22,7 @@ export interface SearchEmptyStateProps {
   activeCategory: string;
   searchMode?: SearchMode;
   query: string;
+  snapshotQuery?: string;
   sortedResults: SearchResult[];
   searchHistoryLength: number;
   scanElapsedSeconds: number;
@@ -42,6 +43,7 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
   activeCategory,
   searchMode = 'name',
   query,
+  snapshotQuery,
   sortedResults,
   searchHistoryLength,
   scanElapsedSeconds,
@@ -190,7 +192,10 @@ export const SearchEmptyState: React.FC<SearchEmptyStateProps> = ({
   }
 
   // 5. 搜索无匹配结果
-  if (!isInitialIndexing && !isServiceStarting && serviceAvailable && query.trim() && !loading && sortedResults.length === 0) {
+  // 严格校验当前已提交快照的查询词与输入框一致，杜绝服务启动/忙碌重试或防抖空窗期闪现“无匹配”
+  const snapshotMatchesCurrentQuery =
+    snapshotQuery === undefined || snapshotQuery.trim() === query.trim();
+  if (!isInitialIndexing && !isServiceStarting && serviceAvailable && query.trim() && !loading && snapshotMatchesCurrentQuery && sortedResults.length === 0) {
     return (
       <div className="search-empty-container" role="status">
         <div className="search-empty-icon-wrap">

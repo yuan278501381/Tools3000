@@ -369,4 +369,138 @@ describe('useSearchEngine service wakeup stopwatch & recovery', () => {
     expect(receivedExcludes).toHaveLength(2);
     expect(receivedExcludes[1]).toEqual(['D:\\PrivateMovies']);
   });
+
+  it('keeps loading=true across busy retries so UI never flashes Not Found mid-retry', async () => {
+    let calls = 0;
+    bridgeRequestMock.mockImplementation(async (method: string) => {
+      if (method === 'search.query') {
+        calls += 1;
+        if (calls <= 2) {
+          return {
+            results: [],
+            available: true,
+            status: 'busy',
+            busy: true,
+            error: 'search service busy',
+          };
+        }
+        return {
+          results: [{ name: 'Code.exe', path: 'C:\\Apps\\VSCode\\Code.exe', isDirectory: false }],
+          available: true,
+          status: 'ready',
+          elapsedMs: 6,
+        };
+      }
+      return {};
+    });
+
+    const { result } = renderHook(() =>
+      useSearchEngine({
+        query: 'vscode',
+        isComposing: false,
+        activeCategory: 'all',
+        searchMode: 'name',
+        enabledDrives: [],
+        maxResultLimit: 100,
+        excludeGitAndModules: true,
+        excludeHidden: false,
+        customContentFormats: [],
+        disabledContentFormats: [],
+      }),
+    );
+
+    // After first busy response, loading MUST remain true while retry is scheduled
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
+    });
+    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(result.current.loading).toBe(true);
+    expect(result.current.snapshot.query).toBe('');
+
+    // Advance through retries until ready response arrives
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1200);
+    });
+    expect(calls).toBe(3);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.snapshot.query).toBe('vscode');
+    expect(result.current.results).toHaveLength(1);
+    expect(result.current.results[0].name).toBe('Code.exe');
+  });
+
+  it('commits partial local app results immediately during status=starting while continuing background retry', async () => {
+    let calls = 0;
+    bridgeRequestMock.mockImplementation(async (method: string) => {
+      if (method === 'search.query') {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            results: [
+              {
+                name: 'Google Chrome',
+                path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk',
+                isDirectory: false,
+                resultType: 'app',
+              },
+            ],
+            available: false,
+            status: 'starting',
+            partialLocalResults: true,
+          };
+        }
+        return {
+          results: [
+            {
+              name: 'Google Chrome',
+              path: 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\Google Chrome.lnk',
+              isDirectory: false,
+              resultType: 'app',
+            },
+            {
+              name: 'chrome_notes.md',
+              path: 'D:\\docs\\chrome_notes.md',
+              isDirectory: false,
+            },
+          ],
+          available: true,
+          status: 'ready',
+          elapsedMs: 14,
+        };
+      }
+      return {};
+    });
+
+    const { result } = renderHook(() =>
+      useSearchEngine({
+        query: 'chrome',
+        isComposing: false,
+        activeCategory: 'all',
+        searchMode: 'name',
+        enabledDrives: [],
+        maxResultLimit: 100,
+        excludeGitAndModules: true,
+        excludeHidden: false,
+        customContentFormats: [],
+        disabledContentFormats: [],
+      }),
+    );
+
+    // Immediately after first starting response, local app result is already visible!
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(180);
+    });
+    expect(calls).toBe(1);
+    expect(result.current.isServiceStarting).toBe(true);
+    expect(result.current.results).toHaveLength(1);
+    expect(result.current.results[0].name).toBe('Google Chrome');
+
+    // Background retry completes with merged full-disk results
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    expect(calls).toBe(2);
+    expect(result.current.isServiceStarting).toBe(false);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.results).toHaveLength(2);
+  });
 });

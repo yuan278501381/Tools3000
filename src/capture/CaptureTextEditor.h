@@ -404,9 +404,11 @@ public:
         return (std::max)(static_cast<float>(safeFontSize) * 1.15f, maxBoxWidth - padW);
     }
 
-    /// 根据排版快照计算外框像素尺寸（SSOT：与渲染画布大小 100% 一致）
+    /// 根据排版快照计算外框像素尺寸（SSOT：与渲染画布大小 100% 一致；支持用户自定义独立拉宽与拉长）
     static std::pair<int, int> computeBoxSize(const MultilineTextLayout& layout, int fontSize,
-                                              float maxBoxWidth = 0.0f) noexcept {
+                                              float maxBoxWidth = 0.0f,
+                                              bool fixedBoxWidth = false,
+                                              float minBoxHeight = 0.0f) noexcept {
         const int safeFontSize = (std::max)(12, fontSize);
         const int padW = computeBoxHorizontalPadding(safeFontSize);
         const int padH = computeBoxVerticalPadding(safeFontSize);
@@ -415,9 +417,17 @@ public:
             const int maxWInt = static_cast<int>(std::ceil(maxBoxWidth));
             // 仅夹取行尾空白或小数舍入误差；若单字本身宽度超过极窄框，保留完整字形不裁切
             const int minSingleGlyphBox = static_cast<int>(std::ceil(static_cast<float>(safeFontSize) * 1.15f)) + padW;
-            w = (std::min)(w, (std::max)(maxWInt, minSingleGlyphBox));
+            const int clampedTargetW = (std::max)(maxWInt, minSingleGlyphBox);
+            if (fixedBoxWidth) {
+                w = (std::max)(w, clampedTargetW);
+            } else {
+                w = (std::min)(w, clampedTargetW);
+            }
         }
         int h = static_cast<int>(std::ceil(layout.contentHeight)) + padH;
+        if (minBoxHeight > 0.0f) {
+            h = (std::max)(h, static_cast<int>(std::ceil(minBoxHeight)));
+        }
         return {(std::max)(w, 24), (std::max)(h, safeFontSize + padH)};
     }
 

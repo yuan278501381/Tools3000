@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <numbers>
 #include <sstream>
+#include <string_view>
 
 namespace tools3000::capture {
 
@@ -201,11 +202,16 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
                 ioY = popCy;
                 return true;
             }
-            if (clickInsidePopup && areaRatio <= 0.58f) {
-                // 点击已在紧凑子弹窗内：向弹窗几何中心温和居中，稳稳框全对话框
-                ioX = ioX * 0.35f + popCx * 0.65f;
-                ioY = ioY * 0.35f + popCy * 0.65f;
-                return true;
+            // 仅对紧凑小对话框 (<= 18% 屏面) 温和居中，且保证原点击点绝不偏出缩放后视口舒适区；
+            // 严禁对搜索/设置/浏览器等常规窗口内的顶部输入点击执行中心拉扯，杜绝画面跳回屏幕正中裁切输入区
+            if (clickInsidePopup && areaRatio <= 0.18f) {
+                const float safeShiftX = (w / (std::max)(1.0f, clampedZoom)) * 0.28f;
+                const float safeShiftY = (h / (std::max)(1.0f, clampedZoom)) * 0.28f;
+                if (std::abs(popCx - ioX) <= safeShiftX && std::abs(popCy - ioY) <= safeShiftY) {
+                    ioX = ioX * 0.55f + popCx * 0.45f;
+                    ioY = ioY * 0.55f + popCy * 0.45f;
+                    return true;
+                }
             }
         }
         return false;
@@ -280,6 +286,7 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
         StudioZoomSegment seg;
         int64_t firstAnchorMs = 0;
         int count = 0;
+        int posCount = 0;
         float sumX = 0.0f;
         float sumY = 0.0f;
         bool hasTyping = false;
@@ -296,33 +303,46 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
         bool canMergePrev = false;
         if (!clusters.empty()) {
             const auto& prevC = clusters.back();
-            const float distFromPrev = std::hypot(a.x - prevC.seg.focusX, a.y - prevC.seg.focusY);
-            const bool isSpatiallyNear = (distFromPrev < w * 0.28f);
-            const int64_t allowedGap = (isSpatiallyNear && !a.triggeredPopup) ? localMergeGapMs : kFarMergeGapMs;
-            canMergePrev = (segStart <= prevC.seg.endMs + allowedGap);
+            const float dxPrev = std::abs(a.x - prevC.seg.focusX);
+            const float dyPrev = std::abs(a.y - prevC.seg.focusY);
+            const float distFromPrev = std::hypot(dxPrev, dyPrev);
+            const bool isSpatiallyNear = (distFromPrev < w * 0.24f) && (dyPrev < h * 0.24f);
+            // 仅在同一操作区或因果弹窗内合并；远距离点击/输入绝不吞并丢弃新坐标，而是开启新段让镜头平滑追焦
+            if (isSpatiallyNear) {
+                canMergePrev = (segStart <= prevC.seg.endMs + localMergeGapMs);
+            } else if (a.triggeredPopup) {
+                canMergePrev = (segStart <= prevC.seg.endMs + kFarMergeGapMs);
+            }
         }
 
         if (canMergePrev) {
             auto& c = clusters.back();
             c.seg.endMs = (std::max)(c.seg.endMs, segEnd);
-            if (std::hypot(a.x - c.seg.focusX, a.y - c.seg.focusY) < w * 0.28f || a.triggeredPopup) {
-                c.sumX += a.x;
-                c.sumY += a.y;
-                ++c.count;
-                if (a.triggeredPopup) {
-                    c.seg.focusX = c.seg.focusX * 0.25f + a.x * 0.75f;
-                    c.seg.focusY = c.seg.focusY * 0.25f + a.y * 0.75f;
-                } else {
-                    c.seg.focusX = c.sumX / static_cast<float>(c.count);
-                    c.seg.focusY = c.sumY / static_cast<float>(c.count);
-                }
+            ++c.count;
+            c.sumX += a.x;
+            c.sumY += a.y;
+            ++c.posCount;
+            if (a.triggeredPopup) {
+                c.seg.focusX = c.seg.focusX * 0.25f + a.x * 0.75f;
+                c.seg.focusY = c.seg.focusY * 0.25f + a.y * 0.75f;
+            } else if (a.isFocusTyping) {
+                // 打字焦点高权重吸附，避免旧点击偏置将输入框拉出视口
+                c.seg.focusX = c.seg.focusX * 0.25f + a.x * 0.75f;
+                c.seg.focusY = c.seg.focusY * 0.25f + a.y * 0.75f;
             } else {
-                ++c.count;
+                c.seg.focusX = c.sumX / static_cast<float>((std::max)(1, c.posCount));
+                c.seg.focusY = c.sumY / static_cast<float>((std::max)(1, c.posCount));
             }
             c.hasTyping = c.hasTyping || a.isFocusTyping;
             c.hasPopup = c.hasPopup || a.triggeredPopup;
             c.bestDwell = (std::max)(c.bestDwell, a.dwellBonus);
         } else {
+            // 若新远距操作与前一段尾部重叠，优雅截断前段尾部以便弹簧无缝平移到新焦点
+            if (!clusters.empty() && segStart < clusters.back().seg.endMs) {
+                auto& prevC = clusters.back();
+                const int64_t cutMs = (std::max)(prevC.seg.startMs + 280, segStart);
+                prevC.seg.endMs = (std::min)(prevC.seg.endMs, cutMs);
+            }
             CandidateCluster c;
             c.seg.startMs = segStart;
             c.seg.endMs = segEnd;
@@ -333,6 +353,7 @@ std::vector<StudioZoomSegment> StudioTimelineAnalyzer::buildAutoZoomSegments(
             c.seg.manualInserted = false;
             c.firstAnchorMs = a.ptsMs;
             c.count = 1;
+            c.posCount = 1;
             c.sumX = a.x;
             c.sumY = a.y;
             c.hasTyping = a.isFocusTyping;
@@ -459,14 +480,48 @@ void StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(
             continue;
         }
         // 2. 异地因果校正（点左栏 A -> 右侧面板/弹窗 B 局部刷新）：将焦点顺滑校准至真正变化重心 B
+        //    重要护栏：绝不允许远端列表刷新劫持文本输入段（如顶部搜索栏打字导致下方结果列表大面积刷新）
         if (changedRatio >= 0.022f && changedRatio <= 0.52f && sumW > 1.0) {
-            const float diffX = static_cast<float>((sumX / sumW) / static_cast<double>(kProbeW)) * srcW;
-            const float diffY = static_cast<float>((sumY / sumW) / static_cast<double>(kProbeH)) * srcH;
-            const float localShare = static_cast<float>(localChangedPx) / static_cast<float>((std::max)(1, changedPx));
-            const float distFromClick = std::hypot(diffX - seg.focusX, diffY - seg.focusY);
-            if (localShare < 0.16f && distFromClick > srcW * 0.22f) {
-                seg.focusX = std::clamp(diffX, 0.0f, srcW);
-                seg.focusY = std::clamp(diffY, 0.0f, srcH);
+            bool hasTypingInSeg = false;
+            for (const auto& foc : timeline.focusEvents) {
+                if (foc.ptsMs >= seg.startMs - 250 && foc.ptsMs <= seg.endMs) {
+                    hasTypingInSeg = true;
+                    break;
+                }
+            }
+            if (!hasTypingInSeg) {
+                for (const auto& cs : timeline.cursorSamples) {
+                    if (cs.ptsMs < seg.startMs - 200) continue;
+                    if (cs.ptsMs > triggerMs + 420) break;
+                    if (cs.kind == StudioCursorKind::IBeam &&
+                        std::hypot(cs.x - seg.focusX, cs.y - seg.focusY) < srcW * 0.16f) {
+                        hasTypingInSeg = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!hasTypingInSeg) {
+                const float diffX = static_cast<float>((sumX / sumW) / static_cast<double>(kProbeW)) * srcW;
+                const float diffY = static_cast<float>((sumY / sumW) / static_cast<double>(kProbeH)) * srcH;
+                const float localShare = static_cast<float>(localChangedPx) / static_cast<float>((std::max)(1, changedPx));
+                const float distFromClick = std::hypot(diffX - seg.focusX, diffY - seg.focusY);
+                const bool isUpperInputLowerListPattern =
+                    (seg.focusY < srcH * 0.40f) &&
+                    (diffY > seg.focusY + srcH * 0.14f) &&
+                    (std::abs(diffX - seg.focusX) < srcW * 0.30f);
+                if (localShare < 0.16f && distFromClick > srcW * 0.22f) {
+                    if (isUpperInputLowerListPattern) {
+                        // 顶部输入栏刷新下方结果区：最多温和下移至同时完整框住顶部输入栏与紧邻结果首行
+                        const float effZoom = std::clamp(seg.targetZoom, 1.05f, 2.80f);
+                        const float viewHalfH = (srcH / effZoom) * 0.5f;
+                        const float maxSafeY = seg.focusY + viewHalfH * 0.62f;
+                        seg.focusY = std::clamp((std::min)(diffY, maxSafeY), 0.0f, srcH);
+                    } else {
+                        seg.focusX = std::clamp(diffX, 0.0f, srcW);
+                        seg.focusY = std::clamp(diffY, 0.0f, srcH);
+                    }
+                }
             }
         }
         refined.push_back(seg);
@@ -698,10 +753,17 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
                     activeSeg->manualInserted ? activeSeg->targetZoom : config.defaultZoomFactor,
                     1.00f, 2.80f);
                 desiredSpotAlpha = std::clamp(config.focusSpotlightDim, 0.0f, 0.65f);
-                // 锁定视角防晃模式下直接锁定语义聚类中心（零漂移）；自由跟鼠模式才随点击/鼠标摇移
+                // 追踪当前放大段内最新真实意图锚点（点击或正在输入的焦点）
+                // 关键不变量：即使在三脚架锁镜模式或 typingAutoZoom 关闭下，只要当前已处于放大态，
+                // 真实打字焦点与新点击绝不可被裁切出放大视口！纯鼠标闲逛则继续保持三脚架纹丝不动。
                 float refX = activeSeg->focusX;
                 float refY = activeSeg->focusY;
-                if (!activeSeg->manualInserted && !config.lockCameraWhileZoomed) {
+                bool hasLiveIntent = false;
+                float liveIntentX = refX;
+                float liveIntentY = refY;
+                int64_t liveIntentPts = -1;
+
+                if (!activeSeg->manualInserted) {
                     while (clickZoomCursor < clicksRef.size() && clicksRef[clickZoomCursor].ptsMs < activeSeg->startMs) {
                         ++clickZoomCursor;
                     }
@@ -711,31 +773,47 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
                     for (size_t ci = clickZoomCursor; ci < clicksRef.size(); ++ci) {
                         const auto& clk = clicksRef[ci];
                         if (clk.ptsMs > ptsMs + 180) break;
-                        if (clk.ptsMs >= activeSeg->startMs) {
-                            refX = clk.x;
-                            refY = clk.y;
+                        if (clk.ptsMs >= activeSeg->startMs && clk.ptsMs >= liveIntentPts) {
+                            liveIntentPts = clk.ptsMs;
+                            liveIntentX = std::clamp(clk.x, 0.0f, srcW);
+                            liveIntentY = std::clamp(clk.y, 0.0f, srcH);
+                            hasLiveIntent = true;
                         }
                     }
-                    if (config.typingAutoZoom) {
-                        while (focusZoomCursor < focusRef.size() && focusRef[focusZoomCursor].ptsMs < activeSeg->startMs) {
-                            ++focusZoomCursor;
-                        }
-                        while (focusZoomCursor > 0 && focusRef[focusZoomCursor - 1].ptsMs >= activeSeg->startMs) {
-                            --focusZoomCursor;
-                        }
-                        for (size_t fi = focusZoomCursor; fi < focusRef.size(); ++fi) {
-                            const auto& foc = focusRef[fi];
-                            if (foc.ptsMs > ptsMs + 120) break;
-                            if (foc.ptsMs >= activeSeg->startMs) {
-                                refX = foc.x;
-                                refY = foc.y;
-                            }
+                    while (focusZoomCursor < focusRef.size() && focusRef[focusZoomCursor].ptsMs < activeSeg->startMs) {
+                        ++focusZoomCursor;
+                    }
+                    while (focusZoomCursor > 0 && focusRef[focusZoomCursor - 1].ptsMs >= activeSeg->startMs) {
+                        --focusZoomCursor;
+                    }
+                    for (size_t fi = focusZoomCursor; fi < focusRef.size(); ++fi) {
+                        const auto& foc = focusRef[fi];
+                        if (foc.ptsMs > ptsMs + 120) break;
+                        if (foc.ptsMs >= activeSeg->startMs && foc.ptsMs >= liveIntentPts) {
+                            liveIntentPts = foc.ptsMs;
+                            liveIntentX = std::clamp(foc.x, 0.0f, srcW);
+                            liveIntentY = std::clamp(foc.y, 0.0f, srcH);
+                            hasLiveIntent = true;
                         }
                     }
                 }
 
                 const float viewHalfW = (srcW / (std::max)(1.0f, desiredZoom)) * 0.5f;
                 const float viewHalfH = (srcH / (std::max)(1.0f, desiredZoom)) * 0.5f;
+
+                if (!activeSeg->manualInserted && hasLiveIntent) {
+                    if (!config.lockCameraWhileZoomed) {
+                        refX = liveIntentX;
+                        refY = liveIntentY;
+                    } else {
+                        // 锁镜模式下：仅当新点击或打字焦点离开中心 56% 舒适区时，平滑迁移机位，避免琐碎微晃又杜绝出框
+                        if (std::abs(liveIntentX - refX) > viewHalfW * 0.56f ||
+                            std::abs(liveIntentY - refY) > viewHalfH * 0.56f) {
+                            refX = liveIntentX;
+                            refY = liveIntentY;
+                        }
+                    }
+                }
 
                 anchorFocusX = refX;
                 anchorFocusY = refY;
@@ -773,6 +851,16 @@ std::vector<StudioEvaluatedFrame> StudioTimelineAnalyzer::bakeEvaluatedFrames(
                 // 提前对目标中心做视口边界钳制，避免弹簧向屏幕外无效蓄力
                 desiredCenterX = std::clamp(anchorFocusX, viewHalfW, (std::max)(viewHalfW, srcW - viewHalfW));
                 desiredCenterY = std::clamp(anchorFocusY, viewHalfH, (std::max)(viewHalfH, srcH - viewHalfH));
+
+                // 硬性数学防裁切护栏：当存在真实打字/点击锚点时，确保该锚点始终位于视口内侧至少 16% 边距处
+                if (!activeSeg->manualInserted && hasLiveIntent && desiredZoom > 1.02f) {
+                    const float maxOffsetX = viewHalfW * 0.68f;
+                    const float maxOffsetY = viewHalfH * 0.68f;
+                    desiredCenterX = std::clamp(desiredCenterX, liveIntentX - maxOffsetX, liveIntentX + maxOffsetX);
+                    desiredCenterY = std::clamp(desiredCenterY, liveIntentY - maxOffsetY, liveIntentY + maxOffsetY);
+                    desiredCenterX = std::clamp(desiredCenterX, viewHalfW, (std::max)(viewHalfW, srcW - viewHalfW));
+                    desiredCenterY = std::clamp(desiredCenterY, viewHalfH, (std::max)(viewHalfH, srcH - viewHalfH));
+                }
 
                 if (config.zoomMode == StudioZoomMode::Motion3D && desiredZoom > 1.02f) {
                     const float normDx = std::clamp((anchorFocusX - centerDefaultX) / (srcW * 0.45f), -1.0f, 1.0f);
@@ -1711,7 +1799,20 @@ void StudioTimelineRecorder::samplingLoop() {
             if (fg) {
                 DWORD fgPid = 0;
                 const DWORD tid = GetWindowThreadProcessId(fg, &fgPid);
-                if (fgPid != selfPid) {
+                // 放行 Tools3000 搜索/设置等业务窗口，仅排除录屏自身悬浮控制条与演播室预览窗
+                bool isSelfRecordingOverlay = false;
+                if (fgPid == selfPid) {
+                    wchar_t clsBuf[128]{};
+                    const int clsLen = GetClassNameW(fg, clsBuf, 128);
+                    if (clsLen > 0) {
+                        const std::wstring_view cls(clsBuf, static_cast<size_t>(clsLen));
+                        isSelfRecordingOverlay =
+                            cls.find(L"Recording") != std::wstring_view::npos ||
+                            cls.find(L"ShortcutHint") != std::wstring_view::npos ||
+                            cls.find(L"StudioPreview") != std::wstring_view::npos;
+                    }
+                }
+                if (!isSelfRecordingOverlay) {
                     RECT fgRc{};
                     if (GetWindowRect(fg, &fgRc) && fgRc.right > fgRc.left && fgRc.bottom > fgRc.top) {
                         const bool hwndChanged = (fg != prevFgHwnd);
@@ -1834,7 +1935,8 @@ void StudioTimelineRecorder::typingFocusLoop() {
                                         if (SUCCEEDED(SafeArrayAccessData(rectSa, reinterpret_cast<void**>(&vals))) && vals) {
                                             const double rl = vals[0], rt = vals[1], rw = vals[2], rh = vals[3];
                                             SafeArrayUnaccessData(rectSa);
-                                            if ((rw >= 0.0 && rh > 1.0) &&
+                                            if (rw >= 0.0 && rw <= static_cast<double>(m_width) * 0.85 &&
+                                                rh > 1.0 && rh <= 220.0 &&
                                                 acceptScreenPoint(rl + (std::min)(rw * 0.5, 24.0), rt + rh * 0.5)) {
                                                 resolved = true;
                                             }
@@ -1857,10 +1959,13 @@ void StudioTimelineRecorder::typingFocusLoop() {
                         const double bw = static_cast<double>(brc.right - brc.left);
                         const double bh = static_cast<double>(brc.bottom - brc.top);
                         const double regionArea = static_cast<double>(m_width) * static_cast<double>(m_height);
-                        // 仅当焦点控件确实是具体输入框/编辑子区（面积 <= 选区 52%）时才取其输入起始视点
-                        if (bw >= 12.0 && bh >= 10.0 && (bw * bh) <= regionArea * 0.52) {
+                        // 严格校验紧凑输入控件边界（面积 <= 22% 且高度 <= 28% 屏高），
+                        // 防止 WebView2 / Electron / Chrome 根容器被误认为输入框而把打字焦点拉向屏幕正中
+                        if (bw >= 12.0 && bh >= 10.0 &&
+                            (bw * bh) <= regionArea * 0.22 &&
+                            bh <= static_cast<double>(m_height) * 0.28) {
                             const double targetX = static_cast<double>(brc.left) + (std::min)(bw * 0.35, 160.0);
-                            const double targetY = static_cast<double>(brc.top) + (std::min)(bh * 0.5, 120.0);
+                            const double targetY = static_cast<double>(brc.top) + (std::min)(bh * 0.45, 48.0);
                             if (acceptScreenPoint(targetX, targetY)) {
                                 resolved = true;
                             }
@@ -1877,7 +1982,7 @@ void StudioTimelineRecorder::typingFocusLoop() {
             std::lock_guard lock(m_dataMutex);
             if (!m_data.clickEvents.empty()) {
                 const auto& lastClk = m_data.clickEvents.back();
-                if (pts - lastClk.ptsMs <= 8000 &&
+                if (pts - lastClk.ptsMs <= 30000 &&
                     lastClk.x >= 0.0f && lastClk.x <= static_cast<float>(m_width) &&
                     lastClk.y >= 0.0f && lastClk.y <= static_cast<float>(m_height)) {
                     focusRelX = lastClk.x;

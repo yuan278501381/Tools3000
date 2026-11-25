@@ -209,8 +209,10 @@ struct MarkupElement {
     // 文本内容与描边体系
     std::string text;
     float fontSize = 16.0f;
-    float textMaxWidth = 0.0f;     // 文本框最大可用外框像素宽度（<= 0.0f 不限宽；> 0.0f 在截图右边界处自动软换行）
-    cv::Size textRenderSize{0, 0}; // 记录最后一次渲染的文本尺寸，用于包围盒
+    float textMaxWidth = 0.0f;        // 文本框最大可用外框像素宽度（<= 0.0f 不限宽；> 0.0f 自动软换行）
+    bool hasCustomTextWidth = false;  // true=用户手动拖左右边手柄设定了独立宽度（移动/渲染不再强行重置）
+    float customTextBoxHeight = 0.0f; // > 0.0f=用户手动拖上下边手柄设定的独立外框高度
+    cv::Size textRenderSize{0, 0};    // 记录最后一次渲染的文本尺寸，用于包围盒
     bool textOutline = true;       // 文字/图形是否描边 (默认开启)
     MarkupColor textOutlineColor{0, 0, 0, 0}; // 描边/边框颜色: a == 0 为自适应高对比描边，其他为固定颜色
     float outlineThickness = 2.0f; // 边框/描边粗细 (0.0f ~ 12.0f; <= 0.05f 表示无边框)

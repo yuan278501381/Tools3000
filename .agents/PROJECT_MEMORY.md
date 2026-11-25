@@ -6,6 +6,44 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] 演播室全格式高压缩与运镜输入防裁切、截图文本框 8 向独立拉伸、性能页真实工作集与即时静默回收（Issue `#29`）、HDD 搜索首帧防黑屏及剪贴板批量删除根治（`v1.4.10`）
+- **1. 演播室全 6 格式导出修复与世界级桌面高压缩（`vcpkg.json`, `StudioVideoCompositor*.{h,cpp}`, `StudioExportWorker.{h,cpp}`, `StudioPreviewWindowExport.cpp`, 6 套 `resources/locales/native/*.json`）**：
+  - *根因*：`vcpkg.json` 此前仅启用 `ffmpeg[openh264]`，导致 `WebM_VP9` 在构建物中无 `libvpx-vp9`/`libopus` 编码器 71ms 必败且 UI 只弹出泛化失败提示；H.264 固定 ABR 与 GIF/WebP 固定每帧写出导致成片体积偏大；
+  - *根治*：① 升级 `vcpkg.json` 为 `ffmpeg[gpl,openh264,opus,vpx,x264]`，引入 `libx264`（CRF + 5s GOP + `aq-mode=2:deblock=-1,-1:ref=3` + 静态帧 VFR 抽帧）、`libvpx-vp9`（CQ + `row-mt=1` + `WebmAudioTranscoder` Opus 转码）、GIF/WebP 静态帧时长合并，以及目标文件被锁自动顺延文件名救援与 8 语种具体失败诊断 Toast；② 经真实原片肉眼抽帧对比收紧桌面小字画质甜点为 **`libx264` High=16 / Rec=20 / Compact=25** 与 **`libvpx-vp9` High=18 / Rec=24 / Compact=30**；
+  - *真实 51.50 MB 原片 (`3456x2086`, `55.02s`) 端到端实测*：`WebM_VP9 1080p24 推荐` **`3.66 MB` (-92.9%)**、`MP4_H264 1080p30 推荐` **`3.75 MB` (-92.7%)**、`MP4_H264 1080p30 紧凑` **`2.94 MB` (-94.3%)**、`WebP 1080p20 (15s)` **`1.88 MB`**、`GIF 微信直发 (15s)` **`0.52 MB`**、`GIF 高清 (15s)` **`2.56 MB`**。
+- **2. 录屏自动运镜上半屏文本框输入防裁切五重重构（`src/capture/StudioTimeline.cpp`）**：
+  - 根治 `resolvePopupCausalAnchor`、`buildAutoZoomSegments` 远距聚类拆分、`refineZoomSegmentsWithVisualDiff` 顶部输入护栏、`bakeEvaluatedFrames` 锁镜实时意图追焦 + 硬防裁切不变量、`samplingLoop` 放行自身业务窗及 `typingFocusLoop` 拦截 WebView2 容器巨框并保留 30s 点击锚点兜底；1.60x 放大全程保证上半屏输入栏完整居中可见。
+- **3. 截图文本框 8 方向独立拉伸与实时流式重排（`MarkupEngine.{h,cpp}`, `MarkupEngineEffects.cpp`, `CaptureTextEditor.h`, `CaptureInput*.cpp`）**：
+  - `MarkupElement` 新增 `hasCustomTextWidth` 与 `customTextBoxHeight`；左右中点胶囊手柄独立拉宽/收窄并实时软换行重排（字号不变）、上下中点胶囊手柄独立拉长/压缩文本框高度、四角圆点手柄等比缩放字号与宽/高，双击四边中点胶囊手柄一键恢复自动贴合内容，Undo/Redo 全保真。
+- **4. 性能与内存页真实专用工作集 & 即时静默回收（Issue `#29 @xwshan`）(`PerformanceMonitor.{h,cpp}`, `MessageBridge.cpp`, `PerformancePage.{tsx,test.tsx}`, `DatabaseManager.cpp`)**：
+  - *根因*：`PerformanceMonitor::sampleMemory` 曾将虚拟提交量 `pmc.PrivateUsage` 误报为 `privateMemoryMB`（界面标为「专用工作集内存」），造成「专用 42 MB > 总工作集 7 MB」并与任务管理器「内存」列严重矛盾，且工作集修剪后纹丝不动；`perf.trimMemory` 仅预约异步 `scheduleQuietIdleTrim(250)` 且未触发即时重采样与在线搜索服务联动；
+  - *根治*：① 优先通过 `PROCESS_MEMORY_COUNTERS_EX2.PrivateWorkingSetSize` 采集与任务管理器 1:1 一致的真实专用工作集（旧系统回退 `min(PrivateUsage, WorkingSetSize)`）；② 新增线程安全 `PerformanceMonitor::sampleNow()`，`perf.trimMemory` 立即执行堆紧缩/工作集修剪并回传最新 `metrics`，前端同步静默调用 `search.trimMemory`（严格 `autoStart=false`）；③ `DatabaseManager::saveSnapshot` 在机械盘上将后台写盘步进由 `16 MiB / 2ms` 收紧至 **`4 MiB / 12ms`**，平滑压低 5400/7200rpm 机械盘队列。
+- **5. 搜索框首次打开黑屏根治、服务闲置高水位再修剪与诊断日志附带服务日志（`SearchWindow.{h,cpp}`, `SearchApp.tsx`, `src/main.cpp`, `src/service/main.cpp`, `SearchPlugin.cpp`）**：
+  - *首帧门禁防黑屏*：Controller 创建后保持 `put_IsVisible(FALSE)` 不遮挡宿主原生加载界面，禁止对 0 帧隐藏 `preload` 窗过早 `TrySuspend()`；前端 `SearchApp` 双 `requestAnimationFrame` 后上报 `search.firstPaintReady`（`2000ms` 兜底）才切显或预约 25s 后温和挂起；
+  - *服务高水位再修剪与退出轻修剪（100% 维持默认会话常驻契约）*：`MemoryPolicyWatchdogThread` 在闲置期工作集被 Docker/Syncthing USN 写盘再次顶回 `>= 64 MiB` 时按冷却间隔温和再修剪，并收紧 `MaxPlanAnchorStates` (`8 -> 4`) 与 `scannedNormPaths` 上限 (`350k -> 100k`)；主程序退出时若服务在线且非 `full_resident`，在 `SearchPlugin::shutdown()` 发一次非阻塞 `trimMemory`（绝不停止服务、绝不拉起未运行服务）；
+  - *导出诊断日志*：`app.exportLogs` 自动附带 `ProgramData\Tools3000\logs\Tools3000_Service.log` 尾部最多 `512 KiB`。
+- **6. `Alt+V` 剪贴板批量删除「只删一条」3 大根因根治（`ClipboardApp.tsx`, `ClipboardApp.test.tsx`, `src/main.cpp`）**：
+  - ① 左侧复选框 `[data-clip-checkbox="true"]` 独立切换勾选绝不清空既有选区并阻止误起拖；② 多选态下右侧详情底栏删除按钮自动切换为危险态批量删除（`handleBatchDelete`）；③ 搜索框为空且存在多选时按 `Delete` 直接触发批量删除（支持 `Alt+V -> Ctrl+A -> Delete`）；④ `extractIdList` 兼容 JSON 浮点整数并补齐结构化观测日志。
+- **7. 全量质量门禁验收**：C++ **`893/893 PASSED`**（7 env-gated skipped, 0 failed）、前端 **`45/45` 文件 · `284/284 PASSED`**、ESLint + 7 重并发静态门禁 + `tsc -b` + Vite 生产构建 100% 通过。
+
+### [2026-11-25] 世界级方案 1B 索引压缩、机械盘 200x 有界视口水合、应用搜索防闪现与设置页机械盘适配（回应 LINUX DO `#101 @zg2qxy` 四项实机反馈）
+- **1. 世界级 1B 内存引擎压缩与流式快照（`StringArena.h`, `FileIndexStore.{h,cpp}`, `MftParser.{h,cpp}`, `DatabaseManager.cpp`, `service/main.cpp`）**：
+  - *紧凑索引结构*：`StoredFileRecord` 由 `64 B` 压降至 **`40 B`**（`-37.5%`）：`fileSize32` 内联 4 GiB 以内体积并由 `m_largeSizes` 溢出表保真任意 64-bit 大文件/目录聚合体积；`lastWriteSec` 使用 1 秒精度 Unix 时间戳（1970..2106）；`creationTime` 收敛至 `<= 65536` 条冷侧表（冷 MFT 扫描占 0 B）；`treeDepth` 下沉为 `recomputeHierarchyMetadata()` 瞬态局部变量（常驻 0 B）；`m_slots` 装载因子由 `50%` 提升至 `70%`；
+  - *双轨零膨胀字符串池*：`StringArena` 拆分为 1-byte ASCII 轨道（覆盖 85–95% 文件名与拼音首字母）+ 原生 2-byte UTF-16 轨道（中文 0 字节 UTF-8 膨胀），块粒度收紧至 `BlockShift = 18`（256K chars = 256 KiB ASCII / 512 KiB UTF-16，全 4B 字符寻址空间且多分区块尾浪费降低 75%）；全链路热扫描引入 `FileViewScratch` 零分配展宽，`RankedCandidate` 仅存 `uint32_t recordSlot`（`104 B -> 24 B`）并彻底消除 `wstring_view` 跨循环悬空风险；
+  - *3-pass 流式快照与冷修剪*：`DatabaseManager::saveSnapshot` 经 `withSnapshotLock` 采用固定 `2 MiB` 字符串块与 `2 MiB` POD 块流式落盘（100% 保持 `EASYDB02` 二进制兼容，HDD 每写 `16 MiB` 礼让 `Sleep(2)`），彻底消除 150–250 MB 快照峰值；`MftParser::EnumerateFiles` 补齐 `bulkImport = true` 与 `StorageDeviceTrimProperty` 机械盘探测回退；默认 `idleTrimMinutes` 由 `5 -> 2` 分钟，并在快照/重建完成后无在途查询时执行温和堆紧缩与工作集修剪。
+- **2. 机械盘每次新搜索耗时 4.2s+ 根因与有界视口优先水合（`src/service/MftParserQuery.cpp`）**：
+  - *根因*：`maxResultLimit = 0` 会扩展为每卷 `10,000` 条，`MftParser::Search` 对全部命中条目逐一同步执行 `GetFileAttributesExW`，机械盘 100 IOPS 下一次搜索需等待 4.2s–20s 并触发「正在扫描文件索引」进度条；
+  - *根治*：将 `$Recycle.Bin` 与 `Recent` 过滤彻底拆为 100% 纯内存过滤（全量命中均生效），磁盘 `GetFileAttributesExW` 实时水合与幽灵检测严格有界限流至视口顶部（HDD 上限 `24` 条 / `50 ms` 硬预算；SSD 上限 `100` 条 / `80 ms` 硬预算；USN 监听活跃且已水合条目跳过重复 stat），结果总数 100% 守恒。
+- **3. 应用搜索防闪现「未找到」与后台 SWR 热更新（`InstalledAppIndex.{h,cpp}`, `AppLauncherCatalog.h`, `SearchPlugin.cpp`, `SearchEmptyState.tsx`, `useSearchEngine.ts`, `SearchApp.tsx`）**：
+  - `InstalledAppIndex` 与 `AppsFolderCatalog` 统一升级为 **10 分钟 TTL + Stale-While-Revalidate (SWR)** 后台低优热更新与安全 `shutdown()` 线程汇合；`search.windowShown` 异步预热进程内离线应用索引（严格不唤醒全盘服务）；服务处于 `initializing` / `starting` 时立即融合返回本地应用/系统命令/书签（`partialLocalResults: true`）；
+  - 前端 `useSearchEngine` 在 `busy` 重试期间保持 `loading = true` 并在 `starting` 携带本地结果时即时渲染，`SearchApp` 仅在无结果时隐藏表格，`SearchEmptyState` 新增 `snapshotQuery` 强一致性守卫彻底杜绝错位空态闪现。
+- **4. 设置页机械盘卡顿与磁盘飙升治理（`WinUtils.{h,cpp}`, `SettingsWindow.{h,cpp}`, `I18nLogCatalog.cpp`, `ConfigBackupService.cpp`, 8 语种 JSON）**：
+  - `WinUtils::isPathOnRotationalDisk` 提供按盘符无锁原子缓存的介质探测（`SeekPenalty` + `Trim` 回退）；`SettingsWindow` 关闭仍即时 `TrySuspend()` + `3s` 冷修剪，彻底销毁超时改为按介质自适应（SSD `5` 分钟 / HDD `15` 分钟）；`ConfigBackupService::detectLocalSyncFolders` 增加 `%LOCALAPPDATA%\Google\DriveFS` 前置门控（未安装时不探测 `G:–Z:` 避免唤醒休眠机械盘）、`GetLogicalDrives()` + `DRIVE_FIXED` 过滤与 10 分钟 TTL 缓存。
+- **5. 真实全盘实测数据（2,942,415 条本机 C+D 双盘记录，改前旧版 vs 改后新版同机对比）**：
+  - **内存占用**：Ready `PrivateBytes` 由 **`314.91 MB` -> `197.00 MB`（-117.91 MB / -37.4%，均摊 `70.2 B/file`）**，Ready `WorkingSet` 由 **`323.83 MB` -> `206.01 MB`**，`trimMemory` 后 `WorkingSet` 仅 **`0.89 MB`**；
+  - **全语法结果数量与准确率**：28 项全语法查询全部 **`Delta = 0`**（27/28 路径集合 100% 逐条一致，1 项 `limit=10000` 截断超长高频词 `config` 数量 `10000 -> 10000` 且端到端耗时由 **`1179 ms -> 226 ms` (5.2x)**，`*.ps1` `2782` 条 **`629 ms -> 124 ms` (5.1x)**，`Tools3000 cpp` `10000` 条 **`830 ms -> 251 ms` (3.3x)**）；
+  - **全量质量门禁**：C++ `889/889 PASSED`（6 env-gated skipped, 0 failed）、前端 `283/283 PASSED`（45 files）、ESLint + `tsc -b` + Vite + 7 重静态门禁 100% 通过。
+
 ### [2026-11-25] PP-OCRv6 与全 4 类离线模型下载完整校验修复 + Tools3000_Service 浏览器敏感凭据文件零句柄触碰守卫（`v1.4.9`，解决 Issue `#28`）
 - **1. PP-OCRv6 离线模型下载校验必败根因与全 4 类模型防截断加固 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `TextReplaceEngine.cpp`, `OcrPage.tsx`)**：
   - *根因*：`v1.4.8` 中 `DeepOcrEngineModel.cpp::verifyCandidatePath()` 仅对扩展语种包（`isScriptExtOnnx`）跳过了 OpenCV DNN 试解析，但对 `PP-OCRv6_rec_small.onnx` 与 `PP-OCRv6_rec_medium.onnx` 仍调用旧版 OpenCV 4.12 的 `cv::dnn::readNetFromONNX()`，因 OpenCV 4.12 不支持 PP-OCRv6 新算子直接抛异常删包并报错 `Failed to download or verify PP-OCRv6_rec_small.onnx`；同时 `OcrPage.tsx` 在老版 `v4` 升级失败时因 `next.state === 'installed'` 静默吞掉了错误 Toast；

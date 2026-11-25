@@ -32,33 +32,40 @@ enum class HydrateResult {
     GhostNotFound
 };
 
+// Pure in-memory shadow-path filter (Recycle Bin / Windows & Office Recent shortcuts) so
+// every candidate is filtered in microseconds with zero disk I/O even on slow rotational HDDs.
+bool isRejectedShadowPath(const std::wstring& fullPath, bool allowRecycleBin, bool allowRecentShadow) {
+    if (allowRecycleBin && allowRecentShadow) {
+        return false;
+    }
+    const std::wstring lowerPath = normalize(fullPath);
+    if (!allowRecycleBin &&
+        (lowerPath.find(L"\\$recycle.bin") != std::wstring::npos ||
+         lowerPath.find(L"/$recycle.bin") != std::wstring::npos)) {
+        return true;
+    }
+    if (!allowRecentShadow &&
+        (lowerPath.find(L"\\microsoft\\windows\\recent\\") != std::wstring::npos ||
+         lowerPath.find(L"/microsoft/windows/recent/") != std::wstring::npos ||
+         lowerPath.find(L"\\microsoft\\office\\recent\\") != std::wstring::npos ||
+         lowerPath.find(L"/microsoft/office/recent/") != std::wstring::npos)) {
+        return true;
+    }
+    return false;
+}
+
 // FSCTL_ENUM_USN_DATA is deliberately fast, but its records do not contain a
 // file's size or creation time; USN_RECORD::TimeStamp is also the journal event
 // time rather than the authoritative last-write time. Hydrate only the small
-// final result set so the index stays compact while every displayed property is
-// accurate.
+// top viewport result slice within a strict I/O time budget so mechanical HDDs
+// never stall for seconds scanning thousands of off-screen matches.
 //
 // Real-time verification: if GetFileAttributesExW indicates the file physically
 // does not exist on disk (ERROR_FILE_NOT_FOUND or ERROR_PATH_NOT_FOUND), return
 // GhostNotFound so the caller can drop the phantom node and prune it from the store.
-HydrateResult hydrateResultProperties(SearchResult& result, bool allowRecycleBin = false, bool allowRecentShadow = false) {
+HydrateResult hydrateResultProperties(SearchResult& result) {
     if (result.fullPath.empty()) {
         return HydrateResult::GhostNotFound;
-    }
-    if (!allowRecycleBin || !allowRecentShadow) {
-        std::wstring lowerPath = normalize(result.fullPath);
-        if (!allowRecycleBin &&
-            (lowerPath.find(L"\\$recycle.bin") != std::wstring::npos ||
-             lowerPath.find(L"/$recycle.bin") != std::wstring::npos)) {
-            return HydrateResult::RejectedRecycleBin;
-        }
-        if (!allowRecentShadow &&
-            (lowerPath.find(L"\\microsoft\\windows\\recent\\") != std::wstring::npos ||
-             lowerPath.find(L"/microsoft/windows/recent/") != std::wstring::npos ||
-             lowerPath.find(L"\\microsoft\\office\\recent\\") != std::wstring::npos ||
-             lowerPath.find(L"/microsoft/office/recent/") != std::wstring::npos)) {
-            return HydrateResult::RejectedRecycleBin;
-        }
     }
     // 对浏览器密码/Cookie/密钥库及 Windows 凭据存储目录零句柄触碰，避免触发杀软浏览器密码保护盾误报
     if (tools3000::service::SensitivePathGuard::shouldSkipMetadataHandleTouch(result.fileName, result.fullPath)) {
@@ -238,7 +245,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     auto getFastDirClauseMask = [&](DWORDLONG parentFrn,
                                     DWORDLONG& lastMaskParentFrn,
                                     uint64_t& lastDirMask,
-                                    std::vector<FlatMaskSlot>& maskCache) -> uint64_t {
+                                    std::vector<FlatMaskSlot>& maskCache,
+                                    tools3000::service::FileViewScratch& dirScratch) -> uint64_t {
         if (!hasSeparableClauses) {
             return 0ULL;
         }
@@ -274,7 +282,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             if (!node) {
                 break;
             }
-            const FileRecord dirRec = m_Store.view(*node);
+            const FileRecord dirRec = m_Store.view(*node, dirScratch);
             const DWORDLONG nextParent = dirRec.parentFileReferenceNumber;
             if (dirRec.fileName.empty() || dirRec.fileName == L"." ||
                 nextParent == cur || nextParent == 0) {
@@ -293,7 +301,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             const DWORDLONG stepFrn = chain[idx - 1];
             const auto* node = m_Store.find(stepFrn);
             if (node) {
-                const FileRecord dirRec = m_Store.view(*node);
+                const FileRecord dirRec = m_Store.view(*node, dirScratch);
                 if (!dirRec.fileName.empty() && dirRec.fileName != L".") {
                     baseMask |= expr.computeDirectorySegmentMask(
                         dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
@@ -309,7 +317,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     auto isAncestorExcludedByPattern = [&](DWORDLONG parentFrn,
                                            DWORDLONG& lastExParentFrn,
                                            bool& lastExResult,
-                                           std::unordered_map<DWORDLONG, bool>& exCache) -> bool {
+                                           std::unordered_map<DWORDLONG, bool>& exCache,
+                                           tools3000::service::FileViewScratch& dirScratch) -> bool {
         if (excludeMatcher.singleSegmentPatterns().empty() || parentFrn == 0) {
             return false;
         }
@@ -336,7 +345,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             chain[chainLen++] = cur;
             const auto* node = m_Store.find(cur);
             if (!node) break;
-            const FileRecord dirRec = m_Store.view(*node);
+            const FileRecord dirRec = m_Store.view(*node, dirScratch);
             const DWORDLONG nextParent = dirRec.parentFileReferenceNumber;
             if (dirRec.fileName.empty() || dirRec.fileName == L"." ||
                 nextParent == cur || nextParent == 0) {
@@ -356,7 +365,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             if (!excluded) {
                 const auto* node = m_Store.find(stepFrn);
                 if (node) {
-                    const FileRecord dirRec = m_Store.view(*node);
+                    const FileRecord dirRec = m_Store.view(*node, dirScratch);
                     if (excludeMatcher.matchesSingleSegmentName(dirRec.fileName)) {
                         excluded = true;
                     }
@@ -376,8 +385,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                                    int& outPriority) {
         if (stored.isTierComputed()) {
             outDirClassFlags = stored.dirClassFlags;
-            outPathTier = stored.pathTier;
-            outPriority = stored.folderPriority;
+            outPathTier = stored.pathTier();
+            outPriority = stored.folderPriority();
             return;
         }
         // Fallback when an incremental orphan node has not yet had hierarchy metadata computed.
@@ -389,7 +398,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             if (pNode != nullptr) {
                 parentClassFlags = pNode->dirClassFlags;
                 parentStateBits = pNode->dirStateBits;
-                parentPriority = pNode->folderPriority;
+                parentPriority = pNode->folderPriority();
             }
         }
         outDirClassFlags = parentClassFlags;
@@ -414,7 +423,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
 
     struct RankedCandidate {
         DWORDLONG id = 0;
-        FileRecord record;
+        uint32_t recordSlot = tools3000::service::FileIndexStore::kEmptySlot;
         int rank = 7;
         int folderPriority = 200;
         uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
@@ -444,6 +453,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                              DWORDLONG& lastExParentFrn,
                              bool& lastExResult,
                              std::unordered_map<DWORDLONG, bool>& localExCache,
+                             tools3000::service::FileViewScratch& dirScratch,
                              std::wstring& outBuiltPath,
                              int& outPriority,
                              uint8_t& outPathTier) -> CandidateEvalResult {
@@ -508,7 +518,8 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             return CandidateEvalResult::Rejected;
         }
         if (!excludeMatcher.empty()) {
-            if (isAncestorExcludedByPattern(record.parentFileReferenceNumber, lastExParentFrn, lastExResult, localExCache)) {
+            if (isAncestorExcludedByPattern(
+                    record.parentFileReferenceNumber, lastExParentFrn, lastExResult, localExCache, dirScratch)) {
                 return CandidateEvalResult::Rejected;
             }
             if (excludeMatcher.matchesSingleSegmentName(record.fileName)) {
@@ -608,24 +619,28 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         DWORDLONG lastExParentFrn = UINT64_MAX;
         bool lastExResult = false;
         std::wstring scratchPath;
+        tools3000::service::FileViewScratch candScratch;
+        tools3000::service::FileViewScratch dirScratch;
         size_t checked = 0;
         for (const auto id : candidates) {
             if (((checked++ & cancelMask) == 0) && isCancelled && isCancelled()) return results;
-            const auto* stored = m_Store.find(id);
+            const uint32_t slotIdx = m_Store.findSlotIndex(id);
+            if (slotIdx == tools3000::service::FileIndexStore::kEmptySlot) continue;
+            const auto* stored = m_Store.at(slotIdx);
             if (!stored) continue;
             try {
-                const FileRecord record = m_Store.view(*stored);
+                const FileRecord record = m_Store.view(*stored, candScratch);
                 const uint64_t dirMask = getFastDirClauseMask(
-                    record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                    record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache, dirScratch);
                 int fPriority = 0;
                 uint8_t pTier = tools3000::service::kPathTierPrimaryUser;
                 scratchPath.clear();
                 const CandidateEvalResult eval = testCandidate(
-                    id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, scratchPath, fPriority, pTier);
+                    id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, dirScratch, scratchPath, fPriority, pTier);
                 if (eval == CandidateEvalResult::MatchedInMemory) {
                     filtered.push_back(id);
                     const int rnk = expr.calculateRank(record);
-                    ranked.push_back({id, record, rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
+                    ranked.push_back({id, slotIdx, rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
                 } else if (eval == CandidateEvalResult::NeedsLockFreeStat) {
                     appendPendingStat(pendingStatCandidates, id, dirMask, record, std::move(scratchPath), fPriority, pTier);
                 }
@@ -667,17 +682,19 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 DWORDLONG lastMaskParentFrn = UINT64_MAX;
                 uint64_t lastDirClauseMask = 0;
                 auto& localMasks = threadDirMasks[t];
+                tools3000::service::FileViewScratch candScratch;
+                tools3000::service::FileViewScratch dirScratch;
                 for (size_t i = startIdx; i < endIdx; ++i) {
                     if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
                     const auto* stored = m_Store.at(i);
                     if (!stored || !stored->isDirectory()) continue;
-                    const FileRecord dirRec = m_Store.view(*stored);
+                    const FileRecord dirRec = m_Store.view(*stored, candScratch);
                     if (dirRec.fileName.empty() || dirRec.fileName == L".") continue;
                     const uint64_t segMask = expr.computeDirectorySegmentMask(
                         dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
                     if (segMask != 0) {
                         const uint64_t parentMask = getFastDirClauseMask(
-                            dirRec.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                            dirRec.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache, dirScratch);
                         const uint64_t rawFullMask = parentMask | segMask;
                         if ((rawFullMask & negMask) == 0 && rawFullMask != 0 &&
                             std::find(localMasks.begin(), localMasks.end(), rawFullMask) == localMasks.end()) {
@@ -747,12 +764,14 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 DWORDLONG lastExParentFrn = UINT64_MAX;
                 bool lastExResult = false;
                 std::wstring scratchPath;
+                tools3000::service::FileViewScratch candScratch;
+                tools3000::service::FileViewScratch dirScratch;
 
                 for (size_t i = startIdx; i < endIdx; ++i) {
                     if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) break;
                     const auto* stored = m_Store.at(i);
                     if (!stored) continue;
-                    const FileRecord record = m_Store.view(*stored);
+                    const FileRecord record = m_Store.view(*stored, candScratch);
                     if (useOptimisticDirPreFilter) {
                         bool possible = false;
                         for (size_t m = 0; m < maximalDirMaskCount; ++m) {
@@ -767,16 +786,16 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                     }
                     const DWORDLONG id = record.fileReferenceNumber;
                     const uint64_t dirMask = getFastDirClauseMask(
-                        record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache);
+                        record.parentFileReferenceNumber, lastMaskParentFrn, lastDirClauseMask, flatMaskCache, dirScratch);
                     int fPriority = 0;
                     uint8_t pTier = tools3000::service::kPathTierPrimaryUser;
                     scratchPath.clear();
                     const CandidateEvalResult eval = testCandidate(
-                        id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, scratchPath, fPriority, pTier);
+                        id, *stored, record, dirMask, lastExParentFrn, lastExResult, localExCache, dirScratch, scratchPath, fPriority, pTier);
                     if (eval == CandidateEvalResult::MatchedInMemory) {
                         localCand.push_back(id);
                         const int rnk = expr.calculateRank(record);
-                        localRank.push_back({id, record, rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
+                        localRank.push_back({id, static_cast<uint32_t>(i), rnk, fPriority, effectiveSingleDriveTier(pTier, rnk)});
                     } else if (eval == CandidateEvalResult::NeedsLockFreeStat) {
                         appendPendingStat(localPendingStat, id, dirMask, record, std::move(scratchPath), fPriority, pTier);
                     }
@@ -809,27 +828,29 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
         }
     }
 
-    const auto compareRank = [&expr](const auto& a, const auto& b) {
+    const auto compareRank = [&expr, this](const RankedCandidate& a, const RankedCandidate& b) {
         if (a.pathTier != b.pathTier) return a.pathTier < b.pathTier;
         if (a.rank != b.rank) return a.rank < b.rank;
-        if (expr.hasContentFilter()) {
-            if (a.folderPriority != b.folderPriority) return a.folderPriority > b.folderPriority;
-            return a.record.lastWriteTime > b.record.lastWriteTime;
-        }
         if (a.folderPriority != b.folderPriority) return a.folderPriority > b.folderPriority;
-        if (a.record.lastWriteTime != b.record.lastWriteTime)
-            return a.record.lastWriteTime > b.record.lastWriteTime;
-        if (a.record.fileName.size() != b.record.fileName.size())
-            return a.record.fileName.size() < b.record.fileName.size();
-        const int cmp = _wcsnicmp(
-            a.record.fileName.data(),
-            b.record.fileName.data(),
-            a.record.fileName.size());
+        const auto* recA = m_Store.at(a.recordSlot);
+        const auto* recB = m_Store.at(b.recordSlot);
+        if (!recA || !recB) return recA != nullptr;
+        if (expr.hasContentFilter()) {
+            return recA->lastWriteSec > recB->lastWriteSec;
+        }
+        if (recA->lastWriteSec != recB->lastWriteSec) {
+            return recA->lastWriteSec > recB->lastWriteSec;
+        }
+        if (recA->nameLength() != recB->nameLength()) {
+            return recA->nameLength() < recB->nameLength();
+        }
+        const int cmp = m_Store.compareNamesIgnoreCase(*recA, *recB);
         if (cmp != 0) return cmp < 0;
-        return a.record.fileName < b.record.fileName;
+        return m_Store.compareNamesExact(*recA, *recB) < 0;
     };
 
     std::vector<DWORDLONG> resultIds;
+    std::vector<uint8_t> resultHydrated;
 
     if (pendingStatCandidates.empty()) {
         if (isCancelled && isCancelled()) return results;
@@ -860,22 +881,26 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
 
         results.reserve(resultCount);
         resultIds.reserve(resultCount);
+        resultHydrated.reserve(resultCount);
         for (size_t i = 0; i < resultCount; ++i) {
             const auto& candidate = ranked[i];
+            const auto* rec = m_Store.at(candidate.recordSlot);
+            if (!rec) continue;
             results.push_back(SearchResult{
-                std::wstring(candidate.record.fileName),
+                m_Store.copyFileName(*rec),
                 buildFullPath(candidate.id),
-                candidate.record.isDirectory,
-                candidate.record.fileSize,
-                candidate.record.creationTime,
-                candidate.record.lastWriteTime,
+                rec->isDirectory(),
+                m_Store.fileSizeOf(*rec),
+                m_Store.creationTimeOf(*rec),
+                m_Store.lastWriteTimeOf(*rec),
                 candidate.rank,
                 candidate.folderPriority,
                 candidate.pathTier,
                 0ULL,
-                candidate.record.fileAttributes,
+                rec->attributes16,
             });
             resultIds.push_back(candidate.id);
+            resultHydrated.push_back(rec->isMetadataHydrated() ? 1u : 0u);
         }
 
         // Never hold the index lock across filesystem I/O.
@@ -895,23 +920,27 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             int folderPriority = 200;
             uint8_t pathTier = tools3000::service::kPathTierPrimaryUser;
             uint32_t fileAttributes = 0;
+            bool metadataHydrated = false;
         };
 
         std::vector<OwnedRankedItem> ownedRanked;
         ownedRanked.reserve(ranked.size() + pendingStatCandidates.size());
         for (const auto& r : ranked) {
+            const auto* rec = m_Store.at(r.recordSlot);
+            if (!rec) continue;
             ownedRanked.push_back(OwnedRankedItem{
                 r.id,
-                std::wstring(r.record.fileName),
+                m_Store.copyFileName(*rec),
                 buildFullPath(r.id),
-                r.record.isDirectory,
-                r.record.fileSize,
-                r.record.creationTime,
-                r.record.lastWriteTime,
+                rec->isDirectory(),
+                m_Store.fileSizeOf(*rec),
+                m_Store.creationTimeOf(*rec),
+                m_Store.lastWriteTimeOf(*rec),
                 r.rank,
                 r.folderPriority,
                 r.pathTier,
-                r.record.fileAttributes,
+                rec->attributes16,
+                rec->isMetadataHydrated(),
             });
         }
         {
@@ -986,6 +1015,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                         item.folderPriority,
                         effectiveSingleDriveTier(item.pathTier, rnk),
                         item.fileAttributes,
+                        statOk,
                     });
                 }
             }
@@ -1026,6 +1056,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
 
         results.reserve(resultCount);
         resultIds.reserve(resultCount);
+        resultHydrated.reserve(resultCount);
         for (size_t i = 0; i < resultCount; ++i) {
             auto& item = ownedRanked[i];
             results.push_back(SearchResult{
@@ -1042,6 +1073,7 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
                 item.fileAttributes,
             });
             resultIds.push_back(item.id);
+            resultHydrated.push_back(item.metadataHydrated ? 1u : 0u);
         }
     }
 
@@ -1049,15 +1081,68 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     validatedResults.reserve(results.size());
     std::vector<DWORDLONG> ghostFrns;
     const bool validateDiskExistence = isRealTimeValidationEnabled();
+    const bool usnListening = m_IsListening.load(std::memory_order_acquire);
+
+    // Bounded viewport-first disk hydration:
+    // Previously `maxResultLimit == 0` expanded to 10,000 results/volume and synchronously invoked
+    // `GetFileAttributesExW` on EVERY hit, causing 4s..20s stalls on mechanical HDDs.
+    // Now shadow-path filtering runs 100% in memory, while disk stat hydration is strictly
+    // bounded to the top viewport hits within a hard latency budget (24 hits / 50ms on HDD,
+    // 100 hits / 80ms on SSD) so every search returns in milliseconds.
+    constexpr size_t kHddDiskHydrateMaxItems = 24;
+    constexpr size_t kSsdDiskHydrateMaxItems = 100;
+    constexpr size_t kHddUsnTrustedTopWindow = 16;
+    constexpr size_t kSsdUsnTrustedTopWindow = 48;
+    constexpr auto kHddDiskHydrateBudget = std::chrono::milliseconds(50);
+    constexpr auto kSsdDiskHydrateBudget = std::chrono::milliseconds(80);
+
+    const size_t maxDiskStats = m_IsRotationalDisk ? kHddDiskHydrateMaxItems : kSsdDiskHydrateMaxItems;
+    const size_t usnTrustedTop = m_IsRotationalDisk ? kHddUsnTrustedTopWindow : kSsdUsnTrustedTopWindow;
+    const auto diskHydrateBudget = m_IsRotationalDisk ? kHddDiskHydrateBudget : kSsdDiskHydrateBudget;
+    const auto hydrateStartTime = std::chrono::steady_clock::now();
+    size_t diskStatsPerformed = 0;
+    bool diskHydrateBudgetExhausted = false;
 
     for (size_t i = 0; i < results.size(); ++i) {
         if (isCancelled && isCancelled()) {
             validatedResults.clear();
             break;
         }
-        const bool neededStat = (!results[i].isDirectory && results[i].fileSize == 0) ||
+        if (results[i].fullPath.empty()) {
+            if (validateDiskExistence) {
+                ghostFrns.push_back(resultIds[i]);
+            }
+            continue;
+        }
+        if (isRejectedShadowPath(results[i].fullPath, queryExplicitRecycle, queryExplicitRecent)) {
+            if (validateDiskExistence && !queryExplicitRecycle &&
+                (results[i].fullPath.find(L"$Recycle.Bin") != std::wstring::npos ||
+                 results[i].fullPath.find(L"$RECYCLE.BIN") != std::wstring::npos)) {
+                ghostFrns.push_back(resultIds[i]);
+            }
+            continue;
+        }
+
+        const bool alreadyHydrated = (i < resultHydrated.size() && resultHydrated[i] != 0);
+        const bool skipViaUsnTrust = usnListening && alreadyHydrated && (validatedResults.size() >= usnTrustedTop);
+        const bool shouldDiskStat = !diskHydrateBudgetExhausted &&
+                                    !skipViaUsnTrust &&
+                                    (diskStatsPerformed < maxDiskStats);
+        if (!shouldDiskStat) {
+            validatedResults.push_back(std::move(results[i]));
+            continue;
+        }
+
+        const bool neededStat = !alreadyHydrated ||
+                                (!results[i].isDirectory && results[i].fileSize == 0) ||
                                 (results[i].lastWriteTime == 0);
-        const HydrateResult status = hydrateResultProperties(results[i], queryExplicitRecycle, queryExplicitRecent);
+        const HydrateResult status = hydrateResultProperties(results[i]);
+        ++diskStatsPerformed;
+        if ((diskStatsPerformed & 0x03u) == 0 &&
+            (std::chrono::steady_clock::now() - hydrateStartTime) >= diskHydrateBudget) {
+            diskHydrateBudgetExhausted = true;
+        }
+
         if (status == HydrateResult::Valid) {
             if (neededStat && (results[i].fileSize != 0 || results[i].lastWriteTime != 0)) {
                 hydratedStats.push_back(HydratedStat{
@@ -1074,13 +1159,6 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
             } else {
                 // In mock / in-memory test mode without physical files on disk, keep the mock result
                 validatedResults.push_back(std::move(results[i]));
-            }
-        } else if (status == HydrateResult::RejectedRecycleBin) {
-            // Recycled files must never be returned when not explicitly requested
-            if (validateDiskExistence && !queryExplicitRecycle &&
-                (results[i].fullPath.find(L"$Recycle.Bin") != std::wstring::npos ||
-                 results[i].fullPath.find(L"$RECYCLE.BIN") != std::wstring::npos)) {
-                ghostFrns.push_back(resultIds[i]);
             }
         }
     }
@@ -1204,7 +1282,8 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         : 0ULL;
 
     auto resolveFolderNode = [&](DWORDLONG parentFrn,
-                                 std::unordered_map<DWORDLONG, CachedFolderNode>& folderCache) -> const CachedFolderNode& {
+                                 std::unordered_map<DWORDLONG, CachedFolderNode>& folderCache,
+                                 tools3000::service::FileViewScratch& dirScratch) -> const CachedFolderNode& {
         auto it = folderCache.find(parentFrn);
         if (it != folderCache.end()) {
             return it->second;
@@ -1219,7 +1298,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             return folderCache.emplace(parentFrn, std::move(node)).first->second;
         }
 
-        std::vector<std::wstring_view> segments;
+        std::vector<const tools3000::service::StoredFileRecord*> segments;
         segments.reserve(16);
         bool prunedByAlwaysNoise = false;
         bool prunedByDevNoise = false;
@@ -1243,13 +1322,13 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             }
             const auto* storedDir = m_Store.find(cur);
             if (!storedDir) break;
-            const FileRecord dirRec = m_Store.view(*storedDir);
+            const FileRecord dirRec = m_Store.view(*storedDir, dirScratch);
             if (!dirRec.fileName.empty() && dirRec.fileName != L".") {
                 if (filterHasSeparableGroups) {
                     node.dirClauseMask |= fileFilterExpr.computeDirectorySegmentMask(
                         dirRec.fileName, dirRec.pinyinInitials, dirRec.pinyinFull);
                 }
-                segments.push_back(dirRec.fileName);
+                segments.push_back(storedDir);
                 const std::wstring segNorm = normalize(dirRec.fileName);
                 if (!explicitRecycle &&
                     (segNorm == L"$recycle.bin" || segNorm == L"system volume information")) {
@@ -1350,7 +1429,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         node.fullDirPath.push_back(L':');
         for (auto rIt = segments.rbegin(); rIt != segments.rend(); ++rIt) {
             node.fullDirPath.push_back(L'\\');
-            node.fullDirPath.append(*rIt);
+            m_Store.appendNameTo(**rIt, node.fullDirPath);
         }
         node.lowerDirPath = normalize(node.fullDirPath);
 
@@ -1495,6 +1574,8 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
             localOut.reserve((std::min<size_t>)((endIdx - startIdx) / 32 + 64, 16384));
             std::unordered_map<DWORDLONG, CachedFolderNode> localFolderCache;
             localFolderCache.reserve(2048);
+            tools3000::service::FileViewScratch candScratch;
+            tools3000::service::FileViewScratch dirScratch;
 
             for (size_t i = startIdx; i < endIdx; ++i) {
                 if (((i - startIdx) & cancelMask) == 0 && isCancelled && isCancelled()) {
@@ -1502,7 +1583,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 }
                 const auto* stored = m_Store.at(i);
                 if (!stored) continue;
-                const FileRecord record = m_Store.view(*stored);
+                const FileRecord record = m_Store.view(*stored, candScratch);
                 if (record.isDirectory) continue;
 
                 if (options.excludeOpts.excludeHidden && (record.fileAttributes & FILE_ATTRIBUTE_HIDDEN)) continue;
@@ -1524,7 +1605,7 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
                 }
 
                 const CachedFolderNode& dirNode = resolveFolderNode(
-                    record.parentFileReferenceNumber, localFolderCache);
+                    record.parentFileReferenceNumber, localFolderCache, dirScratch);
                 if (dirNode.pruned) {
                     continue;
                 }

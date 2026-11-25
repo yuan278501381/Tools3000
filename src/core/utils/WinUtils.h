@@ -52,6 +52,9 @@ public:
     /// 获取应用数据根目录（测试隔离变量、便携目录、LocalAppData，按此优先级）
     static std::filesystem::path getAppDataDirectory();
 
+    /// 判断给定路径所在物理磁盘是否为机械旋转磁盘 (HDD)，结果按盘符无锁缓存以保证 0 重复 I/O
+    static bool isPathOnRotationalDisk(const std::filesystem::path& path) noexcept;
+
     /// 获取日志目录
     static std::filesystem::path getLogDirectory();
 

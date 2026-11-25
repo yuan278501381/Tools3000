@@ -35,6 +35,7 @@ struct StudioExportJobPayload {
 struct StudioExportWorkerOutcome {
     bool handledOutOfProcess = false; // true = 已由独立子进程执行完毕；false = 需调用方回退进程内执行
     bool succeeded = false;
+    std::string errorDetail;          // 失败时由子进程透传的诊断原因（供宿主日志与用户提示）
 };
 
 /// 完整无损序列化 / 反序列化演播室导出作业（供进程隔离传输与单元测试往返校验）

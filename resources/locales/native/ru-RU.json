@@ -982,5 +982,7 @@
   "Auto script: {0}": "Автовыбор: {0}",
   "Refining {0} low-confidence text lines...": "Уточнение {0} строк с низкой уверенностью...",
   "Refining": "Уточнение",
-  "Detected {0}, re-recognizing with script pack...": "Обнаружен язык ({0}), повторное распознавание..."
+  "Detected {0}, re-recognizing with script pack...": "Обнаружен язык ({0}), повторное распознавание...",
+  "Export destination is locked or unwritable; raw recording preserved": "Путь экспорта занят или недоступен для записи; исходная запись сохранена",
+  "Encoder initialization failed for this format; raw recording preserved": "Не удалось инициализировать кодек для этого формата; исходная запись сохранена"
 }

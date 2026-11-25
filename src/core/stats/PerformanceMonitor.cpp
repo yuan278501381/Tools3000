@@ -184,6 +184,11 @@ PerfMetrics PerformanceMonitor::getMetrics() const {
     return metrics;
 }
 
+PerfMetrics PerformanceMonitor::sampleNow() {
+    sampleOnce();
+    return getMetrics();
+}
+
 nlohmann::json PerformanceMonitor::getMetricsJson() const {
     return getMetrics().toJson();
 }
@@ -272,6 +277,7 @@ void PerformanceMonitor::sampleLoop() {
 }
 
 void PerformanceMonitor::sampleOnce() {
+    std::lock_guard sampleLock(m_sampleMutex);
     PerfMetrics metrics;
 
     sampleMemory(metrics);
@@ -347,13 +353,45 @@ PerformanceMonitor::latencySummariesLocked() const {
 }
 
 void PerformanceMonitor::sampleMemory(PerfMetrics& metrics) {
+    // 优先使用 PROCESS_MEMORY_COUNTERS_EX2 (Win10 1709+ / Win11) 读取真实 PrivateWorkingSetSize，
+    // 与 Windows 任务管理器「内存」列 1:1 严格对齐，彻底消除误将虚拟提交量 (PrivateUsage)
+    // 当作专用工作集导致“专用 > 总工作集”及工作集修剪后读数纹丝不动的错觉。
+    struct ProcessMemoryCountersEx2Abi {
+        DWORD cb;
+        DWORD PageFaultCount;
+        SIZE_T PeakWorkingSetSize;
+        SIZE_T WorkingSetSize;
+        SIZE_T QuotaPeakPagedPoolUsage;
+        SIZE_T QuotaPagedPoolUsage;
+        SIZE_T QuotaPeakNonPagedPoolUsage;
+        SIZE_T QuotaNonPagedPoolUsage;
+        SIZE_T PagefileUsage;
+        SIZE_T PeakPagefileUsage;
+        SIZE_T PrivateUsage;
+        SIZE_T PrivateWorkingSetSize;
+        ULONG64 SharedCommitUsage;
+    };
+    ProcessMemoryCountersEx2Abi pmc2{};
+    pmc2.cb = sizeof(pmc2);
+    if (GetProcessMemoryInfo(GetCurrentProcess(),
+                              reinterpret_cast<PPROCESS_MEMORY_COUNTERS>(&pmc2),
+                              pmc2.cb)) {
+        metrics.memoryMB = pmc2.WorkingSetSize / (1024.0 * 1024.0);
+        const SIZE_T effectivePrivateWs =
+            (pmc2.PrivateWorkingSetSize > 0 && pmc2.PrivateWorkingSetSize <= pmc2.WorkingSetSize)
+                ? pmc2.PrivateWorkingSetSize
+                : (std::min)(pmc2.PrivateUsage, pmc2.WorkingSetSize);
+        metrics.privateMemoryMB = effectivePrivateWs / (1024.0 * 1024.0);
+        return;
+    }
+
     PROCESS_MEMORY_COUNTERS_EX pmc{};
     pmc.cb = sizeof(pmc);
     if (GetProcessMemoryInfo(GetCurrentProcess(),
                               reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
                               sizeof(pmc))) {
         metrics.memoryMB        = pmc.WorkingSetSize / (1024.0 * 1024.0);
-        metrics.privateMemoryMB = pmc.PrivateUsage / (1024.0 * 1024.0);
+        metrics.privateMemoryMB = (std::min)(pmc.PrivateUsage, pmc.WorkingSetSize) / (1024.0 * 1024.0);
     }
 }
 
@@ -368,7 +406,12 @@ void PerformanceMonitor::sampleCpu(PerfMetrics& metrics) {
     u.LowPart = user.dwLowDateTime;   u.HighPart = user.dwHighDateTime;
 
     uint64_t currentTime = GetTickCount64();
-    uint64_t deltaWall = (currentTime - m_lastSampleTime);
+    uint64_t deltaWall = (currentTime >= m_lastSampleTime) ? (currentTime - m_lastSampleTime) : 0;
+    if (m_lastSampleTime != 0 && deltaWall < 150) {
+        std::lock_guard lock(m_mutex);
+        metrics.cpuPercent = m_currentMetrics.cpuPercent;
+        return;
+    }
     if (deltaWall == 0) deltaWall = 1;
 
     uint64_t deltaKernel = k.QuadPart - m_lastKernelTime;

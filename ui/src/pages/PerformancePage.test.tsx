@@ -49,7 +49,20 @@ describe('PerformancePage (Live Telemetry & Read-Only Memory Lifecycle Matrix)',
         return { memoryMode: 'idle_stop', idleTrimMinutes: 5, idleStopMinutes: 45 };
       }
       if (method === 'perf.trimMemory') {
-        return { success: true };
+        return {
+          success: true,
+          metrics: {
+            privateMemoryMB: 4.2,
+            memoryMB: 9.8,
+            cpuPercent: 0.2,
+            screenshotLatencyMs: 0,
+            gestureLatencyMs: 1.2,
+            uiRenderLatencyMs: 2.8,
+          },
+        };
+      }
+      if (method === 'search.trimMemory') {
+        return { success: false, running: false };
       }
       return {};
     });
@@ -92,11 +105,14 @@ describe('PerformancePage (Live Telemetry & Read-Only Memory Lifecycle Matrix)',
     });
     expect(onNavigate).toHaveBeenCalledWith('search');
 
-    // Trigger quiet trim IPC
+    // Trigger quiet trim IPC and verify immediate metric update + non-starting search service trim
     const trimBtn = screen.getByText('performancePage.trimNowBtn');
     await act(async () => {
       fireEvent.click(trimBtn);
     });
     expect(bridgeSpy).toHaveBeenCalledWith('perf.trimMemory');
+    expect(bridgeSpy).toHaveBeenCalledWith('search.trimMemory', undefined, { silent: true });
+    expect(screen.getByText('4.2')).toBeDefined();
+    expect(screen.getByText('9.8')).toBeDefined();
   });
 });

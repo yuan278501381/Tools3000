@@ -894,7 +894,7 @@ std::optional<std::string> querySearchService(const std::string& query, DWORD& e
 
 struct SearchMemoryPolicyConfig {
     std::string memoryMode = "idle_trim";
-    int idleTrimMinutes = 5;
+    int idleTrimMinutes = 2;
     int idleStopMinutes = 30;
 };
 
@@ -917,7 +917,7 @@ SearchMemoryPolicyConfig readMemoryPolicyFromConfig() {
     auto& cfg = tools3000::core::ConfigManager::instance();
     SearchMemoryPolicyConfig out;
     out.memoryMode = normalizeMemoryModeString(cfg.get<std::string>("/search/memoryMode", "idle_trim"));
-    out.idleTrimMinutes = clampIdleTrimMinutesValue(cfg.get<int>("/search/idleTrimMinutes", 5));
+    out.idleTrimMinutes = clampIdleTrimMinutesValue(cfg.get<int>("/search/idleTrimMinutes", 2));
     out.idleStopMinutes = clampIdleStopMinutesValue(cfg.get<int>("/search/idleStopMinutes", 30));
     return out;
 }
@@ -1414,6 +1414,67 @@ public:
             const std::string payload = normalized.dump();
 
             const DWORD queryTimeout = isContentSearch ? 1800000 : 25000;
+            const uint64_t reqCursor = normalized.contains("cursor") && normalized["cursor"].is_number_unsigned()
+                ? normalized["cursor"].get<uint64_t>()
+                : 0u;
+
+            // 辅助函数：将本地离线应用 / 系统命令 / 浏览器书签与可选服务端文件结果按 3 档策略融合。
+            // 既用于服务就绪时的首页融合，也用于在服务刚唤醒 (initializing/starting) 时 0ms 秒出本地应用，
+            // 彻底消除“搜应用先闪无结果、几秒后才出现”的体验断层。
+            const auto buildLocalFusedResults = [&](const nlohmann::json& baseFilesJson, bool launcherFirstFallback) -> nlohmann::json {
+                auto& cfg = tools3000::core::ConfigManager::instance();
+                const bool includeBookmarks = cfg.get<bool>("/search/includeBookmarks", true);
+                const bool enableAppsAndCommands = cfg.get<bool>("/search/enableAppsAndCommands", true);
+                const auto rankingProfile = launcherFirstFallback
+                    ? tools3000::search::RankingProfile::LauncherFirst
+                    : tools3000::search::parseRankingProfile(
+                          cfg.get<std::string>("/search/rankingProfile", "balanced_frecency"));
+
+                nlohmann::json mixedBookmarks = nlohmann::json::array();
+                if (includeBookmarks &&
+                    tools3000::search::BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(query)) {
+                    mixedBookmarks = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
+                        query, 5u, 55);
+                }
+
+                nlohmann::json mixedCommands = nlohmann::json::array();
+                nlohmann::json mixedApps = nlohmann::json::array();
+                if (enableAppsAndCommands &&
+                    tools3000::search::SystemCommandCatalog::shouldMixLauncherInGeneralQuery(query)) {
+                    mixedCommands = tools3000::search::SystemCommandCatalog::searchCommandsToJson(
+                        query, 8u, /*allowEmptyQuery=*/false, isPreferChineseLanguageFromConfig());
+                    mixedApps = tools3000::search::InstalledAppIndex::instance().searchLocalApps(
+                        query, 10u, /*allowEmptyQuery=*/false);
+                }
+
+                if (mixedBookmarks.empty() && mixedCommands.empty() && mixedApps.empty()) {
+                    return baseFilesJson;
+                }
+
+                nlohmann::json filesCopy = baseFilesJson.is_array() ? baseFilesJson : nlohmann::json::array();
+                auto& frecencyStore = tools3000::search::LauncherFrecencyStore::instance();
+                frecencyStore.applyToResults(filesCopy);
+                frecencyStore.applyToResults(mixedApps);
+                frecencyStore.applyToResults(mixedCommands);
+                frecencyStore.applyToResults(mixedBookmarks);
+
+                tools3000::search::FusionOptions fusionOpts;
+                fusionOpts.profile = rankingProfile;
+                const uint64_t requestedLimit = normalized.contains("limit") && normalized["limit"].is_number_unsigned()
+                    ? normalized["limit"].get<uint64_t>()
+                    : 100u;
+                fusionOpts.maxTotalResults = static_cast<size_t>((std::max<uint64_t>)(
+                    requestedLimit,
+                    static_cast<uint64_t>(filesCopy.size()) + 10u));
+
+                return tools3000::search::fuseSearchResults(
+                    filesCopy,
+                    mixedApps,
+                    mixedCommands,
+                    mixedBookmarks,
+                    fusionOpts);
+            };
+
             DWORD pipeError = ERROR_SUCCESS;
             auto response = querySearchService(payload, pipeError, true, queryTimeout);
 
@@ -1430,62 +1491,17 @@ public:
                     result["available"] = !isInit;
                     result["status"] = isInit ? "starting" : "ready";
 
-                    // 常规搜索首页智能融合：本地极客系统命令 + 已安装应用 + 浏览器书签 + 服务端全盘文件
-                    // 按 3 档可配置优先级策略 (balanced_frecency / files_first / launcher_first) + 统一 Frecency 确定性去重排序
-                    const uint64_t reqCursor = normalized.contains("cursor") && normalized["cursor"].is_number_unsigned()
-                        ? normalized["cursor"].get<uint64_t>()
-                        : 0u;
-                    auto& cfg = tools3000::core::ConfigManager::instance();
-                    const bool includeBookmarks = cfg.get<bool>("/search/includeBookmarks", true);
-                    const bool enableAppsAndCommands = cfg.get<bool>("/search/enableAppsAndCommands", true);
-                    const auto rankingProfile = tools3000::search::parseRankingProfile(
-                        cfg.get<std::string>("/search/rankingProfile", "balanced_frecency"));
-
-                    if (!isInit &&
-                        !isContentSearch &&
+                    if (!isContentSearch &&
                         reqCursor == 0 &&
-                        !result.value("cancelled", false) &&
-                        result.contains("results") &&
-                        result["results"].is_array()) {
-                        nlohmann::json mixedBookmarks = nlohmann::json::array();
-                        if (includeBookmarks &&
-                            tools3000::search::BrowserBookmarkIndex::shouldMixBookmarksInGeneralQuery(query)) {
-                            mixedBookmarks = tools3000::search::BrowserBookmarkIndex::instance().searchLocalBookmarks(
-                                query, 5u, 55);
-                        }
-
-                        nlohmann::json mixedCommands = nlohmann::json::array();
-                        nlohmann::json mixedApps = nlohmann::json::array();
-                        if (enableAppsAndCommands &&
-                            tools3000::search::SystemCommandCatalog::shouldMixLauncherInGeneralQuery(query)) {
-                            mixedCommands = tools3000::search::SystemCommandCatalog::searchCommandsToJson(
-                                query, 8u, /*allowEmptyQuery=*/false, isPreferChineseLanguageFromConfig());
-                            mixedApps = tools3000::search::InstalledAppIndex::instance().searchLocalApps(
-                                query, 10u, /*allowEmptyQuery=*/false);
-                        }
-
-                        if (!mixedBookmarks.empty() || !mixedCommands.empty() || !mixedApps.empty()) {
-                            auto& frecencyStore = tools3000::search::LauncherFrecencyStore::instance();
-                            frecencyStore.applyToResults(result["results"]);
-                            frecencyStore.applyToResults(mixedApps);
-                            frecencyStore.applyToResults(mixedCommands);
-                            frecencyStore.applyToResults(mixedBookmarks);
-
-                            tools3000::search::FusionOptions fusionOpts;
-                            fusionOpts.profile = rankingProfile;
-                            const uint64_t requestedLimit = normalized.contains("limit") && normalized["limit"].is_number_unsigned()
-                                ? normalized["limit"].get<uint64_t>()
-                                : 100u;
-                            fusionOpts.maxTotalResults = static_cast<size_t>((std::max<uint64_t>)(
-                                requestedLimit,
-                                static_cast<uint64_t>(result["results"].size()) + 10u));
-
-                            result["results"] = tools3000::search::fuseSearchResults(
-                                result["results"],
-                                mixedApps,
-                                mixedCommands,
-                                mixedBookmarks,
-                                fusionOpts);
+                        !result.value("cancelled", false)) {
+                        if (!isInit && result.contains("results") && result["results"].is_array()) {
+                            result["results"] = buildLocalFusedResults(result["results"], false);
+                        } else if (isInit) {
+                            auto localOnly = buildLocalFusedResults(nlohmann::json::array(), true);
+                            if (localOnly.is_array() && !localOnly.empty()) {
+                                result["results"] = std::move(localOnly);
+                                result["partialLocalResults"] = true;
+                            }
                         }
                     }
 
@@ -1530,12 +1546,25 @@ public:
             const char* statusError = pipeError == ERROR_NOT_SUPPORTED
                 ? "search service is attached to another Windows user or session"
                 : (isStarting ? "search service starting" : "search service unavailable");
-            return {
-                {"results", nlohmann::json::array()},
+            nlohmann::json fallbackResults = nlohmann::json::array();
+            bool hasPartialLocal = false;
+            if (isStarting && !isContentSearch && reqCursor == 0) {
+                auto localOnly = buildLocalFusedResults(nlohmann::json::array(), true);
+                if (localOnly.is_array() && !localOnly.empty()) {
+                    fallbackResults = std::move(localOnly);
+                    hasPartialLocal = true;
+                }
+            }
+            nlohmann::json fallbackResp = {
+                {"results", std::move(fallbackResults)},
                 {"available", false},
                 {"status", isStarting ? "starting" : "unavailable"},
                 {"error", statusError}
             };
+            if (hasPartialLocal) {
+                fallbackResp["partialLocalResults"] = true;
+            }
+            return fallbackResp;
         });
 
         mb.registerHandler("search.rebuildIndex", [](const nlohmann::json&) -> nlohmann::json {
@@ -1738,6 +1767,8 @@ public:
 
         mb.registerHandler("search.windowShown", [](const nlohmann::json&) -> nlohmann::json {
             g_searchWindowExplicitlyShown.store(true);
+            // 仅预热进程内离线应用索引（零跨进程 IPC，严格遵守 DEMAND_START 搜索服务生命周期契约）
+            tools3000::search::InstalledAppIndex::instance().warmupAsync();
             return {{"success", true}};
         });
 
@@ -2361,8 +2392,6 @@ public:
 
     void shutdown() override {
         LOG_INFO("SearchPlugin: 关闭");
-        g_searchPluginShuttingDown.store(true, std::memory_order_release);
-        g_memoryPolicySynced.store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lock(g_warmupThreadMutex);
             if (g_warmupWorker.joinable()) {
@@ -2370,9 +2399,20 @@ public:
             }
             g_warmupInFlight.store(false, std::memory_order_release);
         }
+        // 主程序退出前：若索引服务当前在线且未设为 full_resident，向其发送一次非阻塞轻度修剪
+        // （严格 autoStart=false，绝不拉起未运行服务，绝不发送 shutdown，完整保持会话常驻契约）。
+        const auto exitPolicy = readMemoryPolicyFromConfig();
+        if (exitPolicy.memoryMode != "full_resident" &&
+            !g_searchPipe.empty() &&
+            isAnySearchPipeReady(1)) {
+            DWORD trimErr = ERROR_SUCCESS;
+            (void)querySearchService(R"({"action":"trimMemory"})", trimErr, /*autoStart=*/false, 800);
+        }
+        g_searchPluginShuttingDown.store(true, std::memory_order_release);
+        g_memoryPolicySynced.store(false, std::memory_order_release);
         closeAllPooledPipes();
         tools3000::search::BrowserBookmarkIndex::instance().clearCache();
-        tools3000::search::InstalledAppIndex::instance().clearCache();
+        tools3000::search::InstalledAppIndex::instance().shutdown();
         tools3000::search::LauncherFrecencyStore::instance().flush();
         tools3000::core::MessageBridge::instance().unregisterHandlersByPrefix("search.");
         // 索引服务一旦因显式搜索需求启动，即独立常驻。

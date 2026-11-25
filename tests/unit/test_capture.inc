@@ -6355,60 +6355,57 @@ TEST(CaptureMarkupResizeTest, TextHandlerEightDirectionZeroDriftAnchoring) {
     EXPECT_GT(initialBox.width, 80);
     EXPECT_GT(initialBox.height, 20);
     const int initW = initialBox.width;
-    const double initialCenterY = initialBox.y + initialBox.height / 2.0;
+    const int initH = initialBox.height;
 
-    // 1. 核心缺陷复现与修复验证：向右拉伸 (HitArea::R)
-    // 现象：老代码中往右拉导致字体变大但顶部固定，使得右侧手柄与文字向下偏移（“往右拉它往下”）
-    // 修复断言：向右拉伸时，左边绝对固定，垂直中心绝对锚定（垂直中心偏移 <= 1px 像素整除），绝不向下漂移！
-    text->resize(30, 0, HitArea::R);
+    // 1. 向右拉宽 (HitArea::R)：独立增加文本框宽度，字号严格不变，左边与顶边绝对锚定
+    text->resize(60, 0, HitArea::R);
     cv::Rect boxAfterR = handler->getBoundingBox(*text);
-    EXPECT_GT(text->fontSize, 24.0f);
+    EXPECT_FLOAT_EQ(text->fontSize, 24.0f);
+    EXPECT_TRUE(text->hasCustomTextWidth);
     EXPECT_GT(boxAfterR.width, initW);
-    EXPECT_EQ(boxAfterR.x, initialBox.x); // 左边绝对锚定
-    double centerYAfterR = boxAfterR.y + boxAfterR.height / 2.0;
-    EXPECT_NEAR(centerYAfterR, initialCenterY, 1.0); // 垂直中心不漂移！
+    EXPECT_EQ(boxAfterR.x, initialBox.x);
+    EXPECT_EQ(boxAfterR.y, initialBox.y);
 
-    // 2. 向左拉伸 (HitArea::L)：右边固定，垂直中心绝对锚定
-    float fontBeforeL = text->fontSize;
+    // 2. 向左拉宽 (HitArea::L)：独立增加文本框宽度，字号严格不变，右边与顶边绝对锚定
     cv::Rect boxBeforeL = handler->getBoundingBox(*text);
     const int rightEdgeBeforeL = boxBeforeL.x + boxBeforeL.width;
-    const double centerYBeforeL = boxBeforeL.y + boxBeforeL.height / 2.0;
-
-    text->resize(-20, 0, HitArea::L);
+    text->resize(-40, 0, HitArea::L);
     cv::Rect boxAfterL = handler->getBoundingBox(*text);
-    EXPECT_GT(text->fontSize, fontBeforeL);
+    EXPECT_FLOAT_EQ(text->fontSize, 24.0f);
     EXPECT_GT(boxAfterL.width, boxBeforeL.width);
-    EXPECT_EQ(boxAfterL.x + boxAfterL.width, rightEdgeBeforeL); // 右边绝对锚定
-    EXPECT_NEAR(boxAfterL.y + boxAfterL.height / 2.0, centerYBeforeL, 1.0); // 垂直中心不漂移！
+    EXPECT_EQ(boxAfterL.x + boxAfterL.width, rightEdgeBeforeL);
+    EXPECT_EQ(boxAfterL.y, boxBeforeL.y);
 
-    // 3. 向下拉伸 (HitArea::B)：顶边固定，水平中心绝对锚定（绝不向右偏移）
-    float fontBeforeB = text->fontSize;
+    // 3. 向下拉长 (HitArea::B)：独立增加文本框高度，字号与宽度严格不变，顶边与左边绝对锚定
     cv::Rect boxBeforeB = handler->getBoundingBox(*text);
-    const double centerXBeforeB = boxBeforeB.x + boxBeforeB.width / 2.0;
-
-    text->resize(0, 20, HitArea::B);
+    text->resize(0, 50, HitArea::B);
     cv::Rect boxAfterB = handler->getBoundingBox(*text);
-    EXPECT_GT(text->fontSize, fontBeforeB);
-    EXPECT_EQ(boxAfterB.y, boxBeforeB.y); // 顶边绝对锚定
-    EXPECT_NEAR(boxAfterB.x + boxAfterB.width / 2.0, centerXBeforeB, 1.0); // 水平中心不漂移！
+    EXPECT_FLOAT_EQ(text->fontSize, 24.0f);
+    EXPECT_EQ(boxAfterB.width, boxBeforeB.width);
+    EXPECT_GT(boxAfterB.height, initH);
+    EXPECT_EQ(boxAfterB.x, boxBeforeB.x);
+    EXPECT_EQ(boxAfterB.y, boxBeforeB.y);
 
-    // 4. 向上拉伸 (HitArea::T)：底边固定，水平中心绝对锚定
-    float fontBeforeT = text->fontSize;
+    // 4. 向上拉长 (HitArea::T)：独立增加文本框高度，字号与宽度严格不变，底边与左边绝对锚定
     cv::Rect boxBeforeT = handler->getBoundingBox(*text);
     const int bottomEdgeBeforeT = boxBeforeT.y + boxBeforeT.height;
-    const double centerXBeforeT = boxBeforeT.x + boxBeforeT.width / 2.0;
-
-    text->resize(0, -20, HitArea::T);
+    text->resize(0, -30, HitArea::T);
     cv::Rect boxAfterT = handler->getBoundingBox(*text);
-    EXPECT_GT(text->fontSize, fontBeforeT);
-    EXPECT_EQ(boxAfterT.y + boxAfterT.height, bottomEdgeBeforeT); // 底边绝对锚定
-    EXPECT_NEAR(boxAfterT.x + boxAfterT.width / 2.0, centerXBeforeT, 1.0); // 水平中心不漂移！
+    EXPECT_FLOAT_EQ(text->fontSize, 24.0f);
+    EXPECT_EQ(boxAfterT.width, boxBeforeT.width);
+    EXPECT_GT(boxAfterT.height, boxBeforeT.height);
+    EXPECT_EQ(boxAfterT.x, boxBeforeT.x);
+    EXPECT_EQ(boxAfterT.y + boxAfterT.height, bottomEdgeBeforeT);
 
-    // 5. 角手柄锚定验证：
-    // HitArea::RB：左上角绝对固定
+    // 5. 四角等比缩放验证（字号缩放 + 自定义宽高等比跟随 + 对角零漂移锚定）：
+    // HitArea::RB：左上角绝对固定，字号增大
     cv::Rect boxBeforeRB = handler->getBoundingBox(*text);
+    const float fontBeforeRB = text->fontSize;
+    const float widthBeforeRB = text->textMaxWidth;
     text->resize(15, 15, HitArea::RB);
     cv::Rect boxAfterRB = handler->getBoundingBox(*text);
+    EXPECT_GT(text->fontSize, fontBeforeRB);
+    EXPECT_GT(text->textMaxWidth, widthBeforeRB);
     EXPECT_EQ(boxAfterRB.x, boxBeforeRB.x);
     EXPECT_EQ(boxAfterRB.y, boxBeforeRB.y);
 
@@ -6428,21 +6425,76 @@ TEST(CaptureMarkupResizeTest, TextHandlerEightDirectionZeroDriftAnchoring) {
     EXPECT_EQ(boxAfterLB.x + boxAfterLB.width, rightBeforeLB);
     EXPECT_EQ(boxAfterLB.y, boxBeforeLB.y);
 
-    // 6. 缩小行为验证 (向左缩小 R 手柄)
-    cv::Rect boxBeforeShrinkR = handler->getBoundingBox(*text);
-    float fontBeforeShrinkR = text->fontSize;
-    text->resize(-10, 0, HitArea::R);
-    cv::Rect boxAfterShrinkR = handler->getBoundingBox(*text);
-    EXPECT_LT(text->fontSize, fontBeforeShrinkR);
-    EXPECT_EQ(boxAfterShrinkR.x, boxBeforeShrinkR.x);
-    EXPECT_NEAR(boxAfterShrinkR.y + boxAfterShrinkR.height / 2.0,
-                boxBeforeShrinkR.y + boxBeforeShrinkR.height / 2.0, 1.0);
-
-    // 7. 极端值截断保护：字号缩放绝不越出 [12.0f, 180.0f] 边界
-    text->resize(-5000, 0, HitArea::R);
+    // 6. 极端值截断保护：四角缩放字号绝不越出 [12.0f, 180.0f] 边界
+    text->resize(-5000, -5000, HitArea::RB);
     EXPECT_FLOAT_EQ(text->fontSize, 12.0f);
-    text->resize(5000, 0, HitArea::R);
+    text->resize(5000, 5000, HitArea::RB);
     EXPECT_FLOAT_EQ(text->fontSize, 180.0f);
+}
+
+TEST(CaptureMarkupResizeTest, TextHandlerIndependentWidthReflowHeightAndUndoParity) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base(720, 960, CV_8UC3, cv::Scalar(32, 36, 44));
+    engine.setBaseImage(base);
+
+    // 1. 复现靠右输入长中文文本被挤成多行竖条的场景
+    auto* text = engine.addText(
+        cv::Point(740, 120),
+        "\xE4\xBD\xA0\xE5\x9C\xA8\xE4\xB8\x8D\xE5\x9C\xA8\xEF\xBC\x8C\xE6\x88\x91\xE5\x8F\x8D\xE6\xAD\xA3\xE4\xB8\x8D\xE5\x9C\xA8\xEF\xBC\x8C\xE4\xBD\xA0\xE5\x91\xA2\xE5\x93\x88\xE5\x93\x88\xE5\x93\x88",
+        MarkupColor::Red(), 36.0f);
+    ASSERT_NE(text, nullptr);
+    text->isActive = true;
+
+    const auto* handler = MarkupToolRegistry::instance().getHandler(MarkupTool::Text);
+    ASSERT_NE(handler, nullptr);
+
+    const cv::Rect narrowBox = handler->getBoundingBox(*text);
+    const int narrowRightEdge = narrowBox.x + narrowBox.width;
+    EXPECT_GT(narrowBox.height, 95); // 初始靠右折成多行
+
+    // 2. 向左拖 L 手柄拉宽 +420px：字号严格不变，右边缘零漂移，多行重排舒展导致高度显著下降
+    auto snapBeforeWiden = engine.captureSnapshot();
+    text->resize(-420, 0, HitArea::L);
+    engine.commitUndoSnapshot(std::move(snapBeforeWiden));
+
+    const cv::Rect wideBox = handler->getBoundingBox(*text);
+    EXPECT_FLOAT_EQ(text->fontSize, 36.0f);
+    EXPECT_TRUE(text->hasCustomTextWidth);
+    EXPECT_GT(wideBox.width, narrowBox.width + 300);
+    EXPECT_EQ(wideBox.x + wideBox.width, narrowRightEdge);
+    EXPECT_LT(wideBox.height, narrowBox.height);
+
+    // 3. 移动与重新合成渲染必须保留自定义宽度，绝不被右边界自动计算重置覆盖
+    const float customWidthSaved = text->textMaxWidth;
+    text->moveBy(-40, 20);
+    cv::Mat composite = engine.getCompositeImage(false);
+    ASSERT_FALSE(composite.empty());
+    EXPECT_TRUE(text->hasCustomTextWidth);
+    EXPECT_NEAR(text->textMaxWidth, customWidthSaved, 0.5f);
+
+    // 4. 向下拖 B 拉长高度 -> 再向上收回至自然高度以内，自动还原 customTextBoxHeight == 0
+    const int naturalWideH = handler->getBoundingBox(*text).height;
+    text->resize(0, 90, HitArea::B);
+    EXPECT_GT(text->customTextBoxHeight, static_cast<float>(naturalWideH));
+    EXPECT_GE(handler->getBoundingBox(*text).height, naturalWideH + 80);
+    text->resize(0, -140, HitArea::B);
+    EXPECT_FLOAT_EQ(text->customTextBoxHeight, 0.0f);
+    EXPECT_EQ(handler->getBoundingBox(*text).height, naturalWideH);
+
+    // 5. Undo/Redo 必须精确恢复自定义宽/高与标志位
+    ASSERT_TRUE(engine.canUndo());
+    engine.undo();
+    ASSERT_EQ(engine.elements().size(), 1u);
+    EXPECT_FALSE(engine.elements()[0]->hasCustomTextWidth);
+    EXPECT_FLOAT_EQ(engine.elements()[0]->customTextBoxHeight, 0.0f);
+
+    ASSERT_TRUE(engine.canRedo());
+    engine.redo();
+    ASSERT_EQ(engine.elements().size(), 1u);
+    EXPECT_TRUE(engine.elements()[0]->hasCustomTextWidth);
+    EXPECT_NEAR(engine.elements()[0]->textMaxWidth, customWidthSaved, 0.5f);
 }
 
 TEST(CaptureMarkupResizeTest, HandleGeometryAnchoredOriginAndScalarDeltaAllEightDirections) {

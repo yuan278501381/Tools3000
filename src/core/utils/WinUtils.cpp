@@ -8,6 +8,7 @@
 #include "core/logger/Logger.h"
 
 #include <windows.h>
+#include <winioctl.h>
 #include <shellapi.h>
 #include <wincrypt.h>
 #include <softpub.h>
@@ -4491,6 +4492,93 @@ std::string WinUtils::truncateUtf8Tail(std::string_view input, size_t maxBytes, 
         }
     }
     return sanitizeUtf8(input.substr(start));
+}
+
+bool WinUtils::isPathOnRotationalDisk(const std::filesystem::path& path) noexcept {
+    wchar_t driveLetter = L'\0';
+    try {
+        const std::wstring raw = path.wstring();
+        if (raw.size() >= 2 && raw[1] == L':') {
+            driveLetter = raw[0];
+        } else {
+            const std::wstring exeRaw = getExePath().wstring();
+            if (exeRaw.size() >= 2 && exeRaw[1] == L':') {
+                driveLetter = exeRaw[0];
+            }
+        }
+    } catch (...) {
+        return false;
+    }
+
+    if (driveLetter >= L'a' && driveLetter <= L'z') {
+        driveLetter = static_cast<wchar_t>(driveLetter - (L'a' - L'A'));
+    }
+    if (driveLetter < L'A' || driveLetter > L'Z') {
+        return false;
+    }
+
+    // 每盘符无锁原子缓存：0=未探测, 1=SSD/非机械盘, 2=机械硬盘(HDD)
+    static std::array<std::atomic<int8_t>, 26> s_rotationalCache{};
+
+    const size_t idx = static_cast<size_t>(driveLetter - L'A');
+    const int8_t cached = s_rotationalCache[idx].load(std::memory_order_acquire);
+    if (cached != 0) {
+        return cached == 2;
+    }
+
+    bool isRotational = false;
+    wchar_t volPath[] = L"\\\\.\\C:";
+    volPath[4] = driveLetter;
+    HANDLE hVol = CreateFileW(
+        volPath,
+        0,  // 零权限句柄即可查询存储设备属性，无需管理员权限
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    if (hVol != INVALID_HANDLE_VALUE) {
+        STORAGE_PROPERTY_QUERY seekQuery{};
+        seekQuery.PropertyId = StorageDeviceSeekPenaltyProperty;
+        seekQuery.QueryType = PropertyStandardQuery;
+        DEVICE_SEEK_PENALTY_DESCRIPTOR seekDesc{};
+        DWORD bytesRet = 0;
+        if (DeviceIoControl(
+                hVol,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                &seekQuery,
+                sizeof(seekQuery),
+                &seekDesc,
+                sizeof(seekDesc),
+                &bytesRet,
+                nullptr) &&
+            bytesRet >= sizeof(DEVICE_SEEK_PENALTY_DESCRIPTOR)) {
+            isRotational = (seekDesc.IncursSeekPenalty != FALSE);
+        } else {
+            // 部分老式 SATA/AHCI/RAID 控制器不支持 SeekPenalty，回退检测 TRIM 支持
+            STORAGE_PROPERTY_QUERY trimQuery{};
+            trimQuery.PropertyId = StorageDeviceTrimProperty;
+            trimQuery.QueryType = PropertyStandardQuery;
+            DEVICE_TRIM_DESCRIPTOR trimDesc{};
+            bytesRet = 0;
+            if (DeviceIoControl(
+                    hVol,
+                    IOCTL_STORAGE_QUERY_PROPERTY,
+                    &trimQuery,
+                    sizeof(trimQuery),
+                    &trimDesc,
+                    sizeof(trimDesc),
+                    &bytesRet,
+                    nullptr) &&
+                bytesRet >= sizeof(DEVICE_TRIM_DESCRIPTOR)) {
+                isRotational = (trimDesc.TrimEnabled == FALSE);
+            }
+        }
+        CloseHandle(hVol);
+    }
+
+    s_rotationalCache[idx].store(isRotational ? int8_t{2} : int8_t{1}, std::memory_order_release);
+    return isRotational;
 }
 
 }  // namespace tools3000::core

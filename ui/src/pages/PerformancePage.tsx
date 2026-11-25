@@ -119,7 +119,7 @@ export const PerformancePage: FC<PerformancePageProps> = ({ onNavigate }) => {
     idleStopMinutes: number;
   }>({
     memoryMode: 'idle_trim',
-    idleTrimMinutes: 5,
+    idleTrimMinutes: 2,
     idleStopMinutes: 30,
   });
 
@@ -238,7 +238,18 @@ export const PerformancePage: FC<PerformancePageProps> = ({ onNavigate }) => {
     if (trimming) return;
     setTrimming(true);
     try {
-      await bridgeRequest('perf.trimMemory');
+      const [trimRes] = await Promise.allSettled([
+        bridgeRequest<{ success?: boolean; metrics?: RawPerfMetrics }>('perf.trimMemory'),
+        // 同步轻度瘦身已在线的全盘搜索服务（后端严格 autoStart=false，未运行时零开销跳过）
+        bridgeRequest('search.trimMemory', undefined, { silent: true }),
+      ]);
+      if (trimRes.status === 'rejected') {
+        throw trimRes.reason;
+      }
+      const immediateMetrics = trimRes.value?.metrics;
+      if (immediateMetrics && typeof immediateMetrics === 'object' && mountedRef.current) {
+        setMetrics(normalizePerfMetrics(immediateMetrics));
+      }
       if (trimTimerRef.current !== null) {
         clearTimeout(trimTimerRef.current);
       }

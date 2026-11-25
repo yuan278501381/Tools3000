@@ -473,6 +473,7 @@ export function useSearchEngine({
           if (response.status === 'busy' || response.busy) {
             if (cursor === 0 && accumulated.length === 0) {
               window.clearTimeout(loadingTimer);
+              setLoading(true);
               startTransition(() => {
                 setIsServiceStarting(false);
                 setServiceAvailable(true);
@@ -925,6 +926,7 @@ export function useSearchEngine({
         }
 
         if (response.status === 'busy' || response.busy) {
+          setLoading(true);
           startTransition(() => {
             setIsServiceStarting(false);
             setServiceAvailable(true);
@@ -939,10 +941,20 @@ export function useSearchEngine({
         }
 
         if (response.status === 'starting' || (!response.available && response.status !== 'unavailable')) {
+          const partialLocalResults = Array.isArray(response.results) ? response.results : [];
           setLoading(true);
           startTransition(() => {
             setIsServiceStarting(true);
             setServiceAvailable(true);
+            if (partialLocalResults.length > 0) {
+              setSnapshot({
+                generationId: sequence,
+                query: trimmedQuery,
+                keywords: parsedKeywords,
+                results: partialLocalResults,
+              });
+              setSelectedIndex(0);
+            }
           });
           if (retryCountRef.current < 90) {
             retryCountRef.current += 1;
