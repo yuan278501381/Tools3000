@@ -108,6 +108,20 @@ private:
 
     static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 2110;
     static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 25000;
+    static constexpr UINT_PTR IDT_COLD_WARMUP_FALLBACK = 2111;
+    static constexpr UINT COLD_WARMUP_FALLBACK_DELAY_MS = 1500;
+
+    enum class WebViewStatus : uint8_t {
+        Loading = 0,
+        Ready = 1,
+        MissingRuntime = 2,
+        InitFailed = 3,
+        RenderCrashed = 4,
+    };
+
+    void setWebViewStatus(WebViewStatus status, HRESULT hr = S_OK);
+    void paintStatusBackdrop(HDC hdc, const RECT& clientRect) const;
+    void handleStatusSurfaceAction();
 
     HWND m_hwnd = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;
@@ -118,6 +132,11 @@ private:
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_minimized{false};
     std::atomic<bool> m_webViewReady{false};
+    std::atomic<bool> m_webViewInitializing{false};
+    std::atomic<bool> m_pendingServiceWarmup{false};
+    std::atomic<uint8_t> m_webViewStatus{static_cast<uint8_t>(WebViewStatus::Loading)};
+    std::atomic<uint32_t> m_lastWebViewErrorHr{0};
+    std::atomic<bool> m_autoRecoverAttempted{false};
     std::atomic<bool> m_isPinned{false};
     std::atomic<bool> m_isMaximized{false};
     std::atomic<bool> m_menuActive{false};

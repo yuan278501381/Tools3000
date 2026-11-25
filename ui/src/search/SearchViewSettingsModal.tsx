@@ -24,6 +24,7 @@ import {
 import { toast } from 'sonner';
 import { bridgeRequest } from '../hooks/useBridge';
 import { CodeBadge, Toggle } from '../components/UIKit';
+import { SearchExcludedPathsManager } from '../components/SearchExcludedPathsManager';
 import {
   CONTENT_FORMAT_CATEGORIES,
   WINDOW_PRESETS,
@@ -72,6 +73,8 @@ export interface SearchViewSettingsModalProps {
   onSetExcludeGitAndModules: (val: boolean) => void;
   excludeHidden: boolean;
   onSetExcludeHidden: (val: boolean) => void;
+  customExcludedPaths: string[];
+  onChangeCustomExcludedPaths: (paths: string[]) => void;
   disabledContentFormats: string[];
   onToggleContentFormat: (ext: string) => void;
   onToggleCategoryFormats: (category: FormatCategory, enabled: boolean) => void;
@@ -120,6 +123,8 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
   onSetExcludeGitAndModules,
   excludeHidden,
   onSetExcludeHidden,
+  customExcludedPaths,
+  onChangeCustomExcludedPaths,
   disabledContentFormats,
   onToggleContentFormat,
   onToggleCategoryFormats,
@@ -549,6 +554,11 @@ export const SearchViewSettingsModal: React.FC<SearchViewSettingsModalProps> = (
               <span>{t('search.excludeHiddenProtected', 'Exclude hidden & protected system files')}</span>
             </label>
           </div>
+          <SearchExcludedPathsManager
+            paths={customExcludedPaths}
+            onChange={onChangeCustomExcludedPaths}
+            compact
+          />
         </div>
 
         {/* 7. 文档内容检索格式定制 (折叠手风琴 + 纯净单层微刻芯片，彻底告别双层蓝框轰炸) */}

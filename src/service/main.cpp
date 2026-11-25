@@ -796,6 +796,53 @@ void stopBackgroundJobs() {
     }
 }
 
+struct ScopedBackgroundIoMode {
+    bool active = false;
+    ScopedBackgroundIoMode() noexcept {
+        active = (SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE);
+        if (!active) {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
+    ~ScopedBackgroundIoMode() noexcept {
+        if (active) {
+            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+        }
+    }
+    ScopedBackgroundIoMode(const ScopedBackgroundIoMode&) = delete;
+    ScopedBackgroundIoMode& operator=(const ScopedBackgroundIoMode&) = delete;
+};
+
+// 按物理磁盘编号将待扫描卷分组：同一块物理机械硬盘上的多个分区（例如同盘 C/D/E）
+// 必须严格排队串行扫描，避免多分区线程并发争夺磁头把磁盘占满 100%；不同物理盘仍可并行。
+std::vector<std::vector<std::shared_ptr<MftParser>>> groupVolumesByPhysicalDisk(
+    const std::vector<std::shared_ptr<MftParser>>& parsers) {
+    std::vector<std::vector<std::shared_ptr<MftParser>>> groups;
+    std::unordered_map<uint64_t, size_t> groupIndexByKey;
+    constexpr uint64_t kUnknownHddKey = 0xFFFFFFFF00000001ULL;
+    uint64_t nextUnknownSsdKey = 0xFFFFFFFF00000010ULL;
+
+    for (const auto& parser : parsers) {
+        if (!parser) continue;
+        uint64_t key = 0;
+        if (parser->hasPhysicalDiskNumber()) {
+            key = static_cast<uint64_t>(parser->getPhysicalDiskNumber());
+        } else if (parser->isRotationalDisk()) {
+            key = kUnknownHddKey;
+        } else {
+            key = nextUnknownSsdKey++;
+        }
+        auto it = groupIndexByKey.find(key);
+        if (it == groupIndexByKey.end()) {
+            groupIndexByKey.emplace(key, groups.size());
+            groups.push_back({parser});
+        } else {
+            groups[it->second].push_back(parser);
+        }
+    }
+    return groups;
+}
+
 void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::string_view reason) {
     if (!g_AcceptBackgroundJobs.load(std::memory_order_acquire) || parsers.empty()) return;
     std::lock_guard lock(g_BackgroundJobMutex);
@@ -804,6 +851,7 @@ void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::stri
 
     g_SnapshotJob = std::jthread(
         [parsers = std::move(parsers), reason = std::string(reason)](std::stop_token stop) {
+            ScopedBackgroundIoMode bgIo;
             while (!stop.stop_requested() &&
                    (g_InitialIndexWorkers.load(std::memory_order_acquire) > 0 ||
                     g_DynamicIndexWorkers.load(std::memory_order_acquire) > 0)) {
@@ -844,20 +892,25 @@ bool scheduleRebuild() {
         if (parser) parser->resetStopRequest();
     }
     g_RebuildJob = std::jthread([parsers = std::move(parsers)](std::stop_token stop) {
-        std::vector<std::thread> workers;
-        workers.reserve(parsers.size());
         for (const auto& parser : parsers) {
-            if (!parser) continue;
-            parser->StopListening();
-            workers.emplace_back([parser, stop]() {
-                if (stop.stop_requested()) return;
-                try {
-                    parser->EnumerateFiles();
-                    if (!stop.stop_requested()) parser->StartListening();
-                } catch (const std::exception& e) {
-                    spdlog::error("Rebuild failed on drive {}: {}", parser->getDriveLetter(), e.what());
-                } catch (...) {
-                    spdlog::error("Rebuild failed on drive {} with unknown exception", parser->getDriveLetter());
+            if (parser) parser->StopListening();
+        }
+        const auto diskGroups = groupVolumesByPhysicalDisk(parsers);
+        std::vector<std::thread> workers;
+        workers.reserve(diskGroups.size());
+        for (const auto& group : diskGroups) {
+            workers.emplace_back([group, stop]() {
+                ScopedBackgroundIoMode bgIo;
+                for (const auto& parser : group) {
+                    if (!parser || stop.stop_requested()) break;
+                    try {
+                        parser->EnumerateFiles();
+                        if (!stop.stop_requested()) parser->StartListening();
+                    } catch (const std::exception& e) {
+                        spdlog::error("Rebuild failed on drive {}: {}", parser->getDriveLetter(), e.what());
+                    } catch (...) {
+                        spdlog::error("Rebuild failed on drive {} with unknown exception", parser->getDriveLetter());
+                    }
                 }
             });
         }
@@ -865,6 +918,7 @@ bool scheduleRebuild() {
         invalidateContentPlanCache();
         try {
             if (!stop.stop_requested()) {
+                ScopedBackgroundIoMode bgIo;
                 const auto rawParsers = toRawParserPointers(parsers);
                 if (tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers)) {
                     recordPersistedUsns(rawParsers);
@@ -2835,10 +2889,34 @@ void IPCServerThread() {
     bool snapshotLoaded = tools3000::service::db::DatabaseManager::instance().loadSnapshot(rawParsers);
     std::vector<std::thread> indexThreads;
 
+    auto launchGroupedInitialScans = [&indexThreads](const std::vector<std::shared_ptr<MftParser>>& toScan, const char* tag) {
+        const auto diskGroups = groupVolumesByPhysicalDisk(toScan);
+        for (const auto& group : diskGroups) {
+            g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
+            indexThreads.emplace_back([group, tag]() {
+                ScopedBackgroundIoMode bgIo;
+                for (const auto& pShared : group) {
+                    if (!pShared || !g_IsRunning.load(std::memory_order_acquire)) break;
+                    const char drive = pShared->getDriveLetter();
+                    try {
+                        pShared->EnumerateFiles();
+                        if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
+                        spdlog::info("Indexed drive {}: ({})", drive, tag);
+                    } catch (const std::exception& e) {
+                        spdlog::error("Initial indexing failed on drive {}: {}", drive, e.what());
+                    } catch (...) {
+                        spdlog::error("Initial indexing failed on drive {} with unknown exception", drive);
+                    }
+                }
+                g_InitialIndexWorkers.fetch_sub(1, std::memory_order_release);
+            });
+        }
+    };
+
     if (snapshotLoaded) {
         recordPersistedUsns(rawParsers);
         spdlog::info("Successfully loaded database snapshot from Tools3000.db, checking volume readiness...");
-        bool anyMissing = false;
+        std::vector<std::shared_ptr<MftParser>> missingParsers;
         bool anyCatchUpRescanned = false;
         for (const auto& pShared : initialParsers) {
             if (!pShared) continue;
@@ -2846,49 +2924,20 @@ void IPCServerThread() {
                 anyCatchUpRescanned = true;
             }
             if (pShared->getFileCount() == 0 && !pShared->isInitialScanDone()) {
-                anyMissing = true;
-                char drive = pShared->getDriveLetter();
-                g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
-                indexThreads.emplace_back([pShared, drive]() {
-                    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    try {
-                        pShared->EnumerateFiles();
-                        if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
-                        spdlog::info("Indexed drive {}: (volume was unpopulated in snapshot)", drive);
-                    } catch (const std::exception& e) {
-                        spdlog::error("Initial indexing failed on drive {}: {}", drive, e.what());
-                    } catch (...) {
-                        spdlog::error("Initial indexing failed on drive {} with unknown exception", drive);
-                    }
-                    g_InitialIndexWorkers.fetch_sub(1, std::memory_order_release);
-                });
+                missingParsers.push_back(pShared);
             } else {
                 pShared->StartListening();
             }
         }
-        if (anyMissing || anyCatchUpRescanned) {
+        if (!missingParsers.empty()) {
+            launchGroupedInitialScans(missingParsers, "volume was unpopulated in snapshot");
+        }
+        if (!missingParsers.empty() || anyCatchUpRescanned) {
             scheduleSnapshot(initialParsers, anyCatchUpRescanned ? "USN catchup rescan" : "Updated complete");
         }
     } else {
         spdlog::info("No valid database snapshot found, performing full MFT scan and building initial index...");
-        for (const auto& pShared : initialParsers) {
-            if (!pShared) continue;
-            char drive = pShared->getDriveLetter();
-            g_InitialIndexWorkers.fetch_add(1, std::memory_order_relaxed);
-            indexThreads.emplace_back([pShared, drive]() {
-                SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                try {
-                    pShared->EnumerateFiles();
-                    if (g_IsRunning.load(std::memory_order_acquire)) pShared->StartListening();
-                    spdlog::info("Indexed drive {}:", drive);
-                } catch (const std::exception& e) {
-                    spdlog::error("Initial indexing failed on drive {}: {}", drive, e.what());
-                } catch (...) {
-                    spdlog::error("Initial indexing failed on drive {} with unknown exception", drive);
-                }
-                g_InitialIndexWorkers.fetch_sub(1, std::memory_order_release);
-            });
-        }
+        launchGroupedInitialScans(initialParsers, "initial scan");
         // 初始全量索引完成后在后台异步保存快照
         scheduleSnapshot(initialParsers, "Initial");
     }

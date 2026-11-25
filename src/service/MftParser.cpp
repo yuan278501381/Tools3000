@@ -22,6 +22,109 @@ uint64_t fileTimeToUint64(const FILETIME& value) noexcept {
     return raw.QuadPart;
 }
 
+struct ScopedBackgroundIoPriority {
+    bool active = false;
+    ScopedBackgroundIoPriority() noexcept {
+        // Windows 原生线程后台模式：同时降低 CPU 优先级、磁盘 I/O 优先级（IoPriorityVeryLow）
+        // 与内存页优先级，确保机械硬盘（HDD）上后台扫描/水合绝不抢占前台与 WebView2 磁盘读写。
+        active = (SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE);
+        if (!active) {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        }
+    }
+    ~ScopedBackgroundIoPriority() noexcept {
+        if (active) {
+            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
+        }
+    }
+    ScopedBackgroundIoPriority(const ScopedBackgroundIoPriority&) = delete;
+    ScopedBackgroundIoPriority& operator=(const ScopedBackgroundIoPriority&) = delete;
+};
+
+struct VolumeStorageTopology {
+    bool isRotational = false;
+    bool hasDiskNumber = false;
+    uint32_t diskNumber = 0;
+};
+
+VolumeStorageTopology detectVolumeStorageTopology(char driveLetter) noexcept {
+    VolumeStorageTopology topo{};
+    std::wstring volPath = L"\\\\.\\";
+    volPath += static_cast<wchar_t>(driveLetter);
+    volPath += L":";
+
+    // 使用 0 访问权限（仅查询元数据）即可读取驱动器拓扑与寻道惩罚属性，非管理员也能工作
+    HANDLE hVol = CreateFileW(
+        volPath.c_str(),
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        0,
+        nullptr);
+    if (hVol == INVALID_HANDLE_VALUE) {
+        return topo;
+    }
+
+    DWORD bytesReturned = 0;
+    STORAGE_DEVICE_NUMBER devNum{};
+    if (DeviceIoControl(
+            hVol,
+            IOCTL_STORAGE_GET_DEVICE_NUMBER,
+            nullptr,
+            0,
+            &devNum,
+            sizeof(devNum),
+            &bytesReturned,
+            nullptr)) {
+        topo.hasDiskNumber = true;
+        topo.diskNumber = static_cast<uint32_t>(devNum.DeviceNumber);
+    }
+
+    auto querySeekPenalty = [](HANDLE hTarget, bool& outRotational) noexcept -> bool {
+        STORAGE_PROPERTY_QUERY query{};
+        query.PropertyId = StorageDeviceSeekPenaltyProperty;
+        query.QueryType = PropertyStandardQuery;
+        DEVICE_SEEK_PENALTY_DESCRIPTOR desc{};
+        DWORD returned = 0;
+        if (DeviceIoControl(
+                hTarget,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                &query,
+                sizeof(query),
+                &desc,
+                sizeof(desc),
+                &returned,
+                nullptr) &&
+            returned >= sizeof(desc)) {
+            outRotational = (desc.IncursSeekPenalty != FALSE);
+            return true;
+        }
+        return false;
+    };
+
+    bool detected = querySeekPenalty(hVol, topo.isRotational);
+    CloseHandle(hVol);
+
+    if (!detected && topo.hasDiskNumber) {
+        const std::wstring physPath = L"\\\\.\\PhysicalDrive" + std::to_wstring(topo.diskNumber);
+        HANDLE hDisk = CreateFileW(
+            physPath.c_str(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            nullptr,
+            OPEN_EXISTING,
+            0,
+            nullptr);
+        if (hDisk != INVALID_HANDLE_VALUE) {
+            (void)querySeekPenalty(hDisk, topo.isRotational);
+            CloseHandle(hDisk);
+        }
+    }
+
+    return topo;
+}
+
 struct ScopedScanPhaseGuard {
     std::atomic<uint8_t>& phase;
     ScopedScanPhaseGuard(std::atomic<uint8_t>& target, MftParser::ScanPhase initial) noexcept
@@ -559,7 +662,7 @@ void MftParser::UsnListenerLoop() {
 }
 
 void MftParser::BackgroundHydrateLoop() {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    ScopedBackgroundIoPriority bgIoGuard;
 
     auto shouldAbort = [this]() noexcept {
         return m_StopHydration.load(std::memory_order_acquire) ||
@@ -704,7 +807,14 @@ void MftParser::StartListening() {
     m_StopHydration.store(false, std::memory_order_release);
     m_IsListening.store(true, std::memory_order_release);
     m_ListenerThread = std::make_unique<std::thread>(&MftParser::UsnListenerLoop, this);
-    m_HydrationThread = std::make_unique<std::thread>(&MftParser::BackgroundHydrateLoop, this);
+    // 机械硬盘（HDD）随机寻道仅 ~100 IOPS：跳过全盘数十万目录的后台随机预水合，
+    // 搜索结果页已具备按需实时元数据水合，彻底杜绝机械盘持续 100% 磁盘占用与系统卡顿。
+    if (m_IsRotationalDisk) {
+        spdlog::info("Drive {}: rotational HDD detected (disk #{}); skipping background random directory hydration to protect disk I/O",
+                     m_DriveLetter, m_PhysicalDiskNumber);
+    } else {
+        m_HydrationThread = std::make_unique<std::thread>(&MftParser::BackgroundHydrateLoop, this);
+    }
 }
 
 void MftParser::StopListening() {
@@ -729,6 +839,16 @@ bool MftParser::Initialize(char driveLetter) {
     m_Initialized = true;
     const std::wstring root{static_cast<wchar_t>(driveLetter), L':', L'\\'};
     m_DriveType = GetDriveTypeW(root.c_str());
+    {
+        const auto topo = detectVolumeStorageTopology(driveLetter);
+        m_IsRotationalDisk = topo.isRotational;
+        m_HasPhysicalDiskNumber = topo.hasDiskNumber;
+        m_PhysicalDiskNumber = topo.diskNumber;
+        spdlog::info("Drive {}: storage topology detected (rotationalHdd={}, physicalDisk={})",
+                     driveLetter,
+                     m_IsRotationalDisk ? "true" : "false",
+                     m_HasPhysicalDiskNumber ? std::to_string(m_PhysicalDiskNumber) : "unknown");
+    }
     {
         wchar_t labelBuf[MAX_PATH + 1]{};
         if (GetVolumeInformationW(root.c_str(), labelBuf, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0)) {
@@ -799,6 +919,7 @@ bool MftParser::QueryUsnJournal() {
 }
 
 void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
+    ScopedBackgroundIoPriority bgIoGuard;
     ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::Scanning);
     m_ScannedRecords.store(0, std::memory_order_release);
     m_EstimatedRecords.store(0, std::memory_order_release);
@@ -1144,7 +1265,8 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
             scratch.creationTime = 0;
             scratch.lastWriteTime = 0;
             if (!next(scratch)) break;
-            m_Store.upsert(scratch, /*metadataHydrated=*/false, /*bulkImport=*/true);
+            const bool hasPersistedMeta = (scratch.fileSize > 0 || scratch.creationTime != 0);
+            m_Store.upsert(scratch, /*metadataHydrated=*/hasPersistedMeta, /*bulkImport=*/true);
             if ((++imported & 0x1FFFu) == 0) {
                 m_ScannedRecords.store(imported, std::memory_order_release);
             }

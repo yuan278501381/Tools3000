@@ -385,11 +385,7 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     const auto action = static_cast<ScrollFinishAction>(finishActionCode);
     const bool forceCopy = (action == ScrollFinishAction::Copy);
     const bool forceSave = (action == ScrollFinishAction::QuickSave);
-    const bool fallbackCopyOnConfirm =
-        (action == ScrollFinishAction::Confirm &&
-         !m_activeOptions.copyToClipboard &&
-         !m_activeOptions.saveToFile);
-    const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard || fallbackCopyOnConfirm;
+    const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard;
     bool copied = false;
     if (shouldCopy) {
         copied = copyToClipboard(finalImage);

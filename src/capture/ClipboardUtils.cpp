@@ -5,6 +5,12 @@
 #include "core/utils/WinUtils.h"
 #include <shlobj.h>
 #include <shellapi.h>
+#include <objbase.h>
+#include <wincodec.h>
+#include <wrl/client.h>
+#include <array>
+#include <cwctype>
+#include <string_view>
 #include <vector>
 #include <filesystem>
 #include <chrono>
@@ -458,9 +464,214 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
     return true;
 }
 
-cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
-    bool opened = false;
-    for (int retry = 0; retry < 25; ++retry) {
+namespace {
+
+constexpr uint64_t kMaxReadDibBytes = 512ULL * 1024ULL * 1024ULL;
+constexpr uint64_t kMaxDropImageFileBytes = 64ULL * 1024ULL * 1024ULL;
+constexpr int kMaxDropImageDimension = 32768;
+constexpr UINT kMaxInspectDropFiles = 64u;
+
+std::wstring extractLowerExtension(const std::wstring& filePath) noexcept {
+    const size_t slashPos = filePath.find_last_of(L"\\/");
+    const size_t dotPos = filePath.find_last_of(L'.');
+    if (dotPos == std::wstring::npos) return {};
+    if (slashPos != std::wstring::npos && dotPos < slashPos) return {};
+    if (dotPos + 1 >= filePath.size()) return {};
+    std::wstring ext = filePath.substr(dotPos);
+    for (wchar_t& ch : ext) {
+        if (ch >= L'A' && ch <= L'Z') {
+            ch = static_cast<wchar_t>(ch - L'A' + L'a');
+        }
+    }
+    return ext;
+}
+
+bool isWicPreferredExtension(std::wstring_view ext) noexcept {
+    static constexpr std::array<std::wstring_view, 8> kWicPreferred = {
+        L".gif", L".ico", L".heic", L".heif", L".avif", L".jxr", L".wdp", L".hdp"
+    };
+    for (const auto candidate : kWicPreferred) {
+        if (ext == candidate) return true;
+    }
+    return false;
+}
+
+bool isJpegExtension(std::wstring_view ext) noexcept {
+    return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" || ext == L".jfif";
+}
+
+bool isExistingRegularFileWithinLimit(const std::wstring& filePath, uint64_t& outSize) noexcept {
+    outSize = 0;
+    if (filePath.empty()) return false;
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (!GetFileAttributesExW(filePath.c_str(), GetFileExInfoStandard, &fad)) {
+        return false;
+    }
+    if ((fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        return false;
+    }
+    const uint64_t size = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) |
+                          static_cast<uint64_t>(fad.nFileSizeLow);
+    if (size == 0 || size > kMaxDropImageFileBytes) {
+        return false;
+    }
+    outSize = size;
+    return true;
+}
+
+cv::Mat normalizeDecodedMat(cv::Mat img) {
+    if (img.empty() || img.cols <= 0 || img.rows <= 0) return {};
+    if (img.cols > kMaxDropImageDimension || img.rows > kMaxDropImageDimension) return {};
+    const uint64_t pixels = static_cast<uint64_t>(img.cols) * static_cast<uint64_t>(img.rows);
+    if (pixels > kMaxReadDibBytes / 4ULL) return {};
+
+    try {
+        if (img.depth() == CV_16U) {
+            cv::Mat tmp;
+            img.convertTo(tmp, CV_8U, 1.0 / 256.0);
+            img = std::move(tmp);
+        } else if (img.depth() != CV_8U) {
+            cv::Mat tmp;
+            img.convertTo(tmp, CV_8U);
+            img = std::move(tmp);
+        }
+
+        if (img.channels() == 1) {
+            cv::Mat bgr;
+            cv::cvtColor(img, bgr, cv::COLOR_GRAY2BGR);
+            return bgr;
+        }
+        if (img.channels() == 3) {
+            return img;
+        }
+        if (img.channels() == 4) {
+            bool hasTransparency = false;
+            for (int y = 0; y < img.rows && !hasTransparency; ++y) {
+                const uint8_t* row = img.ptr<uint8_t>(y);
+                for (int x = 0; x < img.cols; ++x) {
+                    if (row[static_cast<size_t>(x) * 4ULL + 3ULL] != 255) {
+                        hasTransparency = true;
+                        break;
+                    }
+                }
+            }
+            if (hasTransparency) {
+                return img;
+            }
+            cv::Mat bgr;
+            cv::cvtColor(img, bgr, cv::COLOR_BGRA2BGR);
+            return bgr;
+        }
+    } catch (const cv::Exception&) {
+        return {};
+    }
+    return {};
+}
+
+cv::Mat decodeImageWithOpenCv(const std::wstring& filePath,
+                              uint64_t fileSize,
+                              bool preferColorWithExifOrientation) {
+    HANDLE hFile = CreateFileW(
+        filePath.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+        nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+
+    std::vector<uint8_t> bytes;
+    try {
+        bytes.resize(static_cast<size_t>(fileSize));
+    } catch (...) {
+        CloseHandle(hFile);
+        return {};
+    }
+
+    size_t totalRead = 0;
+    while (totalRead < bytes.size()) {
+        const size_t remaining = bytes.size() - totalRead;
+        const DWORD chunk = static_cast<DWORD>((std::min)(remaining, static_cast<size_t>(4 * 1024 * 1024)));
+        DWORD got = 0;
+        if (!ReadFile(hFile, bytes.data() + totalRead, chunk, &got, nullptr)) {
+            CloseHandle(hFile);
+            return {};
+        }
+        if (got == 0) break;
+        totalRead += static_cast<size_t>(got);
+    }
+    CloseHandle(hFile);
+    if (totalRead == 0) return {};
+    bytes.resize(totalRead);
+
+    try {
+        const int flags = preferColorWithExifOrientation ? cv::IMREAD_COLOR : cv::IMREAD_UNCHANGED;
+        cv::Mat decoded = cv::imdecode(bytes, flags);
+        return normalizeDecodedMat(std::move(decoded));
+    } catch (const cv::Exception&) {
+        return {};
+    } catch (...) {
+        return {};
+    }
+}
+
+cv::Mat decodeImageWithWic(const std::wstring& filePath) {
+    const HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool shouldUninit = SUCCEEDED(hrCom);
+    cv::Mat result;
+    {
+        Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+        if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&factory))) && factory) {
+            Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+            if (SUCCEEDED(factory->CreateDecoderFromFilename(
+                    filePath.c_str(), nullptr, GENERIC_READ,
+                    WICDecodeMetadataCacheOnDemand, &decoder)) && decoder) {
+                Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+                if (SUCCEEDED(decoder->GetFrame(0, &frame)) && frame) {
+                    UINT w = 0, h = 0;
+                    if (SUCCEEDED(frame->GetSize(&w, &h)) &&
+                        w > 0 && h > 0 &&
+                        w <= static_cast<UINT>(kMaxDropImageDimension) &&
+                        h <= static_cast<UINT>(kMaxDropImageDimension) &&
+                        static_cast<uint64_t>(w) * static_cast<uint64_t>(h) * 4ULL <= kMaxReadDibBytes) {
+                        Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+                        if (SUCCEEDED(factory->CreateFormatConverter(&converter)) && converter) {
+                            if (SUCCEEDED(converter->Initialize(
+                                    frame.Get(),
+                                    GUID_WICPixelFormat32bppBGRA,
+                                    WICBitmapDitherTypeNone,
+                                    nullptr,
+                                    0.0,
+                                    WICBitmapPaletteTypeCustom))) {
+                                try {
+                                    cv::Mat bgra(static_cast<int>(h), static_cast<int>(w), CV_8UC4);
+                                    const UINT stride = static_cast<UINT>(bgra.step[0]);
+                                    const UINT bufSize = stride * h;
+                                    if (SUCCEEDED(converter->CopyPixels(nullptr, stride, bufSize, bgra.data))) {
+                                        result = normalizeDecodedMat(std::move(bgra));
+                                    }
+                                } catch (const cv::Exception&) {
+                                    result.release();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (shouldUninit) {
+        CoUninitialize();
+    }
+    return result;
+}
+
+bool openClipboardWithRetry(int maxRetries) noexcept {
+    for (int retry = 0; retry < maxRetries; ++retry) {
         if (OpenClipboard(nullptr)) {
             SetLastError(0);
             const UINT probeFmt = EnumClipboardFormats(0);
@@ -470,157 +681,317 @@ cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
                 Sleep(10);
                 continue;
             }
-            opened = true;
-            break;
+            return true;
         }
         Sleep(5);
     }
-    if (!opened) {
+    return false;
+}
+
+std::vector<std::wstring> extractDropPathsFromOpenClipboard() {
+    std::vector<std::wstring> paths;
+    if (!IsClipboardFormatAvailable(CF_HDROP)) {
+        return paths;
+    }
+    HDROP hDrop = static_cast<HDROP>(GetClipboardData(CF_HDROP));
+    if (!hDrop) {
+        return paths;
+    }
+    const UINT fileCount = DragQueryFileW(hDrop, 0xFFFFFFFFu, nullptr, 0);
+    const UINT cappedCount = (std::min)(fileCount, kMaxInspectDropFiles);
+    paths.reserve(cappedCount);
+    for (UINT i = 0; i < cappedCount; ++i) {
+        const UINT len = DragQueryFileW(hDrop, i, nullptr, 0);
+        if (len == 0 || len > 32767) continue;
+        std::wstring buf(static_cast<size_t>(len) + 1, L'\0');
+        const UINT copied = DragQueryFileW(hDrop, i, buf.data(), len + 1);
+        if (copied > 0) {
+            buf.resize(copied);
+            paths.push_back(std::move(buf));
+        }
+    }
+    return paths;
+}
+
+} // namespace
+
+bool ClipboardUtils::isSupportedImageFilePath(const std::wstring& filePath) noexcept {
+    const std::wstring ext = extractLowerExtension(filePath);
+    if (ext.empty()) return false;
+    static constexpr std::array<std::wstring_view, 22> kSupportedImageExts = {
+        L".png", L".jpg", L".jpeg", L".jpe", L".jfif",
+        L".bmp", L".dib", L".webp", L".tif", L".tiff",
+        L".gif", L".ico", L".heic", L".heif", L".avif",
+        L".pbm", L".pgm", L".ppm", L".jp2", L".jxr",
+        L".wdp", L".hdp"
+    };
+    for (const auto candidate : kSupportedImageExts) {
+        if (ext == candidate) return true;
+    }
+    return false;
+}
+
+cv::Mat ClipboardUtils::loadImageFromFile(const std::wstring& filePath) {
+    if (!isSupportedImageFilePath(filePath)) {
+        return {};
+    }
+    uint64_t fileSize = 0;
+    if (!isExistingRegularFileWithinLimit(filePath, fileSize)) {
         return {};
     }
 
-    struct ClipboardGuard {
-        ~ClipboardGuard() { CloseClipboard(); }
-    } guard;
+    const std::wstring ext = extractLowerExtension(filePath);
+    const bool wicFirst = isWicPreferredExtension(ext);
+    const bool jpegExif = isJpegExtension(ext);
 
-    if (outMeta) {
-        *outMeta = Tools3000PinMetadata{};
-        outMeta->magic = 0;
-        UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
-        if (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta)) {
-            if (HANDLE h = GetClipboardData(formatPinMeta)) {
-                if (auto* p = static_cast<const Tools3000PinMetadata*>(GlobalLock(h))) {
-                    *outMeta = *p;
+    if (wicFirst) {
+        cv::Mat img = decodeImageWithWic(filePath);
+        if (!img.empty()) return img;
+        return decodeImageWithOpenCv(filePath, fileSize, false);
+    }
+
+    cv::Mat img = decodeImageWithOpenCv(filePath, fileSize, jpegExif);
+    if (!img.empty()) return img;
+    return decodeImageWithWic(filePath);
+}
+
+ClipboardContentProbe ClipboardUtils::inspectClipboardContent() {
+    ClipboardContentProbe probe;
+    std::vector<std::wstring> dropPaths;
+
+    if (!openClipboardWithRetry(40)) {
+        return probe;
+    }
+    {
+        struct ClipboardGuard {
+            ~ClipboardGuard() { CloseClipboard(); }
+        } guard;
+
+        const UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+        const UINT formatPng = RegisterClipboardFormatW(L"PNG");
+        const bool hasPinMeta = (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta));
+
+        if (!hasPinMeta) {
+            for (UINT fmt = EnumClipboardFormats(0); fmt != 0; fmt = EnumClipboardFormats(fmt)) {
+                if (fmt == CF_UNICODETEXT || fmt == CF_TEXT || fmt == CF_OEMTEXT) {
+                    probe.preferTextOverImage = true;
+                    break;
+                }
+                if ((formatPng != 0 && fmt == formatPng) ||
+                    fmt == CF_DIBV5 || fmt == CF_DIB || fmt == CF_BITMAP) {
+                    probe.preferTextOverImage = false;
+                    break;
+                }
+            }
+        }
+
+        if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
+            if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
+                if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
+                    probe.text = p;
                     GlobalUnlock(h);
                 }
             }
         }
-        if (outMeta->magic != 0x54333030) {
-            std::lock_guard lock(s_metaMutex);
-            if (s_hasPinMeta && GetClipboardSequenceNumber() == s_lastCopiedSeqNumber) {
-                *outMeta = s_lastPinMeta;
-            }
+
+        dropPaths = extractDropPathsFromOpenClipboard();
+    }
+
+    // 锁外快速检验 CF_HDROP 中是否包含可贴图片文件，避免阻塞系统剪贴板锁；
+    // 若复制的是图片文件且第三方工具同时附带了路径文本，强制优先贴出图片而非路径文字卡片。
+    for (const auto& path : dropPaths) {
+        uint64_t fileSize = 0;
+        if (isSupportedImageFilePath(path) && isExistingRegularFileWithinLimit(path, fileSize)) {
+            probe.hasImageDropFiles = true;
+            probe.preferTextOverImage = false;
+            break;
         }
     }
 
-    cv::Mat result;
+    return probe;
+}
 
-    // 1. 优先读取 PNG 格式（保留完整透明通道与最高画质）
-    UINT formatPng = RegisterClipboardFormatW(L"PNG");
-    if (formatPng != 0 && IsClipboardFormatAvailable(formatPng)) {
-        if (HANDLE h = GetClipboardData(formatPng)) {
-            size_t size = GlobalSize(h);
-            if (size > 0) {
-                if (auto* p = static_cast<const uint8_t*>(GlobalLock(h))) {
-                    std::vector<uint8_t> buffer(p, p + size);
-                    GlobalUnlock(h);
-                    try {
-                        result = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
-                    } catch (...) {
-                        result.release();
+std::vector<cv::Mat> ClipboardUtils::readImagesFromClipboard(Tools3000PinMetadata* outMeta, size_t maxFiles) {
+    std::vector<cv::Mat> results;
+    if (maxFiles == 0) {
+        return results;
+    }
+
+    if (!openClipboardWithRetry(25)) {
+        return results;
+    }
+
+    cv::Mat bitmapResult;
+    std::vector<std::wstring> dropPaths;
+    {
+        struct ClipboardGuard {
+            ~ClipboardGuard() { CloseClipboard(); }
+        } guard;
+
+        if (outMeta) {
+            *outMeta = Tools3000PinMetadata{};
+            outMeta->magic = 0;
+            UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
+            if (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta)) {
+                if (HANDLE h = GetClipboardData(formatPinMeta)) {
+                    if (auto* p = static_cast<const Tools3000PinMetadata*>(GlobalLock(h))) {
+                        *outMeta = *p;
+                        GlobalUnlock(h);
                     }
                 }
             }
+            if (outMeta->magic != 0x54333030) {
+                std::lock_guard lock(s_metaMutex);
+                if (s_hasPinMeta && GetClipboardSequenceNumber() == s_lastCopiedSeqNumber) {
+                    *outMeta = s_lastPinMeta;
+                }
+            }
         }
-    }
 
-    // 2. 次选读取 CF_DIBV5（32位 BGRA；若为 GDI 合成的全 0 Alpha 通道则自动转为不透明 BGR）
-    constexpr uint64_t kMaxReadDibBytes = 512ULL * 1024ULL * 1024ULL;
-    if (result.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
-        if (HANDLE h = GetClipboardData(CF_DIBV5)) {
-            const size_t totalSize = GlobalSize(h);
-            if (totalSize >= sizeof(BITMAPV5HEADER)) {
-                if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
-                    const int64_t w64 = p5->bV5Width;
-                    const int64_t hRaw = static_cast<int64_t>(p5->bV5Height);
-                    const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
-                    const uint64_t stride64 = (w64 > 0) ? (static_cast<uint64_t>(w64) * 4ULL) : 0ULL;
-                    const uint64_t pixelBytes64 = (w64 > 0 && h64 > 0 && stride64 <= kMaxReadDibBytes / static_cast<uint64_t>(h64))
-                        ? (stride64 * static_cast<uint64_t>(h64))
-                        : 0ULL;
-                    size_t headerOffset = p5->bV5Size;
-                    if (p5->bV5Compression == BI_BITFIELDS &&
-                        p5->bV5Size == sizeof(BITMAPINFOHEADER) &&
-                        pixelBytes64 > 0 &&
-                        totalSize >= headerOffset + 12 + static_cast<size_t>(pixelBytes64)) {
-                        headerOffset += 12;
-                    }
-                    if (pixelBytes64 > 0 && p5->bV5BitCount == 32 &&
-                        headerOffset <= totalSize &&
-                        static_cast<size_t>(pixelBytes64) <= totalSize - headerOffset) {
+        // 1. 优先读取 PNG 格式（保留完整透明通道与最高画质）
+        UINT formatPng = RegisterClipboardFormatW(L"PNG");
+        if (formatPng != 0 && IsClipboardFormatAvailable(formatPng)) {
+            if (HANDLE h = GetClipboardData(formatPng)) {
+                size_t size = GlobalSize(h);
+                if (size > 0) {
+                    if (auto* p = static_cast<const uint8_t*>(GlobalLock(h))) {
+                        std::vector<uint8_t> buffer(p, p + size);
+                        GlobalUnlock(h);
                         try {
-                            const int w = static_cast<int>(w64);
-                            const int hImg = static_cast<int>(h64);
-                            const size_t stride = static_cast<size_t>(stride64);
-                            const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
-                            cv::Mat bgra(hImg, w, CV_8UC4);
-                            const bool isTopDown = (p5->bV5Height < 0);
-                            bool hasNonZeroAlpha = false;
-                            for (int y = 0; y < hImg; ++y) {
-                                const int srcY = isTopDown ? y : (hImg - 1 - y);
-                                const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
-                                uint8_t* dstRow = bgra.data + static_cast<size_t>(y) * bgra.step[0];
-                                memcpy(dstRow, srcRow, stride);
-                                if (!hasNonZeroAlpha) {
-                                    for (int x = 0; x < w; ++x) {
-                                        if (dstRow[static_cast<size_t>(x) * 4ULL + 3ULL] != 0) {
-                                            hasNonZeroAlpha = true;
-                                            break;
+                            bitmapResult = cv::imdecode(buffer, cv::IMREAD_UNCHANGED);
+                        } catch (...) {
+                            bitmapResult.release();
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. 次选读取 CF_DIBV5（32位 BGRA；若为 GDI 合成的全 0 Alpha 通道则自动转为不透明 BGR）
+        if (bitmapResult.empty() && IsClipboardFormatAvailable(CF_DIBV5)) {
+            if (HANDLE h = GetClipboardData(CF_DIBV5)) {
+                const size_t totalSize = GlobalSize(h);
+                if (totalSize >= sizeof(BITMAPV5HEADER)) {
+                    if (auto* p5 = static_cast<const BITMAPV5HEADER*>(GlobalLock(h))) {
+                        const int64_t w64 = p5->bV5Width;
+                        const int64_t hRaw = static_cast<int64_t>(p5->bV5Height);
+                        const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
+                        const uint64_t stride64 = (w64 > 0) ? (static_cast<uint64_t>(w64) * 4ULL) : 0ULL;
+                        const uint64_t pixelBytes64 = (w64 > 0 && h64 > 0 && stride64 <= kMaxReadDibBytes / static_cast<uint64_t>(h64))
+                            ? (stride64 * static_cast<uint64_t>(h64))
+                            : 0ULL;
+                        size_t headerOffset = p5->bV5Size;
+                        if (p5->bV5Compression == BI_BITFIELDS &&
+                            p5->bV5Size == sizeof(BITMAPINFOHEADER) &&
+                            pixelBytes64 > 0 &&
+                            totalSize >= headerOffset + 12 + static_cast<size_t>(pixelBytes64)) {
+                            headerOffset += 12;
+                        }
+                        if (pixelBytes64 > 0 && p5->bV5BitCount == 32 &&
+                            headerOffset <= totalSize &&
+                            static_cast<size_t>(pixelBytes64) <= totalSize - headerOffset) {
+                            try {
+                                const int w = static_cast<int>(w64);
+                                const int hImg = static_cast<int>(h64);
+                                const size_t stride = static_cast<size_t>(stride64);
+                                const uint8_t* bits = reinterpret_cast<const uint8_t*>(p5) + headerOffset;
+                                cv::Mat bgra(hImg, w, CV_8UC4);
+                                const bool isTopDown = (p5->bV5Height < 0);
+                                bool hasNonZeroAlpha = false;
+                                for (int y = 0; y < hImg; ++y) {
+                                    const int srcY = isTopDown ? y : (hImg - 1 - y);
+                                    const uint8_t* srcRow = bits + static_cast<size_t>(srcY) * stride;
+                                    uint8_t* dstRow = bgra.data + static_cast<size_t>(y) * bgra.step[0];
+                                    memcpy(dstRow, srcRow, stride);
+                                    if (!hasNonZeroAlpha) {
+                                        for (int x = 0; x < w; ++x) {
+                                            if (dstRow[static_cast<size_t>(x) * 4ULL + 3ULL] != 0) {
+                                                hasNonZeroAlpha = true;
+                                                break;
+                                            }
                                         }
                                     }
                                 }
+                                if (hasNonZeroAlpha) {
+                                    bitmapResult = bgra;
+                                } else {
+                                    cv::cvtColor(bgra, bitmapResult, cv::COLOR_BGRA2BGR);
+                                }
+                            } catch (const cv::Exception&) {
+                                bitmapResult.release();
                             }
-                            if (hasNonZeroAlpha) {
-                                result = bgra;
-                            } else {
-                                cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
+                        }
+                        GlobalUnlock(h);
+                    }
+                }
+            }
+        }
+
+        // 3. 兜底读取 CF_BITMAP
+        if (bitmapResult.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
+            if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
+                BITMAP bm{};
+                if (GetObject(hbm, sizeof(bm), &bm)) {
+                    const int64_t w64 = bm.bmWidth;
+                    const int64_t hRaw = static_cast<int64_t>(bm.bmHeight);
+                    const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
+                    if (w64 > 0 && h64 > 0 &&
+                        static_cast<uint64_t>(w64) * static_cast<uint64_t>(h64) * 4ULL <= kMaxReadDibBytes) {
+                        try {
+                            const int w = static_cast<int>(w64);
+                            const int hImg = static_cast<int>(h64);
+                            BITMAPINFOHEADER bi{};
+                            bi.biSize = sizeof(bi);
+                            bi.biWidth = w;
+                            bi.biHeight = -hImg; // top-down
+                            bi.biPlanes = 1;
+                            bi.biBitCount = 32;
+                            bi.biCompression = BI_RGB;
+                            cv::Mat bgra(hImg, w, CV_8UC4);
+                            HDC dc = GetDC(nullptr);
+                            int got = dc ? GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS) : 0;
+                            if (dc) ReleaseDC(nullptr, dc);
+                            if (got > 0) {
+                                cv::cvtColor(bgra, bitmapResult, cv::COLOR_BGRA2BGR);
                             }
                         } catch (const cv::Exception&) {
-                            result.release();
+                            bitmapResult.release();
                         }
-                    }
-                    GlobalUnlock(h);
-                }
-            }
-        }
-    }
-
-    // 3. 兜底读取 CF_BITMAP
-    if (result.empty() && IsClipboardFormatAvailable(CF_BITMAP)) {
-        if (HBITMAP hbm = static_cast<HBITMAP>(GetClipboardData(CF_BITMAP))) {
-            BITMAP bm{};
-            if (GetObject(hbm, sizeof(bm), &bm)) {
-                const int64_t w64 = bm.bmWidth;
-                const int64_t hRaw = static_cast<int64_t>(bm.bmHeight);
-                const int64_t h64 = hRaw < 0 ? -hRaw : hRaw;
-                if (w64 > 0 && h64 > 0 &&
-                    static_cast<uint64_t>(w64) * static_cast<uint64_t>(h64) * 4ULL <= kMaxReadDibBytes) {
-                    try {
-                        const int w = static_cast<int>(w64);
-                        const int hImg = static_cast<int>(h64);
-                        BITMAPINFOHEADER bi{};
-                        bi.biSize = sizeof(bi);
-                        bi.biWidth = w;
-                        bi.biHeight = -hImg; // top-down
-                        bi.biPlanes = 1;
-                        bi.biBitCount = 32;
-                        bi.biCompression = BI_RGB;
-                        cv::Mat bgra(hImg, w, CV_8UC4);
-                        HDC dc = GetDC(nullptr);
-                        int got = dc ? GetDIBits(dc, hbm, 0, hImg, bgra.data, reinterpret_cast<BITMAPINFO*>(&bi), DIB_RGB_COLORS) : 0;
-                        if (dc) ReleaseDC(nullptr, dc);
-                        if (got > 0) {
-                            cv::cvtColor(bgra, result, cv::COLOR_BGRA2BGR);
-                        }
-                    } catch (const cv::Exception&) {
-                        result.release();
                     }
                 }
             }
         }
+
+        // 4. 若剪贴板不含内存位图，仅在锁内提取 CF_HDROP 路径数组，立即释放系统剪贴板锁后再做磁盘解码
+        if (bitmapResult.empty()) {
+            dropPaths = extractDropPathsFromOpenClipboard();
+        }
     }
 
-    return result;
+    if (!bitmapResult.empty()) {
+        results.push_back(std::move(bitmapResult));
+        return results;
+    }
+
+    for (const auto& path : dropPaths) {
+        if (results.size() >= maxFiles) break;
+        cv::Mat fileImg = loadImageFromFile(path);
+        if (!fileImg.empty()) {
+            LOG_INFO("ClipboardUtils: decoded CF_HDROP image file ({}x{}): {}",
+                     fileImg.cols, fileImg.rows, tools3000::core::WinUtils::wstringToUtf8(path));
+            results.push_back(std::move(fileImg));
+        }
+    }
+
+    return results;
+}
+
+cv::Mat ClipboardUtils::readImageFromClipboard(Tools3000PinMetadata* outMeta) {
+    auto images = readImagesFromClipboard(outMeta, 1);
+    if (images.empty()) {
+        return {};
+    }
+    return std::move(images[0]);
 }
 
 } // namespace tools3000::capture

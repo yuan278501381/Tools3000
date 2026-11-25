@@ -196,7 +196,8 @@ bool OcrWorkerClient::runSingleRequestLocked(
     const std::string& scriptMode,
     std::vector<OcrResult>& outResults,
     DeepOcrRunStats& outStats,
-    std::string& outActiveTier) {
+    std::string& outActiveTier,
+    const OcrStageCallback& onStage) {
     if (!m_pipe || !isChildAliveLocked()) return false;
     if (bgrImage.empty() || bgrImage.type() != CV_8UC3) return false;
 
@@ -257,7 +258,8 @@ bool OcrWorkerClient::runSingleRequestLocked(
         outActiveTier,
         /*overlapped=*/true,
         kOcrRequestTimeoutMs,
-        m_childProcess.get());
+        m_childProcess.get(),
+        onStage);
 }
 
 OcrWorkerExtractStatus OcrWorkerClient::extractTextEx(
@@ -267,7 +269,8 @@ OcrWorkerExtractStatus OcrWorkerClient::extractTextEx(
     const std::string& scriptMode,
     std::vector<OcrResult>& outResults,
     DeepOcrRunStats& outStats,
-    std::string& outActiveTier) {
+    std::string& outActiveTier,
+    const OcrStageCallback& onStage) {
     if (!isOutOfProcessAvailable()) {
         return OcrWorkerExtractStatus::WorkerUnavailable;
     }
@@ -302,15 +305,18 @@ OcrWorkerExtractStatus OcrWorkerClient::extractTextEx(
             return OcrWorkerExtractStatus::WorkerFailed;
         }
 
-        if (runSingleRequestLocked(bgrImage, modelDir, modelTier, scriptMode, outResults, outStats, outActiveTier)) {
+        if (runSingleRequestLocked(bgrImage, modelDir, modelTier, scriptMode, outResults, outStats, outActiveTier, onStage)) {
             const long long wallMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::steady_clock::now() - tWallStart).count();
-            LOG_INFO("DeepOcrEngine: isolated worker (pid={}, safeCpu={}) recognized {} lines ({} quads -> {} strips, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
+            LOG_INFO("DeepOcrEngine: isolated worker (pid={}, safeCpu={}) recognized {} lines ({} quads -> {} strips, script={}, autoSwitched={}, refineCandidates={}, serverRefined={}) on {}x{} in {} ms (wall={} ms, load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={}, tier={})",
                      m_childPid.load(std::memory_order_acquire),
                      safeCpu ? "true" : "false",
                      outResults.size(),
                      outStats.detectedQuads,
                      outStats.stripCount,
+                     outStats.detectedScript,
+                     outStats.autoScriptSwitched ? "true" : "false",
+                     outStats.serverRefineCandidateCount,
                      outStats.serverRefinedCount,
                      bgrImage.cols,
                      bgrImage.rows,

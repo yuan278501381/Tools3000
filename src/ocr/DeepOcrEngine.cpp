@@ -365,8 +365,9 @@ struct DeepOcrEngine::WinMlContext {
         if (!serverCascadeEnabled || serverRecPath.empty()) return nullptr;
         if (serverRecSession) return &serverRecSession;
         try {
+            const auto compatServerPath = ensureOnnxWinMlIr8CompatiblePath(serverRecPath);
             if (!serverRecModel) {
-                serverRecModel = waml::LearningModel::LoadFromFilePath(serverRecPath.wstring());
+                serverRecModel = waml::LearningModel::LoadFromFilePath(compatServerPath.wstring());
             }
             if (!serverRecModel ||
                 serverRecModel.InputFeatures().Size() == 0 ||
@@ -389,7 +390,7 @@ struct DeepOcrEngine::WinMlContext {
                     serverRecSession = nullptr;
                     // GPU 创建失败时关闭可能损坏的模型引用并重新在 CPU 上安全加载
                     if (!serverRecModel) {
-                        serverRecModel = waml::LearningModel::LoadFromFilePath(serverRecPath.wstring());
+                        serverRecModel = waml::LearningModel::LoadFromFilePath(compatServerPath.wstring());
                     }
                     if (!cpuDevice) {
                         cpuDevice = waml::LearningModelDevice(waml::LearningModelDeviceKind::Cpu);
@@ -567,10 +568,13 @@ DeepOcrEngine& DeepOcrEngine::instance() {
 }
 
 bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelDir) {
+    const bool useV6 = isV6BaseBundlePresent(modelDir);
+    const std::string desiredGen = useV6 ? "v6" : "v4";
     const std::string desiredTier =
         (configuredModelTier() == "server" && isServerRecModelPresent(modelDir)) ? "server" : "mobile";
 
     if (m_modelsLoaded && m_loadedModelDir == modelDir && m_loadedModelTier == desiredTier &&
+        m_loadedEngineGen == desiredGen &&
         !m_dictKeys.empty() &&
         ((m_useWinMl && m_winMl != nullptr) ||
          (!m_detNet.empty() && !m_recNetShort.empty() && !m_recNetLong.empty()))) {
@@ -582,6 +586,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     m_bucketsPrecompiled = false;
     m_useWinMl = false;
     m_loadedModelTier.clear();
+    m_loadedEngineGen.clear();
     m_winMl.reset();
     m_detNet = cv::dnn::Net{};
     m_clsNet = cv::dnn::Net{};
@@ -590,14 +595,14 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
     m_dictKeys.clear();
 
     try {
-        const auto detPath = modelDir / DeepOcrConstants::kDetModelFileName;
+        const auto detPath = modelDir / (useV6 ? DeepOcrConstants::kV6DetModelFileName : DeepOcrConstants::kDetModelFileName);
         const auto clsPath = modelDir / DeepOcrConstants::kClsModelFileName;
-        const auto mobileRecPath = modelDir / DeepOcrConstants::kRecModelFileName;
-        const auto serverRecPath = modelDir / DeepOcrConstants::kRecServerModelFileName;
+        const auto mobileRecPath = modelDir / (useV6 ? DeepOcrConstants::kV6RecModelFileName : DeepOcrConstants::kRecModelFileName);
+        const auto serverRecPath = modelDir / (useV6 ? DeepOcrConstants::kV6RecMediumModelFileName : DeepOcrConstants::kRecServerModelFileName);
         const auto dictPath = modelDir / DeepOcrConstants::kKeysDictFileName;
 
         // 轻量化 4KB 文件头校验（std::filesystem::file_size + ONNX Protobuf 魔数），
-        // 彻底消灭冷启将 4 个模型（含 86.34 MB server 模型，共 102 MB）整份读盘后立即丢弃的 I/O 浪费
+        // 彻底消灭冷启将多个重型模型整份读盘后立即丢弃的 I/O 浪费
         if (!isValidOnnxFileHeader(detPath, 256)) {
             LOG_WARN("DeepOcrEngine: invalid or missing det ONNX model");
             return false;
@@ -608,28 +613,26 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         }
 
         std::string actualTier = desiredTier;
-        // 无论 mobile 还是 server 档位，主力均校验并加载极速轻量的 mobile 识别模型 (10.8 MB)；
-        // 若用户开启 server 高精度增强档，二阶仅对低置信度疑难行按需懒加载单一甜点 Server 会话精准复核，
-        // 彻底根治 90.5 MB Server 模型多桶 DirectML 显存溢出与 5GB+ Private Commit 暴涨。
+        // 无论 mobile 还是 server 档位，主力均校验并加载极速轻量的主力识别模型（v6 Small 20.3MB / v4 Mobile 10.4MB）；
+        // 若用户开启高精度增强档，二阶仅对低置信度疑难行按需懒加载单一甜点高精度会话复核（v6 Medium Rec 73.1MB / v4 Server 86.3MB），
+        // 彻底规避重型检测器多桶显存暴涨与纯 CPU 108s 卡顿。
         if (!isValidOnnxFileHeader(mobileRecPath, 256)) {
             LOG_WARN("DeepOcrEngine: invalid or missing rec ONNX model");
             return false;
         }
         bool serverModelVerified = false;
         if (desiredTier == "server") {
-            if (isValidOnnxFileHeader(
-                    serverRecPath,
-                    256,
-                    DeepOcrConstants::kEstimatedServerAddOnBytes + 16ULL * 1024ULL * 1024ULL)) {
+            if (isValidOnnxFileHeader(serverRecPath, 256, DeepOcrConstants::kMaxServerModelBytes)) {
                 serverModelVerified = true;
             } else {
                 LOG_WARN("DeepOcrEngine: server rec ONNX model invalid or unreadable, gracefully falling back to mobile tier");
                 actualTier = "mobile";
             }
         }
-        // 仅当独立字典文件 ppocr_keys_v1.txt 缺失或非法时，才按需整文件读取 mobile rec ONNX 提取内嵌词典
+        // PP-OCRv6 强制直接从 rec ONNX 内嵌元数据提取 18,708 字 50 语种词典（严禁误读遗留的旧 v4 ppocr_keys_v1.txt！）；
+        // 旧版 PP-OCRv4 优先读 ppocr_keys_v1.txt 并在缺失时回退内嵌字典提取。
         std::vector<uint8_t> recBytesCache;
-        if (!loadDictionaryLines(dictPath, m_dictKeys)) {
+        if (useV6 || !loadDictionaryLines(dictPath, m_dictKeys)) {
             if (!readFileBytes(mobileRecPath, recBytesCache) ||
                 !extractEmbeddedCharacterDictFromOnnx(recBytesCache.data(), recBytesCache.size(), m_dictKeys)) {
                 LOG_WARN("DeepOcrEngine: invalid or missing dictionary keys file");
@@ -641,10 +644,14 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         // 优先挂载系统内置 Windows.AI.MachineLearning + DirectML 原生 D3D12 紧凑固定桶管线
         try {
             ensureComApartmentInitialized();
+            const auto winmlDetPath = ensureOnnxWinMlIr8CompatiblePath(detPath);
+            const auto winmlClsPath = ensureOnnxWinMlIr8CompatiblePath(clsPath);
+            const auto winmlRecPath = ensureOnnxWinMlIr8CompatiblePath(mobileRecPath);
+
             auto ctx = std::make_unique<WinMlContext>();
-            ctx->detModel = waml::LearningModel::LoadFromFilePath(detPath.wstring());
-            ctx->clsModel = waml::LearningModel::LoadFromFilePath(clsPath.wstring());
-            ctx->recModel = waml::LearningModel::LoadFromFilePath(mobileRecPath.wstring());
+            ctx->detModel = waml::LearningModel::LoadFromFilePath(winmlDetPath.wstring());
+            ctx->clsModel = waml::LearningModel::LoadFromFilePath(winmlClsPath.wstring());
+            ctx->recModel = waml::LearningModel::LoadFromFilePath(winmlRecPath.wstring());
             if (serverModelVerified) {
                 ctx->serverRecPath = serverRecPath;
                 ctx->serverCascadeEnabled = true;
@@ -799,10 +806,12 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                 m_useWinMl = true;
                 m_loadedModelDir = modelDir;
                 m_loadedModelTier = actualTier;
+                m_loadedEngineGen = desiredGen;
                 m_modelsLoaded = true;
                 m_modelsLoadedAtomic.store(true, std::memory_order_release);
                 m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
-                LOG_INFO("DeepOcrEngine: PP-OCRv4 loaded with native WinML ONNX Runtime ({}{}, tier={}, serverGpu={}, dict={} keys)",
+                LOG_INFO("DeepOcrEngine: PP-OCR{} loaded with native WinML ONNX Runtime ({}{}, tier={}, serverGpu={}, dict={} keys)",
+                         m_loadedEngineGen,
                          m_winMl->usingDirectMLGpu ? "DirectML GPU" : "CPU SIMD",
                          m_winMl->supportsBatchEval ? " + CompactBatchCascade" : "",
                          m_loadedModelTier,
@@ -861,9 +870,10 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
 
         m_loadedModelDir = modelDir;
         m_loadedModelTier = actualTier;
+        m_loadedEngineGen = desiredGen;
         m_modelsLoaded = true;
         m_modelsLoadedAtomic.store(true, std::memory_order_release);
-        LOG_INFO("DeepOcrEngine: PP-OCRv4 ONNX models loaded (tier={}, dict={} keys)", m_loadedModelTier, m_dictKeys.size());
+        LOG_INFO("DeepOcrEngine: PP-OCR{} ONNX models loaded (tier={}, dict={} keys)", m_loadedEngineGen, m_loadedModelTier, m_dictKeys.size());
         return true;
     } catch (const winrt::hresult_error& e) {
         LOG_ERROR("DeepOcrEngine: WinRT exception loading PP-OCRv4 models: hr=0x{:08X}",
@@ -891,7 +901,10 @@ struct ScriptGlyphProfile {
     size_t kana = 0;
     size_t japaneseNo = 0;
     size_t cyrillic = 0;
+    size_t arabic = 0;
+    size_t thai = 0;
     size_t latinDiacritic = 0;
+    size_t rareLatinExt = 0;
     size_t cjkHan = 0;
     size_t asciiAlpha = 0;
     size_t totalChars = 0;
@@ -1015,8 +1028,18 @@ ScriptGlyphProfile analyzeScriptGlyphs(const std::string& utf8) noexcept {
         } else if (cp >= 0x0400 && cp <= 0x04FF) {
             ++p.cyrillic;
             p.visualUnits += 0.58f;
+        } else if ((cp >= 0x0600 && cp <= 0x06FF) || (cp >= 0x0750 && cp <= 0x077F) ||
+                   (cp >= 0xFB50 && cp <= 0xFDFF) || (cp >= 0xFE70 && cp <= 0xFEFF)) {
+            ++p.arabic;
+            p.visualUnits += 0.52f;
+        } else if (cp >= 0x0E00 && cp <= 0x0E7F) {
+            ++p.thai;
+            p.visualUnits += 0.55f;
         } else if ((cp >= 0x00C0 && cp <= 0x024F) || cp == 0x00BF || cp == 0x00A1) {
             ++p.latinDiacritic;
+            if (cp >= 0x0100 && cp <= 0x024F) {
+                ++p.rareLatinExt;
+            }
             p.visualUnits += 0.56f;
         } else if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF)) {
             ++p.cjkHan;
@@ -1170,6 +1193,97 @@ void normalizeCyrillicLatinHomoglyphs(CtcDecodeOutput& dec) {
     }
 }
 
+/// 阿拉伯语 PP-OCRv5 视觉左->右 CTC 输出还原为标准逻辑阅读序（RTL）：
+/// 1) 仅当该行包含真实阿拉伯语码点时执行整体字符序反转（纯英文/数字行零改动直通）；
+/// 2) 保留嵌入的连续 ASCII 字母/数字段（如 2026、Tools3000、95.2%）内部正序；
+/// 3) 同步搬移 CtcDecodedChar 自身携带的 normLeft/normRight，保证原图字符级选框 1:1 精准对应。
+void normalizeArabicRtlLine(CtcDecodeOutput& dec) {
+    if (dec.chars.size() < 2) return;
+    auto firstUtf8Codepoint = [](const std::string& s) noexcept -> uint32_t {
+        if (s.empty()) return 0u;
+        const uint8_t b0 = static_cast<uint8_t>(s[0]);
+        if (b0 < 0x80u) return b0;
+        if ((b0 & 0xE0u) == 0xC0u && s.size() >= 2) {
+            return ((b0 & 0x1Fu) << 6) | (static_cast<uint8_t>(s[1]) & 0x3Fu);
+        }
+        if ((b0 & 0xF0u) == 0xE0u && s.size() >= 3) {
+            return ((b0 & 0x0Fu) << 12) |
+                   ((static_cast<uint8_t>(s[1]) & 0x3Fu) << 6) |
+                   (static_cast<uint8_t>(s[2]) & 0x3Fu);
+        }
+        if ((b0 & 0xF8u) == 0xF0u && s.size() >= 4) {
+            return ((b0 & 0x07u) << 18) |
+                   ((static_cast<uint8_t>(s[1]) & 0x3Fu) << 12) |
+                   ((static_cast<uint8_t>(s[2]) & 0x3Fu) << 6) |
+                   (static_cast<uint8_t>(s[3]) & 0x3Fu);
+        }
+        return b0;
+    };
+    auto isArabicCp = [](uint32_t cp) noexcept {
+        return (cp >= 0x0600u && cp <= 0x06FFu) ||
+               (cp >= 0x0750u && cp <= 0x077Fu) ||
+               (cp >= 0x08A0u && cp <= 0x08FFu) ||
+               (cp >= 0xFB50u && cp <= 0xFDFFu) ||
+               (cp >= 0xFE70u && cp <= 0xFEFFu);
+    };
+    auto isLtrRunChar = [](uint32_t cp) noexcept {
+        return (cp >= '0' && cp <= '9') ||
+               (cp >= 'A' && cp <= 'Z') ||
+               (cp >= 'a' && cp <= 'z') ||
+               cp == '_' || cp == '-';
+    };
+    auto isLtrBridgeChar = [](uint32_t cp) noexcept {
+        return cp == '.' || cp == ',' || cp == ':' || cp == '/' || cp == '%';
+    };
+
+    bool hasArabic = false;
+    for (const auto& ch : dec.chars) {
+        if (isArabicCp(firstUtf8Codepoint(ch.utf8Char))) {
+            hasArabic = true;
+            break;
+        }
+    }
+    if (!hasArabic) return;
+
+    std::reverse(dec.chars.begin(), dec.chars.end());
+
+    // 将嵌入的连续 LTR 拉丁/数字子段局部翻回左->右正序
+    const size_t n = dec.chars.size();
+    size_t i = 0;
+    while (i < n) {
+        if (!isLtrRunChar(firstUtf8Codepoint(dec.chars[i].utf8Char))) {
+            ++i;
+            continue;
+        }
+        size_t j = i + 1;
+        while (j < n) {
+            const uint32_t cpJ = firstUtf8Codepoint(dec.chars[j].utf8Char);
+            if (isLtrRunChar(cpJ)) {
+                ++j;
+                continue;
+            }
+            if (isLtrBridgeChar(cpJ) && j + 1 < n &&
+                isLtrRunChar(firstUtf8Codepoint(dec.chars[j + 1].utf8Char))) {
+                j += 2;
+                continue;
+            }
+            break;
+        }
+        if (j - i >= 2) {
+            std::reverse(dec.chars.begin() + static_cast<ptrdiff_t>(i),
+                         dec.chars.begin() + static_cast<ptrdiff_t>(j));
+        }
+        i = j;
+    }
+
+    std::string rebuilt;
+    rebuilt.reserve(dec.text.size());
+    for (const auto& ch : dec.chars) {
+        rebuilt += ch.utf8Char;
+    }
+    dec.text = std::move(rebuilt);
+}
+
 } // namespace
 
 std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const std::string& scriptModeOverride) {
@@ -1201,12 +1315,14 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
             effectiveScriptMode,
             workerResults,
             workerStats,
-            workerActiveTier);
+            workerActiveTier,
+            currentStageCallback());
         if (status == OcrWorkerExtractStatus::Succeeded) {
             {
                 std::lock_guard<std::mutex> statsLock(m_statsMutex);
                 m_lastRunStats = workerStats;
             }
+            m_runSequence.fetch_add(1, std::memory_order_release);
             return workerResults;
         }
         if (status == OcrWorkerExtractStatus::WorkerFailed) {
@@ -1231,9 +1347,11 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
     long long packMs = 0;
     long long recMs = 0;
     long long refineMs = 0;
+    size_t serverRefineCandidateCount = 0;
     size_t serverRefinedCount = 0;
     size_t detectedQuadCount = 0;
     size_t packedStripCount = 0;
+    bool autoScriptSwitched = false;
     std::string bucketProfile;
     std::string detectedScript = "cjk";
     bool pageRotated90Or270 = false;
@@ -2357,11 +2475,20 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
             //      - 命中异常信号时按特征排序候选 + Top-3 限宽(<=480px) CPU 轻探针 + 命中即早停 + 650ms 低配机预算硬护栏；
             //      - 胜出语种免重跑 det，直接全页重识并切换 detectedScript，实现「中文用户截韩/日/俄/西葡图零切换自动识译」。
             if (!usedExplicitExtPack && effectiveScriptMode == "auto" && !pieces.empty()) {
+                const bool isV6Main = (m_loadedEngineGen == "v6");
                 std::vector<std::string> installedExtPacks;
-                installedExtPacks.reserve(4);
+                installedExtPacks.reserve(6);
                 for (const char* pid : allScriptPackIds()) {
                     if (isScriptPackModelPresent(modelDir, pid)) {
                         installedExtPacks.emplace_back(pid);
+                    }
+                }
+                // 旧版 PP-OCRv4 兼容态保留 japan / latin 外挂包探针；PP-OCRv6 已原生高精度覆盖 50 语种（含日/法/德/西/葡），免无用探测
+                if (!isV6Main) {
+                    for (const char* legacyId : {"japan", "latin"}) {
+                        if (isScriptPackModelPresent(modelDir, legacyId)) {
+                            installedExtPacks.emplace_back(legacyId);
+                        }
                     }
                 }
                 auto hasPack = [&](std::string_view id) -> bool {
@@ -2378,6 +2505,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                     size_t totalJapaneseNo = 0;
                     size_t totalKana = 0;
                     size_t totalLatinDiac = 0;
+                    size_t totalRareLatinExt = 0;
                     size_t totalAsciiWords = 0;
                     size_t totalMixedCaseAnom = 0;
                     bool iberianHint = false;
@@ -2398,6 +2526,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         totalJapaneseNo += gp.japaneseNo;
                         totalKana += gp.kana;
                         totalLatinDiac += gp.latinDiacritic;
+                        totalRareLatinExt += gp.rareLatinExt;
                         totalAsciiWords += gp.asciiWordCount;
                         totalMixedCaseAnom += gp.mixedCaseAnomalousWords;
                         if (!iberianHint && hasIberianOrExtendedLatinHint(dec.text)) {
@@ -2412,22 +2541,25 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         ? (static_cast<float>(totalMixedCaseAnom) / static_cast<float>(totalAsciiWords))
                         : 0.0f;
 
-                    // 四重正交异常信号门控（高汉字占比且无真实日文假名/坍塌线索的中文表格/界面直接短路放行，0 额外开销）
-                    const bool sigJapaneseCue      = (totalKana >= 2) ||
-                                                     (totalJapaneseNo >= 1 && (densityRatio < 0.65f || totalCjkHan < 20));
-                    const bool clearlyChineseDoc   = (totalCjkHan >= 15 && survivalRatio >= 0.72f &&
+                    // 四重正交异常信号门控（高汉字/假名占比且稳定的中英日文档直接短路放行，0 额外开销）
+                    const bool sigJapaneseCue      = (!isV6Main) && ((totalKana >= 2) ||
+                                                     (totalJapaneseNo >= 1 && (densityRatio < 0.65f || totalCjkHan < 20)));
+                    const bool clearlyChineseDoc   = ((totalCjkHan + (isV6Main ? totalKana : 0u)) >= 15 &&
+                                                      survivalRatio >= 0.72f &&
                                                       mainAvgConf >= 0.74f && densityRatio >= 0.45f &&
                                                       !sigJapaneseCue);
-                    const bool sigSurvivalCollapse = (survivalRatio < 0.72f);
-                    const bool sigDensityCollapse  = (expectedUnitsSum >= 6.0f && densityRatio < 0.58f);
-                    const bool sigCyrillicGlitch   = (mixedCaseRatio >= 0.22f && totalCjkHan <= 2);
-                    const bool sigLowConf          = (!clearlyChineseDoc && (validPieces == 0 || mainAvgConf < 0.85f));
-                    const bool sigLatinCue         = (totalCjkHan <= 2 && totalAsciiAlpha >= 16 &&
+                    const bool sigSurvivalCollapse = (survivalRatio < (isV6Main ? 0.76f : 0.72f));
+                    const bool sigDensityCollapse  = (expectedUnitsSum >= 6.0f && densityRatio < (isV6Main ? 0.62f : 0.58f));
+                    const bool sigCyrillicGlitch   = ((mixedCaseRatio >= (isV6Main ? 0.16f : 0.22f) ||
+                                                       (isV6Main && totalRareLatinExt >= 4 && mainAvgConf < 0.90f)) &&
+                                                      totalCjkHan <= 4);
+                    const bool sigLowConf          = (!clearlyChineseDoc && (validPieces == 0 || mainAvgConf < (isV6Main ? 0.87f : 0.85f)));
+                    const bool sigLatinCue         = (!isV6Main && totalCjkHan <= 2 && totalAsciiAlpha >= 16 &&
                                                       (iberianHint || totalLatinDiac >= 1));
 
                     const bool shouldProbe = !clearlyChineseDoc && (
-                        (sigSurvivalCollapse && (hasPack("korean") || hasPack("japan") || hasPack("cyrillic"))) ||
-                        ((sigDensityCollapse || sigJapaneseCue) && (hasPack("japan") || hasPack("korean"))) ||
+                        (sigSurvivalCollapse && (hasPack("korean") || hasPack("japan") || hasPack("cyrillic") || hasPack("arabic") || hasPack("thai"))) ||
+                        ((sigDensityCollapse || sigJapaneseCue) && (hasPack("japan") || hasPack("korean") || hasPack("cyrillic") || hasPack("arabic") || hasPack("thai"))) ||
                         (sigCyrillicGlitch && hasPack("cyrillic")) ||
                         (sigLatinCue && hasPack("latin")) ||
                         (sigLowConf && !installedExtPacks.empty()));
@@ -2441,8 +2573,13 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             }
                         };
                         if (sigCyrillicGlitch) pushIfInstalled("cyrillic");
-                        if (sigJapaneseCue || (sigDensityCollapse && totalCjkHan >= 2)) pushIfInstalled("japan");
-                        if (sigSurvivalCollapse) pushIfInstalled("korean");
+                        if (sigJapaneseCue || (!isV6Main && sigDensityCollapse && totalCjkHan >= 2)) pushIfInstalled("japan");
+                        if (sigSurvivalCollapse) {
+                            pushIfInstalled("korean");
+                            pushIfInstalled("cyrillic");
+                            pushIfInstalled("arabic");
+                            pushIfInstalled("thai");
+                        }
                         if (sigLatinCue) pushIfInstalled("latin");
                         // 若有已热驻留的扩展槽，紧随强信号后优先复用以省 ~25ms 加载
                         if (m_winMl->extRec.session && !m_winMl->extRec.scriptId.empty()) {
@@ -2496,6 +2633,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                                 if (scriptId == "korean") targetHits += gp.hangul;
                                 else if (scriptId == "japan") targetHits += gp.kana;
                                 else if (scriptId == "cyrillic") targetHits += gp.cyrillic;
+                                else if (scriptId == "arabic") targetHits += gp.arabic;
+                                else if (scriptId == "thai") targetHits += gp.thai;
                                 else if (scriptId == "latin") targetHits += gp.latinDiacritic;
                             }
                             outAvgConf = (okLines > 0) ? (cSum / static_cast<float>(okLines)) : 0.0f;
@@ -2505,6 +2644,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             if (scriptId == "korean") outHasTargetScript = (targetHits >= 2);
                             else if (scriptId == "japan") outHasTargetScript = (targetHits >= 2);
                             else if (scriptId == "cyrillic") outHasTargetScript = (targetHits >= 4);
+                            else if (scriptId == "arabic") outHasTargetScript = (targetHits >= 3);
+                            else if (scriptId == "thai") outHasTargetScript = (targetHits >= 3);
                             else if (scriptId == "latin") outHasTargetScript = (targetHits >= 2);
                             else outHasTargetScript = true;
                             return outAvgConf * (0.35f + 0.35f * surv + 0.30f * dens) - 0.25f * glitch;
@@ -2518,7 +2659,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         size_t mainSubDiac = 0;
                         const float mainScore = scoreSubset(mainProbeDecs, "cjk", mainSubConf, mainHasTarget, mainSubDiac);
 
-                        constexpr long long kAutoProbeBudgetMs = 650;
+                        constexpr long long kAutoProbeWithWinnerBudgetMs = 650;
+                        constexpr long long kAutoProbeNoWinnerBudgetMs = 2200;
                         const auto tProbeStart = std::chrono::steady_clock::now();
                         std::string winnerScript;
                         float bestScore = mainScore;
@@ -2526,10 +2668,10 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         for (const auto& candId : probeOrder) {
                             const long long elapsedProbeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                                 std::chrono::steady_clock::now() - tProbeStart).count();
-                            if (elapsedProbeMs >= kAutoProbeBudgetMs && !winnerScript.empty()) {
+                            if (!winnerScript.empty() && elapsedProbeMs >= kAutoProbeWithWinnerBudgetMs) {
                                 break;
                             }
-                            if (elapsedProbeMs >= kAutoProbeBudgetMs + 250) {
+                            if (elapsedProbeMs >= kAutoProbeNoWinnerBudgetMs) {
                                 break;
                             }
                             auto* extSlot = m_winMl->ensureExtRecSlot(modelDir, candId);
@@ -2573,16 +2715,25 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             }
                         }
 
+                        const long long probeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - tProbeStart).count();
                         if (!winnerScript.empty()) {
                             if (auto* winSlot = m_winMl->ensureExtRecSlot(modelDir, winnerScript)) {
+                                notifyStage(OcrRecognitionStage::AutoScriptSwitching,
+                                            static_cast<uint32_t>(pieces.size()),
+                                            winnerScript);
                                 m_activeSessionCountAtomic.store(m_winMl->countActiveSessions(), std::memory_order_release);
                                 std::vector<size_t> allIndices(pieces.size());
                                 std::iota(allIndices.begin(), allIndices.end(), 0u);
                                 evalExtRecOnIndices(*winSlot, allIndices, /*maxProbeWidthCap=*/0, pieceDecoded);
                                 detectedScript = winnerScript;
-                                LOG_INFO("DeepOcrEngine: auto script router switched to '{}' (mainScore={:.3f} -> extScore={:.3f})",
-                                         winnerScript, mainScore, bestScore);
+                                autoScriptSwitched = true;
+                                LOG_INFO("DeepOcrEngine: auto script router switched to '{}' (mainScore={:.3f} -> extScore={:.3f}, probeMs={} ms, lines={})",
+                                         winnerScript, mainScore, bestScore, probeMs, pieces.size());
                             }
+                        } else {
+                            LOG_DEBUG("DeepOcrEngine: auto script probe kept primary model (mainScore={:.3f}, survival={:.2f}, density={:.2f}, avgConf={:.3f}, tried={}, probeMs={} ms)",
+                                      mainScore, survivalRatio, densityRatio, mainAvgConf, probeOrder.size(), probeMs);
                         }
                     }
                 }
@@ -2591,6 +2742,10 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
             if (detectedScript == "cyrillic") {
                 for (auto& dec : pieceDecoded) {
                     normalizeCyrillicLatinHomoglyphs(dec);
+                }
+            } else if (detectedScript == "arabic") {
+                for (auto& dec : pieceDecoded) {
+                    normalizeArabicRtlLine(dec);
                 }
             }
 
@@ -2606,11 +2761,13 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 };
                 std::vector<HardPieceCandidate> hardCandidates;
                 hardCandidates.reserve(pieces.size());
+                size_t trigEmpty = 0, trigLowAvg = 0, trigLowChar = 0, trigShort = 0;
                 for (size_t pi = 0; pi < pieces.size(); ++pi) {
                     const auto& dec = pieceDecoded[pi];
                     if (dec.chars.empty()) {
                         if (pieces[pi].contentW >= 18) {
                             hardCandidates.push_back({pi, 0.0f, 0.0f});
+                            ++trigEmpty;
                         }
                         continue;
                     }
@@ -2619,14 +2776,27 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                         minCharConf = (std::min)(minCharConf, ch.confidence);
                     }
                     const bool lowAvg = (dec.confidence < DeepOcrConstants::kServerRefineAvgConfThresh);
-                    const bool lowChar = (minCharConf < DeepOcrConstants::kServerRefineMinCharConfThresh);
+                    const bool lowChar = (minCharConf < DeepOcrConstants::kServerRefineMinCharConfThresh) &&
+                                         (dec.confidence < DeepOcrConstants::kServerRefineHighAvgSkipLowCharThresh ||
+                                          minCharConf < DeepOcrConstants::kServerRefineExtremeMinCharConfThresh);
                     const bool shortUncertain = (dec.chars.size() <= 2 && dec.confidence < DeepOcrConstants::kServerRefineShortLineConfThresh);
-                    if (lowAvg || lowChar || shortUncertain) {
+                    // 通用几何无损保真门控：GPU 精修桶固定宽度为 640px，避免对已高置信（非 lowAvg）的
+                    // 超宽条带执行下采样压扁后反向覆盖主识别的高分辨率无损结果。
+                    const bool gpuWideDownscaleRisk =
+                        m_winMl->usingDirectMLGpu &&
+                        m_winMl->allowServerGpu &&
+                        (pieces[pi].contentW > DeepOcrConstants::kServerRefineGpuBucketWidth) &&
+                        !lowAvg;
+                    if (!gpuWideDownscaleRisk && (lowAvg || lowChar || shortUncertain)) {
                         hardCandidates.push_back({pi, (std::min)(dec.confidence, minCharConf), minCharConf});
+                        if (lowAvg) ++trigLowAvg;
+                        if (lowChar) ++trigLowChar;
+                        if (shortUncertain) ++trigShort;
                     }
                 }
 
                 if (!hardCandidates.empty()) {
+                    const size_t totalHardFound = hardCandidates.size();
                     const size_t maxRefinePieces = (m_winMl->usingDirectMLGpu && m_winMl->supportsBatchEval)
                         ? DeepOcrConstants::kServerRefineMaxPiecesPerImage
                         : DeepOcrConstants::kServerRefineMaxPiecesCpuFallback;
@@ -2640,7 +2810,16 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             });
                         hardCandidates.resize(maxRefinePieces);
                     }
+                    serverRefineCandidateCount = hardCandidates.size();
+                    LOG_INFO("DeepOcrEngine: low-confidence refinement triggered ({}/{} candidates selected from {} strips: lowAvg={}, lowChar={}, short={}, empty={})",
+                             hardCandidates.size(), totalHardFound, pieces.size(),
+                             trigLowAvg, trigLowChar, trigShort, trigEmpty);
+                    notifyStage(OcrRecognitionStage::LowConfidenceRefining,
+                                static_cast<uint32_t>(hardCandidates.size()),
+                                m_loadedEngineGen == "v6" ? "v6_medium" : "v4_server");
 
+                    float acceptedConfBeforeSum = 0.0f;
+                    float acceptedConfAfterSum = 0.0f;
                     auto maybeAcceptServerDecode = [&](const HardPieceCandidate& cand, CtcDecodeOutput&& srvDec) {
                         if (srvDec.chars.empty()) return;
                         float srvMinChar = 1.0f;
@@ -2648,11 +2827,18 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             srvMinChar = (std::min)(srvMinChar, ch.confidence);
                         }
                         const auto& mobDec = pieceDecoded[cand.pieceIdx];
-                        const bool acceptServer =
+                        // 通用字符完整性护栏：主识别已达高置信且精修丢失字符时，拒绝仅因平均分微增覆盖原行
+                        const bool highConfTruncationLoss =
+                            (mobDec.confidence >= 0.90f) &&
+                            (srvDec.chars.size() < mobDec.chars.size()) &&
+                            (srvDec.confidence < mobDec.confidence + 0.04f);
+                        const bool acceptServer = !highConfTruncationLoss && (
                             (mobDec.chars.empty() && srvDec.confidence >= DeepOcrConstants::kRecMinLineConfidence) ||
                             (srvDec.confidence > mobDec.confidence + 0.015f) ||
-                            (srvMinChar > cand.mobileMinCharConf + 0.08f && srvDec.confidence >= mobDec.confidence - 0.01f);
+                            (srvMinChar > cand.mobileMinCharConf + 0.08f && srvDec.confidence >= mobDec.confidence - 0.01f));
                         if (acceptServer) {
+                            acceptedConfBeforeSum += mobDec.confidence;
+                            acceptedConfAfterSum += srvDec.confidence;
                             pieceDecoded[cand.pieceIdx] = std::move(srvDec);
                             ++serverRefinedCount;
                         }
@@ -2787,6 +2973,15 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                             }
                         }
                     }
+                    const long long curRefineMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - tRefineStart).count();
+                    const float avgBefore = (serverRefinedCount > 0)
+                        ? (acceptedConfBeforeSum / static_cast<float>(serverRefinedCount)) : 0.0f;
+                    const float avgAfter = (serverRefinedCount > 0)
+                        ? (acceptedConfAfterSum / static_cast<float>(serverRefinedCount)) : 0.0f;
+                    LOG_INFO("DeepOcrEngine: low-confidence refinement finished (checked={}, accepted={}, avgConf={:.3f}->{:.3f}, backend={}, elapsed={} ms)",
+                             hardCandidates.size(), serverRefinedCount, avgBefore, avgAfter,
+                             m_winMl->serverSessionOnGpu ? "DirectML-GPU" : "CPU", curRefineMs);
                 }
                 refineMs = std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - tRefineStart).count();
@@ -2974,16 +3169,44 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         runStats.refineMs = refineMs;
         runStats.detectedQuads = detectedQuadCount;
         runStats.stripCount = packedStripCount;
+        runStats.serverRefineCandidateCount = serverRefineCandidateCount;
         runStats.serverRefinedCount = serverRefinedCount;
         runStats.activeSessions = sessCnt;
+        runStats.autoScriptSwitched = autoScriptSwitched;
         runStats.bucketProfile = bucketProfile;
         runStats.detectedScript = detectedScript;
         m_lastRunStats = std::move(runStats);
     }
-    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, script={}, serverRefined={}) on {}x{} in {} ms (load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
-             assembled.size(), detectedQuadCount, packedStripCount, detectedScript, serverRefinedCount,
+    m_runSequence.fetch_add(1, std::memory_order_release);
+    LOG_INFO("DeepOcrEngine: recognized {} lines ({} quads -> {} strips, script={}, autoSwitched={}, refineCandidates={}, serverRefined={}) on {}x{} in {} ms (load={} ms, det={} ms, pack={} ms, rec={} ms, refine={} ms, sessions={})",
+             assembled.size(), detectedQuadCount, packedStripCount, detectedScript,
+             autoScriptSwitched ? "true" : "false", serverRefineCandidateCount, serverRefinedCount,
              bgr.cols, bgr.rows, totalMs, loadMs, detMs, packMs, recMs - refineMs, refineMs, sessCnt);
     return assembled;
+}
+
+void DeepOcrEngine::setStageCallback(OcrStageCallback cb) {
+    std::lock_guard<std::mutex> lock(m_stageCbMutex);
+    m_stageCallback = std::move(cb);
+}
+
+OcrStageCallback DeepOcrEngine::currentStageCallback() const {
+    std::lock_guard<std::mutex> lock(m_stageCbMutex);
+    return m_stageCallback;
+}
+
+void DeepOcrEngine::notifyStage(OcrRecognitionStage stage, uint32_t count, const std::string& detail) const {
+    OcrStageCallback cb;
+    {
+        std::lock_guard<std::mutex> lock(m_stageCbMutex);
+        cb = m_stageCallback;
+    }
+    if (cb) {
+        try {
+            cb(stage, count, detail);
+        } catch (...) {
+        }
+    }
 }
 
 bool DeepOcrEngine::isWarmAndLoaded() const noexcept {
@@ -3212,6 +3435,7 @@ void DeepOcrEngine::releaseLoadedModels() {
         m_useWinMl = false;
         m_loadedModelDir.clear();
         m_loadedModelTier.clear();
+        m_loadedEngineGen.clear();
         m_winMl.reset();
         m_detNet = cv::dnn::Net{};
         m_clsNet = cv::dnn::Net{};

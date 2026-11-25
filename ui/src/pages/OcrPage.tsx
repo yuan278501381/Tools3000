@@ -58,6 +58,8 @@ interface DeepOcrScriptPackStatus {
 interface DeepOcrModelStatus {
   installed: boolean;
   serverInstalled?: boolean;
+  engineGeneration?: string;
+  upgradeAvailable?: boolean;
   downloading: boolean;
   downloadingServer?: boolean;
   downloadingScriptPack?: string;
@@ -105,17 +107,17 @@ interface OperationResult {
 }
 
 const DEFAULT_SCRIPT_PACKS: DeepOcrScriptPackStatus[] = [
-  { id: 'japan', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 9752000 },
   { id: 'korean', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 13485000 },
   { id: 'cyrillic', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 8075000 },
-  { id: 'latin', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 7907000 },
+  { id: 'arabic', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 8022000 },
+  { id: 'thai', installed: false, downloading: false, fileBytes: 0, estimatedBytes: 7917000 },
 ];
 
 const SCRIPT_PACK_CATALOG = [
-  { id: 'japan', nameKey: 'ocr.scriptPackJapanName', descKey: 'ocr.scriptPackJapanDesc' },
   { id: 'korean', nameKey: 'ocr.scriptPackKoreanName', descKey: 'ocr.scriptPackKoreanDesc' },
   { id: 'cyrillic', nameKey: 'ocr.scriptPackCyrillicName', descKey: 'ocr.scriptPackCyrillicDesc' },
-  { id: 'latin', nameKey: 'ocr.scriptPackLatinName', descKey: 'ocr.scriptPackLatinDesc' },
+  { id: 'arabic', nameKey: 'ocr.scriptPackArabicName', descKey: 'ocr.scriptPackArabicDesc' },
+  { id: 'thai', nameKey: 'ocr.scriptPackThaiName', descKey: 'ocr.scriptPackThaiDesc' },
 ] as const;
 
 const formatPackSizeMb = (bytes: number): string => {
@@ -131,13 +133,15 @@ const normalizeOcrTab = (raw?: string): OcrPageSubTab => {
 const DEFAULT_MODEL_STATUS: DeepOcrModelStatus = {
   installed: false,
   serverInstalled: false,
+  engineGeneration: '',
+  upgradeAvailable: false,
   downloading: false,
   downloadingServer: false,
   downloadingScriptPack: '',
   progressPercent: 0,
   downloadedBytes: 0,
-  totalBytes: 16600000,
-  serverTotalBytes: 90530732,
+  totalBytes: 31750000,
+  serverTotalBytes: 76630000,
   modelTier: 'mobile',
   activeModelTier: 'mobile',
   scriptMode: 'auto',
@@ -235,7 +239,7 @@ export const OcrPage: FC = () => {
             : 'mobile';
         const resolvedScriptMode =
           typeof data?.scriptMode === 'string' &&
-          ['auto', 'cjk', 'japan', 'korean', 'cyrillic', 'latin'].includes(data.scriptMode)
+          ['auto', 'cjk', 'japan', 'korean', 'cyrillic', 'latin', 'arabic', 'thai'].includes(data.scriptMode)
             ? data.scriptMode
             : 'auto';
         setSettings((prev) => ({
@@ -566,6 +570,9 @@ export const OcrPage: FC = () => {
         />
       );
     }
+    if (modelStatus.installed && modelStatus.upgradeAvailable) {
+      return <Badge text={t('ocr.deepStatusUpgradeAvailable')} variant="primary" />;
+    }
     if (modelStatus.installed) {
       return <Badge text={t('ocr.deepStatusInstalled')} variant="success" />;
     }
@@ -606,7 +613,7 @@ export const OcrPage: FC = () => {
     .reduce((sum, p) => sum + (p.estimatedBytes || 0), 0);
   const isDownloadingScriptPack = Boolean(modelStatus.downloading && modelStatus.downloadingScriptPack);
   const selectedScriptMissingPack =
-    ['japan', 'korean', 'cyrillic', 'latin'].includes(settings.scriptMode) &&
+    ['korean', 'cyrillic', 'arabic', 'thai'].includes(settings.scriptMode) &&
     !scriptPackMap.get(settings.scriptMode)?.installed;
 
   const renderScriptPacksBadge = () => {
@@ -658,14 +665,26 @@ export const OcrPage: FC = () => {
     return <Badge text={t('ocr.inpaintStatusNotInstalled')} variant="muted" />;
   };
 
-  const scriptModeOptions = [
-    { value: 'auto', label: t('ocr.scriptModeAuto') },
-    { value: 'cjk', label: t('ocr.scriptModeCjk') },
-    { value: 'japan', label: t('ocr.scriptModeJapan') },
-    { value: 'korean', label: t('ocr.scriptModeKorean') },
-    { value: 'cyrillic', label: t('ocr.scriptModeCyrillic') },
-    { value: 'latin', label: t('ocr.scriptModeLatin') },
-  ];
+  const isLegacyV4 = modelStatus.engineGeneration === 'v4';
+  const scriptModeOptions = isLegacyV4
+    ? [
+        { value: 'auto', label: t('ocr.scriptModeAuto') },
+        { value: 'cjk', label: t('ocr.scriptModeCjk') },
+        { value: 'japan', label: t('ocr.scriptModeJapan') },
+        { value: 'korean', label: t('ocr.scriptModeKorean') },
+        { value: 'cyrillic', label: t('ocr.scriptModeCyrillic') },
+        { value: 'latin', label: t('ocr.scriptModeLatin') },
+        { value: 'arabic', label: t('ocr.scriptModeArabic') },
+        { value: 'thai', label: t('ocr.scriptModeThai') },
+      ]
+    : [
+        { value: 'auto', label: t('ocr.scriptModeAuto') },
+        { value: 'cjk', label: t('ocr.scriptModeCjk') },
+        { value: 'korean', label: t('ocr.scriptModeKorean') },
+        { value: 'cyrillic', label: t('ocr.scriptModeCyrillic') },
+        { value: 'arabic', label: t('ocr.scriptModeArabic') },
+        { value: 'thai', label: t('ocr.scriptModeThai') },
+      ];
 
   const windowsLangOptions = [
     { value: 'auto', label: t('ocr.langAuto') },
@@ -674,9 +693,14 @@ export const OcrPage: FC = () => {
     { value: 'en-US', label: t('ocr.langEnUs') },
     { value: 'ja-JP', label: t('ocr.langJaJp') },
     { value: 'ko-KR', label: t('ocr.langKoKr') },
-    { value: 'ru-RU', label: t('ocr.langRuRu') },
-    { value: 'pt-BR', label: t('ocr.langPtBr') },
+    { value: 'fr-FR', label: t('ocr.langFrFr') },
+    { value: 'de-DE', label: t('ocr.langDeDe') },
     { value: 'es-ES', label: t('ocr.langEsEs') },
+    { value: 'pt-BR', label: t('ocr.langPtBr') },
+    { value: 'ru-RU', label: t('ocr.langRuRu') },
+    { value: 'vi-VN', label: t('ocr.langViVn') },
+    { value: 'ar-SA', label: t('ocr.langArSa') },
+    { value: 'th-TH', label: t('ocr.langThTh') },
   ];
 
   const isUsingWindowsOcr =
@@ -912,7 +936,7 @@ export const OcrPage: FC = () => {
                           <X size={15} strokeWidth={2.2} aria-hidden="true" />
                           <span>{t('ocr.cancelDownload')}</span>
                         </Button>
-                      ) : !modelStatus.installed ? (
+                      ) : !modelStatus.installed || modelStatus.upgradeAvailable ? (
                         <Button
                           variant="primary"
                           size="sm"
@@ -924,7 +948,13 @@ export const OcrPage: FC = () => {
                           ) : (
                             <Download size={15} strokeWidth={2.2} aria-hidden="true" />
                           )}
-                          <span>{modelStatus.state === 'error' ? t('ocr.retryDownload') : t('ocr.downloadInstall')}</span>
+                          <span>
+                            {modelStatus.upgradeAvailable
+                              ? t('ocr.upgradeToV6Btn')
+                              : modelStatus.state === 'error'
+                                ? t('ocr.retryDownload')
+                                : t('ocr.downloadInstall')}
+                          </span>
                         </Button>
                       ) : null}
                     </div>

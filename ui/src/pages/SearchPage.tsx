@@ -20,10 +20,15 @@ import {
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import { SearchExternalApiCard } from '../components/SearchExternalApiCard';
+import { SearchExcludedPathsManager } from '../components/SearchExcludedPathsManager';
+import {
+  CUSTOM_EXCLUDED_PATHS_STORAGE_KEY,
+  mergeExcludedPaths,
+} from '../search/excludedPathsUtils';
 import { CATEGORY_DEFS } from '../search/searchConstants';
 import type { SearchMemoryMode, SearchMode, SearchRankingProfile } from '../search/searchTypes';
 import { formatBytes } from '../search/searchUtils';
-import { safeStorageGetEnum, safeStorageSetItem } from '../search/storageUtils';
+import { safeStorageGetEnum, safeStorageGetJsonArray, safeStorageSetItem } from '../search/storageUtils';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from '../config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import { toast } from 'sonner';
@@ -35,6 +40,7 @@ import {
   BookOpen,
   CheckCircle2,
   FolderSearch,
+  FolderX,
   Sparkles,
   Zap,
   Play,
@@ -65,6 +71,7 @@ interface SearchSettings {
   idleStopMinutes?: number;
   iconStyle?: 'native' | 'vector';
   autoBypassFullscreen?: boolean;
+  customExcludedPaths?: string[];
   externalApiEnabled?: boolean;
   externalApiExcludePaths?: string;
   externalApiAllowedRoots?: string;
@@ -138,6 +145,7 @@ export const SearchPage: FC = () => {
     idleStopMinutes: 30,
     iconStyle: 'native',
     autoBypassFullscreen: true,
+    customExcludedPaths: [],
     externalApiEnabled: false,
     externalApiExcludePaths: '',
     externalApiAllowedRoots: '',
@@ -181,7 +189,16 @@ export const SearchPage: FC = () => {
           if (!cancelled && res && typeof res === 'object') {
             // 兼容老配置：若 defaultCategory 曾设为 'content'，自动迁移归一化为 searchMode='content' + defaultCategory='all'
             const normalizedCategory = res.defaultCategory === 'content' ? 'all' : (res.defaultCategory || 'all');
-            setSettings((prev) => ({ ...prev, ...res, defaultCategory: normalizedCategory }));
+            const cleanExcluded = Array.isArray(res.customExcludedPaths)
+              ? mergeExcludedPaths([], res.customExcludedPaths.filter((x): x is string => typeof x === 'string')).paths
+              : [];
+            setSettings((prev) => ({
+              ...prev,
+              ...res,
+              defaultCategory: normalizedCategory,
+              customExcludedPaths: cleanExcluded,
+            }));
+            safeStorageSetItem(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, JSON.stringify(cleanExcluded));
             if (res.defaultCategory === 'content' && !remoteHasMode) {
               setSearchMode('content');
               safeStorageSetItem('tools3000_search_default_mode', 'content');
@@ -237,6 +254,14 @@ export const SearchPage: FC = () => {
         setSearchMode(e.newValue);
       } else if (e.key === 'tools3000_search_default_category' && e.newValue) {
         setSettings((prev) => ({ ...prev, defaultCategory: e.newValue === 'content' ? 'all' : e.newValue! }));
+      } else if (e.key === CUSTOM_EXCLUDED_PATHS_STORAGE_KEY) {
+        const synced = safeStorageGetJsonArray<string>(
+          CUSTOM_EXCLUDED_PATHS_STORAGE_KEY,
+          (v): v is string => typeof v === 'string' && v.trim().length > 0,
+          [],
+        );
+        const clean = mergeExcludedPaths([], synced).paths;
+        setSettings((prev) => ({ ...prev, customExcludedPaths: clean }));
       }
     };
     window.addEventListener('storage', onStorage);
@@ -336,6 +361,8 @@ export const SearchPage: FC = () => {
       safeStorageSetItem('tools3000_search_default_category', String(value));
     } else if (key === 'iconStyle' && value) {
       safeStorageSetItem('tools3000_search_icon_style', String(value));
+    } else if (key === 'customExcludedPaths' && Array.isArray(value)) {
+      safeStorageSetItem(CUSTOM_EXCLUDED_PATHS_STORAGE_KEY, JSON.stringify(value));
     }
     try {
       await bridgeRequest('search.saveSettings', { [key]: value });
@@ -697,6 +724,18 @@ export const SearchPage: FC = () => {
                     onChange={(v) => void saveSetting('caseSensitive', v)}
                   />
                 </SettingRow>
+              </Card>
+            </SettingGroup>
+
+            <SettingGroup
+              title={t('searchPage.groupExclusions', 'Excluded Folders & Privacy Shield')}
+              icon={<FolderX size={18} />}
+            >
+              <Card>
+                <SearchExcludedPathsManager
+                  paths={settings.customExcludedPaths ?? []}
+                  onChange={(nextPaths) => void saveSetting('customExcludedPaths', nextPaths)}
+                />
               </Card>
             </SettingGroup>
 

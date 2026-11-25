@@ -22,6 +22,8 @@ public:
     using ReadyCallback = std::function<void(HRESULT, ICoreWebView2Environment*)>;
 
     static WebViewEnvironmentManager& instance();
+    static bool isRuntimeInstalled() noexcept;
+    static const wchar_t* evergreenDownloadUrl() noexcept;
     void acquire(ReadyCallback callback);
     void shutdown();
     bool isInitializing() const noexcept;

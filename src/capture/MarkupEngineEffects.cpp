@@ -93,43 +93,27 @@ namespace {
             }
         }
     }
-    cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false) {
+    cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false,
+                                 float maxBoxWidth = 0.0f) {
         ensureGdiplusStartup();
         const int safeFontSize = (std::max)(12, fontSize);
-        const auto [originX, originY] = tools3000::capture::CaptureTextEditor::computeTextOrigin(safeFontSize);
-        const int padW = static_cast<int>(std::ceil(originX * 2.0f + 4.0f));
-        const int padH = static_cast<int>(std::ceil(originY * 2.0f + 2.0f));
+        const int padW = tools3000::capture::CaptureTextEditor::computeBoxHorizontalPadding(safeFontSize);
+        const int padH = tools3000::capture::CaptureTextEditor::computeBoxVerticalPadding(safeFontSize);
         if (!isGdiplusStarted()) {
             int w = text.empty() ? (124 + padW) : static_cast<int>((std::max)(40.0f, safeFontSize * 2.0f)) + padW;
             int h = static_cast<int>((std::max)(24.0f, safeFontSize * 1.3f)) + padH;
             return cv::Size((std::max)(w, 24 + padW), (std::max)(h, safeFontSize + padH));
         }
 
-        Gdiplus::FontFamily fontFamily(tools3000::capture::CaptureTextEditor::resolveMarkupFontFamilyName(false));
-        const Gdiplus::FontFamily* activeFamily = &fontFamily;
-        Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
-        if (!fontFamily.IsAvailable()) {
-            activeFamily = &fallbackFamily;
-        }
-        Gdiplus::Font font(activeFamily, static_cast<Gdiplus::REAL>(safeFontSize), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
-        Gdiplus::StringFormat format(Gdiplus::StringFormat::GenericTypographic());
-        format.SetAlignment(Gdiplus::StringAlignmentNear);
-        format.SetLineAlignment(Gdiplus::StringAlignmentNear);
-        format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
-
-        Gdiplus::Bitmap tmpBmp(1, 1, PixelFormat32bppARGB);
-        Gdiplus::Graphics g(&tmpBmp);
-        Gdiplus::RectF boundRect;
         const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
-        std::wstring measureStr = text.empty() ? placeholder : text;
-        if (!measureStr.empty() && measureStr.back() == L'\n') {
-            // GDI+ MeasureString 会忽略末尾单独的换行符，附加占位空格以准确计算新空行高度
-            measureStr.push_back(L' ');
-        }
-        g.MeasureString(measureStr.c_str(), -1, &font, Gdiplus::PointF(0, 0), &format, &boundRect);
-        int w = static_cast<int>(std::ceil(boundRect.Width)) + padW;
-        int h = static_cast<int>(std::ceil(boundRect.Height)) + padH;
-        return cv::Size((std::max)(w, 24), (std::max)(h, safeFontSize + padH));
+        const std::wstring& measureStr = text.empty() ? placeholder : text;
+        const float maxContentW = tools3000::capture::CaptureTextEditor::computeContentWidthFromBoxWidth(
+            maxBoxWidth, safeFontSize);
+        const auto layout = tools3000::capture::CaptureTextEditor::buildLayout(
+            measureStr, safeFontSize, maxContentW);
+        const auto [w, h] = tools3000::capture::CaptureTextEditor::computeBoxSize(
+            layout, safeFontSize, maxBoxWidth);
+        return cv::Size(w, h);
     }
 
     void renderSnipasteStyleText(cv::Mat& canvas, const std::string& text, cv::Point pt, const cv::Scalar& color,
@@ -137,7 +121,8 @@ namespace {
                                  bool textOutline = true,
                                  const tools3000::capture::MarkupColor& outlineColor = tools3000::capture::MarkupColor::Auto(),
                                  size_t caretIndex = 0, size_t selAnchor = 0, uint32_t lastCaretTick = 0,
-                                 float outlineThicknessScale = 1.0f) {
+                                 float outlineThicknessScale = 1.0f,
+                                 float maxBoxWidth = 0.0f) {
         ensureGdiplusStartup();
         std::wstring wtext = utf8ToWide(text);
         if (wtext.empty() && !isEditing && !isSelected) {
@@ -145,7 +130,20 @@ namespace {
             return;
         }
 
-        cv::Size sz = measureSnipasteText(wtext, fontSize, isEditing || isSelected);
+        const int safeFontSize = (std::max)(12, fontSize);
+        const float maxContentW = tools3000::capture::CaptureTextEditor::computeContentWidthFromBoxWidth(
+            maxBoxWidth, safeFontSize);
+        const auto textLayout = tools3000::capture::CaptureTextEditor::buildLayout(
+            wtext, safeFontSize, maxContentW);
+
+        cv::Size sz(0, 0);
+        if (wtext.empty()) {
+            sz = measureSnipasteText(wtext, safeFontSize, isEditing || isSelected, maxBoxWidth);
+        } else {
+            const auto [bw, bh] = tools3000::capture::CaptureTextEditor::computeBoxSize(
+                textLayout, safeFontSize, maxBoxWidth);
+            sz = cv::Size(bw, bh);
+        }
         outSize = sz;
         if (sz.width <= 0 || sz.height <= 0) return;
 
@@ -176,8 +174,8 @@ namespace {
             format.SetLineAlignment(Gdiplus::StringAlignmentNear);
             format.SetFormatFlags(format.GetFormatFlags() | Gdiplus::StringFormatFlagsMeasureTrailingSpaces);
 
-            const int safeFontSize = (std::max)(12, fontSize);
-            const auto [textX, textY] = tools3000::capture::CaptureTextEditor::computeTextOrigin(safeFontSize);
+            const float textX = textLayout.textOriginX;
+            const float textY = textLayout.textOriginY;
 
             Gdiplus::GraphicsPath boxPath;
             const float boxInset = 2.2f;
@@ -207,15 +205,11 @@ namespace {
                 Gdiplus::Pen editFocusPen(Gdiplus::Color(225, 59, 130, 246), 1.5f);
                 editFocusPen.SetDashStyle(Gdiplus::DashStyleDash);
                 g.DrawPath(&editFocusPen, &boxPath);
-            }
 
-            tools3000::capture::MultilineTextLayout editLayout;
-            if (isEditing) {
-                editLayout = tools3000::capture::CaptureTextEditor::buildLayout(wtext, fontSize);
-                // 绘制多行文本选区高亮微晶底块（支持鼠标拖拽划词与 Ctrl+A 全选）
+                // 绘制多行文本选区高亮微晶底块（支持鼠标拖拽划词、自动软换行跨行选区与 Ctrl+A 全选）
                 if (tools3000::capture::CaptureTextEditor::hasSelection(caretIndex, selAnchor) && !wtext.empty()) {
                     const auto spans = tools3000::capture::CaptureTextEditor::computeSelectionHighlights(
-                        editLayout, wtext, caretIndex, selAnchor);
+                        textLayout, wtext, caretIndex, selAnchor);
                     Gdiplus::SolidBrush selFill(Gdiplus::Color(135, 59, 130, 246));
                     Gdiplus::Pen selBorder(Gdiplus::Color(190, 96, 165, 250), 1.0f);
                     for (const auto& sp : spans) {
@@ -241,8 +235,20 @@ namespace {
                 // 关键铁律：必须显式使用 FillModeWinding（非零环绕规则）！
                 // 思源黑体 (Noto Sans SC / Source Han Sans SC) 等现代可变/OpenType 中文字库采用独立笔画闭合轮廓交叠构字，
                 // 默认的 FillModeAlternate（奇偶规则）会在横竖撇捺所有笔画交叉处产生偶次挖空孔洞，导致底层白色描边穿透形成断裂虚线杂色。
+                // 逐视觉行按 SSOT CaptureTextEditor::buildLayout 的精确 topY 写入同一路径，保证编辑预览、光标、选区与导出位图 100% 像素级同构。
                 Gdiplus::GraphicsPath textPath(Gdiplus::FillModeWinding);
-                textPath.AddString(wtext.c_str(), -1, activeFamily, Gdiplus::FontStyleBold, static_cast<Gdiplus::REAL>(safeFontSize), Gdiplus::PointF(textX, textY), &format);
+                for (const auto& line : textLayout.lines) {
+                    if (line.endIndex <= line.startIndex) continue;
+                    const std::wstring lineSlice = wtext.substr(line.startIndex, line.endIndex - line.startIndex);
+                    textPath.AddString(
+                        lineSlice.c_str(),
+                        static_cast<INT>(lineSlice.size()),
+                        activeFamily,
+                        Gdiplus::FontStyleBold,
+                        static_cast<Gdiplus::REAL>(safeFontSize),
+                        Gdiplus::PointF(textX, line.topY),
+                        &format);
+                }
 
                 const BYTE elemAlpha = (color[3] > 0) ? static_cast<BYTE>(std::clamp(color[3], 0.0, 255.0)) : 255;
                 auto drawGlyphAndOutline = [&](Gdiplus::Graphics& targetG, BYTE masterAlpha) {
@@ -301,21 +307,32 @@ namespace {
                     drawGlyphAndOutline(g, elemAlpha);
                 }
             } else if (isEditing || isSelected) {
-                // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线）
+                // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线，窄选区同样自动换行不截断）
                 const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
-                Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>((std::max)(12.0f, safeFontSize * 0.88f)), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
+                const int phFontSize = static_cast<int>(std::lround((std::max)(12.0f, safeFontSize * 0.88f)));
+                Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>(phFontSize), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                 Gdiplus::SolidBrush placeholderBrush(Gdiplus::Color(180, 148, 163, 184));
-                g.DrawString(placeholder.c_str(), -1, &placeholderFont, Gdiplus::PointF(textX + 2.0f, textY + 1.0f), &format, &placeholderBrush);
+                const float phMaxContentW = tools3000::capture::CaptureTextEditor::computeContentWidthFromBoxWidth(
+                    maxBoxWidth, safeFontSize);
+                const auto phLayout = tools3000::capture::CaptureTextEditor::buildLayout(
+                    placeholder, phFontSize, phMaxContentW);
+                for (const auto& line : phLayout.lines) {
+                    if (line.endIndex <= line.startIndex) continue;
+                    const std::wstring lineSlice = placeholder.substr(line.startIndex, line.endIndex - line.startIndex);
+                    g.DrawString(lineSlice.c_str(), static_cast<INT>(lineSlice.size()), &placeholderFont,
+                                 Gdiplus::PointF(textX + 2.0f, textY + 1.0f + (line.topY - phLayout.textOriginY)),
+                                 &format, &placeholderBrush);
+                }
             }
 
-            // 2. 编辑态光标绘制（支持任意行/列精确定位，且在移动光标或输入后的 520ms 内保持常亮）
+            // 2. 编辑态光标绘制（支持任意视觉行/列精确定位，且在移动光标或输入后的 520ms 内保持常亮）
             if (isEditing) {
                 const uint32_t nowTick = GetTickCount();
                 const bool recentlyMoved = (lastCaretTick != 0) && ((nowTick - lastCaretTick) < 520u);
                 const bool showCursor = recentlyMoved || ((nowTick / 480u) % 2u == 0u) || wtext.empty();
                 if (showCursor) {
                     const auto caretVis = tools3000::capture::CaptureTextEditor::computeCaretVisual(
-                        editLayout, wtext, caretIndex);
+                        textLayout, wtext, caretIndex);
                     Gdiplus::Pen caretShadowPen(Gdiplus::Color(180, 255, 255, 255), 3.2f);
                     caretShadowPen.SetStartCap(Gdiplus::LineCapRound);
                     caretShadowPen.SetEndCap(Gdiplus::LineCapRound);
@@ -548,12 +565,18 @@ public:
         if (element.textRenderSize.width <= 0 || element.textRenderSize.height <= 0) {
             std::wstring wtext = utf8ToWide(element.text);
             const_cast<MarkupElement&>(element).textRenderSize =
-                measureSnipasteText(wtext, static_cast<int>(element.fontSize), element.isEditing || element.isActive);
+                measureSnipasteText(wtext, static_cast<int>(element.fontSize),
+                                    element.isEditing || element.isActive,
+                                    element.textMaxWidth);
         }
         int bw = element.textRenderSize.width;
         int bh = element.textRenderSize.height;
         if (element.text.empty()) {
-            if (bw < 140) bw = static_cast<int>((std::max)(140.0f, element.fontSize * 5.0f));
+            int minEmptyW = static_cast<int>((std::max)(140.0f, element.fontSize * 5.0f));
+            if (element.textMaxWidth > 0.0f) {
+                minEmptyW = (std::min)(minEmptyW, static_cast<int>(std::ceil(element.textMaxWidth)));
+            }
+            if (bw < minEmptyW) bw = (std::max)(32, minEmptyW);
             if (bh < static_cast<int>(element.fontSize + 12)) bh = static_cast<int>((std::max)(28.0f, element.fontSize + 12.0f));
         } else {
             if (bw < 32) bw = static_cast<int>((std::max)(32.0f, element.fontSize * 1.5f));
@@ -631,11 +654,17 @@ public:
         cv::Size renderedSize(0, 0);
         const bool effOutline = element.textOutline && (!element.hasCustomOutline || element.outlineThickness > 0.05f);
         const float outlineScale = element.hasCustomOutline ? (element.outlineThickness / 2.0f) : 1.0f;
+        float effectiveMaxBoxWidth = element.textMaxWidth;
+        if (effectiveMaxBoxWidth <= 0.0f && canvas.cols > 0) {
+            effectiveMaxBoxWidth = tools3000::capture::CaptureTextEditor::computeAvailableBoxWidth(
+                canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+            const_cast<MarkupElement&>(element).textMaxWidth = effectiveMaxBoxWidth;
+        }
         renderSnipasteStyleText(canvas, element.text, element.startPt, color, static_cast<int>(element.fontSize),
                                 element.isEditing, element.isActive, element.fill, renderedSize,
                                 effOutline, element.textOutlineColor,
                                 element.textCaret, element.textSelAnchor, element.textLastCaretTick,
-                                outlineScale);
+                                outlineScale, effectiveMaxBoxWidth);
         const_cast<MarkupElement&>(element).textRenderSize = renderedSize;
         if (renderedSize.width > 0 && renderedSize.height > 0) {
             const_cast<MarkupElement&>(element).endPt = cv::Point(element.startPt.x + renderedSize.width, element.startPt.y + renderedSize.height);

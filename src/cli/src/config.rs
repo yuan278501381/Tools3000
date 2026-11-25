@@ -154,6 +154,40 @@ pub fn apply_config_json(root: &JsonValue, cfg: &mut LoadedCliConfig) {
     if let Some(global_ex) = search.get("excludePatterns").and_then(|v| v.as_str()) {
         cfg.global_excludes = split_config_list(global_ex);
     }
+    let custom_excluded_arr = search
+        .get("customExcludedPaths")
+        .and_then(|v| v.as_array())
+        .or_else(|| {
+            search
+                .get("uiPreferences")
+                .and_then(|u| u.get("customExcludedPaths"))
+                .and_then(|v| v.as_array())
+        });
+    if let Some(arr) = custom_excluded_arr {
+        for item in arr {
+            if let Some(raw) = item.as_str() {
+                let trimmed = raw.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if !cfg
+                    .policy
+                    .extra_exclude_patterns
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(trimmed))
+                {
+                    cfg.policy.extra_exclude_patterns.push(trimmed.to_string());
+                }
+                if !cfg
+                    .global_excludes
+                    .iter()
+                    .any(|x| x.eq_ignore_ascii_case(trimmed))
+                {
+                    cfg.global_excludes.push(trimmed.to_string());
+                }
+            }
+        }
+    }
     if let Some(hidden) = search.get("excludeHidden").and_then(|v| v.as_bool()) {
         cfg.exclude_hidden = hidden;
     }
@@ -195,6 +229,7 @@ mod tests {
                 "search": {
                     "externalApiEnabled": true,
                     "externalApiExcludePaths": "D:\\Secrets\nnode_modules",
+                    "customExcludedPaths": ["D:\\PrivateMedia", "E:\\Archive\\Temp"],
                     "externalApiAllowedRoots": "C:\\repo,D:\\Docs",
                     "enabledDrives": "C, D",
                     "pipeToken": "0123456789abcdef0123456789abcdef"
@@ -204,7 +239,12 @@ mod tests {
         .unwrap();
         apply_config_json(&enabled, &mut cfg);
         assert!(cfg.policy.external_api_enabled);
-        assert_eq!(cfg.policy.extra_exclude_patterns, vec!["D:\\Secrets", "node_modules"]);
+        assert_eq!(
+            cfg.policy.extra_exclude_patterns,
+            vec!["D:\\Secrets", "node_modules", "D:\\PrivateMedia", "E:\\Archive\\Temp"]
+        );
+        assert!(!cfg.policy.is_path_allowed(r"D:\PrivateMedia\movie.mp4"));
+        assert!(cfg.policy.is_path_allowed(r"D:\Docs\ok.txt"));
         assert_eq!(cfg.policy.allowed_roots, vec!["C:\\repo", "D:\\Docs"]);
         assert_eq!(cfg.enabled_drives, vec!["C", "D"]);
         assert_eq!(cfg.pipe_token.len(), 32);

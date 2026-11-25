@@ -7450,6 +7450,233 @@ TEST(ClipboardUtilsTest, ReadImageWithoutPinMetadataZeroesMagic) {
     }
 }
 
+TEST(PinPasteCoordinatorTest, ClipboardHdropImageFilesDecodePriorityAndMultiStep) {
+    using namespace tools3000::capture;
+
+    // 1. 扩展名白名单边界断言（大小写不敏感、屏蔽非图片与目录式路径）
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"C:\\Users\\demo\\截图.PNG"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\pic.jpeg"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\anim.gif"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\icon.ICO"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\modern.webp"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\apple.HEIC"));
+    EXPECT_TRUE(ClipboardUtils::isSupportedImageFilePath(L"D:\\Photos\\next.avif"));
+    EXPECT_FALSE(ClipboardUtils::isSupportedImageFilePath(L"C:\\Docs\\report.pdf"));
+    EXPECT_FALSE(ClipboardUtils::isSupportedImageFilePath(L"C:\\Docs\\notes.txt"));
+    EXPECT_FALSE(ClipboardUtils::isSupportedImageFilePath(L"C:\\Docs\\no_extension"));
+    EXPECT_FALSE(ClipboardUtils::isSupportedImageFilePath(L"C:\\Folder.png\\readme"));
+    EXPECT_FALSE(ClipboardUtils::isSupportedImageFilePath(L""));
+
+    // 2. 准备含中文宽路径的临时测试目录与多种真实图片样本（PNG 透明 / JPG / GIF 首帧 / 非图片文本 / 子目录）
+    wchar_t tempBase[MAX_PATH] = {};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempBase), 0u);
+    const std::filesystem::path testDir =
+        std::filesystem::path(tempBase) /
+        (L"Tools3000_HdropPinTest_中文_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64()));
+    std::error_code ec;
+    std::filesystem::create_directories(testDir, ec);
+    ASSERT_FALSE(ec);
+
+    struct TempCleanup {
+        std::filesystem::path dir;
+        ~TempCleanup() {
+            for (int retry = 0; retry < 10; ++retry) {
+                if (OpenClipboard(nullptr)) {
+                    EmptyClipboard();
+                    CloseClipboard();
+                    break;
+                }
+                Sleep(5);
+            }
+            std::error_code rmEc;
+            std::filesystem::remove_all(dir, rmEc);
+        }
+    } cleanup{testDir};
+
+    auto writeBinaryFile = [](const std::filesystem::path& p, const std::vector<uint8_t>& data) -> bool {
+        HANDLE h = CreateFileW(p.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        DWORD written = 0;
+        const BOOL ok = WriteFile(h, data.data(), static_cast<DWORD>(data.size()), &written, nullptr);
+        CloseHandle(h);
+        return ok && written == data.size();
+    };
+
+    const std::filesystem::path pngPath = testDir / L"透明素材.png";
+    cv::Mat alphaImg(24, 32, CV_8UC4, cv::Scalar(40, 120, 220, 128));
+    std::vector<uint8_t> pngBuf;
+    ASSERT_TRUE(cv::imencode(".png", alphaImg, pngBuf));
+    ASSERT_TRUE(writeBinaryFile(pngPath, pngBuf));
+
+    const std::filesystem::path jpgPath = testDir / L"实拍照片.JPG";
+    cv::Mat opaqueImg(30, 44, CV_8UC3, cv::Scalar(15, 180, 60));
+    std::vector<uint8_t> jpgBuf;
+    ASSERT_TRUE(cv::imencode(".jpg", opaqueImg, jpgBuf));
+    ASSERT_TRUE(writeBinaryFile(jpgPath, jpgBuf));
+
+    // 最小合法 2x2 GIF89a 文件，实测 WIC 解码通路（OpenCV 默认不解 GIF）
+    const std::filesystem::path gifPath = testDir / L"动图首帧.gif";
+    const std::vector<uint8_t> gifBytes = {
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, // GIF89a
+        0x02, 0x00, 0x02, 0x00,             // 2x2
+        0x80, 0x00, 0x00,                   // GCT 2 colors
+        0xFF, 0x00, 0x00, 0x00, 0x00, 0xFF, // Red, Blue
+        0x2C, 0x00, 0x00, 0x00, 0x00,       // Image descriptor
+        0x02, 0x00, 0x02, 0x00, 0x00,
+        0x02, 0x02, 0x44, 0x01, 0x00,       // LZW min code size 2 + data
+        0x3B                                // Trailer
+    };
+    ASSERT_TRUE(writeBinaryFile(gifPath, gifBytes));
+
+    const std::filesystem::path txtPath = testDir / L"普通文档.txt";
+    ASSERT_TRUE(writeBinaryFile(txtPath, {'h', 'e', 'l', 'l', 'o'}));
+    const std::filesystem::path subDirPath = testDir / L"子目录.png";
+    std::filesystem::create_directories(subDirPath, ec);
+    ASSERT_FALSE(ec);
+
+    // 3. 验证单文件宽路径安全解码（PNG 透明保真、JPG、WIC GIF、目录/非图片拒绝）
+    cv::Mat loadedPng = ClipboardUtils::loadImageFromFile(pngPath.wstring());
+    ASSERT_FALSE(loadedPng.empty());
+    EXPECT_EQ(loadedPng.cols, 32);
+    EXPECT_EQ(loadedPng.rows, 24);
+    EXPECT_EQ(loadedPng.type(), CV_8UC4);
+    EXPECT_EQ(loadedPng.at<cv::Vec4b>(0, 0)[3], 128);
+
+    cv::Mat loadedJpg = ClipboardUtils::loadImageFromFile(jpgPath.wstring());
+    ASSERT_FALSE(loadedJpg.empty());
+    EXPECT_EQ(loadedJpg.cols, 44);
+    EXPECT_EQ(loadedJpg.rows, 30);
+    EXPECT_EQ(loadedJpg.type(), CV_8UC3);
+
+    cv::Mat loadedGif = ClipboardUtils::loadImageFromFile(gifPath.wstring());
+    ASSERT_FALSE(loadedGif.empty());
+    EXPECT_EQ(loadedGif.cols, 2);
+    EXPECT_EQ(loadedGif.rows, 2);
+
+    EXPECT_TRUE(ClipboardUtils::loadImageFromFile(txtPath.wstring()).empty());
+    EXPECT_TRUE(ClipboardUtils::loadImageFromFile(subDirPath.wstring()).empty());
+
+    auto putHdropOnClipboard = [](const std::vector<std::wstring>& paths,
+                                  const std::wstring& optionalPrecedingText = L"") -> bool {
+        size_t chars = 1; // double null terminator
+        for (const auto& p : paths) chars += p.size() + 1;
+        const size_t totalBytes = sizeof(DROPFILES) + chars * sizeof(wchar_t);
+
+        for (int retry = 0; retry < 50; ++retry) {
+            if (OpenClipboard(nullptr)) {
+                EmptyClipboard();
+                if (!optionalPrecedingText.empty()) {
+                    const size_t textBytes = (optionalPrecedingText.size() + 1) * sizeof(wchar_t);
+                    HGLOBAL hText = GlobalAlloc(GMEM_MOVEABLE, textBytes);
+                    if (hText) {
+                        void* dst = GlobalLock(hText);
+                        if (dst) {
+                            std::memcpy(dst, optionalPrecedingText.c_str(), textBytes);
+                            GlobalUnlock(hText);
+                            if (!SetClipboardData(CF_UNICODETEXT, hText)) {
+                                GlobalFree(hText);
+                            }
+                        } else {
+                            GlobalFree(hText);
+                        }
+                    }
+                }
+
+                HGLOBAL hDrop = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, totalBytes);
+                if (!hDrop) {
+                    CloseClipboard();
+                    return false;
+                }
+                auto* df = static_cast<DROPFILES*>(GlobalLock(hDrop));
+                if (!df) {
+                    GlobalFree(hDrop);
+                    CloseClipboard();
+                    return false;
+                }
+                df->pFiles = sizeof(DROPFILES);
+                df->fWide = TRUE;
+                wchar_t* dst = reinterpret_cast<wchar_t*>(reinterpret_cast<uint8_t*>(df) + sizeof(DROPFILES));
+                for (const auto& p : paths) {
+                    std::memcpy(dst, p.c_str(), (p.size() + 1) * sizeof(wchar_t));
+                    dst += p.size() + 1;
+                }
+                *dst = L'\0';
+                GlobalUnlock(hDrop);
+                if (!SetClipboardData(CF_HDROP, hDrop)) {
+                    GlobalFree(hDrop);
+                    CloseClipboard();
+                    return false;
+                }
+                CloseClipboard();
+                return true;
+            }
+            Sleep(10);
+        }
+        return false;
+    };
+
+    // 4. 单张图片文件 Ctrl+C（同时伴随 CF_UNICODETEXT 路径文本）-> 必须优先按真实图片贴出而非路径字签
+    CaptureHistory::instance().clear();
+    PinPasteCoordinator::instance().reset();
+    ASSERT_TRUE(putHdropOnClipboard({pngPath.wstring()}, pngPath.wstring()));
+
+    const auto probeSingle = ClipboardUtils::inspectClipboardContent();
+    EXPECT_TRUE(probeSingle.hasImageDropFiles);
+    EXPECT_FALSE(probeSingle.preferTextOverImage);
+
+    auto singleDecision = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(singleDecision.has_value());
+    EXPECT_TRUE(singleDecision->candidate.isFromClipboard);
+    EXPECT_FALSE(singleDecision->candidate.isGeneratedCard);
+    EXPECT_EQ(singleDecision->candidate.image.cols, 32);
+    EXPECT_EQ(singleDecision->candidate.image.rows, 24);
+    EXPECT_EQ(singleDecision->candidate.image.type(), CV_8UC4);
+
+    // 5. 多选图片文件（混入非图片 .txt 与目录）-> 连续按 F3 逐张贴出，最后顺延历史截图
+    CaptureHistory::instance().clear();
+    cv::Mat histImg(18, 22, CV_8UC3, cv::Scalar(90, 90, 90));
+    CaptureHistory::instance().push(histImg, CaptureRegion{10, 10, 22, 18});
+    PinPasteCoordinator::instance().reset();
+
+    ASSERT_TRUE(putHdropOnClipboard({
+        txtPath.wstring(),
+        subDirPath.wstring(),
+        pngPath.wstring(),
+        jpgPath.wstring()
+    }));
+
+    const auto multiImgs = ClipboardUtils::readImagesFromClipboard();
+    ASSERT_EQ(multiImgs.size(), 2u);
+    EXPECT_EQ(multiImgs[0].cols, 32);
+    EXPECT_EQ(multiImgs[1].cols, 44);
+
+    auto d1 = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(d1.has_value());
+    EXPECT_TRUE(d1->candidate.isFromClipboard);
+    EXPECT_EQ(d1->candidate.image.cols, 32);
+    EXPECT_EQ(d1->totalCount, 3);
+
+    auto d2 = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(d2.has_value());
+    EXPECT_TRUE(d2->candidate.isFromClipboard);
+    EXPECT_EQ(d2->candidate.image.cols, 44);
+
+    auto d3 = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(d3.has_value());
+    EXPECT_FALSE(d3->candidate.isFromClipboard);
+    EXPECT_EQ(d3->candidate.image.cols, 22);
+    EXPECT_EQ(d3->candidate.image.rows, 18);
+
+    // 6. 仅复制非图片文件（无文本）时，平滑忽略 CF_HDROP 并无缝回退至历史截图
+    PinPasteCoordinator::instance().reset();
+    ASSERT_TRUE(putHdropOnClipboard({txtPath.wstring(), subDirPath.wstring()}));
+    EXPECT_TRUE(ClipboardUtils::readImagesFromClipboard().empty());
+    auto fallbackDecision = PinPasteCoordinator::instance().stepNext();
+    ASSERT_TRUE(fallbackDecision.has_value());
+    EXPECT_FALSE(fallbackDecision->candidate.isFromClipboard);
+    EXPECT_EQ(fallbackDecision->candidate.image.cols, 22);
+}
+
 TEST(CaptureLifecycleAndGhostWindowTest, ShortcutHintOverlayBottomLeftPositionAndMaximizedWindowStability) {
     using namespace tools3000::capture;
     const RECT workArea = { 0, 0, 1920, 1040 };
@@ -8393,6 +8620,157 @@ TEST(CaptureTextEditorTest, MultilineHitTestDragSelectionAndRichEditing) {
     }
 }
 
+TEST(CaptureTextEditorTest, BoundaryAutoWrapSoftLinesNavigationAndRenderParity) {
+    using namespace tools3000::capture;
+
+    Gdiplus::GdiplusStartupInput gdiInput;
+    ULONG_PTR gdiToken = 0;
+    const bool gdiStartedHere = (Gdiplus::GdiplusStartup(&gdiToken, &gdiInput, nullptr) == Gdiplus::Ok);
+
+    constexpr int fontSize = 20;
+
+    // 1. 中文长文本遇到截图右边界自动软换行，且原始字符串绝对不插入假 '\n'
+    const std::wstring zhText = L"截图内输入文字遇到截图右边界自动换行，体验流畅自然，绝不截断文字。";
+    const float maxBoxW = CaptureTextEditor::computeAvailableBoxWidth(320, 140, fontSize);
+    const float maxContentW = CaptureTextEditor::computeContentWidthFromBoxWidth(maxBoxW, fontSize);
+    ASSERT_GT(maxContentW, 80.0f);
+    ASSERT_LT(maxBoxW, 180.0f);
+
+    const auto zhLayout = CaptureTextEditor::buildLayout(zhText, fontSize, maxContentW);
+    ASSERT_GE(zhLayout.lines.size(), 3u);
+    EXPECT_LE(zhLayout.contentWidth, maxContentW + 1.5f);
+    for (size_t i = 0; i + 1 < zhLayout.lines.size(); ++i) {
+        EXPECT_TRUE(zhLayout.lines[i].softWrapped);
+        EXPECT_EQ(zhLayout.lines[i].endIndex, zhLayout.lines[i + 1].startIndex);
+    }
+    EXPECT_FALSE(zhLayout.lines.back().softWrapped);
+    EXPECT_EQ(zhLayout.lines.back().endIndex, zhText.size());
+
+    // 验证避头标点保护：除极窄框外，软换行后下一视觉行行首不应以孤立中文逗号/句号开头
+    for (size_t i = 1; i < zhLayout.lines.size(); ++i) {
+        const size_t sIdx = zhLayout.lines[i].startIndex;
+        if (sIdx < zhText.size()) {
+            EXPECT_FALSE(CaptureTextEditor::isLineStartProhibitedPunct(zhText[sIdx]))
+                << "Prohibited line-start punct at visual line " << i;
+        }
+    }
+
+    // 2. 英文单词不断腰 + 超长无空格 Token 字符级安全折断
+    const std::wstring enText = L"Tools3000 WorldClass AutoWrap SuperLongUnbreakableIdentifierToken2026";
+    const auto enLayout = CaptureTextEditor::buildLayout(enText, fontSize, 175.0f);
+    ASSERT_GE(enLayout.lines.size(), 3u);
+    // "WorldClass" 不应被从中间切开（第一行在空格后断行）
+    const std::wstring firstEnLine = enText.substr(enLayout.lines[0].startIndex,
+                                                   enLayout.lines[0].endIndex - enLayout.lines[0].startIndex);
+    EXPECT_TRUE(firstEnLine.find(L"WorldCl") == std::wstring::npos || firstEnLine.find(L"WorldClass") != std::wstring::npos);
+    EXPECT_LE(enLayout.contentWidth, 176.5f);
+
+    // 3. 软换行视觉行导航：光标位于软换行交界归属下一行首；Up/Down/Home/End/Selection 无错位且无多余 +6px 换行尾
+    const size_t wrapBoundary = zhLayout.lines[0].endIndex;
+    const auto boundaryVis = CaptureTextEditor::computeCaretVisual(zhLayout, zhText, wrapBoundary);
+    EXPECT_NEAR(boundaryVis.y, zhLayout.lines[1].topY + 1.0f, 0.5f);
+    EXPECT_NEAR(boundaryVis.x, zhLayout.textOriginX + 1.0f, 0.5f);
+
+    size_t caret = zhLayout.lines[1].endIndex;
+    size_t anchor = caret;
+    float preferredX = -1.0f;
+    // 从第 2 视觉行向下再向上，应稳稳回到不同视觉行，绝不在软换行交界死锁
+    CaptureTextEditor::moveVertical(zhLayout, zhText, caret, anchor, -1, false, preferredX);
+    EXPECT_EQ(CaptureTextEditor::findVisualLineIndex(zhLayout, caret), 1u);
+    CaptureTextEditor::moveVertical(zhLayout, zhText, caret, anchor, -1, false, preferredX);
+    EXPECT_EQ(CaptureTextEditor::findVisualLineIndex(zhLayout, caret), 0u);
+
+    CaptureTextEditor::moveHomeInLayout(zhLayout, zhText, caret, anchor, false, false);
+    EXPECT_EQ(caret, zhLayout.lines[0].startIndex);
+    CaptureTextEditor::moveEndInLayout(zhLayout, zhText, caret, anchor, false, false);
+    EXPECT_EQ(CaptureTextEditor::findVisualLineIndex(zhLayout, caret), 0u);
+    EXPECT_LT(caret, zhLayout.lines[0].endIndex);
+
+    // 跨软换行划词高亮：第一行高亮宽度应严格贴齐该行末字偏移（不叠加硬换行 +6px 尾巴）
+    const auto softSpans = CaptureTextEditor::computeSelectionHighlights(
+        zhLayout, zhText, zhLayout.lines[1].startIndex + 2, 0);
+    ASSERT_EQ(softSpans.size(), 2u);
+    EXPECT_NEAR(softSpans[0].width, zhLayout.lines[0].charOffsets.back(), 0.5f);
+
+    // 4. 极近边缘点击智能礼让 & 自动换行触底自动上抬
+    const auto [smartX, smartY] = CaptureTextEditor::computeSmartTextStartPoint(392, 294, 400, 300, 20);
+    EXPECT_LT(smartX, 300);
+    EXPECT_GE(smartX, 4);
+    EXPECT_LT(smartY, 270);
+    EXPECT_GE(smartY, 4);
+    EXPECT_EQ(CaptureTextEditor::computeBottomSafeStartY(240, 90, 300), 204);
+    EXPECT_EQ(CaptureTextEditor::computeBottomSafeStartY(100, 90, 300), 100);
+
+    // 5. MarkupEngine 端到端渲染：不透明/半透明文字均自动在截图右边界内折行，向左拖宽或拉宽画布后自然舒展
+    cv::Mat narrowCanvas(240, 320, CV_8UC4, cv::Scalar(248, 250, 252, 255));
+    MarkupEngine engine;
+    engine.setBaseImage(narrowCanvas);
+    auto* txtOpaque = engine.addText(
+        cv::Point(150, 24),
+        reinterpret_cast<const char*>(u8"遇到截图右边界自动换行，完全不裁切任何文字！"),
+        MarkupColor(220, 38, 38, 255),
+        20.0f);
+    ASSERT_NE(txtOpaque, nullptr);
+    const cv::Mat renderedNarrow = engine.getCompositeImage(false);
+    ASSERT_FALSE(renderedNarrow.empty());
+    const cv::Rect narrowBox = txtOpaque->getBoundingBox();
+    EXPECT_LE(narrowBox.x + narrowBox.width, narrowCanvas.cols);
+    EXPECT_GT(narrowBox.height, 60); // 自动折成多行
+
+    // 半透明文字 (alpha=180) 经过局部 ROI 合成路径，包围盒尺寸应与同等不透明文字严格一致（不受 ROI 宽度干扰）
+    MarkupEngine semiEngine;
+    semiEngine.setBaseImage(narrowCanvas);
+    auto* txtSemi = semiEngine.addText(
+        cv::Point(150, 24),
+        reinterpret_cast<const char*>(u8"遇到截图右边界自动换行，完全不裁切任何文字！"),
+        MarkupColor(220, 38, 38, 180),
+        20.0f);
+    ASSERT_NE(txtSemi, nullptr);
+    const cv::Mat renderedSemi = semiEngine.getCompositeImage(false);
+    ASSERT_FALSE(renderedSemi.empty());
+    const cv::Rect semiBox = txtSemi->getBoundingBox();
+    EXPECT_EQ(semiBox.width, narrowBox.width);
+    EXPECT_EQ(semiBox.height, narrowBox.height);
+
+    // 拉宽画布 (updateBaseImage -> 760px) 后，原本折行的文字框自动自然舒展、高度显著回落
+    cv::Mat wideCanvas(240, 760, CV_8UC4, cv::Scalar(248, 250, 252, 255));
+    engine.updateBaseImage(wideCanvas);
+    const cv::Mat renderedWide = engine.getCompositeImage(false);
+    ASSERT_FALSE(renderedWide.empty());
+    const cv::Rect wideBox = txtOpaque->getBoundingBox();
+    EXPECT_GT(wideBox.width, narrowBox.width);
+    EXPECT_LT(wideBox.height, narrowBox.height);
+
+    if (const char* dumpPath = std::getenv("TOOLS3000_DUMP_WRAP_PREVIEW"); dumpPath && *dumpPath) {
+        // 生成实机视觉验收拼图：左(320px 窄边编辑态自动换行+描边) | 中(半透明 ROI 换行) | 下(760px 拖宽自动舒展)
+        cv::Mat narrowEditCanvas(240, 320, CV_8UC4, cv::Scalar(24, 30, 44, 255));
+        MarkupEngine editEng;
+        editEng.setBaseImage(narrowEditCanvas);
+        auto* editTxt = editEng.addText(
+            cv::Point(120, 24),
+            reinterpret_cast<const char*>(u8"微信同款边界自动换行：支持中英文混排 AutoWrap 与避头标点保护！"),
+            MarkupColor(255, 255, 255, 255),
+            20.0f);
+        editTxt->isActive = true;
+        editTxt->isEditing = true;
+        editTxt->textSelAnchor = 4;
+        editTxt->textCaret = 14;
+        const cv::Mat panelA = editEng.getCompositeImage(true);
+
+        cv::Mat board(500, 760, CV_8UC4, cv::Scalar(226, 232, 240, 255));
+        panelA.copyTo(board(cv::Rect(10, 10, 320, 240)));
+        renderedSemi.copyTo(board(cv::Rect(350, 10, 320, 240)));
+        renderedWide.copyTo(board(cv::Rect(0, 260, 760, 240)));
+        cv::Mat boardBgr;
+        cv::cvtColor(board, boardBgr, cv::COLOR_BGRA2BGR);
+        cv::imwrite(dumpPath, boardBgr);
+    }
+
+    if (gdiStartedHere) {
+        Gdiplus::GdiplusShutdown(gdiToken);
+    }
+}
+
 TEST(CaptureShortcutPolicyTest, ZeroConflictRoutingAndShiftTapStateMachine) {
     using namespace tools3000::capture;
 
@@ -8732,10 +9110,10 @@ TEST(CaptureDeliveryPolicyTest, RespectsCopyToClipboardSettingAndOcrMemoryDirect
         EXPECT_FALSE(copyDecision.shouldPromptSaveAsFallback);
     }
 
-    // 2. 自动复制与自动保存解耦 + 双关兜底复制策略：
+    // 2. 自动复制与自动保存严格解耦，双项全关绝不偷偷覆盖剪贴板（保护仅截图翻译/核对/贴图用户的工作流）：
     //    - 开启复制 + 关闭保存：只复制不弹另存为；
     //    - 关闭复制 + 开启保存：只保存不污染剪贴板；
-    //    - 双项全关（非纯内存直达）：点「完成」无打扰兜底复制到剪贴板，绝不弹另存为，与 Esc 取消区分；
+    //    - 双项全关：点「完成」仅静默结束并存入历史，绝不写入剪贴板、绝不弹另存为；用户显式按 Ctrl+C 仍正常复制；
     //    - 工具栏「完成」提示动态与真实交付决策 100% 对齐。
     {
         CaptureOptions copyOnly;
@@ -8753,10 +9131,15 @@ TEST(CaptureDeliveryPolicyTest, RespectsCopyToClipboardSettingAndOcrMemoryDirect
         CaptureCompletion defaultDone;
         defaultDone.action = CaptureCompletionAction::Default;
         const auto bothOffDecision = resolveCaptureDeliveryDecision(bothOff, defaultDone);
-        EXPECT_TRUE(bothOffDecision.shouldCopyToClipboard);
+        EXPECT_FALSE(bothOffDecision.shouldCopyToClipboard);
         EXPECT_FALSE(bothOffDecision.shouldSaveAutomatically);
         EXPECT_FALSE(bothOffDecision.shouldPromptSaveAsFallback);
         EXPECT_TRUE(bothOffDecision.shouldRecordHistory);
+
+        // 双关状态下用户显式点击「复制」/ Ctrl+C 仍必须写入剪贴板
+        const auto bothOffExplicitCopy = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Copy});
+        EXPECT_TRUE(bothOffExplicitCopy.shouldCopyToClipboard);
+        EXPECT_FALSE(bothOffExplicitCopy.shouldSaveAutomatically);
 
         // 动态 Confirm 工具栏悬浮提示必须 1:1 匹配 4 种开关组合
         ToolbarButton confirmBtn{};
@@ -8773,8 +9156,8 @@ TEST(CaptureDeliveryPolicyTest, RespectsCopyToClipboardSettingAndOcrMemoryDirect
         EXPECT_EQ(tooltipForButton(confirmBtn, false, &copyOnly), L"Done & Copy (Enter)");
         EXPECT_EQ(tooltipForButton(confirmBtn, true, &saveOnly), L"完成并保存 (Enter)");
         EXPECT_EQ(tooltipForButton(confirmBtn, false, &saveOnly), L"Done & Save (Enter)");
-        EXPECT_EQ(tooltipForButton(confirmBtn, true, &bothOff), L"完成并复制 (Enter)");
-        EXPECT_EQ(tooltipForButton(confirmBtn, false, &bothOff), L"Done & Copy (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, true, &bothOff), L"完成并关闭 (Enter)");
+        EXPECT_EQ(tooltipForButton(confirmBtn, false, &bothOff), L"Done & Close (Enter)");
 
         // 显式指定另存为目标路径时仍正常执行显式保存且尊重 copyToClipboard=false 不覆盖剪贴板
         CaptureCompletion saveAsDone;
@@ -14820,7 +15203,7 @@ TEST(CaptureQuickSaveRegressionTest, DeliveryDecisionForcesAutoSaveWithoutFallba
         EXPECT_TRUE(d.shouldRecordHistory);
     }
 
-    // 3. 回归确认：SaveAs / Copy 保持显式行为，Default 在双关时兜底复制到剪贴板且绝不触发另存为弹窗
+    // 3. 回归确认：SaveAs / Copy 保持显式行为，Default 在双关时严格静默关闭（绝不覆盖剪贴板、绝不触发另存为弹窗）
     {
         CaptureOptions bothOff;
         bothOff.saveToFile = false;
@@ -14828,7 +15211,7 @@ TEST(CaptureQuickSaveRegressionTest, DeliveryDecisionForcesAutoSaveWithoutFallba
 
         const auto dDefault = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Default});
         EXPECT_FALSE(dDefault.shouldSaveAutomatically);
-        EXPECT_TRUE(dDefault.shouldCopyToClipboard);
+        EXPECT_FALSE(dDefault.shouldCopyToClipboard);
         EXPECT_FALSE(dDefault.shouldPromptSaveAsFallback);
 
         const auto dCopy = resolveCaptureDeliveryDecision(bothOff, {CaptureCompletionAction::Copy});
@@ -16125,6 +16508,444 @@ TEST(PinMemoryGovernorTest, SingleFlightSchedulerCapsConcurrencyAndPromotesInter
     EXPECT_EQ(executionOrder[0], 1u);
     // 被用户悬停提权的 #20 必须在第 1 张完成后紧接着第 2 个执行，抢占所有后台静默任务
     EXPECT_EQ(executionOrder[1], 20u);
+}
+
+TEST(InPlaceTranslateEngineTest, AllOcrFixturesEndToEndTranslateAudit) {
+    const char* runEnv = std::getenv("TOOLS3000_RUN_ALL_TRANSLATE_AUDIT");
+    if (!runEnv || !*runEnv || std::string(runEnv) == "0") {
+        GTEST_SKIP() << "Set TOOLS3000_RUN_ALL_TRANSLATE_AUDIT=1 to run full-directory OCR + In-Place Translate E2E audit";
+    }
+
+    using namespace tools3000::capture;
+    using namespace tools3000::ocr;
+    namespace fs = std::filesystem;
+
+    // 1. 解析统一样本根目录 tests/fixtures/ocr
+    using tools3000::core::WinUtils;
+    auto pathToGenericUtf8 = [](const fs::path& p) -> std::string {
+        return WinUtils::wstringToUtf8(p.generic_wstring());
+    };
+    fs::path fixturesRoot = fs::path(L"tests") / L"fixtures" / L"ocr";
+    if (const char* rootOverride = std::getenv("TOOLS3000_OCR_FIXTURES_DIR"); rootOverride && *rootOverride) {
+        fixturesRoot = fs::path(WinUtils::utf8ToWstring(rootOverride));
+    }
+    ASSERT_TRUE(fs::exists(fixturesRoot) && fs::is_directory(fixturesRoot))
+        << "Missing OCR fixtures root: " << pathToGenericUtf8(fixturesRoot);
+
+    // 2. 注入指定离线 OCR 模型目录与档位（默认使用当前本机 PP-OCRv6 混合精修档）
+    auto& deepOcr = DeepOcrEngine::instance();
+    if (const char* modelDirEnv = std::getenv("TOOLS3000_OCR_MODEL_DIR"); modelDirEnv && *modelDirEnv) {
+        deepOcr.setCustomModelDirectoryForTest(fs::path(WinUtils::utf8ToWstring(modelDirEnv)));
+    }
+    const char* tierEnv = std::getenv("TOOLS3000_OCR_MODEL_TIER");
+    const std::string tierMode = (tierEnv && *tierEnv) ? std::string(tierEnv) : std::string("server");
+    deepOcr.setModelTierOverrideForWorker(tierMode);
+    deepOcr.setScriptModeOverrideForWorker("auto");
+
+    struct OcrResetGuard {
+        ~OcrResetGuard() {
+            auto& eng = DeepOcrEngine::instance();
+            eng.setModelTierOverrideForWorker("");
+            eng.setScriptModeOverrideForWorker("");
+            eng.setCustomModelDirectoryForTest({});
+        }
+    } resetGuard;
+
+    ASSERT_TRUE(deepOcr.isModelInstalled()) << "PP-OCR model pack not installed at configured model directory";
+
+    // 3. 递归收集 tests/fixtures/ocr 下的全部目录与图片文件
+    std::vector<fs::path> imageFiles;
+    for (const auto& entry : fs::recursive_directory_iterator(fixturesRoot)) {
+        if (!entry.is_regular_file()) continue;
+        std::string ext = entry.path().extension().string();
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" || ext == ".bmp") {
+            imageFiles.push_back(entry.path());
+        }
+    }
+    std::sort(imageFiles.begin(), imageFiles.end());
+    ASSERT_FALSE(imageFiles.empty()) << "No images found under " << pathToGenericUtf8(fixturesRoot);
+
+    fs::path outDir;
+    if (const char* outDirEnv = std::getenv("TOOLS3000_TRANSLATE_AUDIT_OUT_DIR"); outDirEnv && *outDirEnv) {
+        outDir = fs::path(WinUtils::utf8ToWstring(outDirEnv));
+        std::error_code ec;
+        fs::create_directories(outDir, ec);
+    }
+
+    auto classifyBucket = [&](const fs::path& p) -> std::string {
+        std::error_code ec;
+        const fs::path rel = fs::relative(p, fixturesRoot, ec);
+        const std::string relStr = pathToGenericUtf8(rel);
+        const auto slash = relStr.find('/');
+        if (slash == std::string::npos) return "root_public";
+        return relStr.substr(0, slash);
+    };
+
+    // 判定文本主体是否为 CJK/日/韩文字，从而模拟真实双向原位翻译（中/日/韩 -> 英，外语 -> 简中）
+    auto isMostlyCjkLike = [](std::string_view utf8) -> bool {
+        size_t cjk = 0;
+        size_t total = 0;
+        const unsigned char* s = reinterpret_cast<const unsigned char*>(utf8.data());
+        size_t i = 0;
+        while (i < utf8.size()) {
+            uint32_t cp = 0;
+            unsigned char c = s[i];
+            if (c < 0x80) {
+                cp = c;
+                i += 1;
+            } else if ((c & 0xE0) == 0xC0 && i + 1 < utf8.size()) {
+                cp = ((c & 0x1F) << 6) | (s[i + 1] & 0x3F);
+                i += 2;
+            } else if ((c & 0xF0) == 0xE0 && i + 2 < utf8.size()) {
+                cp = ((c & 0x0F) << 12) | ((s[i + 1] & 0x3F) << 6) | (s[i + 2] & 0x3F);
+                i += 3;
+            } else if ((c & 0xF8) == 0xF0 && i + 3 < utf8.size()) {
+                cp = ((c & 0x07) << 18) | ((s[i + 1] & 0x3F) << 12) | ((s[i + 2] & 0x3F) << 6) | (s[i + 3] & 0x3F);
+                i += 4;
+            } else {
+                i += 1;
+                continue;
+            }
+            if (cp <= 0x20) continue;
+            ++total;
+            if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3040 && cp <= 0x30FF) || (cp >= 0xAC00 && cp <= 0xD7AF)) {
+                ++cjk;
+            }
+        }
+        return total > 0 && cjk * 4 >= total;
+    };
+
+    // 离线确定性长度保真译文构造器（无需外部网络，真实压测 DirectWrite 换行/防碰撞/字号二分拟合与双语排版）
+    auto synthesizeRealisticTranslation = [](std::string_view orig, bool toEnglish, size_t idx) -> std::string {
+        const size_t cpCount = std::max<size_t>(1, OcrEngine::countUtf8Codepoints(orig));
+        if (toEnglish) {
+            static const char* kEnWords[] = {
+                "Order", "Status", "Report", "Summary", "Confirm", "Inventory", "Amount",
+                "Detail", "System", "Updated", "Warehouse", "Notice", "Record", "Verified",
+                "Invoice", "Batch", "Schedule", "Export", "Settings", "Complete"
+            };
+            const size_t targetWords = std::clamp<size_t>((cpCount + 1) / 2, 1, 28);
+            std::string out;
+            for (size_t w = 0; w < targetWords; ++w) {
+                if (w > 0) out += ' ';
+                out += kEnWords[(idx * 5 + w * 3) % (sizeof(kEnWords) / sizeof(kEnWords[0]))];
+            }
+            return out;
+        }
+        static const char* kZhChunks[] = {
+            "\xE7\xB3\xBB\xE7\xBB\x9F\xE7\x8A\xB6\xE6\x80\x81", // 系统状态
+            "\xE6\x95\xB0\xE6\x8D\xAE\xE6\xA0\xB8\xE5\xAF\xB9", // 数据核对
+            "\xE8\xAE\xA2\xE5\x8D\x95\xE6\x98\x8E\xE7\xBB\x86", // 订单明细
+            "\xE9\x85\x8D\xE7\xBD\xAE\xE8\xAF\xB4\xE6\x98\x8E", // 配置说明
+            "\xE4\xB8\x9A\xE5\x8A\xA1\xE6\x91\x98\xE8\xA6\x81", // 业务摘要
+            "\xE6\xA3\x80\xE6\x9F\xA5\xE7\xBB\x93\xE6\x9E\x9C", // 检查结果
+            "\xE7\x95\x8C\xE9\x9D\xA2\xE5\x8F\x82\xE6\x95\xB0", // 界面参数
+            "\xE6\x89\xA7\xE8\xA1\x8C\xE5\xAE\x8C\xE6\x88\x90"  // 执行完成
+        };
+        const size_t targetChunks = std::clamp<size_t>((cpCount + 5) / 6, 1, 14);
+        std::string out;
+        for (size_t c = 0; c < targetChunks; ++c) {
+            out += kZhChunks[(idx * 3 + c * 5) % (sizeof(kZhChunks) / sizeof(kZhChunks[0]))];
+        }
+        return out;
+    };
+
+    const std::unordered_set<std::string> visualSampleNames = {
+        "sap_form_table.jpg",
+        "sap_b1_form_designer.png",
+        "nytimes_homepage.png",
+        "dark_markdown_codebadges.png",
+        "packing_card_handheld.jpg",
+        "excel_finance_sheet_zh.png",
+        "erp_purchase_order_dense.png",
+        "web_docs_fr_de_es.png",
+        "web_erp_ja_dashboard.png",
+        "web_portal_ar_rtl.png",
+        "web_portal_th_erp.png",
+        "sap_iqc_multiwindow_redbox.png",
+    };
+
+    struct BucketStats {
+        int images = 0;
+        int ocrNonEmptyImages = 0;
+        int translatedImages = 0;
+        int totalAtomicBlocks = 0;
+        int totalParagraphs = 0;
+        int totalRendered = 0;
+        int totalQrProtected = 0;
+        int qrOverlapViolations = 0;
+        int boundsViolations = 0;
+        long long totalOcrMs = 0;
+        long long totalBuildMs = 0;
+        long long totalRenderMs = 0;
+    };
+
+    std::map<std::string, BucketStats> bucketMap;
+    nlohmann::json perImageJson = nlohmann::json::array();
+
+    for (const auto& imgPath : imageFiles) {
+        const std::string bucket = classifyBucket(imgPath);
+        auto& st = bucketMap[bucket];
+        st.images += 1;
+
+        // 支持含中文路径读取：读字节后 imdecode
+        const std::string imgPathUtf8 = pathToGenericUtf8(imgPath);
+        std::ifstream ifs(imgPath, std::ios::binary);
+        ASSERT_TRUE(ifs.is_open()) << "Cannot open image: " << imgPathUtf8;
+        std::vector<uchar> rawBytes((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        cv::Mat src = cv::imdecode(rawBytes, cv::IMREAD_COLOR);
+        ASSERT_FALSE(src.empty()) << "Failed to decode image: " << imgPathUtf8;
+        const cv::Mat srcSnapshot = src.clone();
+
+        const auto t0 = std::chrono::steady_clock::now();
+        const auto page = OcrEngine::instance().extractPage(src);
+        const auto t1 = std::chrono::steady_clock::now();
+        const long long ocrMs = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+        st.totalOcrMs += ocrMs;
+
+        if (!page.lines.empty()) {
+            st.ocrNonEmptyImages += 1;
+        }
+
+        // 与 PinWindowTranslate.cpp 100% 同源的块拆分 + QR 避障过滤 + 段落构建
+        std::vector<cv::Rect> obstacles;
+        std::vector<cv::Rect> qrBoxes;
+        for (const auto& q : page.qrCodes) {
+            if (q.boundingBox.width > 0 && q.boundingBox.height > 0) {
+                qrBoxes.push_back(q.boundingBox);
+                obstacles.push_back(q.boundingBox);
+            }
+        }
+        st.totalQrProtected += static_cast<int>(qrBoxes.size());
+
+        auto overlapsQr = [&](const cv::Rect& rc) noexcept -> bool {
+            if (rc.area() <= 0) return false;
+            const cv::Point c(rc.x + rc.width / 2, rc.y + rc.height / 2);
+            for (const auto& q : qrBoxes) {
+                const cv::Rect pad(q.x - 4, q.y - 4, q.width + 8, q.height + 8);
+                if (pad.contains(c) || (rc & pad).area() * 10 >= rc.area() * 4) return true;
+            }
+            return false;
+        };
+
+        const auto atomicLines = OcrEngine::splitIntoAtomicBlocks(page.lines);
+        std::vector<PinOcrBlock> blocks;
+        blocks.reserve(atomicLines.size());
+        for (const auto& b : atomicLines) {
+            if (b.box.width > 0 && b.box.height > 0) obstacles.push_back(b.box);
+            if (overlapsQr(b.box)) continue;
+            blocks.push_back(PinOcrBlock{b.text, b.box, b.charBoxes, b.layoutRegionId, b.alignedRowId});
+        }
+        st.totalAtomicBlocks += static_cast<int>(blocks.size());
+
+        const auto t2 = std::chrono::steady_clock::now();
+        auto paragraphs = InPlaceTranslateEngine::buildTranslationParagraphs(blocks, src.size(), {}, src);
+        const auto t3 = std::chrono::steady_clock::now();
+        const long long buildMs = std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t2).count();
+        st.totalBuildMs += buildMs;
+        st.totalParagraphs += static_cast<int>(paragraphs.size());
+
+        int renderedCount = 0;
+        long long renderMs = 0;
+        std::string targetLang = "zh-CN";
+
+        if (!paragraphs.empty()) {
+            size_t cjkParas = 0;
+            for (const auto& p : paragraphs) {
+                if (isMostlyCjkLike(p.originalText)) ++cjkParas;
+            }
+            const bool toEnglish = (cjkParas * 2 >= paragraphs.size());
+            targetLang = toEnglish ? "en" : "zh-CN";
+
+            for (size_t i = 0; i < paragraphs.size(); ++i) {
+                paragraphs[i].translatedText = synthesizeRealisticTranslation(paragraphs[i].originalText, toEnglish, i);
+            }
+
+            const auto t4 = std::chrono::steady_clock::now();
+            const auto renderRes = InPlaceTranslateEngine::renderTranslatedCanvas(
+                src, std::move(paragraphs), targetLang, obstacles);
+            const auto t5 = std::chrono::steady_clock::now();
+            renderMs = std::chrono::duration_cast<std::chrono::milliseconds>(t5 - t4).count();
+            st.totalRenderMs += renderMs;
+
+            EXPECT_TRUE(renderRes.success) << "renderTranslatedCanvas failed on " << imgPathUtf8;
+            EXPECT_EQ(renderRes.translatedCanvas.size(), src.size()) << "canvas size mismatch on " << imgPathUtf8;
+            EXPECT_GT(renderRes.renderedCount, 0) << "rendered 0 paragraphs on " << imgPathUtf8;
+            renderedCount = renderRes.renderedCount;
+            st.totalRendered += renderedCount;
+            if (renderRes.success && renderedCount > 0) {
+                st.translatedImages += 1;
+            }
+
+            // 校验所有渲染矩形严格位于画布内且零侵入二维码中心
+            const cv::Rect canvasRect(0, 0, src.cols, src.rows);
+            for (const auto& rp : renderRes.paragraphs) {
+                if (rp.renderedRect.area() <= 0) continue;
+                if ((rp.renderedRect & canvasRect) != rp.renderedRect) {
+                    st.boundsViolations += 1;
+                }
+                const cv::Point center(rp.renderedRect.x + rp.renderedRect.width / 2,
+                                       rp.renderedRect.y + rp.renderedRect.height / 2);
+                for (const auto& q : qrBoxes) {
+                    if (q.contains(center)) {
+                        st.qrOverlapViolations += 1;
+                    }
+                }
+            }
+
+            // 保存代表性视觉抽检产物（用于人工/多模态读图质检）
+            const std::string fname = WinUtils::wstringToUtf8(imgPath.filename().wstring());
+            if (!outDir.empty() && visualSampleNames.count(fname) > 0 && !renderRes.translatedCanvas.empty()) {
+                std::vector<uchar> encoded;
+                if (cv::imencode(".png", renderRes.translatedCanvas, encoded)) {
+                    const fs::path savePath = outDir / fs::path(WinUtils::utf8ToWstring(bucket + "_" + fname + ".translated.png"));
+                    std::ofstream ofs(savePath, std::ios::binary | std::ios::trunc);
+                    ofs.write(reinterpret_cast<const char*>(encoded.data()),
+                              static_cast<std::streamsize>(encoded.size()));
+                }
+            }
+        }
+
+        // 无损原图守恒校验：原图 cv::Mat 绝不得被原位污染
+        EXPECT_EQ(cv::norm(src, srcSnapshot, cv::NORM_INF), 0.0)
+            << "Source canvas mutated during OCR/Translate on " << imgPathUtf8;
+
+        std::error_code relEc;
+        const std::string relStr = pathToGenericUtf8(fs::relative(imgPath, fixturesRoot, relEc));
+        perImageJson.push_back({
+            {"path", relStr},
+            {"bucket", bucket},
+            {"width", src.cols},
+            {"height", src.rows},
+            {"ocrLines", page.lines.size()},
+            {"atomicBlocks", blocks.size()},
+            {"paragraphs", renderedCount > 0 ? renderedCount : 0},
+            {"qrCodes", qrBoxes.size()},
+            {"targetLang", targetLang},
+            {"ocrMs", ocrMs},
+            {"buildMs", buildMs},
+            {"renderMs", renderMs},
+        });
+    }
+
+    int grandImages = 0;
+    int grandOcrNonEmpty = 0;
+    int grandTranslated = 0;
+    int grandBlocks = 0;
+    int grandParas = 0;
+    int grandRendered = 0;
+    int grandQr = 0;
+    int grandQrViolations = 0;
+    int grandBoundsViolations = 0;
+    long long grandOcrMs = 0;
+    long long grandBuildMs = 0;
+    long long grandRenderMs = 0;
+
+    nlohmann::json summaryJson = nlohmann::json::object();
+    std::cout << "\n[ALL-TRANSLATE-AUDIT] === Full-Directory OCR + In-Place Translate Summary (tier=" << tierMode << ") ===\n";
+    for (const auto& [bName, s] : bucketMap) {
+        grandImages += s.images;
+        grandOcrNonEmpty += s.ocrNonEmptyImages;
+        grandTranslated += s.translatedImages;
+        grandBlocks += s.totalAtomicBlocks;
+        grandParas += s.totalParagraphs;
+        grandRendered += s.totalRendered;
+        grandQr += s.totalQrProtected;
+        grandQrViolations += s.qrOverlapViolations;
+        grandBoundsViolations += s.boundsViolations;
+        grandOcrMs += s.totalOcrMs;
+        grandBuildMs += s.totalBuildMs;
+        grandRenderMs += s.totalRenderMs;
+
+        const double avgOcr = s.images > 0 ? static_cast<double>(s.totalOcrMs) / s.images : 0.0;
+        const double avgBuild = s.images > 0 ? static_cast<double>(s.totalBuildMs) / s.images : 0.0;
+        const double avgRender = s.images > 0 ? static_cast<double>(s.totalRenderMs) / s.images : 0.0;
+        std::cout << "  [" << bName << "] imgs=" << s.images
+                  << " ocrOk=" << s.ocrNonEmptyImages
+                  << " transOk=" << s.translatedImages
+                  << " blocks=" << s.totalAtomicBlocks
+                  << " paras=" << s.totalParagraphs
+                  << " rendered=" << s.totalRendered
+                  << " qr=" << s.totalQrProtected
+                  << " qrViol=" << s.qrOverlapViolations
+                  << " bndViol=" << s.boundsViolations
+                  << " avgMs(ocr/build/render)=" << static_cast<int>(avgOcr) << "/"
+                  << static_cast<int>(avgBuild) << "/" << static_cast<int>(avgRender) << "\n";
+
+        summaryJson[bName] = {
+            {"images", s.images},
+            {"ocrNonEmptyImages", s.ocrNonEmptyImages},
+            {"translatedImages", s.translatedImages},
+            {"totalAtomicBlocks", s.totalAtomicBlocks},
+            {"totalParagraphs", s.totalParagraphs},
+            {"totalRendered", s.totalRendered},
+            {"totalQrProtected", s.totalQrProtected},
+            {"qrOverlapViolations", s.qrOverlapViolations},
+            {"boundsViolations", s.boundsViolations},
+            {"avgOcrMs", avgOcr},
+            {"avgBuildMs", avgBuild},
+            {"avgRenderMs", avgRender},
+        };
+    }
+    std::cout << "  [TOTAL] imgs=" << grandImages
+              << " ocrOk=" << grandOcrNonEmpty
+              << " transOk=" << grandTranslated
+              << " blocks=" << grandBlocks
+              << " paras=" << grandParas
+              << " rendered=" << grandRendered
+              << " qr=" << grandQr
+              << " qrViol=" << grandQrViolations
+              << " bndViol=" << grandBoundsViolations
+              << " avgMs(ocr/build/render)=" << (grandImages ? grandOcrMs / grandImages : 0) << "/"
+              << (grandImages ? grandBuildMs / grandImages : 0) << "/"
+              << (grandImages ? grandRenderMs / grandImages : 0) << "\n";
+
+    if (!outDir.empty()) {
+        nlohmann::json report = {
+            {"tier", tierMode},
+            {"totalImages", grandImages},
+            {"ocrNonEmptyImages", grandOcrNonEmpty},
+            {"translatedImages", grandTranslated},
+            {"totalAtomicBlocks", grandBlocks},
+            {"totalParagraphs", grandParas},
+            {"totalRendered", grandRendered},
+            {"totalQrProtected", grandQr},
+            {"qrOverlapViolations", grandQrViolations},
+            {"boundsViolations", grandBoundsViolations},
+            {"buckets", summaryJson},
+            {"images", perImageJson},
+        };
+        std::ofstream ofs(outDir / "audit_summary.json", std::ios::binary | std::ios::trunc);
+        ofs << report.dump(2);
+    }
+
+    EXPECT_EQ(grandQrViolations, 0) << "Rendered translated blocks must never overlap detected QR code centers";
+    EXPECT_EQ(grandBoundsViolations, 0) << "Rendered translated rects must stay inside source canvas bounds";
+    EXPECT_GE(grandOcrNonEmpty, grandImages - 2) << "At least ~99% of fixtures should yield OCR text";
+}
+
+TEST(InPlaceTranslateEngineTest, IsTranslatableTextSupportsArabicThaiVietnameseAndFiltersNoise) {
+    using tools3000::capture::InPlaceTranslateEngine;
+
+    // 阿拉伯语 / 泰语 / 越南语 / 俄语 / 希腊语 / 中日韩均必须通过可翻译判定
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("لوحة متابعة الطلبات والمخزون"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("ระบบจัดการคำสั่งซื้อและคลังสินค้า"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Tiếng Việt"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Hệ thống quản lý kho"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("Проверка кириллицы"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("在庫管理ダッシュボード"));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText("주문 관리 시스템"));
+
+    // 纯阿拉伯/泰文数字、序列号、代码标识符与孤立单字母噪声仍必须被拦截
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("١٢٣٤٥"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("๑๒๓๔๕"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("SKU-2026-0891"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("https://github.com/yuan278501381/Tools3000"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Q"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("12px"));
 }
 
 

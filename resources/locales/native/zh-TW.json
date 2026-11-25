@@ -503,6 +503,7 @@
   "Pen Annotation": "畫筆標註",
   "Pin": "貼圖",
   "Pin Group": "貼圖群組",
+  "Clipboard pin {0}/{1}": "剪貼簿貼圖 {0}/{1}",
   "Pin history {0}/{1}": "歷史貼圖 {0}/{1}",
   "Pin to Screen": "置頂釘選到螢幕",
   "Pine & Emerald": "松煙墨翠",
@@ -967,5 +968,19 @@
   "Copy & save": "複製並儲存",
   "Save & finish": "儲存並完成",
   "Done & Copy (Enter)": "完成並複製 (Enter)",
-  "Copy & finish": "完成並複製"
+  "Copy & finish": "完成並複製",
+  "50+": "50+",
+  "AR": "阿語",
+  "TH": "泰語",
+  "CJK / EN / JA / European (50+)": "中 / 英 / 日 / 歐文 (50 語種)",
+  "Arabic / Persian": "阿拉伯語 / 波斯語",
+  "Thai": "泰語",
+  "Cyrillic / Russian": "西里爾文 / 俄語",
+  "Arabic": "阿拉伯語",
+  "European Latin": "拉丁歐洲語",
+  "Refined {0} lines": "高精度精修 {0} 處",
+  "Auto script: {0}": "自動切換: {0}",
+  "Refining {0} low-confidence text lines...": "偵測到 {0} 處低置信度文字，正在高精度精修...",
+  "Refining": "低置信度精修中",
+  "Detected {0}, re-recognizing with script pack...": "偵測到 {0}，正在使用擴充語種模型複核..."
 }

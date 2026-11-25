@@ -23,8 +23,9 @@ bool initializeMarkupTextRenderer();
 
 /// 原地多行文本标注的排版度量快照（与 GDI+ GraphicsPath::AddString 100% 度量同构）
 struct TextLineLayout {
-    size_t startIndex = 0;          // 本行首字符在 wstring 中的索引
-    size_t endIndex = 0;            // 本行末字符后一位索引（不含 '\n'）
+    size_t startIndex = 0;          // 本视觉行首字符在 wstring 中的索引
+    size_t endIndex = 0;            // 本视觉行末字符后一位索引（不含硬换行 '\n'）
+    bool softWrapped = false;       // true 表示行尾因到达最大宽度自动软换行（下一行 startIndex == endIndex）
     float topY = 0.0f;              // 相对于文本框左上角的 Y 偏移
     float height = 0.0f;            // 单行视觉高度
     std::vector<float> charOffsets; // 长度为 (endIndex - startIndex + 1)，记录每个字符边界相对于 textX 的像素偏移
@@ -35,6 +36,9 @@ struct MultilineTextLayout {
     float textOriginY = 4.0f;
     float lineStep = 20.0f;
     float glyphHeight = 18.0f;
+    float maxContentWidth = 0.0f;   // 本次排版生效的文本内容区最大宽度（<= 0.0f 表示不限宽）
+    float contentWidth = 0.0f;      // 全部视觉行的最大可视像素宽度
+    float contentHeight = 0.0f;     // 全部视觉行占用的总内容像素高度
     std::vector<TextLineLayout> lines;
 };
 
@@ -267,6 +271,52 @@ public:
         if (!shiftExtend) anchor = caret;
     }
 
+    /// 定位给定光标索引所在的视觉行编号（软换行边界归属下一视觉行行首）
+    static size_t findVisualLineIndex(const MultilineTextLayout& layout, size_t clampedCaret) noexcept {
+        for (size_t i = 0; i < layout.lines.size(); ++i) {
+            const auto& line = layout.lines[i];
+            const bool onLine = line.softWrapped
+                ? (clampedCaret >= line.startIndex && clampedCaret < line.endIndex)
+                : (clampedCaret >= line.startIndex && clampedCaret <= line.endIndex);
+            if (onLine) return i;
+        }
+        return layout.lines.empty() ? 0 : (layout.lines.size() - 1);
+    }
+
+    /// 视觉行感知 Home（支持自动软换行行首定位，Ctrl+Home 跳至全文首）
+    static void moveHomeInLayout(const MultilineTextLayout& layout, const std::wstring& wstr,
+                                 size_t& caret, size_t& anchor, bool shiftExtend, bool ctrlDoc) noexcept {
+        if (ctrlDoc || layout.lines.empty()) {
+            moveHome(wstr, caret, anchor, shiftExtend, ctrlDoc);
+            return;
+        }
+        caret = clampIndex(wstr, caret);
+        anchor = clampIndex(wstr, anchor);
+        const size_t lineIdx = findVisualLineIndex(layout, caret);
+        caret = clampIndex(wstr, layout.lines[lineIdx].startIndex);
+        if (!shiftExtend) anchor = caret;
+    }
+
+    /// 视觉行感知 End（支持自动软换行行尾定位，Ctrl+End 跳至全文尾）
+    static void moveEndInLayout(const MultilineTextLayout& layout, const std::wstring& wstr,
+                                size_t& caret, size_t& anchor, bool shiftExtend, bool ctrlDoc) noexcept {
+        if (ctrlDoc || layout.lines.empty()) {
+            moveEnd(wstr, caret, anchor, shiftExtend, ctrlDoc);
+            return;
+        }
+        caret = clampIndex(wstr, caret);
+        anchor = clampIndex(wstr, anchor);
+        const size_t lineIdx = findVisualLineIndex(layout, caret);
+        const auto& line = layout.lines[lineIdx];
+        if (line.softWrapped && line.endIndex > line.startIndex) {
+            // 软换行行末尾字符之后就是下一视觉行行首；停在最后一个字簇前以保持视觉光标留在本行内
+            caret = prevClusterIndex(wstr, line.endIndex);
+        } else {
+            caret = clampIndex(wstr, line.endIndex);
+        }
+        if (!shiftExtend) anchor = caret;
+    }
+
     /// 解析截图标注体系的全局统一无衬线字体回退栈（SSOT：Noto Sans SC -> Source Han Sans SC -> Segoe UI / Microsoft YaHei UI）
     static const wchar_t* resolveMarkupFontFamilyName(bool preferLatinDigits = false) {
         initializeMarkupTextRenderer();
@@ -314,13 +364,138 @@ public:
         return {originX, originY};
     }
 
-    /// 构建与 GDI+ GraphicsPath::AddString 完全对齐的多行字符边界度量表
-    static MultilineTextLayout buildLayout(const std::wstring& wtext, int fontSize) {
+    /// 文本框水平与垂直总内边距（SSOT：度量、换行可用宽度、渲染与命中测试完全共用）
+    static int computeBoxHorizontalPadding(int fontSize) noexcept {
+        const auto [originX, originY] = computeTextOrigin((std::max)(12, fontSize));
+        (void)originY;
+        return static_cast<int>(std::ceil(originX * 2.0f + 4.0f));
+    }
+
+    static int computeBoxVerticalPadding(int fontSize) noexcept {
+        const auto [originX, originY] = computeTextOrigin((std::max)(12, fontSize));
+        (void)originX;
+        return static_cast<int>(std::ceil(originY * 2.0f + 2.0f));
+    }
+
+    static constexpr float kRightBoundarySafetyMarginPx = 6.0f;
+    static constexpr float kBottomBoundarySafetyMarginPx = 6.0f;
+
+    /// 根据截图画布宽度与文本框左起点，计算不越出右边界的最大可用外框宽度（<= 0.0f 表示不限宽）
+    static float computeAvailableBoxWidth(int canvasWidth, int boxStartX, int fontSize,
+                                          float rightSafetyMargin = kRightBoundarySafetyMarginPx) noexcept {
+        if (canvasWidth <= 0) return 0.0f;
         const int safeFontSize = (std::max)(12, fontSize);
+        const float padW = static_cast<float>(computeBoxHorizontalPadding(safeFontSize));
+        const float minReadableBoxW = (std::max)(44.0f, static_cast<float>(safeFontSize) * 1.8f + padW);
+        const float canvasF = static_cast<float>(canvasWidth);
+        const float clampedMinW = (std::min)(canvasF, minReadableBoxW);
+        const float remaining = canvasF - static_cast<float>(boxStartX) - rightSafetyMargin;
+        if (remaining <= clampedMinW) {
+            return clampedMinW;
+        }
+        return remaining;
+    }
+
+    /// 将外框最大宽度换算为排版内容区最大宽度（扣除左右描边与聚焦框安全内边距）
+    static float computeContentWidthFromBoxWidth(float maxBoxWidth, int fontSize) noexcept {
+        if (maxBoxWidth <= 0.0f) return 0.0f;
+        const int safeFontSize = (std::max)(12, fontSize);
+        const float padW = static_cast<float>(computeBoxHorizontalPadding(safeFontSize));
+        return (std::max)(static_cast<float>(safeFontSize) * 1.15f, maxBoxWidth - padW);
+    }
+
+    /// 根据排版快照计算外框像素尺寸（SSOT：与渲染画布大小 100% 一致）
+    static std::pair<int, int> computeBoxSize(const MultilineTextLayout& layout, int fontSize,
+                                              float maxBoxWidth = 0.0f) noexcept {
+        const int safeFontSize = (std::max)(12, fontSize);
+        const int padW = computeBoxHorizontalPadding(safeFontSize);
+        const int padH = computeBoxVerticalPadding(safeFontSize);
+        int w = static_cast<int>(std::ceil(layout.contentWidth)) + padW;
+        if (maxBoxWidth > 0.0f) {
+            const int maxWInt = static_cast<int>(std::ceil(maxBoxWidth));
+            // 仅夹取行尾空白或小数舍入误差；若单字本身宽度超过极窄框，保留完整字形不裁切
+            const int minSingleGlyphBox = static_cast<int>(std::ceil(static_cast<float>(safeFontSize) * 1.15f)) + padW;
+            w = (std::min)(w, (std::max)(maxWInt, minSingleGlyphBox));
+        }
+        int h = static_cast<int>(std::ceil(layout.contentHeight)) + padH;
+        return {(std::max)(w, 24), (std::max)(h, safeFontSize + padH)};
+    }
+
+    /// 新建文本框时对紧贴截图右/底边缘的点击落点进行温和礼让，避免首行仅剩极窄列宽或掉出底边
+    static std::pair<int, int> computeSmartTextStartPoint(int clickX, int clickY,
+                                                          int canvasWidth, int canvasHeight,
+                                                          int fontSize) noexcept {
+        if (canvasWidth <= 0 || canvasHeight <= 0) {
+            return {clickX, clickY};
+        }
+        const int safeFontSize = (std::max)(12, fontSize);
+        const int padW = computeBoxHorizontalPadding(safeFontSize);
+        const int padH = computeBoxVerticalPadding(safeFontSize);
+        const int margin = 4;
+        const int preferredMinWidth = static_cast<int>(std::ceil(
+            (std::max)(140.0f, static_cast<float>(safeFontSize) * 4.5f + static_cast<float>(padW))));
+        const int minInitialHeight = static_cast<int>(std::ceil(
+            static_cast<float>(safeFontSize) * 1.45f + static_cast<float>(padH)));
+
+        int outX = clickX;
+        int outY = clickY;
+        const int maxComfortX = canvasWidth - static_cast<int>(std::ceil(kRightBoundarySafetyMarginPx)) - preferredMinWidth;
+        if (outX > maxComfortX) {
+            outX = (std::max)(margin, maxComfortX);
+        }
+        const int maxComfortY = canvasHeight - static_cast<int>(std::ceil(kBottomBoundarySafetyMarginPx)) - minInitialHeight;
+        if (outY > maxComfortY) {
+            outY = (std::max)(margin, maxComfortY);
+        }
+        return {outX, outY};
+    }
+
+    /// 自动换行增高时，将越过截图底边界的文本框温和上抬，确保正在输入的新行始终完整可见
+    static int computeBottomSafeStartY(int currentStartY, int boxHeight, int canvasHeight) noexcept {
+        if (canvasHeight <= 0 || boxHeight <= 0) return currentStartY;
+        const int bottomLimit = canvasHeight - static_cast<int>(std::ceil(kBottomBoundarySafetyMarginPx));
+        if (currentStartY + boxHeight <= bottomLimit) {
+            return currentStartY;
+        }
+        const int lifted = bottomLimit - boxHeight;
+        return (std::max)(4, lifted);
+    }
+
+    static bool isLatinWordChar(wchar_t ch) noexcept {
+        return ch == L'_' || ch == L'\'' ||
+               (ch >= L'0' && ch <= L'9') ||
+               (ch >= L'A' && ch <= L'Z') ||
+               (ch >= L'a' && ch <= L'z') ||
+               (ch >= 0x00C0 && ch <= 0x024F) ||
+               (ch >= 0x0400 && ch <= 0x04FF);
+    }
+
+    static bool isLineStartProhibitedPunct(wchar_t ch) noexcept {
+        switch (ch) {
+            case L',': case L'.': case L'!': case L'?': case L';': case L':':
+            case L')': case L']': case L'}': case L'%':
+            case L'\uFF0C': case L'\u3002': case L'\uFF01': case L'\uFF1F':
+            case L'\uFF1B': case L'\uFF1A': case L'\u3001': case L'\uFF09':
+            case L'\u3011': case L'\u300B': case L'\u300D': case L'\u300F':
+            case L'\u201D': case L'\u2019': case L'\u2026':
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    /// 构建与 GDI+ GraphicsPath::AddString 完全对齐的多行字符边界度量表（支持可选 maxContentWidth 边界自动软换行）
+    static MultilineTextLayout buildLayout(const std::wstring& wtext, int fontSize, float maxContentWidth = 0.0f) {
+        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeMaxContentW = (maxContentWidth > 0.5f) ? maxContentWidth : 0.0f;
+        const int maxWidthTenths = (safeMaxContentW > 0.0f)
+            ? static_cast<int>(std::lround(safeMaxContentW * 10.0f))
+            : 0;
 
         struct CachedLayoutEntry {
             std::wstring text;
             int fontPx = 0;
+            int maxWidthTenths = 0;
             MultilineTextLayout layout;
         };
         static std::mutex s_cacheMutex;
@@ -328,7 +503,9 @@ public:
         {
             std::lock_guard<std::mutex> lock(s_cacheMutex);
             for (auto it = s_layoutCache.begin(); it != s_layoutCache.end(); ++it) {
-                if (it->fontPx == safeFontSize && it->text == wtext) {
+                if (it->fontPx == safeFontSize &&
+                    it->maxWidthTenths == maxWidthTenths &&
+                    it->text == wtext) {
                     MultilineTextLayout hit = it->layout;
                     if (it != s_layoutCache.begin()) {
                         CachedLayoutEntry moved = std::move(*it);
@@ -349,6 +526,7 @@ public:
         layout.textOriginY = originY;
         layout.glyphHeight = fSize * 1.16f;
         layout.lineStep = fSize * 1.32f;
+        layout.maxContentWidth = safeMaxContentW;
 
         Gdiplus::FontFamily primaryFamily(resolveMarkupFontFamilyName(false));
         Gdiplus::FontFamily fallbackFamily(L"Segoe UI");
@@ -388,18 +566,18 @@ public:
 
         std::wstring probe;
         probe.reserve(std::min<size_t>(wtext.size() + 2, 1024));
-        auto measurePrefixWidth = [&](const std::wstring& lineStr, size_t prefixLen) -> float {
-            if (prefixLen == 0) return 0.0f;
+        auto measureSpanWidth = [&](const std::wstring& src, size_t startOff, size_t len) -> float {
+            if (len == 0) return 0.0f;
             if (!font || !font->IsAvailable()) {
                 float approx = 0.0f;
-                for (size_t i = 0; i < prefixLen; ++i) {
-                    approx += (lineStr[i] > 0x7F) ? fSize : (fSize * 0.56f);
+                for (size_t i = 0; i < len; ++i) {
+                    approx += (src[startOff + i] > 0x7F) ? fSize : (fSize * 0.56f);
                 }
                 return approx;
             }
             // 哨兵差分法：确保末尾连续空格、制表符及 CJK/Latin 混排字距 100% 精确不丢失
             probe.clear();
-            probe.append(lineStr, 0, prefixLen);
+            probe.append(src, startOff, len);
             probe.push_back(L'|');
             Gdiplus::RectF bRect{};
             g.MeasureString(probe.c_str(), static_cast<INT>(probe.size()), font.get(),
@@ -407,42 +585,145 @@ public:
             return std::max(0.0f, bRect.Width - sentinelW);
         };
 
-        size_t pos = 0;
-        size_t lineIndex = 0;
-        while (true) {
-            const size_t nl = wtext.find(L'\n', pos);
-            const size_t end = (nl == std::wstring::npos) ? wtext.size() : nl;
+        auto emitVisualLine = [&](size_t startIdx, size_t endIdx, bool softWrapped, size_t lineIdx) {
             TextLineLayout line;
-            line.startIndex = pos;
-            line.endIndex = end;
-            line.topY = layout.textOriginY + static_cast<float>(lineIndex) * layout.lineStep;
+            line.startIndex = startIdx;
+            line.endIndex = endIdx;
+            line.softWrapped = softWrapped;
+            line.topY = layout.textOriginY + static_cast<float>(lineIdx) * layout.lineStep;
             line.height = layout.glyphHeight;
 
-            const size_t len = end - pos;
-            const std::wstring lineSub = wtext.substr(pos, len);
+            const size_t len = endIdx - startIdx;
             line.charOffsets.resize(len + 1, 0.0f);
             float prevX = 0.0f;
             for (size_t k = 1; k <= len; ++k) {
-                if (isLowSurrogateChar(lineSub[k - 1]) && k >= 2 && isHighSurrogateChar(lineSub[k - 2])) {
+                if (isLowSurrogateChar(wtext[startIdx + k - 1]) && k >= 2 &&
+                    isHighSurrogateChar(wtext[startIdx + k - 2])) {
                     line.charOffsets[k] = prevX;
                     continue;
                 }
-                prevX = std::max(prevX, measurePrefixWidth(lineSub, k));
+                prevX = std::max(prevX, measureSpanWidth(wtext, startIdx, k));
                 line.charOffsets[k] = prevX;
             }
             // 对齐高代理项的中间位置至完整代理对末尾，防止落入半个码点
             for (size_t k = 1; k < len; ++k) {
-                if (isHighSurrogateChar(lineSub[k - 1]) && isLowSurrogateChar(lineSub[k])) {
-                    const float endX = measurePrefixWidth(lineSub, k + 1);
+                if (isHighSurrogateChar(wtext[startIdx + k - 1]) && isLowSurrogateChar(wtext[startIdx + k])) {
+                    const float endX = measureSpanWidth(wtext, startIdx, k + 1);
                     line.charOffsets[k] = endX;
                     line.charOffsets[k + 1] = endX;
                 }
             }
 
+            float visualWidth = line.charOffsets.back();
+            if (softWrapped && safeMaxContentW > 0.0f && visualWidth > safeMaxContentW) {
+                // 软换行行尾被吸附的纯空白不撑破右边界，仅保留可见墨水宽度与限宽中的较大值
+                size_t trimmedLen = len;
+                while (trimmedLen > 0 && std::iswspace(wtext[startIdx + trimmedLen - 1])) {
+                    --trimmedLen;
+                }
+                const float inkWidth = line.charOffsets[trimmedLen];
+                visualWidth = std::max(inkWidth, std::min(visualWidth, safeMaxContentW));
+            }
+            layout.contentWidth = std::max(layout.contentWidth, visualWidth);
             layout.lines.push_back(std::move(line));
+        };
+
+        size_t pos = 0;
+        size_t lineIndex = 0;
+        while (true) {
+            const size_t nl = wtext.find(L'\n', pos);
+            const size_t paraEnd = (nl == std::wstring::npos) ? wtext.size() : nl;
+            const size_t paraLen = paraEnd - pos;
+
+            if (safeMaxContentW <= 0.0f || paraLen == 0) {
+                emitVisualLine(pos, paraEnd, false, lineIndex);
+                ++lineIndex;
+            } else {
+                const float wrapLimit = safeMaxContentW + 0.25f;
+                size_t segStart = pos;
+                while (segStart < paraEnd) {
+                    const size_t remLen = paraEnd - segStart;
+                    if (measureSpanWidth(wtext, segStart, remLen) <= wrapLimit) {
+                        emitVisualLine(segStart, paraEnd, false, lineIndex);
+                        ++lineIndex;
+                        segStart = paraEnd;
+                        break;
+                    }
+
+                    // 保底每条视觉行至少消费 1 个完整 UTF-16 字簇，防止极窄框死循环
+                    const size_t minNext = std::min(paraEnd, nextClusterIndex(wtext, segStart));
+                    size_t fitEnd = minNext;
+                    if (minNext < paraEnd && measureSpanWidth(wtext, segStart, minNext - segStart) <= wrapLimit) {
+                        size_t lo = minNext;
+                        size_t hi = paraEnd;
+                        while (true) {
+                            const size_t nextLo = nextClusterIndex(wtext, lo);
+                            if (nextLo >= hi) break;
+                            size_t mid = clampIndex(wtext, lo + (hi - lo) / 2);
+                            if (mid <= lo) mid = nextLo;
+                            if (mid >= hi) break;
+                            if (measureSpanWidth(wtext, segStart, mid - segStart) <= wrapLimit) {
+                                lo = mid;
+                            } else {
+                                hi = mid;
+                            }
+                        }
+                        fitEnd = lo;
+                    }
+
+                    size_t breakEnd = fitEnd;
+                    if (breakEnd < paraEnd) {
+                        if (std::iswspace(wtext[breakEnd])) {
+                            // 吸附紧随其后的空格留在当前行尾，杜绝下一行产生莫名行首缩进
+                            while (breakEnd < paraEnd && std::iswspace(wtext[breakEnd])) {
+                                breakEnd = std::min(paraEnd, nextClusterIndex(wtext, breakEnd));
+                            }
+                        } else if (breakEnd > segStart &&
+                                   isLatinWordChar(wtext[breakEnd - 1]) &&
+                                   isLatinWordChar(wtext[breakEnd])) {
+                            // 英文/西里尔/数字单词不断腰：向前寻找最近的空白、连字符或非词边界
+                            size_t scan = prevClusterIndex(wtext, breakEnd);
+                            while (scan > segStart) {
+                                const wchar_t sc = wtext[scan];
+                                if (std::iswspace(sc) || sc == L'-' || sc == L'/' || sc == L'\\') {
+                                    const size_t cand = std::min(paraEnd, nextClusterIndex(wtext, scan));
+                                    if (cand > segStart && cand < breakEnd) {
+                                        breakEnd = cand;
+                                    }
+                                    break;
+                                }
+                                if (!isLatinWordChar(sc)) {
+                                    const size_t cand = std::min(paraEnd, nextClusterIndex(wtext, scan));
+                                    if (cand > segStart && cand < breakEnd) {
+                                        breakEnd = cand;
+                                    }
+                                    break;
+                                }
+                                scan = prevClusterIndex(wtext, scan);
+                            }
+                        } else if (isLineStartProhibitedPunct(wtext[breakEnd])) {
+                            // 简易避头标点保护：避免下一视觉行以孤立的逗号、句号或右括号开头
+                            const size_t prevPos = prevClusterIndex(wtext, breakEnd);
+                            if (prevPos > segStart &&
+                                !std::iswspace(wtext[prevPos]) &&
+                                !isLineStartProhibitedPunct(wtext[prevPos])) {
+                                breakEnd = prevPos;
+                            }
+                        }
+                    }
+
+                    if (breakEnd <= segStart) {
+                        breakEnd = minNext;
+                    }
+                    const bool isSoft = (breakEnd < paraEnd);
+                    emitVisualLine(segStart, breakEnd, isSoft, lineIndex);
+                    ++lineIndex;
+                    segStart = breakEnd;
+                }
+            }
+
             if (nl == std::wstring::npos) break;
             pos = nl + 1;
-            ++lineIndex;
         }
 
         if (layout.lines.empty()) {
@@ -453,10 +734,13 @@ public:
             layout.lines.push_back(std::move(emptyLine));
         }
 
+        layout.contentHeight =
+            static_cast<float>(layout.lines.size() - 1) * layout.lineStep + layout.glyphHeight;
+
         if (wtext.size() <= 8192) {
             std::lock_guard<std::mutex> lock(s_cacheMutex);
-            s_layoutCache.push_front(CachedLayoutEntry{wtext, safeFontSize, layout});
-            while (s_layoutCache.size() > 8) {
+            s_layoutCache.push_front(CachedLayoutEntry{wtext, safeFontSize, maxWidthTenths, layout});
+            while (s_layoutCache.size() > 16) {
                 s_layoutCache.pop_back();
             }
         }
@@ -511,25 +795,17 @@ public:
         if (layout.lines.empty()) return vis;
 
         const size_t clamped = clampIndex(wtext, caret);
-        for (size_t i = 0; i < layout.lines.size(); ++i) {
-            const auto& line = layout.lines[i];
-            if (clamped >= line.startIndex && clamped <= line.endIndex) {
-                const size_t col = clamped - line.startIndex;
-                const float dx = (col < line.charOffsets.size()) ? line.charOffsets[col] : line.charOffsets.back();
-                vis.x = layout.textOriginX + dx + 1.0f;
-                vis.y = line.topY + 1.0f;
-                vis.height = line.height;
-                return vis;
-            }
-        }
-        const auto& last = layout.lines.back();
-        vis.x = layout.textOriginX + last.charOffsets.back() + 1.0f;
-        vis.y = last.topY + 1.0f;
-        vis.height = last.height;
+        const size_t lineIdx = findVisualLineIndex(layout, clamped);
+        const auto& line = layout.lines[lineIdx];
+        const size_t col = (clamped >= line.startIndex) ? (clamped - line.startIndex) : 0;
+        const float dx = (col < line.charOffsets.size()) ? line.charOffsets[col] : line.charOffsets.back();
+        vis.x = layout.textOriginX + dx + 1.0f;
+        vis.y = line.topY + 1.0f;
+        vis.height = line.height;
         return vis;
     }
 
-    /// 上下方向键跨行移动光标（保持期望水平像素列对齐 preferredX）
+    /// 上下方向键跨行移动光标（保持期望水平像素列对齐 preferredX，原生支持自动软换行视觉行）
     static void moveVertical(const MultilineTextLayout& layout, const std::wstring& wtext,
                              size_t& caret, size_t& anchor, int lineDelta,
                              bool shiftExtend, float& preferredX) noexcept {
@@ -543,13 +819,7 @@ public:
             return;
         }
 
-        size_t curLine = 0;
-        for (size_t i = 0; i < layout.lines.size(); ++i) {
-            if (caret >= layout.lines[i].startIndex && caret <= layout.lines[i].endIndex) {
-                curLine = i;
-                break;
-            }
-        }
+        const size_t curLine = findVisualLineIndex(layout, caret);
 
         if (preferredX < 0.0f) {
             const auto vis = computeCaretVisual(layout, wtext, caret);
@@ -563,13 +833,18 @@ public:
             caret = wtext.size();
         } else {
             const auto& dstLine = layout.lines[static_cast<size_t>(targetLine)];
-            caret = hitTestCaretIndex(layout, wtext, preferredX, dstLine.topY + dstLine.height * 0.5f);
+            size_t nextCaret = hitTestCaretIndex(layout, wtext, preferredX, dstLine.topY + dstLine.height * 0.5f);
+            // 若目标视觉行是软换行行且落点超过行尾，夹回该行末字簇前，防止弹回下一视觉行行首导致上下键卡滞
+            if (dstLine.softWrapped && nextCaret >= dstLine.endIndex && dstLine.endIndex > dstLine.startIndex) {
+                nextCaret = prevClusterIndex(wtext, dstLine.endIndex);
+            }
+            caret = nextCaret;
         }
 
         if (!shiftExtend) anchor = caret;
     }
 
-    /// 生成多行选区高亮圆角底块列表
+    /// 生成多行选区高亮圆角底块列表（精确区分硬换行与自动软换行）
     static std::vector<TextHighlightSpan> computeSelectionHighlights(
         const MultilineTextLayout& layout, const std::wstring& wtext,
         size_t caret, size_t anchor) {
@@ -579,7 +854,8 @@ public:
 
         for (size_t i = 0; i < layout.lines.size(); ++i) {
             const auto& line = layout.lines[i];
-            const size_t lineMaxWithNewline = (i + 1 < layout.lines.size()) ? (line.endIndex + 1) : line.endIndex;
+            const bool hasHardNewline = (!line.softWrapped) && (i + 1 < layout.lines.size());
+            const size_t lineMaxWithNewline = hasHardNewline ? (line.endIndex + 1) : line.endIndex;
             if (selEnd <= line.startIndex || selStart >= lineMaxWithNewline) continue;
 
             const size_t segStart = std::clamp(selStart, line.startIndex, line.endIndex) - line.startIndex;
@@ -587,8 +863,8 @@ public:
             const float x0 = line.charOffsets[std::min(segStart, line.charOffsets.size() - 1)];
             float x1 = line.charOffsets[std::min(segEnd, line.charOffsets.size() - 1)];
 
-            // 若选区跨过了本行末尾换行符，附加 6px 换行选区提示宽，清晰反馈空行/换行已被包含在复制范围内
-            if (selEnd > line.endIndex && i + 1 < layout.lines.size()) {
+            // 仅当选区跨过真实硬换行符 '\n' 时附加 6px 换行提示宽；软换行视觉折行紧贴字尾无冗余尾巴
+            if (hasHardNewline && selEnd > line.endIndex) {
                 x1 += 6.0f;
             }
             if (x1 > x0 + 0.5f) {

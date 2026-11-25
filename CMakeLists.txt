@@ -686,6 +686,24 @@ if(BUILD_TESTING)
     target_include_directories(Tools3000DialogNavigatorIntegration PRIVATE ${CMAKE_SOURCE_DIR}/src)
     target_link_libraries(Tools3000DialogNavigatorIntegration PRIVATE Tools3000Core
         user32 shell32 shlwapi ole32 UIAutomationCore)
+
+    # Native DeepOcrEngine cross-version benchmark harness (PP-OCRv4/v5/v6).
+    # Excluded from normal builds and installers.
+    add_executable(Tools3000OcrBench EXCLUDE_FROM_ALL
+        tests/benchmark/ocr_engine_bench.cpp
+        src/ocr/OcrEngine.cpp
+        src/ocr/DeepOcrEngine.cpp
+        src/ocr/DeepOcrEngineModel.cpp
+        src/ocr/DeepOcrEnginePostprocess.cpp
+        src/ocr/OcrWorkerClient.cpp
+        src/ocr/OcrWorkerHost.cpp
+        src/ocr/OcrTableReconstructor.cpp
+    )
+    target_include_directories(Tools3000OcrBench PRIVATE ${CMAKE_SOURCE_DIR}/src ${OpenCV_INCLUDE_DIRS})
+    target_link_libraries(Tools3000OcrBench PRIVATE Tools3000Core nlohmann_json::nlohmann_json
+        opencv_core opencv_imgproc opencv_imgcodecs opencv_photo opencv_dnn opencv_objdetect
+        d3d11 dxgi dxguid ole32 oleaut32 winhttp windowsapp psapi user32 gdi32 shell32 shlwapi advapi32
+    )
 endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/resources/locales")

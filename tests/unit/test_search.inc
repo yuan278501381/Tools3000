@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "service/StringArena.h"
+#include "service/PathExclusionMatcher.h"
 
 TEST(StringArenaTest, OversizedSideBlockPreservesActiveBlockCapacity) {
     tools3000::service::StringArena arena;
@@ -5130,4 +5131,118 @@ TEST(SearchNativeIconResolutionTest, ResolvesOfflineBookmarkOriginSystemCommands
         const std::string genericExeIcon = WinUtils::getFileTypeIconBase64(L".exe", false, L"");
         EXPECT_NE(chromeIcon, genericExeIcon);
     }
+}
+
+TEST(PathExclusionMatcherTest, EnforcesExactPathBoundariesAndMultiPatternSemantics) {
+    using tools3000::service::PathExclusionMatcher;
+
+    // 1. 精确路径边界：屏蔽 D:\动作片 及其全部子孙文件，绝不误伤 D:\动作片2 或 D:\动作片备份
+    PathExclusionMatcher matcher;
+    matcher.compile({
+        L"D:\\动作片\\",
+        L"E:/Private/Secret Docs/",
+        L"f:",
+        L"pip\\cache",
+        L"node_modules",
+    });
+
+    auto matchRaw = [&](std::wstring_view p) {
+        return matcher.matchesNormalizedFullPath(PathExclusionMatcher::normalizePathForMatch(p));
+    };
+
+    ASSERT_FALSE(matcher.empty());
+    EXPECT_FALSE(matcher.hasOnlySingleSegmentPatterns());
+
+    // 精确目录本身及子孙必须被屏蔽（支持反斜杠与正斜杠、大小写不敏感）
+    EXPECT_TRUE(matchRaw(L"D:\\动作片"));
+    EXPECT_TRUE(matchRaw(L"d:\\动作片\\欧美\\clip01.mp4"));
+    EXPECT_TRUE(matchRaw(L"D:/动作片/sub/deep/video.mkv"));
+
+    // 同前缀兄弟目录必须 100% 放行（零误伤）
+    EXPECT_FALSE(matchRaw(L"D:\\动作片2\\clip01.mp4"));
+    EXPECT_FALSE(matchRaw(L"D:\\动作片备份\\note.txt"));
+    EXPECT_FALSE(matchRaw(L"C:\\动作片\\clip01.mp4"));
+
+    // 多路径第二条（带空格 + 正斜杠归一化）
+    EXPECT_TRUE(matchRaw(L"E:\\Private\\Secret Docs"));
+    EXPECT_TRUE(matchRaw(L"e:\\private\\secret docs\\2026\\ledger.xlsx"));
+    EXPECT_FALSE(matchRaw(L"E:\\Private\\Secret Docs Archive\\ledger.xlsx"));
+
+    // 裸盘符根排除（F: -> F:\）
+    EXPECT_TRUE(matchRaw(L"F:\\any_file.mkv"));
+    EXPECT_FALSE(matchRaw(L"C:\\F\\any_file.mkv"));
+
+    // 多段相对路径精确边界（\pip\cache\）
+    EXPECT_TRUE(matchRaw(L"C:\\Users\\alice\\pip\\cache\\pkg.whl"));
+    EXPECT_TRUE(matchRaw(L"C:\\Users\\alice\\pip\\cache"));
+    EXPECT_FALSE(matchRaw(L"C:\\Users\\alice\\pip\\cache2\\pkg.whl"));
+
+    // 单段目录名回退匹配
+    EXPECT_TRUE(matchRaw(L"C:\\repo\\node_modules\\react\\index.js"));
+    EXPECT_FALSE(matchRaw(L"C:\\repo\\src\\index.js"));
+}
+
+TEST(MftParserExclusionTest, CustomMultiPathExclusionsApplyToBothNameAndContentCandidates) {
+    auto parser = std::make_unique<MftParser>();
+    ASSERT_TRUE(parser->Initialize('C'));
+
+    // 构造虚拟目录树（C:\动作片\movie.txt、C:\动作片2\movie.txt、C:\隐私文档\sub\movie.txt、C:\工作文档\movie.txt）
+    std::vector<FileRecordInit> records;
+    auto addNode = [&](uint64_t frn, uint64_t parent, const wchar_t* name, bool isDir) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = isDir;
+        r.fileSize = isDir ? 0 : 1024;
+        records.push_back(std::move(r));
+    };
+
+    addNode(10, 0, L"动作片", true);
+    addNode(11, 10, L"movie_secret.txt", false);
+    addNode(12, 10, L"嵌套目录", true);
+    addNode(13, 12, L"movie_nested.txt", false);
+
+    addNode(20, 0, L"动作片2", true);
+    addNode(21, 20, L"movie_sibling.txt", false);
+
+    addNode(30, 0, L"隐私文档", true);
+    addNode(31, 30, L"movie_private.txt", false);
+
+    addNode(40, 0, L"工作文档", true);
+    addNode(41, 40, L"movie_work.txt", false);
+
+    ASSERT_TRUE(parser->importSnapshot(std::move(records), 12345, /*volumeSerial=*/0));
+
+    SearchExcludeOptions excludeOpts{};
+    excludeOpts.patterns = {L"C:\\动作片", L"C:\\隐私文档\\"};
+
+    // 1. 文件名检索：动作片与隐私文档下的全部文件被彻底屏蔽，动作片2 与工作文档完好返回
+    const auto nameResults = parser->Search(L"movie", 100, excludeOpts);
+    ASSERT_EQ(nameResults.size(), 2u);
+    auto hasName = [&](const std::wstring& target) {
+        return std::any_of(nameResults.begin(), nameResults.end(),
+                           [&](const SearchResult& r) { return r.fileName == target; });
+    };
+    EXPECT_TRUE(hasName(L"movie_sibling.txt"));
+    EXPECT_TRUE(hasName(L"movie_work.txt"));
+    EXPECT_FALSE(hasName(L"movie_secret.txt"));
+    EXPECT_FALSE(hasName(L"movie_nested.txt"));
+    EXPECT_FALSE(hasName(L"movie_private.txt"));
+
+    // 2. 全文内容候选采集：同样 100% 遵守自定义多路径绝对前缀排除，绝不读盘扫描屏蔽目录
+    ContentCandidateOptions contentOpts{};
+    contentOpts.excludeOpts = excludeOpts;
+    const auto expr = SearchExpression::parse(L"content:hello");
+    const auto candidates = parser->CollectContentCandidates(expr, contentOpts);
+    ASSERT_EQ(candidates.size(), 2u);
+    auto hasCand = [&](const std::wstring& target) {
+        return std::any_of(candidates.begin(), candidates.end(),
+                           [&](const ContentCandidate& c) { return c.fileName == target; });
+    };
+    EXPECT_TRUE(hasCand(L"movie_sibling.txt"));
+    EXPECT_TRUE(hasCand(L"movie_work.txt"));
+    EXPECT_FALSE(hasCand(L"movie_secret.txt"));
+    EXPECT_FALSE(hasCand(L"movie_nested.txt"));
+    EXPECT_FALSE(hasCand(L"movie_private.txt"));
 }

@@ -503,6 +503,7 @@
   "Pen Annotation": "Anotação com caneta",
   "Pin": "Fixar",
   "Pin Group": "Grupo de fixações",
+  "Clipboard pin {0}/{1}": "Fixação da área de transferência {0}/{1}",
   "Pin history {0}/{1}": "Histórico de fixações {0}/{1}",
   "Pin to Screen": "Fixar na tela",
   "Pine & Emerald": "Pinho e Esmeralda",
@@ -967,5 +968,19 @@
   "Copy & save": "Copiar e salvar",
   "Save & finish": "Salvar e concluir",
   "Done & Copy (Enter)": "Concluir e copiar (Enter)",
-  "Copy & finish": "Copiar e concluir"
+  "Copy & finish": "Copiar e concluir",
+  "50+": "50+",
+  "AR": "AR",
+  "TH": "TH",
+  "CJK / EN / JA / European (50+)": "50+ idiomas integrados",
+  "Arabic / Persian": "Árabe / Persa",
+  "Thai": "Tailandés",
+  "Cyrillic / Russian": "Cirílico / Russo",
+  "Arabic": "Árabe",
+  "European Latin": "Latim europeu",
+  "Refined {0} lines": "{0} linhas refinadas",
+  "Auto script: {0}": "Idioma auto: {0}",
+  "Refining {0} low-confidence text lines...": "Refinando {0} linhas de baixa confiança...",
+  "Refining": "Refinando",
+  "Detected {0}, re-recognizing with script pack...": "Detectado {0}, reconhecendo novamente com pacote de idioma..."
 }

@@ -351,14 +351,29 @@ void SearchWindow::show(HINSTANCE hInstance) {
                 std::chrono::steady_clock::now() - showStarted).count());
     };
     m_showTimeTick = GetTickCount64();
-    // 先同步记录“原生窗口被显式唤起”，再异步启动服务。这样查询即使与
-    // warmup 并发，也只能在这次用户动作之后补拉服务。
+    // 先同步记录“原生窗口被显式唤起”，再决定是否立即唤醒搜索服务。
+    // 若 WebView2 已热就绪，0ms 立即唤醒服务；若 WebView2 尚在冷启动（例如 Win10 LTSC / 机械盘），
+    // 先把磁盘 I/O 让给 WebView2 首屏加载，待导航完成（或 1.5s 兜底定时器）后再唤醒索引服务，
+    // 避免两者在机械盘上互掐造成长时间黑屏。
     tools3000::core::MessageBridge::instance().handleMessage(
         R"({"id":0,"method":"search.windowShown","params":{}})");
-    warmUpSearchService();
+    if (m_webViewReady.load(std::memory_order_acquire)) {
+        m_pendingServiceWarmup.store(false, std::memory_order_release);
+        warmUpSearchService();
+    } else {
+        m_pendingServiceWarmup.store(true, std::memory_order_release);
+    }
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+        // 若此前 WebView2 初始化曾失败或渲染器崩溃且当前未在初始化，立即自动重试恢复，杜绝永久黑屏死胡同
+        if (!m_webView && !m_webViewInitializing.load(std::memory_order_acquire)) {
+            m_autoRecoverAttempted.store(false, std::memory_order_release);
+            initializeWebView2();
+        }
+        if (m_pendingServiceWarmup.load(std::memory_order_acquire)) {
+            SetTimer(m_hwnd, IDT_COLD_WARMUP_FALLBACK, COLD_WARMUP_FALLBACK_DELAY_MS, nullptr);
+        }
         const bool wasHidden = !IsWindowVisible(m_hwnd);
         const bool wasMinimized = (IsIconic(m_hwnd) != FALSE);
 
@@ -385,6 +400,9 @@ void SearchWindow::show(HINSTANCE hInstance) {
         m_minimized = false;
         hookWebViewChildWindows(m_hwnd);
         if (m_webView) m_suspendController.resume(m_webView.Get(), "search");
+        if (!m_webViewReady.load(std::memory_order_acquire)) {
+            InvalidateRect(m_hwnd, nullptr, FALSE);
+        }
         focusSearchIfVisible();
         recordShown();
         return;
@@ -395,7 +413,11 @@ void SearchWindow::show(HINSTANCE hInstance) {
         return;
     }
 
+    m_autoRecoverAttempted.store(false, std::memory_order_release);
     initializeWebView2();
+    if (m_pendingServiceWarmup.load(std::memory_order_acquire)) {
+        SetTimer(m_hwnd, IDT_COLD_WARMUP_FALLBACK, COLD_WARMUP_FALLBACK_DELAY_MS, nullptr);
+    }
     const bool wantMax = tools3000::core::ConfigManager::instance().get<bool>(
         "/search/windowMaximized", m_isMaximized.load());
     ShowWindow(m_hwnd, wantMax ? SW_SHOWMAXIMIZED : SW_SHOW);
@@ -405,6 +427,7 @@ void SearchWindow::show(HINSTANCE hInstance) {
     SetFocus(m_hwnd);
     m_visible = true;
     m_minimized = false;
+    InvalidateRect(m_hwnd, nullptr, FALSE);
     recordShown();
 }
 
@@ -470,6 +493,9 @@ void SearchWindow::destroy() {
     m_visible = false;
     m_minimized = false;
     m_webViewReady = false;
+    m_webViewInitializing = false;
+    m_pendingServiceWarmup = false;
+    m_webViewStatus.store(static_cast<uint8_t>(WebViewStatus::Loading), std::memory_order_release);
 }
 
 bool SearchWindow::createWindow(HINSTANCE hInstance) {
@@ -603,12 +629,159 @@ void SearchWindow::updatePlacement() {
     m_updatingPlacement = false;
 }
 
+void SearchWindow::setWebViewStatus(WebViewStatus status, HRESULT hr) {
+    m_webViewStatus.store(static_cast<uint8_t>(status), std::memory_order_release);
+    if (FAILED(hr)) {
+        m_lastWebViewErrorHr.store(static_cast<uint32_t>(hr), std::memory_order_release);
+    } else if (status == WebViewStatus::Ready || status == WebViewStatus::Loading) {
+        m_lastWebViewErrorHr.store(0u, std::memory_order_release);
+    }
+    if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void SearchWindow::paintStatusBackdrop(HDC hdc, const RECT& clientRect) const {
+    const bool dark = isSearchDarkTheme();
+    const COLORREF bg = searchWindowBackdropColor();
+    HBRUSH hBrush = CreateSolidBrush(bg);
+    if (hBrush) {
+        FillRect(hdc, &clientRect, hBrush);
+        DeleteObject(hBrush);
+    }
+
+    const auto status = static_cast<WebViewStatus>(m_webViewStatus.load(std::memory_order_acquire));
+    if (status == WebViewStatus::Ready) {
+        return;
+    }
+
+    const int width = clientRect.right - clientRect.left;
+    const int height = clientRect.bottom - clientRect.top;
+    if (width < 120 || height < 80) return;
+
+    const float scale = m_hwnd ? tools3000::core::dpi::scaleForWindow(m_hwnd) : 1.0f;
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    const COLORREF titleColor = dark ? RGB(241, 245, 249) : RGB(15, 23, 42);
+    const COLORREF subColor = dark ? RGB(148, 163, 184) : RGB(71, 85, 105);
+    const COLORREF accentColor = dark ? RGB(96, 165, 250) : RGB(37, 99, 235);
+
+    std::wstring titleText;
+    std::wstring descText;
+    std::wstring actionText;
+    const uint32_t errHr = m_lastWebViewErrorHr.load(std::memory_order_acquire);
+
+    switch (status) {
+        case WebViewStatus::MissingRuntime:
+            titleText = zh ? L"缺少 Microsoft Edge WebView2 运行时" : L"Microsoft Edge WebView2 Runtime Required";
+            descText = zh
+                ? L"当前 Windows 系统（常见于 Windows 10 LTSC 精简版）未预装 WebView2 运行时，因此搜索界面暂时无法渲染。"
+                : L"WebView2 Runtime is not installed on this Windows system (common on Windows 10 LTSC), so the Search UI cannot render yet.";
+            actionText = zh
+                ? L"按 Enter 或点击窗口打开微软官方下载页安装  |  按 Esc 关闭"
+                : L"Press Enter or click here to open Microsoft's download page  |  Esc to close";
+            break;
+        case WebViewStatus::RenderCrashed:
+        case WebViewStatus::InitFailed: {
+            wchar_t hexBuf[24]{};
+            if (errHr != 0) {
+                swprintf_s(hexBuf, L" (0x%08X)", errHr);
+            }
+            titleText = (zh ? L"搜索界面加载受阻" : L"Search Interface Failed to Load") + std::wstring(hexBuf);
+            descText = zh
+                ? L"WebView2 渲染进程启动超时或异常中止（机械硬盘首次冷启动或驱动兼容问题可能引发）。"
+                : L"The WebView2 renderer failed to initialize or stopped unexpectedly (slow HDD cold start or GPU driver issue).";
+            actionText = zh
+                ? L"按 R 或点击窗口立即重新加载  |  按 Esc 关闭"
+                : L"Press R or click here to retry  |  Esc to close";
+            break;
+        }
+        case WebViewStatus::Loading:
+        default:
+            titleText = zh ? L"正在启动 Tools3000 搜索界面..." : L"Starting Tools3000 Search...";
+            descText = zh
+                ? L"首次冷启动正在初始化 WebView2 视图，机械硬盘设备可能需要数秒，请稍候。"
+                : L"Initializing WebView2 search view for the first time (may take a few seconds on HDD).";
+            actionText = zh ? L"按 Esc 隐藏窗口" : L"Press Esc to hide";
+            break;
+    }
+
+    SetBkMode(hdc, TRANSPARENT);
+    const int titleFontPx = -tools3000::core::dpi::scaleMetric(18, scale);
+    const int bodyFontPx = -tools3000::core::dpi::scaleMetric(13, scale);
+    HFONT titleFont = CreateFontW(titleFontPx, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+    HFONT bodyFont = CreateFontW(bodyFontPx, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_SWISS, L"Microsoft YaHei UI");
+
+    const int padX = tools3000::core::dpi::scaleMetric(40, scale);
+    const int centerY = clientRect.top + height / 2;
+    const int lineGap = tools3000::core::dpi::scaleMetric(12, scale);
+
+    HGDIOBJ oldFont = SelectObject(hdc, titleFont ? titleFont : GetStockObject(DEFAULT_GUI_FONT));
+    SetTextColor(hdc, titleColor);
+    RECT titleRc{clientRect.left + padX, centerY - tools3000::core::dpi::scaleMetric(54, scale),
+                 clientRect.right - padX, centerY - tools3000::core::dpi::scaleMetric(14, scale)};
+    DrawTextW(hdc, titleText.c_str(), -1, &titleRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    SelectObject(hdc, bodyFont ? bodyFont : GetStockObject(DEFAULT_GUI_FONT));
+    SetTextColor(hdc, subColor);
+    RECT descRc{clientRect.left + padX, centerY - tools3000::core::dpi::scaleMetric(8, scale),
+                clientRect.right - padX, centerY + tools3000::core::dpi::scaleMetric(42, scale)};
+    DrawTextW(hdc, descText.c_str(), -1, &descRc, DT_CENTER | DT_WORDBREAK);
+
+    SetTextColor(hdc, status == WebViewStatus::Loading ? subColor : accentColor);
+    RECT actRc{clientRect.left + padX, descRc.bottom + lineGap,
+               clientRect.right - padX, descRc.bottom + lineGap + tools3000::core::dpi::scaleMetric(28, scale)};
+    DrawTextW(hdc, actionText.c_str(), -1, &actRc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+    SelectObject(hdc, oldFont);
+    if (titleFont) DeleteObject(titleFont);
+    if (bodyFont) DeleteObject(bodyFont);
+}
+
+void SearchWindow::handleStatusSurfaceAction() {
+    const auto status = static_cast<WebViewStatus>(m_webViewStatus.load(std::memory_order_acquire));
+    if (status == WebViewStatus::MissingRuntime) {
+        tools3000::core::WinUtils::openUrl(WebViewEnvironmentManager::evergreenDownloadUrl());
+    } else if (status == WebViewStatus::InitFailed || status == WebViewStatus::RenderCrashed) {
+        if (!m_webViewInitializing.load(std::memory_order_acquire)) {
+            if (m_controller) {
+                m_controller->Close();
+                m_controller = nullptr;
+            }
+            m_webView = nullptr;
+            m_webViewReady = false;
+            initializeWebView2();
+        }
+    }
+}
+
 void SearchWindow::initializeWebView2() {
     const uint64_t generation = ++m_generation;
+    m_webViewReady.store(false, std::memory_order_release);
+    m_webViewInitializing.store(true, std::memory_order_release);
+    if (!WebViewEnvironmentManager::isRuntimeInstalled()) {
+        LOG_ERROR("SearchWindow: WebView2 Runtime is missing on this machine");
+        m_webViewInitializing.store(false, std::memory_order_release);
+        setWebViewStatus(WebViewStatus::MissingRuntime, HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND));
+        return;
+    }
+    setWebViewStatus(WebViewStatus::Loading, S_OK);
     WebViewEnvironmentManager::instance().acquire(
             [this, generation](HRESULT result, ICoreWebView2Environment* env) {
                 if (FAILED(result) || !env) {
-                    LOG_ERROR("SearchWindow: shared environment unavailable.");
+                    LOG_ERROR("SearchWindow: shared environment unavailable, hr=0x{:08X}",
+                              static_cast<unsigned>(result));
+                    if (generation == m_generation.load()) {
+                        m_webViewInitializing.store(false, std::memory_order_release);
+                        setWebViewStatus(
+                            WebViewEnvironmentManager::isRuntimeInstalled()
+                                ? WebViewStatus::InitFailed
+                                : WebViewStatus::MissingRuntime,
+                            result);
+                    }
                     return;
                 }
                 if (generation != m_generation.load() || !m_hwnd || !IsWindow(m_hwnd)) {
@@ -619,7 +792,15 @@ void SearchWindow::initializeWebView2() {
                     m_hwnd,
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [this, generation](HRESULT res, ICoreWebView2Controller* controller) -> HRESULT {
-                            if (FAILED(res) || !controller) return E_FAIL;
+                            if (FAILED(res) || !controller) {
+                                LOG_ERROR("SearchWindow: CreateCoreWebView2Controller completed with error hr=0x{:08X}",
+                                          static_cast<unsigned>(res));
+                                if (generation == m_generation.load()) {
+                                    m_webViewInitializing.store(false, std::memory_order_release);
+                                    setWebViewStatus(WebViewStatus::InitFailed, res);
+                                }
+                                return E_FAIL;
+                            }
                             if (generation != m_generation.load() || !m_hwnd || !IsWindow(m_hwnd)) {
                                 controller->Close();
                                 return E_ABORT;
@@ -628,6 +809,8 @@ void SearchWindow::initializeWebView2() {
                             const HRESULT hrGetWeb = m_controller->get_CoreWebView2(&m_webView);
                             if (FAILED(hrGetWeb) || !m_webView) {
                                 LOG_WARN("SearchWindow: get_CoreWebView2 失败: HRESULT=0x{:08X}", static_cast<unsigned>(hrGetWeb));
+                                m_webViewInitializing.store(false, std::memory_order_release);
+                                setWebViewStatus(WebViewStatus::InitFailed, hrGetWeb);
                                 return E_FAIL;
                             }
                             m_controller->put_IsVisible(m_visible.load() ? TRUE : FALSE);
@@ -677,6 +860,26 @@ void SearchWindow::initializeWebView2() {
 
                             web_security::applyNavigationPolicy(m_webView.Get());
                             KeyboardPipeline::applyWebKeyboardPolicy(m_controller.Get());
+
+                            // 监听 WebView2 渲染器/GPU 进程崩溃：自动尝试一次自愈重载，杜绝永久黑屏死窗
+                            m_webView->add_ProcessFailed(
+                                Callback<ICoreWebView2ProcessFailedEventHandler>(
+                                    [this, generation](ICoreWebView2*, ICoreWebView2ProcessFailedEventArgs* args) -> HRESULT {
+                                        if (generation != m_generation.load()) return S_OK;
+                                        COREWEBVIEW2_PROCESS_FAILED_KIND kind = COREWEBVIEW2_PROCESS_FAILED_KIND_BROWSER_PROCESS_EXITED;
+                                        if (args) args->get_ProcessFailedKind(&kind);
+                                        LOG_ERROR("SearchWindow: WebView2 process failed, kind={}", static_cast<int>(kind));
+                                        m_webViewReady.store(false, std::memory_order_release);
+                                        m_webViewInitializing.store(false, std::memory_order_release);
+                                        if (!m_autoRecoverAttempted.exchange(true, std::memory_order_acq_rel) && m_webView) {
+                                            setWebViewStatus(WebViewStatus::Loading, S_OK);
+                                            m_webView->Reload();
+                                        } else {
+                                            if (m_controller) m_controller->put_IsVisible(FALSE);
+                                            setWebViewStatus(WebViewStatus::RenderCrashed, E_FAIL);
+                                        }
+                                        return S_OK;
+                                    }).Get(), nullptr);
 
                             // ── 动态获取 UI 基础地址 ──────────────────────────────────────────
                             auto exeDir = tools3000::core::WinUtils::getExeDirectory();
@@ -752,10 +955,31 @@ void SearchWindow::initializeWebView2() {
                             // Chromium renderer 以确保隐藏态零 CPU；只有可见窗口才同步聚焦输入框。
                             m_webView->add_NavigationCompleted(
                                 Callback<ICoreWebView2NavigationCompletedEventHandler>(
-                                    [this, generation](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs*) -> HRESULT {
+                                    [this, generation](ICoreWebView2*, ICoreWebView2NavigationCompletedEventArgs* navArgs) -> HRESULT {
                                         if (generation != m_generation.load()) return S_OK;
+                                        m_webViewInitializing.store(false, std::memory_order_release);
+                                        BOOL isSuccess = TRUE;
+                                        COREWEBVIEW2_WEB_ERROR_STATUS webErr = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+                                        if (navArgs) {
+                                            navArgs->get_IsSuccess(&isSuccess);
+                                            navArgs->get_WebErrorStatus(&webErr);
+                                        }
+                                        if (!isSuccess && webErr != COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED) {
+                                            LOG_ERROR("SearchWindow: WebView2 navigation failed, webErrorStatus={}",
+                                                      static_cast<int>(webErr));
+                                            if (m_controller) m_controller->put_IsVisible(FALSE);
+                                            setWebViewStatus(WebViewStatus::InitFailed, E_FAIL);
+                                            return S_OK;
+                                        }
                                         m_webViewReady = true;
+                                        setWebViewStatus(WebViewStatus::Ready, S_OK);
                                         hookWebViewChildWindows(m_hwnd);
+                                        if (m_pendingServiceWarmup.exchange(false, std::memory_order_acq_rel)) {
+                                            if (m_hwnd && IsWindow(m_hwnd)) {
+                                                KillTimer(m_hwnd, IDT_COLD_WARMUP_FALLBACK);
+                                            }
+                                            warmUpSearchService();
+                                        }
                                         if (m_visible.load()) {
                                             focusSearchIfVisible();
                                         } else if (m_controller && m_webView) {
@@ -773,6 +997,10 @@ void SearchWindow::initializeWebView2() {
                 if (FAILED(controllerResult)) {
                     LOG_ERROR("SearchWindow: Create controller request failed, hr=0x{:08X}",
                               static_cast<unsigned>(controllerResult));
+                    if (generation == m_generation.load()) {
+                        m_webViewInitializing.store(false, std::memory_order_release);
+                        setWebViewStatus(WebViewStatus::InitFailed, controllerResult);
+                    }
                 }
             });
 }
@@ -791,14 +1019,18 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
         case WM_PAINT: {
             PAINTSTRUCT ps{};
             HDC hdc = BeginPaint(hwnd, &ps);
-            // 填充当前主题底色，防止最大化或后台休眠唤醒首帧到达前露底或残留旧帧
-            HBRUSH hBrush = CreateSolidBrush(searchWindowBackdropColor());
-            if (hBrush) {
-                FillRect(hdc, &ps.rcPaint, hBrush);
-                DeleteObject(hBrush);
-            }
+            RECT clientRc{};
+            GetClientRect(hwnd, &clientRc);
+            inst.paintStatusBackdrop(hdc, clientRc);
             EndPaint(hwnd, &ps);
             return 0;
+        }
+        case WM_LBUTTONUP: {
+            if (!inst.m_webViewReady.load(std::memory_order_acquire)) {
+                inst.handleStatusSurfaceAction();
+                return 0;
+            }
+            break;
         }
         case WM_NCCALCSIZE: {
             if (wParam) {
@@ -989,6 +1221,13 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             }
             return 0;
         case WM_TIMER: {
+            if (wParam == IDT_COLD_WARMUP_FALLBACK) {
+                KillTimer(hwnd, IDT_COLD_WARMUP_FALLBACK);
+                if (inst.m_pendingServiceWarmup.exchange(false, std::memory_order_acq_rel)) {
+                    warmUpSearchService();
+                }
+                return 0;
+            }
             if (wParam == IDT_DEFERRED_SUSPEND && !inst.m_visible.load()) {
                 KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
                 if (inst.m_controller) inst.m_controller->put_IsVisible(FALSE);
@@ -1004,6 +1243,11 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
         case WM_KEYDOWN:
             if (wParam == VK_ESCAPE) {
                 inst.hide();
+                return 0;
+            }
+            if (!inst.m_webViewReady.load(std::memory_order_acquire) &&
+                (wParam == VK_RETURN || wParam == 'R')) {
+                inst.handleStatusSurfaceAction();
                 return 0;
             }
             break;

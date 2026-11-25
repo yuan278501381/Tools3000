@@ -34,7 +34,10 @@ public:
     bool initialize();
     void cleanup();
 
-    void showResult(const std::string& text, const RECT* anchorRect = nullptr);
+    void showResult(const std::string& text, const RECT* anchorRect = nullptr,
+                    const std::wstring& statusBadge = {});
+    /// 仅当结果窗当前可见且处于等待识别状态时，更新慢路径进度提示（如进入低置信度精修），绝不覆盖已出结果
+    void updateLoadingStatus(const std::string& statusText, const std::wstring& statusBadge = {});
     void reloadTheme();
 
     // 段落智能合并、双击选词与微调编辑接口
@@ -192,6 +195,8 @@ private:
 
     uint64_t m_copiedTime = 0;
     bool m_copySucceeded = false;
+    bool m_isLoadingState = false;
+    std::wstring m_statusBadge;
 };
 
 } // namespace tools3000::ocr

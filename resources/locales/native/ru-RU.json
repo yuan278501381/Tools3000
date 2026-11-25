@@ -503,6 +503,7 @@
   "Pen Annotation": "Перо",
   "Pin": "Закреп.",
   "Pin Group": "Группа закреплений",
+  "Clipboard pin {0}/{1}": "Закрепление из буфера {0}/{1}",
   "Pin history {0}/{1}": "История закреплений {0}/{1}",
   "Pin to Screen": "Закрепить на экране",
   "Pine & Emerald": "Хвоя и изумруд",
@@ -967,5 +968,19 @@
   "Copy & save": "Копировать и сохранить",
   "Save & finish": "Сохранить и завершить",
   "Done & Copy (Enter)": "Готово и копировать (Enter)",
-  "Copy & finish": "Копировать и завершить"
+  "Copy & finish": "Копировать и завершить",
+  "50+": "50+",
+  "AR": "AR",
+  "TH": "TH",
+  "CJK / EN / JA / European (50+)": "Базовые 50+ языков",
+  "Arabic / Persian": "Арабский / персидский",
+  "Thai": "Тайский",
+  "Cyrillic / Russian": "Кириллица / Русский",
+  "Arabic": "Арабский",
+  "European Latin": "Европейская латиница",
+  "Refined {0} lines": "Уточнено строк: {0}",
+  "Auto script: {0}": "Автовыбор: {0}",
+  "Refining {0} low-confidence text lines...": "Уточнение {0} строк с низкой уверенностью...",
+  "Refining": "Уточнение",
+  "Detected {0}, re-recognizing with script pack...": "Обнаружен язык ({0}), повторное распознавание..."
 }

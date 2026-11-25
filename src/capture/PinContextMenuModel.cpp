@@ -374,7 +374,9 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
             scriptParent.icon = CaptureIconId::ActionTranslate;
             scriptParent.label = tools3000::core::trWCstrFor(zh, L"识字语种", L"OCR Script");
             if (curScript == "cjk") {
-                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"中英", L"CJK");
+                scriptParent.statusBadge = snap.engineIsV6
+                    ? tools3000::core::trWCstrFor(zh, L"通用", L"50+")
+                    : tools3000::core::trWCstrFor(zh, L"中英", L"CJK");
             } else if (curScript == "japan") {
                 scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"日语", L"JA");
             } else if (curScript == "korean") {
@@ -383,6 +385,10 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
                 scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"俄语", L"RU");
             } else if (curScript == "latin") {
                 scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"西/葡", L"LA");
+            } else if (curScript == "arabic") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"阿语", L"AR");
+            } else if (curScript == "thai") {
+                scriptParent.statusBadge = tools3000::core::trWCstrFor(zh, L"泰语", L"TH");
             }
 
             auto makeScriptItem = [&](int param, const char* modeKey,
@@ -401,11 +407,19 @@ PinContextMenuData PinContextMenuBuilder::buildRootMenu(const PinContextMenuSnap
 
             makeScriptItem(PinOcrScriptParam::kAuto, "auto", L"自动识别 (推荐)", L"Auto Detect (Recommended)", true);
             scriptParent.submenu.push_back(makeSeparator());
-            makeScriptItem(PinOcrScriptParam::kCjk, "cjk", L"中文与英文", L"Chinese & English", true);
-            makeScriptItem(PinOcrScriptParam::kJapan, "japan", L"日语", L"Japanese", snap.scriptPackJapanInstalled);
-            makeScriptItem(PinOcrScriptParam::kKorean, "korean", L"韩语", L"Korean", snap.scriptPackKoreanInstalled);
-            makeScriptItem(PinOcrScriptParam::kCyrillic, "cyrillic", L"俄语 (西里尔)", L"Russian (Cyrillic)", snap.scriptPackCyrillicInstalled);
-            makeScriptItem(PinOcrScriptParam::kLatin, "latin", L"西 / 葡 / 欧文 (拉丁)", L"Spanish / Portuguese (Latin)", snap.scriptPackLatinInstalled);
+            if (snap.engineIsV6) {
+                makeScriptItem(PinOcrScriptParam::kCjk, "cjk", L"中 / 英 / 日 / 欧文 (50 语种)", L"CJK / EN / JA / European (50+)", true);
+                makeScriptItem(PinOcrScriptParam::kKorean, "korean", L"韩语", L"Korean", snap.scriptPackKoreanInstalled);
+                makeScriptItem(PinOcrScriptParam::kCyrillic, "cyrillic", L"俄语 (西里尔)", L"Russian (Cyrillic)", snap.scriptPackCyrillicInstalled);
+                makeScriptItem(PinOcrScriptParam::kArabic, "arabic", L"阿拉伯语 / 波斯语", L"Arabic / Persian", snap.scriptPackArabicInstalled);
+                makeScriptItem(PinOcrScriptParam::kThai, "thai", L"泰语", L"Thai", snap.scriptPackThaiInstalled);
+            } else {
+                makeScriptItem(PinOcrScriptParam::kCjk, "cjk", L"中文与英文", L"Chinese & English", true);
+                makeScriptItem(PinOcrScriptParam::kJapan, "japan", L"日语", L"Japanese", snap.scriptPackJapanInstalled);
+                makeScriptItem(PinOcrScriptParam::kKorean, "korean", L"韩语", L"Korean", snap.scriptPackKoreanInstalled);
+                makeScriptItem(PinOcrScriptParam::kCyrillic, "cyrillic", L"俄语 (西里尔)", L"Russian (Cyrillic)", snap.scriptPackCyrillicInstalled);
+                makeScriptItem(PinOcrScriptParam::kLatin, "latin", L"西 / 葡 / 欧文 (拉丁)", L"Spanish / Portuguese (Latin)", snap.scriptPackLatinInstalled);
+            }
 
             ocrParent.submenu.push_back(std::move(scriptParent));
         }

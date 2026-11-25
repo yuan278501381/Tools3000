@@ -121,7 +121,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             } else if (m_state->sliderPopup.type == SliderPopupType::TextFontSize) {
                                 if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
                                     m_state->activeElement->fontSize = static_cast<float>(val);
-                                    m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                                    ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                                 }
                                 const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
                                 tools3000::core::ConfigManager::instance().set<double>("/capture/markup/text/fontSize", static_cast<double>(val) / curDpi);
@@ -578,8 +578,9 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             if (m_state->activeElement->isEditing && activeElemHit == HitArea::Body && !altDown) {
                                 // 编辑态下点击文字内容区：定位字符级光标，开启按住左键拖拽划词选中（绝不拖走整个文本框）
                                 const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
+                                const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                                 const auto layout = CaptureTextEditor::buildLayout(
-                                    wstr, static_cast<int>(m_state->activeElement->fontSize));
+                                    wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
                                 const float relX = static_cast<float>(local.x - m_state->activeElement->startPt.x);
                                 const float relY = static_cast<float>(local.y - m_state->activeElement->startPt.y);
                                 const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
@@ -594,6 +595,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 m_state->isManipulating = false;
                                 m_state->lastMousePos = point;
                                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                                syncImeCompositionWindow(hwnd);
                                 m_renderer->markMarkupDirty();
                                 m_renderer->invalidate();
                                 updateHoverCursor(point);
@@ -1122,7 +1124,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 } else if (m_state->sliderPopup.type == SliderPopupType::TextFontSize) {
                     if (m_state->activeElement && m_state->activeElement->tool == MarkupTool::Text) {
                         m_state->activeElement->fontSize = static_cast<float>(val);
-                        m_state->activeElement->textRenderSize = cv::Size(0, 0);
+                        ensureActiveTextBoundsAfterEdit(*m_state->activeElement);
                     }
                     const float curDpi = m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f;
                     tools3000::core::ConfigManager::instance().set<double>("/capture/markup/text/fontSize", static_cast<double>(val) / curDpi);
@@ -1180,8 +1182,9 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     const float relX = static_cast<float>(localPt.x - m_state->activeElement->startPt.x);
                     const float relY = static_cast<float>(localPt.y - m_state->activeElement->startPt.y);
                     const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
+                    const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                     const auto layout = CaptureTextEditor::buildLayout(
-                        wstr, static_cast<int>(m_state->activeElement->fontSize));
+                        wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
                     const size_t newCaret = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
                     if (newCaret != m_state->activeElement->textCaret) {
                         m_state->activeElement->textCaret = newCaret;
@@ -1305,8 +1308,14 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                               static_cast<int>(m_state->dragHandle), dx, dy);
                     if (m_state->dragHandle == HitArea::None) {
                         m_state->activeElement->moveBy(dx, dy);
+                        if (m_state->activeElement->tool == MarkupTool::Text) {
+                            syncTextElementWrapWidth(*m_state->activeElement);
+                        }
                     } else {
                         m_state->activeElement->resize(dx, dy, m_state->dragHandle);
+                        if (m_state->activeElement->tool == MarkupTool::Text) {
+                            syncTextElementWrapWidth(*m_state->activeElement);
+                        }
                         if (m_state->activeElement->tool == MarkupTool::Number && m_state->dragHandle == HitArea::RT) {
                             m_state->currentStrokeWidth = static_cast<int>(std::round(m_state->activeElement->thickness));
                             m_state->toolbarLayoutValid = false;
@@ -1522,8 +1531,9 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         m_state->textEditEnteredTick = GetTickCount();
                         const cv::Point local = toMarkupPoint(releasePt);
                         const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
+                        const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                         const auto layout = CaptureTextEditor::buildLayout(
-                            wstr, static_cast<int>(m_state->activeElement->fontSize));
+                            wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
                         const float relX = static_cast<float>(local.x - m_state->activeElement->startPt.x);
                         const float relY = static_cast<float>(local.y - m_state->activeElement->startPt.y);
                         const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
@@ -1532,6 +1542,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         m_state->activeElement->textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
                         SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
+                        syncImeCompositionWindow(hwnd);
                         m_renderer->markMarkupDirty();
                     }
                 }
@@ -1724,7 +1735,9 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             m_state->isSelectingText = false;
                             m_state->isManipulating = false;
                             const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
-                            const auto layout = CaptureTextEditor::buildLayout(wstr, static_cast<int>(elem.fontSize));
+                            const float maxContentW = syncTextElementWrapWidth(elem);
+                            const auto layout = CaptureTextEditor::buildLayout(
+                                wstr, static_cast<int>(elem.fontSize), maxContentW);
                             const float relX = static_cast<float>(local.x - elem.startPt.x);
                             const float relY = static_cast<float>(local.y - elem.startPt.y);
                             const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);

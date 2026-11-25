@@ -226,12 +226,9 @@ inline CaptureDeliveryDecision resolveCaptureDeliveryDecision(
         d.shouldPromptSaveAsFallback = false;
     } else if (completion.action == CaptureCompletionAction::Default) {
         // 默认完成动作（Enter、双击选区、点击「完成」勾号）：
-        // - 开启自动保存到文件时，严格尊重 copyToClipboard 开关（关闭时不覆盖剪贴板）；
-        // - 若非纯内存直达回调（如 OCR），且自动复制与自动保存同时关闭，则点「完成」无打扰兜底复制到剪贴板，
-        //   绝不擅自弹出另存为对话框，同时与按 Esc 取消形成清晰区隔。
-        const bool fallbackCopyWhenBothOff =
-            (!options.copyToClipboard && !options.saveToFile && !d.shouldInvokeMemoryCallback);
-        d.shouldCopyToClipboard = options.copyToClipboard || fallbackCopyWhenBothOff;
+        // 100% 严格尊重用户开关：关闭「自动复制到剪贴板」时绝不擅自覆写剪贴板（哪怕同时关闭了「自动保存到文件」），
+        // 避免仅做截图翻译/核对/贴图的用户原有剪贴板内容被意外破坏；如需复制可显式按 Ctrl+C 或点「复制」按钮。
+        d.shouldCopyToClipboard = options.copyToClipboard;
         d.shouldPromptSaveAsFallback = false;
     } else {
         // 显式另存为动作：尊重用户是否开启同时复制到剪贴板

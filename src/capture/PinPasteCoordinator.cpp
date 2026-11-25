@@ -492,57 +492,6 @@ cv::Mat PinPasteCoordinator::renderTextToImage(const std::wstring& text, float d
 
 namespace {
 
-void inspectClipboardTextAndPriority(std::wstring& outText, bool& outPreferTextOverImage) {
-    outText.clear();
-    outPreferTextOverImage = false;
-
-    bool opened = false;
-    for (int retry = 0; retry < 40; ++retry) {
-        if (OpenClipboard(nullptr)) {
-            SetLastError(0);
-            const UINT probeFmt = EnumClipboardFormats(0);
-            if ((probeFmt == 0 && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN) ||
-                (probeFmt != 0 && GetClipboardData(probeFmt) == nullptr && GetLastError() == ERROR_CLIPBOARD_NOT_OPEN)) {
-                CloseClipboard();
-                Sleep(10);
-                continue;
-            }
-            opened = true;
-            break;
-        }
-        Sleep(5);
-    }
-    if (!opened) return;
-
-    const UINT formatPinMeta = RegisterClipboardFormatW(L"Tools3000_PinMetadata");
-    const UINT formatPng = RegisterClipboardFormatW(L"PNG");
-    const bool hasPinMeta = (formatPinMeta != 0 && IsClipboardFormatAvailable(formatPinMeta));
-
-    if (!hasPinMeta) {
-        for (UINT fmt = EnumClipboardFormats(0); fmt != 0; fmt = EnumClipboardFormats(fmt)) {
-            if (fmt == CF_UNICODETEXT || fmt == CF_TEXT || fmt == CF_OEMTEXT) {
-                outPreferTextOverImage = true;
-                break;
-            }
-            if ((formatPng != 0 && fmt == formatPng) ||
-                fmt == CF_DIBV5 || fmt == CF_DIB || fmt == CF_BITMAP) {
-                outPreferTextOverImage = false;
-                break;
-            }
-        }
-    }
-
-    if (IsClipboardFormatAvailable(CF_UNICODETEXT)) {
-        if (HANDLE h = GetClipboardData(CF_UNICODETEXT)) {
-            if (auto* p = static_cast<const wchar_t*>(GlobalLock(h))) {
-                outText = p;
-                GlobalUnlock(h);
-            }
-        }
-    }
-    CloseClipboard();
-}
-
 cv::Mat renderClipboardTextOrColor(const std::wstring& clipText, float& outCornerRadius, std::wstring& outCleanSource) {
     outCornerRadius = 0.0f;
     outCleanSource.clear();
@@ -668,68 +617,78 @@ void PinPasteCoordinator::setSessionTimeoutMs(int timeoutMs) {
 std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_unused]] DWORD currentSeq, int historyCount) {
     std::vector<PinPasteCandidate> candidates;
 
-    // 1. 探测系统剪贴板中的文本与图像优先级（当富文本编辑器/Office 将 CF_UNICODETEXT 置于首位且附带预览位图时，优先转为微晶字签卡片）
-    std::wstring clipText;
-    bool preferTextOverImage = false;
-    inspectClipboardTextAndPriority(clipText, preferTextOverImage);
+    // 1. 探测系统剪贴板中的文本、CF_HDROP 图片文件与图像优先级（当富文本编辑器/Office 将 CF_UNICODETEXT 置于首位且附带预览位图时，优先转为微晶字签卡片；若为 CF_HDROP 图片文件则始终优先贴图）
+    const ClipboardContentProbe probe = ClipboardUtils::inspectClipboardContent();
 
     Tools3000PinMetadata meta{};
     meta.magic = 0;
-    cv::Mat clipImg;
+    std::vector<cv::Mat> clipImages;
     bool clipFromTextOrColor = false;
     float generatedCornerRadius = 0.0f;
     std::wstring generatedSourceText;
 
-    if (preferTextOverImage && !clipText.empty()) {
-        clipImg = renderClipboardTextOrColor(clipText, generatedCornerRadius, generatedSourceText);
-        clipFromTextOrColor = !clipImg.empty();
+    if (probe.preferTextOverImage && !probe.text.empty()) {
+        cv::Mat card = renderClipboardTextOrColor(probe.text, generatedCornerRadius, generatedSourceText);
+        if (!card.empty()) {
+            clipImages.push_back(std::move(card));
+            clipFromTextOrColor = true;
+        }
     }
 
-    if (clipImg.empty()) {
-        clipImg = ClipboardUtils::readImageFromClipboard(&meta);
+    if (clipImages.empty()) {
+        clipImages = ClipboardUtils::readImagesFromClipboard(&meta);
     }
 
-    if (clipImg.empty() && !clipText.empty()) {
-        clipImg = renderClipboardTextOrColor(clipText, generatedCornerRadius, generatedSourceText);
-        clipFromTextOrColor = !clipImg.empty();
+    if (clipImages.empty() && !probe.text.empty()) {
+        cv::Mat card = renderClipboardTextOrColor(probe.text, generatedCornerRadius, generatedSourceText);
+        if (!card.empty()) {
+            clipImages.push_back(std::move(card));
+            clipFromTextOrColor = true;
+        }
     }
 
-    // 2. 检查 CaptureHistory 中的条目
+    // 2. 检查 CaptureHistory 中的条目并计算 history[0] 精确像素指纹
     auto& history = CaptureHistory::instance();
     const int count = (historyCount >= 0) ? historyCount : history.count();
-    const uint64_t clipFp = !clipImg.empty()
-        ? computeContentFingerprint(clipImg, clipFromTextOrColor ? generatedSourceText : std::wstring{})
-        : 0ULL;
-
-    // 检查剪贴板图像是否与 CaptureHistory[0] 像素内容完全一致（用 64-bit 像素指纹精准判重，
-    // 绝不因两张不同截图恰好同尺寸而误吞新图；微晶字签/色卡绝不与历史截图判重）
-    bool clipboardMatchesHistory0 = false;
-    if (!clipImg.empty() && !clipFromTextOrColor && count > 0) {
+    uint64_t latestHistoryFp = 0ULL;
+    if (count > 0) {
         auto latestOpt = history.get(0);
         if (latestOpt.has_value() && !latestOpt->image.empty()) {
-            const auto& latest = *latestOpt;
-            const uint64_t latestFp = computeContentFingerprint(latest.image);
-            if (clipFp != 0ULL && latestFp != 0ULL && clipFp == latestFp) {
-                clipboardMatchesHistory0 = true;
-            }
+            latestHistoryFp = computeContentFingerprint(latestOpt->image);
         }
     }
 
-    // 3. 构造候选列表
-    if (!clipImg.empty() && !clipboardMatchesHistory0) {
-        PinPasteCandidate clipCand;
-        clipCand.image = clipImg;
-        if (!clipFromTextOrColor && meta.magic == 0x54333030 && meta.regionW > 0 && meta.regionH > 0) {
-            clipCand.region = CaptureRegion{meta.regionX, meta.regionY, meta.regionW, meta.regionH, meta.cornerRadius};
-            clipCand.padX = meta.padX;
-            clipCand.padY = meta.padY;
+    // 检查单图剪贴板是否与 CaptureHistory[0] 像素内容完全一致（用 64-bit 像素指纹精准判重，
+    // 绝不因两张不同截图恰好同尺寸而误吞新图；微晶字签/色卡绝不与历史截图判重）
+    const bool clipboardMatchesHistory0 =
+        (clipImages.size() == 1 && !clipFromTextOrColor && latestHistoryFp != 0ULL &&
+         computeContentFingerprint(clipImages[0]) == latestHistoryFp);
+
+    // 3. 构造候选列表（支持单图、多选 CF_HDROP 图片文件队列与微晶字签/色卡）
+    std::unordered_set<uint64_t> seenClipFingerprints;
+    if (!clipImages.empty() && !clipboardMatchesHistory0) {
+        for (size_t i = 0; i < clipImages.size(); ++i) {
+            const cv::Mat& img = clipImages[i];
+            if (img.empty()) continue;
+            const uint64_t fp = computeContentFingerprint(
+                img, clipFromTextOrColor ? generatedSourceText : std::wstring{});
+            if (fp != 0ULL && !seenClipFingerprints.insert(fp).second) {
+                continue;
+            }
+            PinPasteCandidate clipCand;
+            clipCand.image = img;
+            if (i == 0 && !clipFromTextOrColor && meta.magic == 0x54333030 && meta.regionW > 0 && meta.regionH > 0) {
+                clipCand.region = CaptureRegion{meta.regionX, meta.regionY, meta.regionW, meta.regionH, meta.cornerRadius};
+                clipCand.padX = meta.padX;
+                clipCand.padY = meta.padY;
+            }
+            clipCand.isFromClipboard = true;
+            clipCand.isGeneratedCard = clipFromTextOrColor;
+            clipCand.cardCornerRadius = generatedCornerRadius;
+            clipCand.sourceText = generatedSourceText;
+            clipCand.contentFingerprint = fp;
+            candidates.push_back(std::move(clipCand));
         }
-        clipCand.isFromClipboard = true;
-        clipCand.isGeneratedCard = clipFromTextOrColor;
-        clipCand.cardCornerRadius = generatedCornerRadius;
-        clipCand.sourceText = generatedSourceText;
-        clipCand.contentFingerprint = clipFp;
-        candidates.push_back(std::move(clipCand));
     }
 
     // 依序推入 CaptureHistory 中的所有截图（从 0 到 count-1，即按保存时间倒序排列）
@@ -752,14 +711,17 @@ std::vector<PinPasteCandidate> PinPasteCoordinator::resolveCandidates([[maybe_un
         candidates.push_back(std::move(histCand));
     }
 
-    if (candidates.empty() && !clipImg.empty()) {
+    if (candidates.empty() && !clipImages.empty()) {
+        const cv::Mat& img = clipImages[0];
+        const uint64_t fp = computeContentFingerprint(
+            img, clipFromTextOrColor ? generatedSourceText : std::wstring{});
         PinPasteCandidate clipCand;
-        clipCand.image = clipImg;
+        clipCand.image = img;
         clipCand.isFromClipboard = true;
         clipCand.isGeneratedCard = clipFromTextOrColor;
         clipCand.cardCornerRadius = generatedCornerRadius;
         clipCand.sourceText = generatedSourceText;
-        clipCand.contentFingerprint = clipFp;
+        clipCand.contentFingerprint = fp;
         candidates.push_back(std::move(clipCand));
     }
 

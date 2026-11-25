@@ -341,6 +341,7 @@ bool MarkupEngine::elementEquivalent(const MarkupElement& a, const MarkupElement
         a.endPt != b.endPt ||
         a.text != b.text ||
         std::abs(a.fontSize - b.fontSize) > 1e-3f ||
+        std::abs(a.textMaxWidth - b.textMaxWidth) > 0.5f ||
         a.textOutline != b.textOutline ||
         a.textOutlineColor != b.textOutlineColor ||
         std::abs(a.outlineThickness - b.outlineThickness) > 1e-3f ||
@@ -496,6 +497,15 @@ void MarkupEngine::setBaseImage(const cv::Mat& image) {
 void MarkupEngine::updateBaseImage(const cv::Mat& image) {
     // 仅替换底图，保留标注/撤销栈/序号状态（选区二次调整后重裁用）
     m_baseImage = image.clone();
+    if (m_baseImage.cols > 0) {
+        for (auto& e : m_elements) {
+            if (e && e->tool == MarkupTool::Text) {
+                e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
+                    m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
+                e->textRenderSize = cv::Size(0, 0);
+            }
+        }
+    }
     m_filterRoiCache.clear();
     m_underlayCache.release();
     m_underlayElements.clear();
@@ -505,7 +515,14 @@ void MarkupEngine::updateBaseImage(const cv::Mat& image) {
 void MarkupEngine::translateAll(int dx, int dy) {
     if (dx == 0 && dy == 0) return;
     for (auto& e : m_elements) {
-        if (e) e->moveBy(dx, dy);
+        if (e) {
+            e->moveBy(dx, dy);
+            if (e->tool == MarkupTool::Text && m_baseImage.cols > 0) {
+                e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
+                    m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
+                e->textRenderSize = cv::Size(0, 0);
+            }
+        }
     }
     for (auto& snap : m_undoHistory) {
         for (auto& e : snap.elements) e.moveBy(dx, dy);
@@ -868,6 +885,10 @@ MarkupElement* MarkupEngine::addText(cv::Point position, const std::string& text
     elem->text = text;
     elem->color = color;
     elem->fontSize = fontSize;
+    if (m_baseImage.cols > 0) {
+        elem->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
+            m_baseImage.cols, position.x, static_cast<int>(fontSize));
+    }
     elem->textOutline = textOutline;
     elem->textOutlineColor = outlineColor;
     return addElement(std::move(elem));
@@ -1280,8 +1301,21 @@ void MarkupEngine::renderSubset(cv::Mat& canvas, size_t count, bool includeActiv
         markup_detail::renderUnifiedSpotlights(canvas, spotlights);
     }
 
-    auto renderWithColorOpacity = [](cv::Mat& targetCanvas, const IMarkupToolHandler* handler, const MarkupElement& element) {
+    auto syncTextWrapWidthForCanvas = [](const cv::Mat& targetCanvas, const MarkupElement& element) {
+        if (element.tool != MarkupTool::Text || targetCanvas.cols <= 0) return;
+        const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
+            targetCanvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+        if (std::abs(element.textMaxWidth - maxW) > 0.5f) {
+            auto& mut = const_cast<MarkupElement&>(element);
+            mut.textMaxWidth = maxW;
+            mut.textRenderSize = cv::Size(0, 0);
+        }
+    };
+
+    auto renderWithColorOpacity = [&](cv::Mat& targetCanvas, const IMarkupToolHandler* handler, const MarkupElement& element) {
         if (!handler || targetCanvas.empty()) return;
+        // 必须在半透明 ROI 局部裁剪之前按完整画布宽度同步换行宽度，杜绝局部 ROI 宽度误导软换行
+        syncTextWrapWidthForCanvas(targetCanvas, element);
         if (element.color.a == 0 || element.color.a >= 255 ||
             element.tool == MarkupTool::Highlight ||
             element.tool == MarkupTool::Magnifier ||
@@ -1341,6 +1375,15 @@ void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
 
 void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, bool includeActiveHandles) const {
     if (const auto* handler = MarkupToolRegistry::instance().getHandler(element.tool)) {
+        if (element.tool == MarkupTool::Text && canvas.cols > 0) {
+            const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
+                canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+            if (std::abs(element.textMaxWidth - maxW) > 0.5f) {
+                auto& mut = const_cast<MarkupElement&>(element);
+                mut.textMaxWidth = maxW;
+                mut.textRenderSize = cv::Size(0, 0);
+            }
+        }
         if (element.color.a > 0 && element.color.a < 255 &&
             element.tool != MarkupTool::Highlight &&
             element.tool != MarkupTool::Magnifier &&

@@ -31,12 +31,15 @@ bool isValidOnnxFileHeader(const std::filesystem::path& filePath,
                            size_t minBytes = 256,
                            size_t maxBytes = 192ULL * 1024ULL * 1024ULL);
 bool loadDictionaryLines(const std::filesystem::path& dictPath, std::vector<std::string>& outKeys);
+bool isV6BaseBundlePresent(const std::filesystem::path& dir);
+bool isV4BaseBundlePresent(const std::filesystem::path& dir);
 bool isDirectoryCompleteModelBundle(const std::filesystem::path& dir);
 bool isServerRecModelPresent(const std::filesystem::path& dir);
 std::filesystem::path resolveScriptPackModelPath(const std::filesystem::path& dir, std::string_view packId);
 bool isScriptPackModelPresent(const std::filesystem::path& dir, std::string_view packId, uint64_t* outFileBytes = nullptr);
 std::string normalizeScriptMode(std::string_view rawMode);
 const std::array<const char*, 4>& allScriptPackIds() noexcept;
+std::filesystem::path ensureOnnxWinMlIr8CompatiblePath(const std::filesystem::path& onnxPath);
 
 // 唯一定义位于 DeepOcrEnginePostprocess.cpp
 std::array<cv::Point2f, 4> orderQuadPointsClockwise(const cv::Point2f rawPts[4]) noexcept;

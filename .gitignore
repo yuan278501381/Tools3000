@@ -87,6 +87,8 @@ ui/.env.*.local
 # ==============================================================================
 coverage_report/
 TestResults/
+tests/fixtures/ocr/web_benchmark/
+tests/fixtures/ocr/local_private/
 *.profraw
 *.profdata
 *.gcno

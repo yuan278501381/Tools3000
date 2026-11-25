@@ -681,6 +681,45 @@ static void releaseOcrTransientMemory() {
     tools3000::core::WinUtils::trimWorkingSet();
 }
 
+static std::wstring formatOcrScriptDisplayName(const std::string& scriptId, bool isZh) {
+    if (scriptId == "korean") {
+        return tools3000::core::trWCstrFor(isZh, L"韩语", L"Korean");
+    }
+    if (scriptId == "cyrillic") {
+        return tools3000::core::trWCstrFor(isZh, L"西里尔文 / 俄语", L"Cyrillic / Russian");
+    }
+    if (scriptId == "arabic") {
+        return tools3000::core::trWCstrFor(isZh, L"阿拉伯语", L"Arabic");
+    }
+    if (scriptId == "thai") {
+        return tools3000::core::trWCstrFor(isZh, L"泰语", L"Thai");
+    }
+    if (scriptId == "japan") {
+        return tools3000::core::trWCstrFor(isZh, L"日语", L"Japanese");
+    }
+    if (scriptId == "latin") {
+        return tools3000::core::trWCstrFor(isZh, L"拉丁欧洲语", L"European Latin");
+    }
+    return tools3000::core::WinUtils::utf8ToWstring(scriptId);
+}
+
+static std::wstring buildOcrResultStatusBadge(const tools3000::ocr::DeepOcrRunStats& stats, bool isZh) {
+    // 常规快速识别保持完全静默（返回空串），仅在进入低置信度高精度精修或自动切语种时呈现极轻反馈
+    if (stats.serverRefinedCount > 0) {
+        return tools3000::core::trFmtW(
+            L"高精度精修 {0} 处",
+            L"Refined {0} lines",
+            {std::to_wstring(stats.serverRefinedCount)});
+    }
+    if (stats.autoScriptSwitched && !stats.detectedScript.empty() && stats.detectedScript != "cjk") {
+        return tools3000::core::trFmtW(
+            L"自动切换: {0}",
+            L"Auto script: {0}",
+            {formatOcrScriptDisplayName(stats.detectedScript, isZh)});
+    }
+    return {};
+}
+
 static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion* capturedRegion = nullptr) {
     if (capturedImage.empty()) return;
     const bool isZh = tools3000::core::isUiLanguageChinese();
@@ -715,10 +754,53 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
             return;
         }
         const bool zh = tools3000::core::isUiLanguageChinese();
+        struct StageCallbackGuard {
+            ~StageCallbackGuard() {
+                tools3000::ocr::DeepOcrEngine::instance().setStageCallback({});
+            }
+        } stageGuard;
+        tools3000::ocr::DeepOcrEngine::instance().setStageCallback(
+            [myGen, zh](tools3000::ocr::OcrRecognitionStage stage, uint32_t count, const std::string& detail) {
+                if (g_ocrTaskGeneration.load(std::memory_order_acquire) != myGen) return;
+                std::wstring msgW;
+                std::wstring badgeW;
+                if (stage == tools3000::ocr::OcrRecognitionStage::LowConfidenceRefining) {
+                    msgW = tools3000::core::trFmtW(
+                        L"检测到 {0} 处低置信度文字，正在高精度精修...",
+                        L"Refining {0} low-confidence text lines...",
+                        {std::to_wstring(count)});
+                    badgeW = tools3000::core::trWCstrFor(zh, L"低置信度精修中", L"Refining");
+                } else if (stage == tools3000::ocr::OcrRecognitionStage::AutoScriptSwitching) {
+                    const std::wstring langW = formatOcrScriptDisplayName(detail, zh);
+                    msgW = tools3000::core::trFmtW(
+                        L"检测到 {0}，正在使用扩展语种模型复核...",
+                        L"Detected {0}, re-recognizing with script pack...",
+                        {langW});
+                    badgeW = langW;
+                } else {
+                    return;
+                }
+                const bool showWin = tools3000::core::ConfigManager::instance().get<bool>(
+                    "/ocr/showResultWindow", true);
+                if (showWin) {
+                    const std::string msgUtf8 = tools3000::core::WinUtils::wstringToUtf8(msgW);
+                    tools3000::core::MainThreadDispatcher::instance().post([msgUtf8, badgeW]() {
+                        tools3000::ocr::OcrResultWindow::instance().updateLoadingStatus(msgUtf8, badgeW);
+                    });
+                } else {
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msgW});
+                }
+            });
         try {
+            const uint64_t seqBefore = tools3000::ocr::DeepOcrEngine::instance().runSequence();
             auto results = tools3000::ocr::OcrEngine::instance().extractText(img);
             if (g_ocrTaskGeneration.load(std::memory_order_acquire) != myGen) {
                 return;
+            }
+            std::wstring resultBadge;
+            if (tools3000::ocr::DeepOcrEngine::instance().runSequence() != seqBefore) {
+                const auto runStats = tools3000::ocr::DeepOcrEngine::instance().lastRunStats();
+                resultBadge = buildOcrResultStatusBadge(runStats, zh);
             }
             std::string fullText;
             for (const auto& r : results) {
@@ -742,15 +824,19 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
                     tools3000::core::WinUtils::copyToClipboard(fullText);
                 }
                 if (showResult) {
-                    tools3000::core::MainThreadDispatcher::instance().post([text = std::move(fullText), hasAnchor, anchorRc]() {
-                        tools3000::ocr::OcrResultWindow::instance().showResult(
-                            text, hasAnchor ? &anchorRc : nullptr);
-                    });
+                    tools3000::core::MainThreadDispatcher::instance().post(
+                        [text = std::move(fullText), hasAnchor, anchorRc, resultBadge]() {
+                            tools3000::ocr::OcrResultWindow::instance().showResult(
+                                text, hasAnchor ? &anchorRc : nullptr, resultBadge);
+                        });
                 } else {
-                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        copy
-                            ? (tools3000::core::trWCstrFor(zh, L"文字已复制到剪贴板", L"Text copied to clipboard"))
-                            : (tools3000::core::trWCstrFor(zh, L"文字识别完成", L"Text recognition completed"))});
+                    std::wstring toastMsg = copy
+                        ? std::wstring(tools3000::core::trWCstrFor(zh, L"文字已复制到剪贴板", L"Text copied to clipboard"))
+                        : std::wstring(tools3000::core::trWCstrFor(zh, L"文字识别完成", L"Text recognition completed"));
+                    if (!resultBadge.empty()) {
+                        toastMsg += L" (" + resultBadge + L")";
+                    }
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{toastMsg});
                     releaseOcrTransientMemory();
                 }
             }
@@ -1802,7 +1888,8 @@ public:
                         return {{"success", false}, {"error", "invalid OCR scriptMode"}};
                     const std::string sm = value.get<std::string>();
                     if (sm != "auto" && sm != "cjk" && sm != "japan" &&
-                        sm != "korean" && sm != "cyrillic" && sm != "latin")
+                        sm != "korean" && sm != "cyrillic" && sm != "latin" &&
+                        sm != "arabic" && sm != "thai")
                         return {{"success", false}, {"error", "unsupported OCR scriptMode: " + sm}};
                 } else {
                     return {{"success", false}, {"error", "unsupported OCR setting: " + key}};
@@ -1996,6 +2083,8 @@ public:
             return {
                 {"installed", st.installed},
                 {"serverInstalled", st.serverInstalled},
+                {"engineGeneration", st.engineGeneration},
+                {"upgradeAvailable", st.upgradeAvailable},
                 {"downloading", st.downloading},
                 {"downloadingServer", st.downloadingServer},
                 {"downloadingScriptPack", st.downloadingScriptPack},
