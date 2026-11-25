@@ -19,6 +19,9 @@
 - **4. 纯离线应用搜索免唤醒全盘服务（Issue `#24 @clollipop`）与解放「文档内容」自由拖拽排序 (`SearchWindow.{h,cpp}`, `searchConstants.ts`, `searchUtils.ts`, `SearchCategoryBar.test.tsx`)**：
   - `SearchWindow::shouldWarmUpSearchServiceOnShow` 当默认分类为 `app` 或 `bookmark` 时呼出搜索跳过 `warmUpSearchService()`，零后台索引服务唤醒；
   - `PINNED_SEARCH_CATEGORY_IDS` 收窄为仅锁定 `['all']`，解放 `content`（文档内容）支持自由拖拽排序与键盘微调，并平滑兼容老用户既有自定义排序。
+- **5. 截图/划词翻译内置 Bilibili Index-Translate 免费免密钥一键预设与全局思考链剥离 (`TranslationTypes.h`, `TranslationService.{h,cpp}`, `InPlaceTranslateCard.{tsx,css,test.tsx}`)**：
+  - *定位权衡*：保留 `Edge / Google` 作为开箱默认极速通道（300~900ms 级，无公益公网单点风险）；将 `https://index-translate.bilibili.com/v1` 作为 OpenAI 兼容通道的一键免费免密钥预设，并提供 `Index-Translate-2B`（极速）/ `Index-Translate-9B`（均衡默认）/ `Index-Translate-35B-A3B`（旗舰）快捷切换；
+  - *安全与协议护栏*：`TranslationService::isKeylessPublicOpenAiUrl` 严格校验 `https://` + 精确主机名 `index-translate.bilibili.com`，放行无 API Key 且**绝不透传本地历史保存的私有 API Key**（防私钥外泄至第三方公益站），自动注入 `chat_template_kwargs: { enable_thinking: false }` 与 `temperature: 0.0`；`stripReasoningThinkBlocks` 全局剥离 `<think>/<thought>` 块，一并保护所有推理模型（含 DeepSeek-R1 / 本地 Qwen3）不被思维链花括号干扰 JSON 解析。
 
 ### [2026-11-25] 搜索 / 剪贴板 / 贴图 9 项高分歧交互习惯自定义设置、剪贴板 `autoPaste` 缺陷修复与跨选项防冲突护栏（分支 `feat/search-auto-hide-options`，回应 LINUX DO `#106 @zg2qxy`）
 - **1. 零破坏默认值原则**：全部 9 项新设置均严格以原行为作为默认值，老用户升级后零感知波动；同时通过设置页、8 套语言包与设置搜索索引统一可配、实时生效。

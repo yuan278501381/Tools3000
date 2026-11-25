@@ -520,8 +520,36 @@ ScriptStats analyzeScriptStats(const std::vector<std::string>& texts) {
     return stats;
 }
 
+std::string stripReasoningThinkBlocks(std::string_view raw) {
+    std::string text = trimAscii(raw);
+    if (text.empty()) return {};
+
+    // 剥离推理模型偶发输出的 <think>...</think> 或 <thought>...</thought> 思考链，
+    // 防止思考内容里的示例花括号干扰后续 JSON 负载提取。
+    static constexpr std::array<std::pair<std::string_view, std::string_view>, 2> kTags = {{
+        {"<think>", "</think>"},
+        {"<thought>", "</thought>"}
+    }};
+
+    for (const auto& [openTag, closeTag] : kTags) {
+        const std::string lower = toLowerAscii(text);
+        const size_t closePos = lower.rfind(closeTag);
+        if (closePos != std::string::npos) {
+            std::string afterClose = trimAscii(text.substr(closePos + closeTag.size()));
+            if (!afterClose.empty()) {
+                text = std::move(afterClose);
+            }
+            continue;
+        }
+        if (startsWithNoCase(text, openTag)) {
+            text = trimAscii(text.substr(openTag.size()));
+        }
+    }
+    return text;
+}
+
 std::string extractJsonPayloadFromModelContent(std::string_view raw) {
-    std::string trimmed = trimAscii(raw);
+    std::string trimmed = stripReasoningThinkBlocks(raw);
     if (trimmed.empty()) return {};
 
     // 剥离模型偶发输出的 ```json ... ``` 围栏
@@ -1018,13 +1046,19 @@ public:
             return out;
         }
         const bool isLocal = TranslationService::isLoopbackHttpUrl(fullUrl);
-        if (settings.openaiApiKey.empty() && !isLocal) {
+        const bool isKeylessPublic = TranslationService::isKeylessPublicOpenAiUrl(fullUrl);
+        if (isKeylessPublic) {
+            out.providerUsed = "index_translate";
+        }
+        if (settings.openaiApiKey.empty() && !isLocal && !isKeylessPublic) {
             out.errorCode = "missing_api_key";
             out.errorDetail = "API key is required for non-local OpenAI-compatible endpoints";
             return out;
         }
         const std::string model = trimAscii(settings.openaiModel).empty()
-            ? std::string(TranslationConstants::kDefaultOpenAiModel)
+            ? std::string(isKeylessPublic
+                ? TranslationConstants::kIndexTranslateDefaultModel
+                : TranslationConstants::kDefaultOpenAiModel)
             : trimAscii(settings.openaiModel);
 
         const ParsedHttpUrl parsed = crackUrl(fullUrl);
@@ -1044,7 +1078,8 @@ public:
             "Do not add explanations or markdown fences.";
 
         std::wstring headers = L"Content-Type: application/json; charset=utf-8\r\n";
-        if (!settings.openaiApiKey.empty()) {
+        // 安全防线：内置免 Key 公网端点绝不透传用户历史保存的私有 API Key
+        if (!isKeylessPublic && !settings.openaiApiKey.empty()) {
             headers += L"Authorization: Bearer " + WinUtils::utf8ToWstring(settings.openaiApiKey) + L"\r\n";
         }
 
@@ -1054,14 +1089,18 @@ public:
             for (size_t i = beginIdx; i < endIdx; ++i) {
                 items.push_back(json{{"id", static_cast<int>(i - beginIdx)}, {"text", texts[i]}});
             }
-            const json reqJson = {
+            json reqJson = {
                 {"model", model},
-                {"temperature", 0.1},
+                {"temperature", isKeylessPublic ? 0.0 : 0.1},
                 {"messages", json::array({
                     json{{"role", "system"}, {"content", systemPrompt}},
                     json{{"role", "user"}, {"content", json{{"items", items}}.dump()}}
                 })}
             };
+            if (isKeylessPublic) {
+                // 对齐 Index-Translate 官方推荐参数，显式关闭思考链以降低延迟并避免思维块污染 JSON 输出
+                reqJson["chat_template_kwargs"] = json{{"enable_thinking", false}};
+            }
 
             const WinHttpResult http = executeHttpRequest(
                 parsed, L"POST", headers, reqJson.dump(), settings.timeoutMs, cancelFlag);
@@ -1686,6 +1725,17 @@ bool TranslationService::isLoopbackHttpUrl(std::string_view url) noexcept {
     // 支持 IPv6 括号地址 "[::1]:11434"
     if (startsWithNoCase(rest, "[::1]")) return true;
     return false;
+}
+
+bool TranslationService::isKeylessPublicOpenAiUrl(std::string_view url) noexcept {
+    const std::string trimmed = trimAscii(url);
+    if (!startsWithNoCase(trimmed, "https://")) {
+        return false;
+    }
+    const std::string_view rest = std::string_view(trimmed).substr(8);
+    const size_t hostEnd = rest.find_first_of("/?:");
+    const std::string host = toLowerAscii(hostEnd == std::string_view::npos ? rest : rest.substr(0, hostEnd));
+    return host == TranslationConstants::kIndexTranslateHost;
 }
 
 bool TranslationService::normalizeOpenAiChatUrl(std::string_view baseUrl, std::string& outFullUrl) {

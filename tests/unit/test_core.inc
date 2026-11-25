@@ -5111,6 +5111,15 @@ TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     EXPECT_TRUE(TranslationService::isLoopbackHttpUrl("http://[::1]:11434/v1"));
     EXPECT_FALSE(TranslationService::isLoopbackHttpUrl("https://api.openai.com/v1"));
 
+    // 2b. 内置免 Key 公网端点判定（严格 HTTPS + 精确主机名匹配，杜绝伪造域名绕过）
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com/v1"));
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com/v1/chat/completions"));
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("HTTPS://INDEX-TRANSLATE.BILIBILI.COM/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("http://index-translate.bilibili.com/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://evil-index-translate.bilibili.com/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com.attacker.test/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://api.openai.com/v1"));
+
     ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-key:fx", fullUrl));
     EXPECT_EQ(fullUrl, "https://api-free.deepl.com/v2/translate");
     ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-pro-key", fullUrl));
@@ -5145,6 +5154,14 @@ TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     ASSERT_EQ(out.size(), 2u);
     EXPECT_EQ(out[0], "保存");
     EXPECT_EQ(out[1], "取消");
+
+    // 3a. 思考链 <think>...</think> 内含干扰 JSON 花括号时，必须剥离思考块并提取最终译文 JSON
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"<think>Input schema is {\"id\":0,\"text\":\"Settings\"} so keep JSON valid.</think>\n```json\n{\"translations\":[{\"id\":0,\"text\":\"设置\"},{\"id\":1,\"text\":\"导出\"}]}\n```"}}]})",
+        2, out));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "设置");
+    EXPECT_EQ(out[1], "导出");
 
     ASSERT_TRUE(TranslationService::parseDeepLTranslateResponse(
         R"({"translations":[{"detected_source_language":"EN","text":"打开"},{"text":"关闭"}]})",
