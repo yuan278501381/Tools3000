@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.locale.1.10.0.schema.json
 
 PackageIdentifier: Yy1.Tools3000
-PackageVersion: 1.4.7
+PackageVersion: 1.4.8
 PackageLocale: zh-CN
 Publisher: Yy1 (yuan278501381)
 PublisherUrl: https://github.com/yuan278501381
@@ -26,6 +26,6 @@ Tags:
 - 鼠标手势
 - 效率工具
 - 开源
-ReleaseNotesUrl: https://github.com/yuan278501381/Tools3000/releases/tag/v1.4.7
+ReleaseNotesUrl: https://github.com/yuan278501381/Tools3000/releases/tag/v1.4.8
 ManifestType: locale
 ManifestVersion: 1.10.0
