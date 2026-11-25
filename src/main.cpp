@@ -889,18 +889,27 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
 
     // ── 9. 清理与退出 ────────────────────────────────────────────────────
     LOG_INFO("收到退出消息，准备清理");
+    const int finalExitCode = (messageResult == -1) ? 1 : static_cast<int>(msg.wParam);
+    // 顶层退场熔断守卫：正常关闭仅需 ~200ms；若任意插件/COM 在卸载期间意外死锁超过 8000ms，强制终结避免永久驻留锁文件。
+    std::thread([finalExitCode]() {
+        Sleep(8000);
+        TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
+    }).detach();
+
     shutdownSubsystems();
     releaseHostHotkeysAndMessageWindow(hwndMessage);
     releaseSingleInstanceMutex();
-    CoUninitialize();
 
-    const int finalExitCode = (messageResult == -1) ? 1 : static_cast<int>(msg.wParam);
-    // 防僵尸退场守护：已完成全部配置落盘、云端备份、钩子卸载与日志刷盘，若 CRT 静态析构或底层图形驱动在
-    // ExitProcess 阶段偶发锁竞争超时 (>1200ms)，自动强制终结进程，杜绝后台残留单线程僵尸实例。
+    // 防僵尸退场守护（必须在 CoUninitialize 之前启动！）：
+    // 此时全部配置落盘、云端备份、钩子卸载、单实例互斥体释放与日志刷盘均已 100% 完成；
+    // 若 CoUninitialize() 或后续 CRT 静态析构因 WebView2/COM STA 锁竞争阻塞 (>1200ms)，自动强杀清场，
+    // 彻底杜绝退出后留下无窗口僵尸进程锁死安装目录（导致应用内更新触发 Restart Manager 弹窗）。
     std::thread([finalExitCode]() {
         Sleep(1200);
         TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
     }).detach();
+
+    CoUninitialize();
     return finalExitCode;
 }
 

@@ -1768,6 +1768,36 @@ begin
   end;
 end;
 
+function HasCommandLineParameter(Parameter: String): Boolean;
+var
+  I: Integer;
+begin
+  Result := False;
+  for I := 1 to ParamCount do
+  begin
+    if Uppercase(ParamStr(I)) = Uppercase(Parameter) then
+    begin
+      Result := True;
+      Exit;
+    end;
+  end;
+end;
+
+// 抢在 Inno Setup 内置 wpPreparing (Windows Restart Manager) 扫描之前主动完成旧进程优雅退出与僵死清场：
+// 1. 彻底向下兼容 v1.4.10 及更早版本应用内更新传入的 /CLOSEAPPLICATIONS 参数；
+// 2. 避免旧版在 CoUninitialize() 阶段僵死后无窗口响应 Restart Manager，弹出“安装程序无法自动关闭所有应用程序”错误框。
+procedure PreClearProcessesBeforeRestartManager(const TargetAppDir: String);
+var
+  NormDir: String;
+begin
+  NormDir := RemoveBackslashUnlessRoot(Trim(TargetAppDir));
+  if NormDir = '' then Exit;
+  Log(Format('PreClearProcessesBeforeRestartManager: Clearing running/stale Tools3000 processes before wpPreparing for %s...', [NormDir]));
+  StopAndKillAllTools3000ProcessesForDir(NormDir);
+  WaitForProcessesAndFilesReleasedInDir(NormDir, 3000);
+  ClearStaleAppPendingFileRenames(NormDir);
+end;
+
 procedure InitializeWizard();
 begin
   ApplyComponentsListStyles();
@@ -1809,14 +1839,22 @@ begin
   DetailsMemo.Visible := False;
 
   TimerCallbackAddr := CreateCallback(@OnExtractTimer);
+
+  // 静默安装或应用内一键自动更新时，在进入 wpPreparing / Restart Manager 之前先完成清场与 PFRO 自愈
+  // （非静默交互向导延后至用户于 wpReady 明确点击“安装”时执行，避免取消安装误杀正在运行的实例）
+  if WizardSilent or HasCommandLineParameter('/AUTOUPDATE') or HasCommandLineParameter('/CLOSEAPPLICATIONS') then
+  begin
+    PreClearProcessesBeforeRestartManager(WizardDirValue);
+  end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
 begin
-  // 在用户点击“安装”(wpReady) 或静默安装进入 wpPreparing 之前瞬间执行 PFRO 自愈清理，
-  // 抢在 Inno Setup 内置 wpPreparing PendingFileRenameOperations 阻断门禁之前解除过期重启拦截。
+  // 在用户点击“安装”(wpReady) 进入 wpPreparing 之前瞬间执行进程清场与 PFRO 自愈清理，
+  // 抢在 Inno Setup 内置 wpPreparing Restart Manager / PendingFileRenameOperations 门禁之前消除锁定与重启拦截。
   if CurPageID = wpReady then
   begin
+    PreClearProcessesBeforeRestartManager(WizardDirValue);
     ClearStaleAppPendingFileRenames(WizardDirValue);
   end;
   Result := True;
@@ -2453,21 +2491,6 @@ begin
     end;
   finally
     Form.Free();
-  end;
-end;
-
-function HasCommandLineParameter(Parameter: String): Boolean;
-var
-  I: Integer;
-begin
-  Result := False;
-  for I := 1 to ParamCount do
-  begin
-    if Uppercase(ParamStr(I)) = Uppercase(Parameter) then
-    begin
-      Result := True;
-      Exit;
-    end;
   end;
 end;
 

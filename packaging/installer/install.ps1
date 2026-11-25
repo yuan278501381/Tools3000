@@ -363,8 +363,8 @@ if ($VerySilent) {
 }
 
 $InstallArgs += "/NORESTART"
-$InstallArgs += "/CLOSEAPPLICATIONS"
-$InstallArgs += "/FORCECLOSEAPPLICATIONS"
+$InstallArgs += "/NOCLOSEAPPLICATIONS"
+$InstallArgs += "/NORESTARTAPPLICATIONS"
 
 if ($Dir) {
     $InvalidChars = [System.IO.Path]::GetInvalidPathChars()
