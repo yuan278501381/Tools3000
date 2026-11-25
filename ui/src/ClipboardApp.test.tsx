@@ -235,11 +235,57 @@ describe('ClipboardApp', () => {
     const optionsForDelete = screen.getAllByRole('option');
     fireEvent.click(optionsForDelete[1]);
     fireEvent.click(optionsForDelete[2]);
-    const deleteBatchBtn = await screen.findByRole('button', { name: 'Delete (2)' });
-    fireEvent.click(deleteBatchBtn);
+    const deleteBatchBtns = await screen.findAllByRole('button', { name: 'Delete (2)' });
+    fireEvent.click(deleteBatchBtns[0]);
     await waitFor(() => {
       expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.deleteItems', {
         ids: [102, 103],
+        skipPinned: false,
+      });
+    });
+  });
+
+  it('keeps multi-selection when clicking checkbox directly, supports Ctrl+A -> Delete from empty search input, and routes detail Delete button to batch delete', async () => {
+    const { container } = render(<ClipboardApp />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rich formatted note')).toBeTruthy();
+    });
+
+    // 1. Ctrl+Click 选中第 1 条后直接点击第 2 条的复选框区域（不按 Ctrl），绝不清空已选集合
+    const options = screen.getAllByRole('option');
+    fireEvent.mouseDown(options[0], { button: 0, ctrlKey: true });
+    fireEvent.click(options[0], { detail: 1, ctrlKey: true });
+
+    const checkboxes = container.querySelectorAll('[data-clip-checkbox="true"]');
+    expect(checkboxes.length).toBe(3);
+    fireEvent.mouseDown(checkboxes[1], { button: 0 });
+    fireEvent.click(checkboxes[1], { detail: 1 });
+
+    // 多选态下右侧详情底栏删除按钮自动切换为批量删除，点击应调用 clipboard.deleteItems 而非 deleteItem
+    const detailBatchDeleteBtn = await screen.findByTestId('detail-batch-delete-btn');
+    expect(detailBatchDeleteBtn.textContent).toContain('Delete (2)');
+    fireEvent.click(detailBatchDeleteBtn);
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.deleteItems', {
+        ids: [101, 102],
+        skipPinned: false,
+      });
+    });
+    expect(bridgeRequestMock).not.toHaveBeenCalledWith('clipboard.deleteItem', expect.anything());
+
+    // 2. 焦点留在空搜索框时按 Ctrl+A -> Delete 应一键批量删除全部 3 条
+    bridgeRequestMock.mockClear();
+    const searchInput = screen.getByPlaceholderText('Search history, color, path or source app...');
+    searchInput.focus();
+    fireEvent.keyDown(searchInput, { key: 'a', ctrlKey: true });
+    await waitFor(() => {
+      expect(screen.getAllByRole('button', { name: 'Delete (3)' }).length).toBeGreaterThanOrEqual(1);
+    });
+    fireEvent.keyDown(searchInput, { key: 'Delete' });
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.deleteItems', {
+        ids: [101, 102, 103],
         skipPinned: false,
       });
     });

@@ -19,7 +19,7 @@ namespace tools3000::search {
 
 namespace {
 
-constexpr uint64_t kAppRefreshThrottleMs = 60'000ull;
+constexpr uint64_t kAppRefreshThrottleMs = 600'000ull;  // 10 分钟 TTL，过期走 SWR 后台静默热更新
 constexpr size_t kMaxIndexedApps = 2048;
 constexpr int kMaxStartMenuScanDepth = 4;
 constexpr int kMaxPortableScanDepth = 2;
@@ -575,6 +575,10 @@ std::string InstalledAppIndex::buildInitialsAcronym(std::string_view utf8Name) {
     return out;
 }
 
+InstalledAppIndex::~InstalledAppIndex() {
+    shutdown();
+}
+
 void InstalledAppIndex::setPortableAppDirs(std::vector<std::string> dirs) {
     std::vector<std::string> cleaned;
     cleaned.reserve(dirs.size());
@@ -587,6 +591,7 @@ void InstalledAppIndex::setPortableAppDirs(std::vector<std::string> dirs) {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (cleaned != m_portableDirs) {
         m_portableDirs = std::move(cleaned);
+        ++m_configVersion;
         m_dirty = true;
     }
 }
@@ -597,11 +602,109 @@ std::vector<std::string> InstalledAppIndex::getPortableAppDirs() const {
 }
 
 void InstalledAppIndex::clearCache() {
+    std::thread workerToJoin;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        ++m_configVersion;
+        if (!m_refreshInFlight && m_refreshWorker.joinable()) {
+            workerToJoin = std::move(m_refreshWorker);
+        }
+        m_entries.clear();
+        m_entries.shrink_to_fit();
+        m_lastRefreshTickMs = 0;
+        m_dirty = true;
+    }
+    if (workerToJoin.joinable()) {
+        workerToJoin.join();
+    }
+}
+
+void InstalledAppIndex::shutdown() {
+    m_shuttingDown.store(true, std::memory_order_release);
+    std::thread workerToJoin;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        ++m_configVersion;
+        if (m_refreshWorker.joinable()) {
+            workerToJoin = std::move(m_refreshWorker);
+        }
+        m_entries.clear();
+        m_entries.shrink_to_fit();
+        m_lastRefreshTickMs = 0;
+        m_dirty = true;
+    }
+    if (workerToJoin.joinable()) {
+        workerToJoin.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_refreshInFlight = false;
+    }
+    m_refreshCv.notify_all();
+}
+
+std::vector<InstalledAppEntry> InstalledAppIndex::buildFreshEntries(const std::vector<std::string>& portableDirs) {
+    std::vector<InstalledAppEntry> fresh;
+    fresh.reserve(256);
+    std::unordered_map<std::string, size_t> seenPaths;
+    std::unordered_map<std::string, size_t> seenStems;
+    seenPaths.reserve(512);
+    seenStems.reserve(512);
+
+    scanKnownStartMenuFolders(fresh, seenPaths, seenStems);
+    scanAppPathsRegistry(fresh, seenPaths, seenStems);
+    scanPortableDirectories(portableDirs, fresh, seenPaths, seenStems);
+
+    fresh.shrink_to_fit();
+    return fresh;
+}
+
+void InstalledAppIndex::launchAsyncRefreshLocked(
+    uint64_t expectedVersion,
+    std::vector<std::string> portableDirs) {
+    if (m_refreshInFlight || m_shuttingDown.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (m_refreshWorker.joinable()) {
+        m_refreshWorker.join();
+    }
+    m_refreshInFlight = true;
+    m_refreshWorker = std::thread([this, expectedVersion, dirs = std::move(portableDirs)]() {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+        std::vector<InstalledAppEntry> fresh;
+        try {
+            if (!m_shuttingDown.load(std::memory_order_acquire)) {
+                fresh = buildFreshEntries(dirs);
+            }
+        } catch (...) {
+            fresh.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            if (!m_shuttingDown.load(std::memory_order_acquire) &&
+                m_configVersion == expectedVersion) {
+                m_entries = std::move(fresh);
+                m_lastRefreshTickMs = GetTickCount64();
+                m_dirty = false;
+            }
+            m_refreshInFlight = false;
+        }
+        m_refreshCv.notify_all();
+    });
+}
+
+void InstalledAppIndex::warmupAsync() {
+    if (m_shuttingDown.load(std::memory_order_acquire)) {
+        return;
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_entries.clear();
-    m_entries.shrink_to_fit();
-    m_lastRefreshTickMs = 0;
-    m_dirty = true;
+    const uint64_t now = GetTickCount64();
+    const bool expired = (m_lastRefreshTickMs == 0 || now < m_lastRefreshTickMs ||
+                          (now - m_lastRefreshTickMs) >= kAppRefreshThrottleMs);
+    if (!m_dirty && !m_entries.empty() && !expired) {
+        return;
+    }
+    launchAsyncRefreshLocked(m_configVersion, m_portableDirs);
 }
 
 void InstalledAppIndex::scanKnownStartMenuFolders(
@@ -648,29 +751,44 @@ void InstalledAppIndex::scanPortableDirectories(
     }
 }
 
-void InstalledAppIndex::ensureFreshLocked() {
+void InstalledAppIndex::ensureFreshLocked(std::unique_lock<std::mutex>& lock) {
     const uint64_t now = GetTickCount64();
-    if (!m_dirty && !m_entries.empty() &&
-        m_lastRefreshTickMs > 0 && now >= m_lastRefreshTickMs &&
-        (now - m_lastRefreshTickMs) < kAppRefreshThrottleMs) {
+    const bool expired = (m_lastRefreshTickMs == 0 || now < m_lastRefreshTickMs ||
+                          (now - m_lastRefreshTickMs) >= kAppRefreshThrottleMs);
+
+    // 1. 缓存有效：0ms 命中
+    if (!m_dirty && !m_entries.empty() && !expired) {
         return;
     }
 
-    std::vector<InstalledAppEntry> fresh;
-    fresh.reserve(256);
-    std::unordered_map<std::string, size_t> seenPaths;
-    std::unordered_map<std::string, size_t> seenStems;
-    seenPaths.reserve(512);
-    seenStems.reserve(512);
+    // 2. Stale-While-Revalidate (SWR)：已有历史缓存且非配置主动变更脏态 ->
+    //    立刻 0ms 返回旧缓存，同时在后台低优先级线程静默热更新，彻底消灭 60s 周期同步卡顿。
+    if (!m_dirty && !m_entries.empty()) {
+        launchAsyncRefreshLocked(m_configVersion, m_portableDirs);
+        return;
+    }
 
-    scanKnownStartMenuFolders(fresh, seenPaths, seenStems);
-    scanAppPathsRegistry(fresh, seenPaths, seenStems);
-    scanPortableDirectories(m_portableDirs, fresh, seenPaths, seenStems);
+    // 3. 若后台预热正好正在跑当前版本的冷扫描，则直接汇合等待避免重复扫描磁盘
+    if (m_refreshInFlight && !m_dirty) {
+        m_refreshCv.wait(lock, [this]() {
+            return !m_refreshInFlight || m_shuttingDown.load(std::memory_order_acquire);
+        });
+        if (!m_entries.empty() && !m_dirty) {
+            return;
+        }
+    }
 
-    fresh.shrink_to_fit();
-    m_entries = std::move(fresh);
-    m_lastRefreshTickMs = now;
-    m_dirty = false;
+    // 4. 首次冷启动或便携目录刚变更：释放锁执行磁盘/注册表扫描，再在版本匹配时原子提交
+    const uint64_t expectedVersion = m_configVersion;
+    const std::vector<std::string> dirsSnapshot = m_portableDirs;
+    lock.unlock();
+    auto fresh = buildFreshEntries(dirsSnapshot);
+    lock.lock();
+    if (m_configVersion == expectedVersion) {
+        m_entries = std::move(fresh);
+        m_lastRefreshTickMs = GetTickCount64();
+        m_dirty = false;
+    }
 }
 
 nlohmann::json InstalledAppIndex::searchLocalApps(
@@ -684,8 +802,8 @@ nlohmann::json InstalledAppIndex::searchLocalApps(
     }
     const size_t safeLimit = (std::clamp<size_t>)(limit == 0 ? 30u : limit, 1u, 100u);
 
-    std::lock_guard<std::mutex> lock(m_mutex);
-    ensureFreshLocked();
+    std::unique_lock<std::mutex> lock(m_mutex);
+    ensureFreshLocked(lock);
 
     if (trimmed.empty()) {
         std::vector<const InstalledAppEntry*> sorted;

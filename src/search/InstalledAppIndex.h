@@ -14,12 +14,15 @@
 
 #include <nlohmann/json.hpp>
 
+#include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -71,13 +74,22 @@ public:
         size_t limit = 30,
         bool allowEmptyQuery = false);
 
-    /// 清空缓存释放内存（冷路径/退出时调用）
+    /// 异步预热或后台静默刷新应用索引（永不阻塞搜索主线程）
+    void warmupAsync();
+
+    /// 清空缓存释放内存（冷路径调用）
     void clearCache();
+
+    /// 退出前安全汇合后台刷新线程并释放内存
+    void shutdown();
 
 private:
     InstalledAppIndex() = default;
+    ~InstalledAppIndex();
 
-    void ensureFreshLocked();
+    void ensureFreshLocked(std::unique_lock<std::mutex>& lock);
+    void launchAsyncRefreshLocked(uint64_t expectedVersion, std::vector<std::string> portableDirs);
+    std::vector<InstalledAppEntry> buildFreshEntries(const std::vector<std::string>& portableDirs);
     void scanKnownStartMenuFolders(
         std::vector<InstalledAppEntry>& out,
         std::unordered_map<std::string, size_t>& seenPaths,
@@ -93,10 +105,15 @@ private:
         std::unordered_map<std::string, size_t>& seenStems);
 
     mutable std::mutex m_mutex;
+    std::condition_variable m_refreshCv;
     std::vector<InstalledAppEntry> m_entries;
     std::vector<std::string> m_portableDirs;
     uint64_t m_lastRefreshTickMs = 0;
+    uint64_t m_configVersion = 0;
     bool m_dirty = true;
+    bool m_refreshInFlight = false;
+    std::atomic<bool> m_shuttingDown{false};
+    std::thread m_refreshWorker;
 };
 
 struct FrecencyRecord {

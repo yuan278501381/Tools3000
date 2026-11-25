@@ -2397,9 +2397,9 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 设置窗口已隐藏",
             "[{}] Settings window hidden"
         }},
-        {"设置窗口已隐藏，已启动 1 分钟闲置自动销毁倒计时", {
-            "[{}] 设置窗口已隐藏，已启动 1 分钟闲置自动销毁倒计时",
-            "[{}] Settings window hidden, 1-minute idle auto-destroy timer started"
+        {"设置窗口已隐藏，已启动 {} 分钟闲置自动销毁倒计时", {
+            "[{}] 设置窗口已隐藏，已启动 {} 分钟闲置自动销毁倒计时",
+            "[{}] Settings window hidden, {}-minute idle auto-destroy timer started"
         }},
         {"设置窗口已隐藏（自动释放内存开关已关闭，保持后台常驻）", {
             "[{}] 设置窗口已隐藏（自动释放内存开关已关闭，保持后台常驻）",
@@ -2413,9 +2413,9 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 设置窗口已彻底销毁并释放 WebView2 渲染器",
             "[{}] Settings window completely destroyed and WebView2 renderer released"
         }},
-        {"设置窗口已闲置 1 分钟，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存", {
-            "[{}] 设置窗口已闲置 1 分钟，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存",
-            "[{}] Settings window has been idle for 1 minute; auto-destroying Win32 window and releasing WebView2 renderer RAM"
+        {"设置窗口已闲置到期，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存", {
+            "[{}] 设置窗口已闲置到期，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存",
+            "[{}] Settings window idle timeout reached; auto-destroying Win32 window and releasing WebView2 renderer RAM"
         }},
         {"CreateWindowExW 失败, error={}", {
             "[{}] CreateWindowExW 失败, error={}",

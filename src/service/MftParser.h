@@ -114,6 +114,14 @@ public:
     using SnapshotVisitor = std::function<void(const FileRecord&)>;
     void exportSnapshot(const SnapshotVisitor& visit, uint64_t& outLastUsn, uint32_t& outVolumeSerial) const;
 
+    // 多趟流式快照访问：在单次 m_MapMutex 共享锁内执行回调，使 DatabaseManager::saveSnapshot
+    // 以固定 4 MiB 缓冲直接分块落盘，彻底消除 300 万文件下 150-250 MB 临时堆峰值。
+    using StoreSnapshotCallback = std::function<bool(
+        const tools3000::service::FileIndexStore& store,
+        uint64_t lastUsn,
+        uint32_t volumeSerial)>;
+    bool withSnapshotLock(const StoreSnapshotCallback& fn) const;
+
     // 导入同理走拉取式回调：填充 out 并返回 true 表示还有下一条。调用方可以复用
     // 同一个 out，于是整个恢复过程只存在一份记录的临时字符串。
     using SnapshotProducer = std::function<bool(FileRecordInit& out)>;

@@ -243,10 +243,37 @@ export default function SearchApp() {
   const [visibleRange, setVisibleRange] = useState<{ start: number; end: number }>({ start: 0, end: 40 });
   const headerScrollRef = useRef<HTMLDivElement>(null);
   const isMountedRef = useRef(true);
+  const firstPaintNotifiedRef = useRef(false);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
+    };
+  }, []);
+
+  // 双 rAF 确认首帧实际渲染完成后再通知原生宿主切换 WebView2 可见，彻底杜绝机械盘冷启纯色黑屏
+  useEffect(() => {
+    if (firstPaintNotifiedRef.current) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    const notifyReady = () => {
+      if (firstPaintNotifiedRef.current) return;
+      firstPaintNotifiedRef.current = true;
+      if (fallbackTimer !== null) {
+        clearTimeout(fallbackTimer);
+        fallbackTimer = null;
+      }
+      void bridgeRequest('search.firstPaintReady', undefined, { silent: true }).catch(() => undefined);
+    };
+    fallbackTimer = setTimeout(notifyReady, 64);
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(notifyReady);
+    });
+    return () => {
+      if (raf1) cancelAnimationFrame(raf1);
+      if (raf2) cancelAnimationFrame(raf2);
+      if (fallbackTimer !== null) clearTimeout(fallbackTimer);
     };
   }, []);
 
@@ -1596,11 +1623,7 @@ export default function SearchApp() {
     );
   }, [snapshot.results, sortField, sortDirection, activePropertyCacheForSort, currentLocale]);
 
-  const resultsHidden =
-    showSyntaxHelp ||
-    isInitialIndexing ||
-    isServiceStarting ||
-    sortedResults.length === 0;
+  const resultsHidden = showSyntaxHelp || sortedResults.length === 0;
 
   const {
     propertyCache,
@@ -2645,6 +2668,7 @@ export default function SearchApp() {
             activeCategory={activeCategory}
             searchMode={searchMode}
             query={query}
+            snapshotQuery={snapshot.query}
             sortedResults={sortedResults}
             searchHistoryLength={searchHistory.length}
             scanElapsedSeconds={scanElapsedSeconds}

@@ -103,6 +103,9 @@ public:
     /// 获取最新性能指标
     PerfMetrics getMetrics() const;
 
+    /// 立即执行一次同步采样并返回最新性能指标（用于静默回收后的实时读数刷新）
+    PerfMetrics sampleNow();
+
     /// Serialized snapshot for process boundaries such as the opt-in benchmark
     /// runner. Keeping serialization behind the exported monitor avoids
     /// exposing non-DLL-exported PerfMetrics methods to host/plugin binaries.
@@ -154,6 +157,7 @@ private:
     mutable std::condition_variable m_wakeCv;
     mutable std::mutex m_wakeMutex;
 
+    mutable std::mutex m_sampleMutex;
     mutable std::mutex m_mutex;
     PerfMetrics m_currentMetrics;
     std::deque<PerfMetrics> m_history;

@@ -110,7 +110,7 @@ struct CachedBothNameRemainder {
 };
 
 constexpr size_t MaxCachedContentPlans = 4;
-constexpr size_t MaxPlanAnchorStates = 8;
+constexpr size_t MaxPlanAnchorStates = 4;
 constexpr auto ContentPlanCacheTtl = std::chrono::seconds(90);
 constexpr size_t ProgressiveFollowupMaxBatchHits = 60;
 
@@ -169,10 +169,11 @@ const char* serviceMemoryModeToString(ServiceMemoryMode mode) noexcept {
 }
 
 std::atomic<int> g_MemoryMode{static_cast<int>(ServiceMemoryMode::IdleTrim)};
-std::atomic<uint32_t> g_IdleTrimMinutes{5};
+std::atomic<uint32_t> g_IdleTrimMinutes{2};
 std::atomic<uint32_t> g_IdleStopMinutes{30};
 std::atomic<uint64_t> g_LastUserActivityTick{0};
 std::atomic<uint64_t> g_LastTrimmedAtMs{0};
+std::atomic<uint64_t> g_LastTrimMonotonicTick{0};
 std::atomic<bool> g_TrimmedDuringIdle{false};
 std::atomic<int> g_InFlightUserQueries{0};
 std::mutex g_MemoryTrimMutex;
@@ -339,7 +340,7 @@ void recordPlanScannedRange(
     for (auto& state : g_PlanAnchorStates) {
         if (state.planId == planId) {
             for (size_t idx = localStart; idx < clampedEnd; ++idx) {
-                if (state.scannedNormPaths.size() < 350000) {
+                if (state.scannedNormPaths.size() < 100000) {
                     state.scannedNormPaths.insert(normalizeCandidatePathKey(candidates[idx].fullPath));
                 }
             }
@@ -844,6 +845,50 @@ std::vector<std::vector<std::shared_ptr<MftParser>>> groupVolumesByPhysicalDisk(
     return groups;
 }
 
+void PerformGentlePostWorkTrim(const char* reason) {
+    if (!g_IsRunning.load(std::memory_order_acquire) ||
+        g_InFlightUserQueries.load(std::memory_order_acquire) > 0 ||
+        g_RebuildInProgress.load(std::memory_order_acquire) ||
+        g_InitialIndexWorkers.load(std::memory_order_acquire) > 0 ||
+        g_DynamicIndexWorkers.load(std::memory_order_acquire) > 0) {
+        return;
+    }
+    const auto mode = static_cast<ServiceMemoryMode>(g_MemoryMode.load(std::memory_order_acquire));
+    if (mode == ServiceMemoryMode::FullResident) {
+        return;
+    }
+
+    std::unique_lock<std::mutex> trimLock(g_MemoryTrimMutex, std::try_to_lock);
+    if (!trimLock.owns_lock()) {
+        return;
+    }
+
+    uint64_t beforeWs = 0;
+    uint64_t beforePriv = 0;
+    querySelfMemoryUsage(beforeWs, beforePriv);
+
+    const auto parsers = snapshotParsers();
+    for (const auto& parser : parsers) {
+        if (!parser) continue;
+        parser->shrinkIndexCapacity();
+    }
+
+    HeapCompact(GetProcessHeap(), 0);
+    if (g_InFlightUserQueries.load(std::memory_order_acquire) == 0) {
+        SetProcessWorkingSetSizeEx(GetCurrentProcess(), static_cast<SIZE_T>(-1), static_cast<SIZE_T>(-1), 0);
+    }
+
+    uint64_t afterWs = 0;
+    uint64_t afterPriv = 0;
+    querySelfMemoryUsage(afterWs, afterPriv);
+    spdlog::info(
+        "Service post-{} memory compact completed: workingSet {} MB -> {} MB, private {} MB",
+        reason ? reason : "work",
+        beforeWs / (1024ULL * 1024ULL),
+        afterWs / (1024ULL * 1024ULL),
+        afterPriv / (1024ULL * 1024ULL));
+}
+
 void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::string_view reason) {
     if (!g_AcceptBackgroundJobs.load(std::memory_order_acquire) || parsers.empty()) return;
     std::lock_guard lock(g_BackgroundJobMutex);
@@ -873,6 +918,9 @@ void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::stri
                 spdlog::error("{} database snapshot failed with unknown exception", reason);
             }
             g_SnapshotInProgress.store(false, std::memory_order_release);
+            if (!stop.stop_requested()) {
+                PerformGentlePostWorkTrim("snapshot");
+            }
         });
 }
 
@@ -931,6 +979,9 @@ bool scheduleRebuild() {
             spdlog::error("Rebuild snapshot failed with unknown exception");
         }
         g_RebuildInProgress.store(false, std::memory_order_release);
+        if (!stop.stop_requested()) {
+            PerformGentlePostWorkTrim("rebuild");
+        }
     });
     return true;
 }
@@ -997,6 +1048,7 @@ void PerformServiceMemoryTrim(uint64_t* outBeforeWs = nullptr, uint64_t* outAfte
     if (outAfterWs) *outAfterWs = afterWs;
 
     g_LastTrimmedAtMs.store(currentEpochMillis(), std::memory_order_release);
+    g_LastTrimMonotonicTick.store(GetTickCount64(), std::memory_order_release);
     g_TrimmedDuringIdle.store(true, std::memory_order_release);
     spdlog::info(
         "Service cold memory trim completed: workingSet {} MB -> {} MB, private {} MB",
@@ -1065,8 +1117,32 @@ void MemoryPolicyWatchdogThread() {
         const uint64_t trimThresholdMs = static_cast<uint64_t>(g_IdleTrimMinutes.load(std::memory_order_acquire)) * 60000ULL;
         const uint64_t stopThresholdMs = static_cast<uint64_t>(g_IdleStopMinutes.load(std::memory_order_acquire)) * 60000ULL;
 
+        // 闲置期高水位再修剪判定：首次达到闲置阈值立即修剪；若闲置期间被后台 USN 写盘活动
+        // （如 Docker / Syncthing）再次将工作集顶回 >= 64 MiB，则按冷却间隔温和再修剪，
+        // 避免常驻服务物理内存长时间飘在数百 MB 且保持 USN 监听 100% 存活。
+        constexpr uint64_t kIdleRetrimWatermarkBytes = 64ULL * 1024ULL * 1024ULL;
+        constexpr uint64_t kIdleRetrimMinCooldownMs = 120000ULL;
+        const auto shouldRunIdleTrim = [&]() -> bool {
+            if (idleMs < trimThresholdMs) return false;
+            if (!g_TrimmedDuringIdle.load(std::memory_order_acquire)) {
+                return true;
+            }
+            const uint64_t lastTrimTick = g_LastTrimMonotonicTick.load(std::memory_order_acquire);
+            const uint64_t sinceLastTrimMs = (lastTrimTick > 0 && nowTick >= lastTrimTick)
+                ? (nowTick - lastTrimTick)
+                : trimThresholdMs;
+            const uint64_t retrimCooldownMs = (std::max)(trimThresholdMs, kIdleRetrimMinCooldownMs);
+            if (sinceLastTrimMs < retrimCooldownMs) {
+                return false;
+            }
+            uint64_t curWs = 0;
+            uint64_t curPriv = 0;
+            querySelfMemoryUsage(curWs, curPriv);
+            return curWs >= kIdleRetrimWatermarkBytes;
+        };
+
         if (mode == ServiceMemoryMode::IdleTrim) {
-            if (!g_TrimmedDuringIdle.load(std::memory_order_acquire) && idleMs >= trimThresholdMs) {
+            if (shouldRunIdleTrim()) {
                 PerformServiceMemoryTrim();
             }
         } else if (mode == ServiceMemoryMode::IdleStop) {
@@ -1079,9 +1155,7 @@ void MemoryPolicyWatchdogThread() {
                 RequestServiceShutdown();
                 break;
             }
-            if (trimThresholdMs < stopThresholdMs &&
-                !g_TrimmedDuringIdle.load(std::memory_order_acquire) &&
-                idleMs >= trimThresholdMs) {
+            if (trimThresholdMs < stopThresholdMs && shouldRunIdleTrim()) {
                 PerformServiceMemoryTrim();
             }
         }
@@ -2938,6 +3012,8 @@ void IPCServerThread() {
         }
         if (!missingParsers.empty() || anyCatchUpRescanned) {
             scheduleSnapshot(initialParsers, anyCatchUpRescanned ? "USN catchup rescan" : "Updated complete");
+        } else {
+            HeapCompact(GetProcessHeap(), 0);
         }
     } else {
         spdlog::info("No valid database snapshot found, performing full MFT scan and building initial index...");
@@ -2982,7 +3058,7 @@ void IPCServerThread() {
     for (auto& parser : remainingParsers) {
         if (parser) parser->StopListening();
     }
-    tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
+    tools3000::service::launcher::AppsFolderCatalog::instance().shutdown();
     tools3000::service::QueryThreadPool::instance().shutdown();
     if (compatPipeDescriptor) LocalFree(compatPipeDescriptor);
     if (pipeDescriptor) LocalFree(pipeDescriptor);

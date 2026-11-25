@@ -1186,6 +1186,13 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 return {{"success", true}};
             });
         tools3000::core::MessageBridge::instance().registerHostHandler(
+            "search.firstPaintReady", [](const nlohmann::json&) -> nlohmann::json {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::SearchWindow::instance().markFirstPaintReady();
+                });
+                return {{"success", true}};
+            });
+        tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.minimize", [](const nlohmann::json&) -> nlohmann::json {
                 tools3000::core::MainThreadDispatcher::instance().post([]() {
                     tools3000::ui::SearchWindow::instance().minimize();
@@ -1721,6 +1728,66 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 out << "\n\n";
             }
         }
+
+        // 同步附带系统服务日志尾部（ProgramData\Tools3000\logs\Tools3000_Service.log，最多 512 KiB），
+        // 避免排查机械盘索引、USN 追赶与服务内存占用时缺少后台服务第一手诊断上下文。
+        {
+            wchar_t progDataBuf[MAX_PATH]{};
+            const DWORD pdLen = GetEnvironmentVariableW(L"ProgramData", progDataBuf, MAX_PATH);
+            std::filesystem::path serviceLogPath = (pdLen > 0 && pdLen < MAX_PATH)
+                ? (std::filesystem::path(progDataBuf) / L"Tools3000" / L"logs" / L"Tools3000_Service.log")
+                : (std::filesystem::path(L"C:\\ProgramData\\Tools3000\\logs\\Tools3000_Service.log"));
+            std::error_code svcEc;
+            if (std::filesystem::is_regular_file(serviceLogPath, svcEc) && !svcEc) {
+                HANDLE hSvc = CreateFileW(
+                    serviceLogPath.c_str(),
+                    GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr,
+                    OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL,
+                    nullptr);
+                if (hSvc != INVALID_HANDLE_VALUE) {
+                    LARGE_INTEGER fileSize{};
+                    constexpr LONGLONG kMaxServiceLogTailBytes = 512LL * 1024LL;
+                    bool truncatedHead = false;
+                    if (GetFileSizeEx(hSvc, &fileSize) && fileSize.QuadPart > kMaxServiceLogTailBytes) {
+                        LARGE_INTEGER seekPos{};
+                        seekPos.QuadPart = fileSize.QuadPart - kMaxServiceLogTailBytes;
+                        if (SetFilePointerEx(hSvc, seekPos, nullptr, FILE_BEGIN)) {
+                            truncatedHead = true;
+                        }
+                    }
+                    out << ">>> File: Tools3000_Service.log (ProgramData"
+                        << (truncatedHead ? ", tail 512 KiB" : "")
+                        << ") <<<\n";
+                    std::vector<char> svcBuf(64 * 1024);
+                    DWORD bytesRead = 0;
+                    bool skipPartialFirstLine = truncatedHead;
+                    while (ReadFile(hSvc, svcBuf.data(), static_cast<DWORD>(svcBuf.size()), &bytesRead, nullptr) &&
+                           bytesRead > 0) {
+                        const char* ptr = svcBuf.data();
+                        DWORD len = bytesRead;
+                        if (skipPartialFirstLine) {
+                            const void* nl = std::memchr(ptr, '\n', len);
+                            if (nl) {
+                                const size_t offset = static_cast<const char*>(nl) - ptr + 1;
+                                ptr += offset;
+                                len -= static_cast<DWORD>(offset);
+                                skipPartialFirstLine = false;
+                            } else {
+                                continue;
+                            }
+                        }
+                        if (len > 0) {
+                            out.write(ptr, static_cast<std::streamsize>(len));
+                        }
+                    }
+                    CloseHandle(hSvc);
+                    out << "\n\n";
+                }
+            }
+        }
         out.close();
 
         // 自动在资源管理器中高亮选中导出的日志
@@ -2174,8 +2241,16 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             if (!params.is_object() || !params.contains("ids") || !params["ids"].is_array()) return out;
             out.reserve((std::min<size_t>)(params["ids"].size(), 1000u));
             for (const auto& v : params["ids"]) {
-                if (v.is_number_unsigned()) out.push_back(v.get<uint64_t>());
-                else if (v.is_number_integer() && v.get<int64_t>() > 0) out.push_back(static_cast<uint64_t>(v.get<int64_t>()));
+                if (v.is_number_unsigned()) {
+                    out.push_back(v.get<uint64_t>());
+                } else if (v.is_number_integer() && v.get<int64_t>() > 0) {
+                    out.push_back(static_cast<uint64_t>(v.get<int64_t>()));
+                } else if (v.is_number_float()) {
+                    const double d = v.get<double>();
+                    if (d > 0.0 && d < 9007199254740992.0 && std::floor(d) == d) {
+                        out.push_back(static_cast<uint64_t>(d));
+                    }
+                }
                 if (out.size() >= 1000u) break;
             }
             return out;
@@ -2214,6 +2289,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             const auto ids = extractIdList(params);
             const bool skipPinned = params.is_object() ? params.value("skipPinned", false) : false;
             const uint32_t removed = tools3000::clipboard::ClipboardManager::instance().deleteItems(ids, skipPinned);
+            LOG_INFO("Clipboard IPC deleteItems: requested={}, removed={}, skipPinned={}",
+                     ids.size(), removed, skipPinned);
             return {{"success", true}, {"removed", removed}};
         });
 

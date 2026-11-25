@@ -38,7 +38,7 @@ enum class ExportProgressState : int32_t {
 struct ExportProgressPacket {
     double progress01 = 0.0;
     int32_t state = 0;
-    int32_t reserved = 0;
+    int32_t errorBytes = 0; // DoneFail 时紧随本包之后的 UTF-8 错误摘要字节数（<= 1024）
 };
 
 json watermarkToJson(const WatermarkConfig& wm) {
@@ -497,6 +497,12 @@ StudioExportWorkerOutcome exportStudioMediaOutOfProcess(
         }
         if (st == ExportProgressState::DoneFail || st == ExportProgressState::Canceled) {
             outcome.succeeded = false;
+            if (st == ExportProgressState::DoneFail && pkt.errorBytes > 0 && pkt.errorBytes <= 1024) {
+                std::string errBuf(static_cast<size_t>(pkt.errorBytes), '\0');
+                if (worker::readExact(pipeServer.get(), errBuf.data(), static_cast<DWORD>(pkt.errorBytes), /*overlapped=*/true)) {
+                    outcome.errorDetail = std::move(errBuf);
+                }
+            }
             sawTerminalPacket = true;
             break;
         }
@@ -518,7 +524,18 @@ StudioExportWorkerOutcome exportStudioMediaOutOfProcess(
         DWORD exitCode = 1;
         if (GetExitCodeProcess(childProc.get(), &exitCode) && exitCode == 0) {
             outcome.succeeded = true;
+        } else if (outcome.errorDetail.empty()) {
+            outcome.errorDetail = "worker_exited_unexpectedly(code=" + std::to_string(exitCode) + ")";
         }
+    }
+    if (!outcome.succeeded && (!cancelFlag || !cancelFlag->load(std::memory_order_acquire))) {
+        LOG_WARN("StudioExportWorker: export failed (pid={}, format={}, res={}, fps={}, quality={}, detail={})",
+                 childPid,
+                 static_cast<int>(exportOpts.format),
+                 static_cast<int>(exportOpts.resolution),
+                 exportOpts.fps,
+                 static_cast<int>(exportOpts.quality),
+                 outcome.errorDetail.empty() ? "unknown" : outcome.errorDetail);
     }
     return outcome;
 }
@@ -560,12 +577,22 @@ int runStudioExportWorkerProcess(int argc, const wchar_t* const* argv) {
         }
     }
 
-    auto sendPacket = [&pipe](double progress01, ExportProgressState st) {
-        ExportProgressPacket pkt{std::clamp(progress01, 0.0, 1.0), static_cast<int32_t>(st), 0};
-        worker::writePod(pipe.get(), pkt, /*overlapped=*/false);
+    auto sendPacket = [&pipe](double progress01, ExportProgressState st, const std::string& errDetail = {}) {
+        const size_t clampedErrLen = (st == ExportProgressState::DoneFail)
+            ? (std::min<size_t>)(errDetail.size(), 1024u)
+            : 0u;
+        ExportProgressPacket pkt{
+            std::clamp(progress01, 0.0, 1.0),
+            static_cast<int32_t>(st),
+            static_cast<int32_t>(clampedErrLen)
+        };
+        if (worker::writePod(pipe.get(), pkt, /*overlapped=*/false) && clampedErrLen > 0) {
+            worker::writeExact(pipe.get(), errDetail.data(), static_cast<DWORD>(clampedErrLen), /*overlapped=*/false);
+        }
     };
 
     bool ok = false;
+    std::string exportErrorDetail;
     {
         std::ifstream ifs(std::filesystem::path(jobPathW), std::ios::binary);
         std::ostringstream oss;
@@ -592,7 +619,10 @@ int runStudioExportWorkerProcess(int argc, const wchar_t* const* argv) {
                         sendPacket(clamped, ExportProgressState::Running);
                     }
                 },
-                &cancelFlag);
+                &cancelFlag,
+                &exportErrorDetail);
+        } else {
+            exportErrorDetail = "invalid_export_job_payload";
         }
     }
 
@@ -602,7 +632,10 @@ int runStudioExportWorkerProcess(int argc, const wchar_t* const* argv) {
     }
 
     const bool canceled = cancelFlag.load(std::memory_order_acquire);
-    sendPacket(ok ? 1.0 : 0.0, canceled ? ExportProgressState::Canceled : (ok ? ExportProgressState::DoneOk : ExportProgressState::DoneFail));
+    sendPacket(
+        ok ? 1.0 : 0.0,
+        canceled ? ExportProgressState::Canceled : (ok ? ExportProgressState::DoneOk : ExportProgressState::DoneFail),
+        exportErrorDetail);
     FlushFileBuffers(pipe.get());
     pipe.reset();
     watchdog.stop();

@@ -2688,9 +2688,9 @@ TEST(FileIndexStoreTest, UpsertReusesUnchangedNameArenaAndUpdatesMetadataInPlace
 
     // Direct in-place metadata refresh for USN BASIC_INFO_CHANGE / CLOSE
     EXPECT_TRUE(store.updateMetadata(42001ULL, 987654ULL, 133100000000000000ULL, 133200000000000000ULL));
-    EXPECT_EQ(stored->fileSize, 987654ULL);
-    EXPECT_EQ(stored->creationTime, 133100000000000000ULL);
-    EXPECT_EQ(stored->lastWriteTime, 133200000000000000ULL);
+    EXPECT_EQ(store.fileSizeOf(*stored), 987654ULL);
+    EXPECT_EQ(store.creationTimeOf(*stored), 133100000000000000ULL);
+    EXPECT_EQ(store.lastWriteTimeOf(*stored), 133200000000000000ULL);
 
     EXPECT_FALSE(store.updateMetadata(999999ULL, 1ULL, 1ULL, 1ULL));
     EXPECT_TRUE(store.erase(42001ULL));
@@ -3854,18 +3854,18 @@ TEST(DirectoryAggregateSizeFilterTest, ComputesRecursiveFolderSizesPropagatesDel
 
     ASSERT_NE(store.find(100), nullptr);
     ASSERT_NE(store.find(101), nullptr);
-    EXPECT_EQ(store.find(100)->fileSize, 40 * kMiB);
-    EXPECT_EQ(store.find(101)->fileSize, 40 * kMiB);
+    EXPECT_EQ(store.fileSizeOf(*store.find(100)), 40 * kMiB);
+    EXPECT_EQ(store.fileSizeOf(*store.find(101)), 40 * kMiB);
 
     // 子文件扩容至 95MB -> 父目录链同步增加 55MB
     store.updateMetadata(102, 95 * kMiB, 1000, 2000);
-    EXPECT_EQ(store.find(101)->fileSize, 95 * kMiB);
-    EXPECT_EQ(store.find(100)->fileSize, 95 * kMiB);
+    EXPECT_EQ(store.fileSizeOf(*store.find(101)), 95 * kMiB);
+    EXPECT_EQ(store.fileSizeOf(*store.find(100)), 95 * kMiB);
 
     // 删除子文件 -> 父目录链聚合体积归零
     EXPECT_TRUE(store.erase(102));
-    EXPECT_EQ(store.find(101)->fileSize, 0ULL);
-    EXPECT_EQ(store.find(100)->fileSize, 0ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(101)), 0ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(100)), 0ULL);
 }
 
 TEST(SearchPluginInteractionAndSettingsSyncTest, ReturnsFileNotFoundCodeAndPersistsUiPreferencesRoundTrip) {
@@ -4042,7 +4042,7 @@ TEST(SearchServiceWakeupNonBlockingTest, MarkMetadataDirtyAndFastConcurrentDbSta
     // 后台水合完成后再次恢复水合标记
     EXPECT_TRUE(store.updateMetadata(200ULL, 8192ULL, 133500000000000000ULL, 133500010000000000ULL));
     EXPECT_TRUE(store.find(200ULL)->isMetadataHydrated());
-    EXPECT_EQ(store.find(200ULL)->fileSize, 8192ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(200ULL)), 8192ULL);
 
     // 验证 bulkImport + recomputeHierarchyMetadata 按树深桶排汇总跨多层目录大小与原语义完全一致
     FileRecordInit subDir{};
@@ -4065,8 +4065,8 @@ TEST(SearchServiceWakeupNonBlockingTest, MarkMetadataDirtyAndFastConcurrentDbSta
     store.recomputeHierarchyMetadata();
     ASSERT_NE(store.find(101ULL), nullptr);
     ASSERT_NE(store.find(100ULL), nullptr);
-    EXPECT_EQ(store.find(101ULL)->fileSize, 2048ULL);
-    EXPECT_EQ(store.find(100ULL)->fileSize, 8192ULL + 2048ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(101ULL)), 2048ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(100ULL)), 8192ULL + 2048ULL);
 
     // 验证 DatabaseManager::getStats 在快照保存/加载前后毫秒级无锁返回
     wchar_t tempDirBuf[MAX_PATH]{};
@@ -5322,4 +5322,273 @@ TEST(SensitivePathGuardTest, SkipsBrowserCredentialFilesAndDirsWithoutFalsePosit
     }
     EXPECT_FALSE(sawChromePref) << "Browser User Data must never be scanned by content search";
     EXPECT_TRUE(sawMyToolSettings) << "Regular AppData config file should remain searchable when appdata is queried";
+}
+
+TEST(CompactIndexStore1BTest, FortyByteRecordDualTrackArenaAndLargeFile64BitRoundTrip) {
+    using tools3000::service::FileIndexStore;
+    using tools3000::service::FileViewScratch;
+    using tools3000::service::StoredFileRecord;
+    using tools3000::service::StringArena;
+
+    static_assert(sizeof(StoredFileRecord) == 40, "StoredFileRecord must remain exactly 40 bytes");
+
+    // 1. 验证双轨 StringArena：ASCII 走 1-byte 轨道、CJK 走原生 2-byte UTF-16 轨道，且跨轨道比较与拷贝完全一致
+    StringArena arena;
+    const uint32_t asciiOff = arena.internAsciiFromWide(L"AlphaReport.pdf");
+    const uint32_t wideOff = arena.intern(L"财务报告_2026.docx");
+    EXPECT_TRUE(arena.equalsName(asciiOff, 15, true, L"AlphaReport.pdf"));
+    EXPECT_FALSE(arena.equalsName(asciiOff, 15, true, L"alphareport.pdf"));
+    EXPECT_TRUE(arena.equalsName(wideOff, 14, false, L"财务报告_2026.docx"));
+
+    const uint32_t asciiUpperOff = arena.internAsciiFromWide(L"ALPHAREPORT.PDF");
+    EXPECT_EQ(arena.compareNamesIgnoreCase(asciiOff, 15, true, asciiUpperOff, 15, true), 0);
+    EXPECT_NE(arena.compareNamesExact(asciiOff, 15, true, asciiUpperOff, 15, true), 0);
+    EXPECT_LT(arena.compareNamesIgnoreCase(asciiOff, 15, true, wideOff, 14, false), 0);
+
+    // 2. 验证 >= 4 GiB 大文件与跨目录聚合体积的 64-bit 精确性以及 < 4 GiB 回落清理
+    FileIndexStore store;
+    store.setDriveLetter('D');
+    constexpr uint64_t kSixGiB = 6ULL * 1024ULL * 1024ULL * 1024ULL + 12345ULL;
+    constexpr uint64_t kFiveGiB = 5ULL * 1024ULL * 1024ULL * 1024ULL + 67890ULL;
+
+    FileRecordInit dir{};
+    dir.fileReferenceNumber = 10;
+    dir.parentFileReferenceNumber = 0;
+    dir.fileName = L"VMImages";
+    dir.isDirectory = true;
+    dir.fileAttributes = FILE_ATTRIBUTE_DIRECTORY;
+    store.upsert(dir, true, true);
+
+    FileRecordInit big1{};
+    big1.fileReferenceNumber = 11;
+    big1.parentFileReferenceNumber = 10;
+    big1.fileName = L"win11_dev.vmdk";
+    big1.isDirectory = false;
+    big1.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    big1.fileSize = kSixGiB;
+    big1.lastWriteTime = 134150000000000000ULL;
+    store.upsert(big1, true, true);
+
+    FileRecordInit big2{};
+    big2.fileReferenceNumber = 12;
+    big2.parentFileReferenceNumber = 10;
+    big2.fileName = L"备份镜像_2026.iso";
+    big2.isDirectory = false;
+    big2.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+    big2.fileSize = kFiveGiB;
+    big2.lastWriteTime = 134160000000000000ULL;
+    store.upsert(big2, true, true);
+
+    store.recomputeHierarchyMetadata();
+
+    const auto* dirRec = store.find(10);
+    const auto* big1Rec = store.find(11);
+    const auto* big2Rec = store.find(12);
+    ASSERT_NE(dirRec, nullptr);
+    ASSERT_NE(big1Rec, nullptr);
+    ASSERT_NE(big2Rec, nullptr);
+    EXPECT_TRUE(big1Rec->isAsciiName());
+    EXPECT_FALSE(big2Rec->isAsciiName());
+    EXPECT_EQ(store.fileSizeOf(*big1Rec), kSixGiB);
+    EXPECT_EQ(store.fileSizeOf(*big2Rec), kFiveGiB);
+    EXPECT_EQ(store.fileSizeOf(*dirRec), kSixGiB + kFiveGiB);
+
+    // 缩小到 < 4 GiB 时溢出表自动回收且父目录聚合大小同步更新
+    EXPECT_TRUE(store.updateMetadata(11, 2048ULL, 0ULL, 134170000000000000ULL));
+    EXPECT_EQ(store.fileSizeOf(*store.find(11)), 2048ULL);
+    EXPECT_EQ(store.fileSizeOf(*store.find(10)), 2048ULL + kFiveGiB);
+    EXPECT_EQ(store.lastWriteTimeOf(*store.find(11)), 134170000000000000ULL);
+
+    // 3. 验证 3-pass 流式快照保存与重新加载对 ASCII/CJK/>=4GiB 文件 100% 无损保真
+    wchar_t tempDirBuf[MAX_PATH]{};
+    ASSERT_GT(GetTempPathW(MAX_PATH, tempDirBuf), 0u);
+    const std::filesystem::path snapDir = std::filesystem::path(tempDirBuf) /
+        (L"t3k_stream_snap_1b_" + std::to_wstring(GetCurrentProcessId()));
+    std::error_code ec;
+    std::filesystem::remove_all(snapDir, ec);
+    ASSERT_TRUE(std::filesystem::create_directories(snapDir, ec));
+    struct CleanupGuard {
+        std::filesystem::path p;
+        ~CleanupGuard() {
+            std::error_code ignoreEc;
+            std::filesystem::remove_all(p, ignoreEc);
+        }
+    } cleanup{snapDir};
+
+    MftParser writer;
+    writer.setRealTimeValidation(false);
+    ASSERT_TRUE(writer.importSnapshot({dir, big1, big2}, 77777ULL, /*volumeSerial=*/0));
+
+    auto& dbMgr = tools3000::service::db::DatabaseManager::instance();
+    const std::wstring prevDbPath = dbMgr.getDbPath();
+    dbMgr.init((snapDir / L"Tools3000_StreamTest.db").wstring());
+    std::vector<MftParser*> writers = {&writer};
+    ASSERT_TRUE(dbMgr.saveSnapshot(writers));
+
+    MftParser reader;
+    reader.setRealTimeValidation(false);
+    std::vector<MftParser*> readers = {&reader};
+    ASSERT_TRUE(dbMgr.loadSnapshot(readers));
+    dbMgr.init(prevDbPath);
+
+    EXPECT_EQ(reader.getFileCount(), 3u);
+    const auto bigHits = reader.Search(L"size:>4gb", 50);
+    ASSERT_EQ(bigHits.size(), 2u);
+    const auto cjkHits = reader.Search(L"bfjx", 50);
+    ASSERT_EQ(cjkHits.size(), 1u);
+    EXPECT_EQ(cjkHits[0].fileName, L"备份镜像_2026.iso");
+    EXPECT_EQ(cjkHits[0].fileSize, kFiveGiB);
+}
+
+TEST(FullSyntaxAccuracyAndCountConservationTest, AllSupportedSyntaxesAndBoundedHydrationPreserveExactCounts) {
+    // 构造精确基准日期的 FILETIME（UTC）：2026-06-15 12:00:00 与 2020-03-10 08:00:00
+    auto makeUtcFileTime = [](WORD year, WORD month, WORD day, WORD hour) -> uint64_t {
+        SYSTEMTIME st{};
+        st.wYear = year;
+        st.wMonth = month;
+        st.wDay = day;
+        st.wHour = hour;
+        FILETIME ft{};
+        SystemTimeToFileTime(&st, &ft);
+        ULARGE_INTEGER uli{};
+        uli.LowPart = ft.dwLowDateTime;
+        uli.HighPart = ft.dwHighDateTime;
+        return uli.QuadPart;
+    };
+    const uint64_t ft2026 = makeUtcFileTime(2026, 6, 15, 12);
+    const uint64_t ft2020 = makeUtcFileTime(2020, 3, 10, 8);
+    constexpr uint64_t kMiB = 1024ULL * 1024ULL;
+    constexpr uint64_t kGiB = 1024ULL * kMiB;
+
+    auto parser = std::make_unique<MftParser>();
+    ASSERT_TRUE(parser->Initialize('C'));
+    parser->setRealTimeValidation(false);
+
+    std::vector<FileRecordInit> records;
+    auto pushRec = [&](uint64_t frn, uint64_t parent, const wchar_t* name, bool isDir,
+                       uint64_t size, uint64_t mtime, DWORD attrs = FILE_ATTRIBUTE_ARCHIVE) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = isDir;
+        r.fileSize = size;
+        r.lastWriteTime = mtime;
+        r.fileAttributes = isDir ? (FILE_ATTRIBUTE_DIRECTORY | attrs) : attrs;
+        records.push_back(std::move(r));
+    };
+
+    // 目录树
+    pushRec(10, 0, L"Workspace", true, 0, ft2026);
+    pushRec(11, 10, L"Finance", true, 0, ft2026);
+    pushRec(12, 10, L"Engineering", true, 0, ft2026);
+    pushRec(13, 0, L"$Recycle.Bin", true, 0, ft2026);
+
+    // 涵盖所有语法的核心样本
+    pushRec(101, 11, L"财务报告_2026.docx", false, 5 * kMiB, ft2026);
+    pushRec(102, 11, L"项目管理方案.pdf", false, 2 * kMiB, ft2026);
+    pushRec(103, 11, L"quarterly report 2026.xlsx", false, 8 * kMiB, ft2026);
+    pushRec(104, 12, L"report_2026.pdf", false, 512, ft2026);
+    pushRec(105, 12, L"report_2020.pdf", false, 6 * kGiB, ft2020);
+    pushRec(106, 12, L"AlphaDraft.md", false, 4096, ft2026);
+    pushRec(107, 12, L"AlphaRelease.md", false, 4096, ft2026);
+    pushRec(108, 12, L"BetaSpec.pdf", false, 3 * kMiB, ft2026);
+    pushRec(109, 12, L"CaseTarget.txt", false, 1024, ft2026);
+    pushRec(110, 12, L"casetarget.txt", false, 1024, ft2026);
+    pushRec(111, 12, L"hidden_secret.cfg", false, 512, ft2026, FILE_ATTRIBUTE_HIDDEN);
+    pushRec(112, 13, L"recycled_project_batch_0.txt", false, 1024, ft2026);
+
+    // 300 条批量样本（超过 HDD 24 条与 SSD 100 条水合上限）+ 4 条回收站干扰项
+    for (uint64_t i = 0; i < 300; ++i) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = 1000 + i;
+        r.parentFileReferenceNumber = 12;
+        r.fileName = L"project_batch_" + std::to_wstring(i) + L".txt";
+        r.isDirectory = false;
+        r.fileSize = 2048 + i;
+        r.lastWriteTime = ft2026;
+        r.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        records.push_back(std::move(r));
+    }
+    for (uint64_t i = 1; i <= 4; ++i) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = 2000 + i;
+        r.parentFileReferenceNumber = 13;
+        r.fileName = L"recycled_project_batch_" + std::to_wstring(i) + L".txt";
+        r.isDirectory = false;
+        r.fileSize = 1024;
+        r.lastWriteTime = ft2026;
+        r.fileAttributes = FILE_ATTRIBUTE_ARCHIVE;
+        records.push_back(std::move(r));
+    }
+
+    ASSERT_TRUE(parser->importSnapshot(std::move(records), 88888ULL, /*volumeSerial=*/0));
+
+    // 1. 纯中文关键词与拼音首字母
+    EXPECT_EQ(parser->Search(L"财务报告", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"cwbg", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"xmgl", 50).size(), 1u);
+    // 禁用拼音 nopy:
+    EXPECT_EQ(parser->Search(L"nopy:cwbg", 50).size(), 0u);
+
+    // 2. 扩展名与多扩展名 ext:
+    EXPECT_EQ(parser->Search(L"ext:pdf", 50).size(), 4u);
+    EXPECT_EQ(parser->Search(L"ext:docx;xlsx", 50).size(), 2u);
+
+    // 3. 通配符 * 与 ?
+    EXPECT_EQ(parser->Search(L"report_202?.pdf", 50).size(), 2u);
+    EXPECT_EQ(parser->Search(L"*.md", 50).size(), 2u);
+
+    // 4. 逻辑 NOT (!)、OR (|) 与引号精确短语
+    EXPECT_EQ(parser->Search(L"Alpha !Draft", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"AlphaRelease|BetaSpec", 50).size(), 2u);
+    EXPECT_EQ(parser->Search(L"\"quarterly report\"", 50).size(), 1u);
+
+    // 5. 路径/父目录过滤 path: / parent: / 斜杠片段 / 盘符
+    EXPECT_EQ(parser->Search(L"path:Finance", 50).size(), 4u);  // Finance 目录本身 + 3 个子文件
+    EXPECT_EQ(parser->Search(L"parent:Finance file:", 50).size(), 3u);
+    EXPECT_EQ(parser->Search(L"Finance\\财务", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"c: BetaSpec", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"d: BetaSpec", 50).size(), 0u);
+
+    // 6. 类型限定 folder: / dir: / file:
+    EXPECT_EQ(parser->Search(L"folder: Finance", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"dir: Workspace", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"file: Finance", 50).size(), 0u);
+
+    // 7. 大小过滤（含 >= 4 GiB 64-bit 溢出表精确过滤）
+    EXPECT_EQ(parser->Search(L"size:>4gb", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"size:>4gb", 50)[0].fileName, L"report_2020.pdf");
+    EXPECT_EQ(parser->Search(L"size:1mb..10mb file:", 50).size(), 4u);
+    EXPECT_EQ(parser->Search(L"size:<1kb file: report", 50).size(), 1u);
+
+    // 8. 修改日期过滤 dm:（验证 1-second Unix 时间戳精度）
+    EXPECT_EQ(parser->Search(L"dm:2020-01-01..2020-12-31 file:", 50).size(), 1u);
+    EXPECT_EQ(parser->Search(L"dm:2026-06-01..2026-06-30 ext:pdf", 50).size(), 3u);
+
+    // 9. 正则表达式 regex:
+    EXPECT_EQ(parser->Search(L"regex:^report_\\d{4}\\.pdf$", 50).size(), 2u);
+
+    // 10. 大小写敏感选项
+    SearchParseOptions csOpts{};
+    csOpts.caseSensitive = true;
+    EXPECT_EQ(parser->Search(L"CaseTarget.txt", 50, {}, {}, csOpts).size(), 1u);
+    csOpts.caseSensitive = false;
+    EXPECT_EQ(parser->Search(L"CaseTarget.txt", 50, {}, {}, csOpts).size(), 2u);
+
+    // 11. 隐藏文件过滤
+    SearchExcludeOptions hideOpts{};
+    hideOpts.excludeHidden = true;
+    EXPECT_EQ(parser->Search(L"hidden_secret", 50, hideOpts).size(), 0u);
+    hideOpts.excludeHidden = false;
+    EXPECT_EQ(parser->Search(L"hidden_secret", 50, hideOpts).size(), 1u);
+
+    // 12. 大结果集有界水合数量守恒：300 条常规文件 100% 全部返回，5 条 $Recycle.Bin 100% 纯内存剔除
+    const auto batchHits = parser->Search(L"project_batch_", 500);
+    EXPECT_EQ(batchHits.size(), 300u);
+    for (const auto& h : batchHits) {
+        EXPECT_EQ(h.fullPath.find(L"$Recycle.Bin"), std::wstring::npos);
+    }
+    // 显式搜 recycle 时可找回回收站里的 5 条
+    EXPECT_EQ(parser->Search(L"recycle project_batch_", 50).size(), 5u);
 }

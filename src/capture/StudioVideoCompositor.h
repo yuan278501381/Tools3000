@@ -136,7 +136,11 @@ public:
         const StudioRenderConfig& config,
         const StudioExportOptions& exportOpts,
         const std::function<void(double progress01)>& onProgress = nullptr,
-        const std::atomic<bool>* cancelFlag = nullptr);
+        const std::atomic<bool>* cancelFlag = nullptr,
+        std::string* outErrorDetail = nullptr);
+
+    /// 返回当前线程最近一次 exportStudioMedia 失败时的结构化诊断摘要（成功时为空）
+    static std::string lastExportErrorDetail();
 
     /// 兼容快捷入口：将原始纯净底片 MP4 与事件时间轴按原尺寸合成为美化 MP4
     static bool exportRenderedVideo(

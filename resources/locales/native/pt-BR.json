@@ -982,5 +982,7 @@
   "Auto script: {0}": "Idioma auto: {0}",
   "Refining {0} low-confidence text lines...": "Refinando {0} linhas de baixa confiança...",
   "Refining": "Refinando",
-  "Detected {0}, re-recognizing with script pack...": "Detectado {0}, reconhecendo novamente com pacote de idioma..."
+  "Detected {0}, re-recognizing with script pack...": "Detectado {0}, reconhecendo novamente com pacote de idioma...",
+  "Export destination is locked or unwritable; raw recording preserved": "O destino de exportação está bloqueado ou sem permissão de gravação; a gravação original foi preservada",
+  "Encoder initialization failed for this format; raw recording preserved": "Falha ao inicializar o codificador para este formato; a gravação original foi preservada"
 }

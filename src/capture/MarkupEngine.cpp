@@ -342,6 +342,8 @@ bool MarkupEngine::elementEquivalent(const MarkupElement& a, const MarkupElement
         a.text != b.text ||
         std::abs(a.fontSize - b.fontSize) > 1e-3f ||
         std::abs(a.textMaxWidth - b.textMaxWidth) > 0.5f ||
+        a.hasCustomTextWidth != b.hasCustomTextWidth ||
+        std::abs(a.customTextBoxHeight - b.customTextBoxHeight) > 0.5f ||
         a.textOutline != b.textOutline ||
         a.textOutlineColor != b.textOutlineColor ||
         std::abs(a.outlineThickness - b.outlineThickness) > 1e-3f ||
@@ -499,7 +501,7 @@ void MarkupEngine::updateBaseImage(const cv::Mat& image) {
     m_baseImage = image.clone();
     if (m_baseImage.cols > 0) {
         for (auto& e : m_elements) {
-            if (e && e->tool == MarkupTool::Text) {
+            if (e && e->tool == MarkupTool::Text && !e->hasCustomTextWidth) {
                 e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
                     m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
                 e->textRenderSize = cv::Size(0, 0);
@@ -517,7 +519,7 @@ void MarkupEngine::translateAll(int dx, int dy) {
     for (auto& e : m_elements) {
         if (e) {
             e->moveBy(dx, dy);
-            if (e->tool == MarkupTool::Text && m_baseImage.cols > 0) {
+            if (e->tool == MarkupTool::Text && !e->hasCustomTextWidth && m_baseImage.cols > 0) {
                 e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
                     m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
                 e->textRenderSize = cv::Size(0, 0);
@@ -1302,7 +1304,7 @@ void MarkupEngine::renderSubset(cv::Mat& canvas, size_t count, bool includeActiv
     }
 
     auto syncTextWrapWidthForCanvas = [](const cv::Mat& targetCanvas, const MarkupElement& element) {
-        if (element.tool != MarkupTool::Text || targetCanvas.cols <= 0) return;
+        if (element.tool != MarkupTool::Text || element.hasCustomTextWidth || targetCanvas.cols <= 0) return;
         const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
             targetCanvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
         if (std::abs(element.textMaxWidth - maxW) > 0.5f) {
@@ -1375,7 +1377,7 @@ void MarkupEngine::renderAll(cv::Mat& canvas, bool includeActiveHandles) const {
 
 void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, bool includeActiveHandles) const {
     if (const auto* handler = MarkupToolRegistry::instance().getHandler(element.tool)) {
-        if (element.tool == MarkupTool::Text && canvas.cols > 0) {
+        if (element.tool == MarkupTool::Text && !element.hasCustomTextWidth && canvas.cols > 0) {
             const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
                 canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
             if (std::abs(element.textMaxWidth - maxW) > 0.5f) {

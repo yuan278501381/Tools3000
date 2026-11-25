@@ -982,5 +982,7 @@
   "Auto script: {0}": "自動切換: {0}",
   "Refining {0} low-confidence text lines...": "偵測到 {0} 處低置信度文字，正在高精度精修...",
   "Refining": "低置信度精修中",
-  "Detected {0}, re-recognizing with script pack...": "偵測到 {0}，正在使用擴充語種模型複核..."
+  "Detected {0}, re-recognizing with script pack...": "偵測到 {0}，正在使用擴充語種模型複核...",
+  "Export destination is locked or unwritable; raw recording preserved": "匯出目標路徑被佔用或無法寫入，已安全保留原始錄影",
+  "Encoder initialization failed for this format; raw recording preserved": "目前匯出格式編碼器初始化失敗，已安全保留原始錄影"
 }

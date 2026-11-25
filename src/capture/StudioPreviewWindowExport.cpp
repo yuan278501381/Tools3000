@@ -1049,6 +1049,7 @@ void StudioPreviewWindow::startAsyncExport() {
         auto progressCb = [this](double p) {
             m_exportProgress.store(p, std::memory_order_relaxed);
         };
+        std::string exportErrorDetail;
         const auto workerOutcome = exportStudioMediaOutOfProcess(
             sourceMasterPath,
             stagingPath,
@@ -1057,20 +1058,26 @@ void StudioPreviewWindow::startAsyncExport() {
             exportOptsCopy,
             progressCb,
             &m_cancelExport);
-        bool ok = workerOutcome.handledOutOfProcess
-            ? workerOutcome.succeeded
-            : StudioVideoCompositor::exportStudioMedia(
+        bool ok = false;
+        if (workerOutcome.handledOutOfProcess) {
+            ok = workerOutcome.succeeded;
+            exportErrorDetail = workerOutcome.errorDetail;
+        } else {
+            ok = StudioVideoCompositor::exportStudioMedia(
                 sourceMasterPath,
                 stagingPath,
                 timelineCopy,
                 configCopy,
                 exportOptsCopy,
                 progressCb,
-                &m_cancelExport);
+                &m_cancelExport,
+                &exportErrorDetail);
+        }
 
         const bool canceled = m_cancelExport.load(std::memory_order_acquire);
         const std::filesystem::path stagingFs(tools3000::core::WinUtils::utf8ToWstring(stagingPath));
-        const std::filesystem::path finalFs(tools3000::core::WinUtils::utf8ToWstring(finalPath));
+        std::filesystem::path finalFs(tools3000::core::WinUtils::utf8ToWstring(finalPath));
+        std::string deliveredFinalPath = finalPath;
         if (ok && !canceled) {
             std::error_code rmOldEc;
             if (std::filesystem::exists(finalFs, rmOldEc)) {
@@ -1079,9 +1086,32 @@ void StudioPreviewWindow::startAsyncExport() {
             std::error_code renEc;
             std::filesystem::rename(stagingFs, finalFs, renEc);
             if (renEc) {
-                ok = false;
-                std::error_code cleanEc;
-                std::filesystem::remove(stagingFs, cleanEc);
+                // 目标文件可能正被外部播放器/微信占用：自动另存为防碰撞副本，绝不白白丢弃已渲染成片
+                bool rescued = false;
+                const std::wstring stemW = finalFs.stem().wstring();
+                const std::wstring extW = finalFs.extension().wstring();
+                const std::filesystem::path dirW = finalFs.parent_path();
+                for (int suffix = 1; suffix <= 99; ++suffix) {
+                    const std::filesystem::path altFs = dirW / (stemW + L"_" + std::to_wstring(suffix) + extW);
+                    std::error_code existsEc;
+                    if (std::filesystem::exists(altFs, existsEc)) continue;
+                    std::error_code altRenEc;
+                    std::filesystem::rename(stagingFs, altFs, altRenEc);
+                    if (!altRenEc) {
+                        finalFs = altFs;
+                        deliveredFinalPath = tools3000::core::WinUtils::wstringToUtf8(altFs.wstring());
+                        rescued = true;
+                        LOG_INFO("StudioPreviewWindow: target file locked, saved rendered media to fallback path: {}",
+                                 deliveredFinalPath);
+                        break;
+                    }
+                }
+                if (!rescued) {
+                    ok = false;
+                    exportErrorDetail = "target_file_locked_or_unwritable(" + renEc.message() + ")";
+                    std::error_code cleanEc;
+                    std::filesystem::remove(stagingFs, cleanEc);
+                }
             }
         } else {
             std::error_code cleanEc;
@@ -1089,7 +1119,7 @@ void StudioPreviewWindow::startAsyncExport() {
         }
 
         tools3000::core::MainThreadDispatcher::instance().post(
-            [this, ok, canceled, sourceMasterPath, finalPath, exportOptsCopy, durSec]() {
+            [this, ok, canceled, sourceMasterPath, deliveredFinalPath, exportOptsCopy, durSec, exportErrorDetail]() {
                 m_exporting.store(false, std::memory_order_release);
                 if (canceled) {
                     m_closeAfterSaveExport = false;
@@ -1097,11 +1127,11 @@ void StudioPreviewWindow::startAsyncExport() {
                 }
                 const bool isZh = tools3000::core::NativeThemePalette::isUiLanguageChinese();
                 if (ok) {
-                    const std::filesystem::path doneFs(tools3000::core::WinUtils::utf8ToWstring(finalPath));
+                    const std::filesystem::path doneFs(tools3000::core::WinUtils::utf8ToWstring(deliveredFinalPath));
                     std::error_code szEc;
                     const auto fsz = std::filesystem::file_size(doneFs, szEc);
                     m_lastExportedFileBytes = szEc ? 0ULL : static_cast<std::uint64_t>(fsz);
-                    m_lastExportedFilePath = finalPath;
+                    m_lastExportedFilePath = deliveredFinalPath;
                     m_lastExportedFormat = exportOptsCopy.format;
                     m_lastExportedSpecLine = std::format(
                         L"{} · {} · {} FPS",
@@ -1116,7 +1146,7 @@ void StudioPreviewWindow::startAsyncExport() {
                     }
                     m_copyFeedbackUntilTick = 0;
 
-                    LOG_INFO("StudioPreviewWindow: exported studio video successfully: {}", finalPath);
+                    LOG_INFO("StudioPreviewWindow: exported studio video successfully: {}", deliveredFinalPath);
                     const bool shouldCloseNow = m_autoCloseAfterExport || m_closeAfterSaveExport;
                     m_closeAfterSaveExport = false;
                     if (shouldCloseNow) {
@@ -1128,9 +1158,27 @@ void StudioPreviewWindow::startAsyncExport() {
                     }
                 } else {
                     m_closeAfterSaveExport = false;
-                    LOG_WARN("StudioPreviewWindow: exportRenderedVideo failed, keeping raw video: {}", sourceMasterPath);
-                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                        tools3000::core::trWCstrFor(isZh, L"演播室合成失败，已为您安全保留原始录屏", L"Studio export failed; raw recording preserved")});
+                    LOG_WARN("StudioPreviewWindow: exportRenderedVideo failed (format={}, detail={}), keeping raw video: {}",
+                             static_cast<int>(exportOptsCopy.format),
+                             exportErrorDetail.empty() ? "unknown" : exportErrorDetail,
+                             sourceMasterPath);
+                    std::wstring toastMsg = tools3000::core::trWCstrFor(
+                        isZh,
+                        L"演播室合成失败，已为您安全保留原始录屏",
+                        L"Studio export failed; raw recording preserved");
+                    if (exportErrorDetail.find("target_file_locked") != std::string::npos ||
+                        exportErrorDetail.find("avio_open") != std::string::npos) {
+                        toastMsg = tools3000::core::trWCstrFor(
+                            isZh,
+                            L"导出目标路径无法写入或被占用，已为您安全保留原始录屏",
+                            L"Export destination is locked or unwritable; raw recording preserved");
+                    } else if (exportErrorDetail.find("no_encoder") != std::string::npos) {
+                        toastMsg = tools3000::core::trWCstrFor(
+                            isZh,
+                            L"当前格式编码器初始化失败，请切换格式重试（已保留原始录屏）",
+                            L"Encoder initialization failed for this format; raw recording preserved");
+                    }
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{std::move(toastMsg)});
                     InvalidateRect(m_hwnd, nullptr, FALSE);
                 }
             });

@@ -1512,6 +1512,8 @@ TEST(StudioRecorderTest, GifGlobalPalettePreservesMidVideoWhiteErpScreenWithoutY
     AVPacket* dPkt = av_packet_alloc();
     int decodedIdx = 0;
     int verifiedWhiteFrames = 0;
+    double maxFrameSec = 0.0;
+    const AVRational gifTb = decFmt->streams[vIdx]->time_base;
 
     while (av_read_frame(decFmt, dPkt) >= 0) {
         if (dPkt->stream_index == vIdx && avcodec_send_packet(decCtx, dPkt) >= 0) {
@@ -1526,7 +1528,13 @@ TEST(StudioRecorderTest, GifGlobalPalettePreservesMidVideoWhiteErpScreenWithoutY
                 int dstStride[1] = {static_cast<int>(frameBgr.step[0])};
                 sws_scale(toBgr, dFrm->data, dFrm->linesize, 0, dFrm->height, dstSlice, dstStride);
 
-                if (decodedIdx >= 13) {
+                const int64_t ts = (dFrm->pts != AV_NOPTS_VALUE) ? dFrm->pts : dPkt->pts;
+                const double frameSec = (ts != AV_NOPTS_VALUE)
+                    ? (static_cast<double>(ts) * av_q2d(gifTb))
+                    : (static_cast<double>(decodedIdx) / 12.0);
+                maxFrameSec = (std::max)(maxFrameSec, frameSec);
+
+                if (frameSec >= 0.98) {
                     // 采样表格中央白底区域：B、G、R 必须均 >= 238，且红蓝差 |R - B| <= 8（绝无泛黄染色！）
                     const cv::Scalar whiteRoi = cv::mean(frameBgr(cv::Rect(220, 160, 160, 100)));
                     EXPECT_GE(whiteRoi[0], 238.0) << "Blue channel dropped (yellow tint!) at frame " << decodedIdx;
@@ -1542,7 +1550,9 @@ TEST(StudioRecorderTest, GifGlobalPalettePreservesMidVideoWhiteErpScreenWithoutY
         av_packet_unref(dPkt);
     }
 
-    EXPECT_GE(verifiedWhiteFrames, 6);
+    // 静态帧时长合并后，后半段静态白底只需极少帧即可完整覆盖 1.0s~2.0s 时长且零泛黄
+    EXPECT_GE(verifiedWhiteFrames, 2);
+    EXPECT_GE(maxFrameSec, 1.75);
     if (toBgr) sws_freeContext(toBgr);
     av_packet_free(&dPkt);
     av_frame_free(&dFrm);
@@ -2714,4 +2724,307 @@ TEST(StudioRecorderTest, CompactProxyDeckAndHiResReaderLruMemoryBudget) {
     }
 
     std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, AllSixFormatsExportWebmVp9CompressionAndErrorDiagnostics) {
+    using namespace tools3000::capture;
+
+    const auto tmpDir = std::filesystem::temp_directory_path() / L"tools3000_studio_all6_formats_test";
+    std::error_code ec;
+    std::filesystem::remove_all(tmpDir, ec);
+    std::filesystem::create_directories(tmpDir, ec);
+
+    const std::string rawUtf8 = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"src_all6.mp4").wstring());
+    ASSERT_TRUE(writeSyntheticCleanMp4ForStudioTest(rawUtf8, 960, 540, 24, 36)); // 1.5s @ 24fps
+
+    StudioTimelineData tl;
+    tl.sourceWidth = 960;
+    tl.sourceHeight = 540;
+    tl.fps = 24;
+    tl.durationMs = 1500;
+    tl.clickEvents.push_back({300, 480.0f, 120.0f, false});
+    tl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.50f);
+
+    StudioRenderConfig cfg;
+    cfg.autoZoomEnabled = true;
+    cfg.defaultZoomFactor = 1.50f;
+    cfg.smoothCursorEnabled = true;
+    cfg.autoFrameEnabled = true;
+    cfg.backgroundTheme = BeautyBackgroundType::DuskMountains;
+    cfg.exportSrtSidecar = false;
+
+    // 1. WebM (VP9) 端到端真实导出：校验 EBML 文件头与可解码帧
+    {
+        const std::wstring webmW = (tmpDir / L"out_vp9.webm").wstring();
+        const std::string webmUtf8 = tools3000::core::WinUtils::wstringToUtf8(webmW);
+        StudioExportOptions opts;
+        opts.format = StudioExportFormat::WebM_VP9;
+        opts.resolution = StudioExportResolution::Res720P;
+        opts.fps = 24;
+        opts.quality = StudioExportQuality::Recommended;
+        std::string errDetail;
+        ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(rawUtf8, webmUtf8, tl, cfg, opts, nullptr, nullptr, &errDetail))
+            << "WebM VP9 export failed: " << errDetail;
+        ASSERT_TRUE(std::filesystem::exists(webmW, ec));
+        EXPECT_GT(std::filesystem::file_size(webmW, ec), 1024u);
+        std::ifstream ifs(webmW, std::ios::binary);
+        uint8_t ebml[4]{};
+        ifs.read(reinterpret_cast<char*>(ebml), 4);
+        ASSERT_EQ(ifs.gcount(), 4);
+        EXPECT_EQ(ebml[0], 0x1Au);
+        EXPECT_EQ(ebml[1], 0x45u);
+        EXPECT_EQ(ebml[2], 0xDFu);
+        EXPECT_EQ(ebml[3], 0xA3u);
+
+        std::vector<cv::Mat> deck;
+        int decW = 0, decH = 0;
+        double decDur = 0.0;
+        ASSERT_TRUE(StudioVideoCompositor::extractPreviewDeck(webmUtf8, 320, 12, deck, decW, decH, decDur));
+        EXPECT_GE(deck.size(), 2u);
+        EXPECT_GT(decDur, 0.8);
+    }
+
+    // 2. MP4 H.264 极小体积档与高画质档对比 + MP4 HEVC / GIF HD 全覆盖
+    {
+        const std::wstring h264CompactW = (tmpDir / L"out_h264_compact.mp4").wstring();
+        const std::wstring h264HighW = (tmpDir / L"out_h264_high.mp4").wstring();
+        const std::wstring hevcW = (tmpDir / L"out_hevc.mp4").wstring();
+        const std::wstring gifHdW = (tmpDir / L"out_hd.gif").wstring();
+
+        StudioExportOptions oCompact;
+        oCompact.format = StudioExportFormat::MP4_H264;
+        oCompact.resolution = StudioExportResolution::Res720P;
+        oCompact.fps = 24;
+        oCompact.quality = StudioExportQuality::Compact;
+
+        StudioExportOptions oHigh = oCompact;
+        oHigh.quality = StudioExportQuality::High;
+
+        StudioExportOptions oHevc = oCompact;
+        oHevc.format = StudioExportFormat::MP4_HEVC;
+        oHevc.quality = StudioExportQuality::Recommended;
+
+        StudioExportOptions oGifHd = oCompact;
+        oGifHd.format = StudioExportFormat::GIF_HD;
+        oGifHd.fps = 12;
+        oGifHd.quality = StudioExportQuality::Recommended;
+
+        std::string err;
+        ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(
+            rawUtf8, tools3000::core::WinUtils::wstringToUtf8(h264CompactW), tl, cfg, oCompact, nullptr, nullptr, &err))
+            << err;
+        ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(
+            rawUtf8, tools3000::core::WinUtils::wstringToUtf8(h264HighW), tl, cfg, oHigh, nullptr, nullptr, &err))
+            << err;
+        ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(
+            rawUtf8, tools3000::core::WinUtils::wstringToUtf8(hevcW), tl, cfg, oHevc, nullptr, nullptr, &err))
+            << err;
+        ASSERT_TRUE(StudioVideoCompositor::exportStudioMedia(
+            rawUtf8, tools3000::core::WinUtils::wstringToUtf8(gifHdW), tl, cfg, oGifHd, nullptr, nullptr, &err))
+            << err;
+
+        const uint64_t bytesCompact = std::filesystem::file_size(h264CompactW, ec);
+        const uint64_t bytesHigh = std::filesystem::file_size(h264HighW, ec);
+        EXPECT_GT(bytesCompact, 512u);
+        EXPECT_LE(bytesCompact, bytesHigh);
+        EXPECT_GT(std::filesystem::file_size(hevcW, ec), 512u);
+        EXPECT_GT(std::filesystem::file_size(gifHdW, ec), 512u);
+    }
+
+    // 3. 结构化失败诊断通道：源视频不存在时必须返回非空精准错误详情
+    {
+        std::string errDetail;
+        const std::string missingRaw = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"does_not_exist.mp4").wstring());
+        const std::string outFail = tools3000::core::WinUtils::wstringToUtf8((tmpDir / L"fail.webm").wstring());
+        StudioExportOptions opts;
+        opts.format = StudioExportFormat::WebM_VP9;
+        EXPECT_FALSE(StudioVideoCompositor::exportStudioMedia(missingRaw, outFail, tl, cfg, opts, nullptr, nullptr, &errDetail));
+        EXPECT_FALSE(errDetail.empty());
+        EXPECT_EQ(errDetail, StudioVideoCompositor::lastExportErrorDetail());
+    }
+
+    std::filesystem::remove_all(tmpDir, ec);
+}
+
+TEST(StudioRecorderTest, UpperHalfTextInputAutoZoomNeverCropsInputArea) {
+    using namespace tools3000::capture;
+
+    // 精确复现高分屏 (3456x2086) 上半屏搜索栏输入场景：
+    // 1) 用户先点击屏幕下方/中部，随后点击顶部搜索框 (1720, 340) 并持续输入；
+    // 2) 中等尺寸前景窗口 (约 46% 屏面) 覆盖屏幕中央；
+    // 3) 输入期间下方结果列表发生大面积像素刷新（视觉差分重心在屏幕正中 y=1100）；
+    // 4) Balanced 锁镜模式 (1.60x, lockCameraWhileZoomed=true, typingAutoZoom=false)。
+    StudioTimelineData tl;
+    tl.sourceWidth = 3456;
+    tl.sourceHeight = 2086;
+    tl.fps = 30;
+    tl.durationMs = 8000;
+
+    // 600ms 先在右下角点一下，1400ms 切到上半屏搜索栏 (1720, 340) 并开始打字
+    tl.clickEvents.push_back({600, 2600.0f, 1600.0f, false});
+    tl.clickEvents.push_back({1400, 1720.0f, 340.0f, false});
+    // 中等尺寸搜索窗（占屏 ~46%）包含点击点但几何中心在 (1728, 1020)
+    tl.windowEvents.push_back({1480, 0x123456u, 520.0f, 220.0f, 2416.0f, 1600.0f});
+    for (int t = 1650; t <= 5200; t += 450) {
+        tl.focusEvents.push_back({t, 1760.0f + static_cast<float>((t - 1650) / 30), 340.0f});
+    }
+    for (int t = 0; t <= 8000; t += 50) {
+        const bool typingPhase = (t >= 1300 && t <= 5600);
+        tl.cursorSamples.push_back({
+            t,
+            typingPhase ? 1740.0f : 2600.0f,
+            typingPhase ? 340.0f : 1600.0f,
+            typingPhase ? StudioCursorKind::IBeam : StudioCursorKind::Arrow,
+            false, false
+        });
+    }
+
+    StudioRenderConfig cfg;
+    applyStudioZoomPreset(cfg, StudioZoomPreset::Balanced); // 1.60x, lockCameraWhileZoomed=true, typingAutoZoom=false
+    tl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(
+        tl, cfg.defaultZoomFactor, cfg.typingAutoZoom, cfg.autoZoomSensitivity);
+    ASSERT_FALSE(tl.zoomSegments.empty());
+
+    // 构造模拟“顶部输入 -> 下方搜索结果列表大面积刷新”的 80 帧代理序列
+    std::vector<cv::Mat> deck(81);
+    for (int i = 0; i < 81; ++i) {
+        cv::Mat frame(180, 320, CV_8UC3, cv::Scalar(34, 38, 46));
+        if (i >= 15 && i <= 60) {
+            // 下方结果列表 (y=68..155) 剧烈刷新，重心落在屏幕中央偏下
+            cv::rectangle(frame, cv::Rect(60, 68, 200, 88), cv::Scalar(235, 238, 245), cv::FILLED);
+        }
+        deck[static_cast<size_t>(i)] = std::move(frame);
+    }
+    StudioTimelineAnalyzer::refineZoomSegmentsWithVisualDiff(tl, deck, 8.0, cfg.autoZoomSensitivity);
+
+    // 验证包含顶部搜索栏的运镜段绝未被拉向屏幕正中 (y ~ 1043)
+    const StudioZoomSegment* inputSeg = nullptr;
+    for (const auto& s : tl.zoomSegments) {
+        if (s.startMs <= 1600 && s.endMs >= 2000) {
+            inputSeg = &s;
+            break;
+        }
+    }
+    ASSERT_NE(inputSeg, nullptr);
+    EXPECT_LT(inputSeg->focusY, 650.0f);
+
+    // 逐帧烘焙并验证：输入期间的每一个放大帧，顶部输入栏 (y=340) 绝不被裁切出画面！
+    const auto baked = StudioTimelineAnalyzer::bakeEvaluatedFrames(tl, cfg, 30, 240);
+    bool checkedZoomedInputFrame = false;
+    for (int f = 60; f <= 140; ++f) { // 2.0s ~ 4.67s
+        const auto& cam = baked[static_cast<size_t>(f)].camera;
+        if (cam.zoom > 1.15f) {
+            checkedZoomedInputFrame = true;
+            EXPECT_LE(cam.cropY, 340.0f) << "frame=" << f << " cropY=" << cam.cropY;
+            EXPECT_GE(cam.cropY + cam.cropH, 340.0f + cam.cropH * 0.10f) << "frame=" << f;
+            EXPECT_LE(cam.cropX, 1760.0f) << "frame=" << f;
+            EXPECT_GE(cam.cropX + cam.cropW, 1880.0f) << "frame=" << f;
+        }
+    }
+    EXPECT_TRUE(checkedZoomedInputFrame);
+}
+
+TEST(StudioRecorderTest, RealRecordingAllFormatsCompressionBenchmark) {
+    using namespace tools3000::capture;
+
+    wchar_t srcEnv[MAX_PATH * 2]{};
+    const DWORD srcLen = GetEnvironmentVariableW(L"TOOLS3000_REAL_STUDIO_E2E_SRC", srcEnv, MAX_PATH * 2);
+    if (srcLen == 0 || srcLen >= MAX_PATH * 2) {
+        GTEST_SKIP() << "Set TOOLS3000_REAL_STUDIO_E2E_SRC and TOOLS3000_REAL_STUDIO_E2E_OUT to run real-file benchmark.";
+    }
+    wchar_t outEnv[MAX_PATH * 2]{};
+    const DWORD outLen = GetEnvironmentVariableW(L"TOOLS3000_REAL_STUDIO_E2E_OUT", outEnv, MAX_PATH * 2);
+    ASSERT_GT(outLen, 0u);
+
+    const std::filesystem::path srcPath(srcEnv);
+    const std::filesystem::path outDir(outEnv);
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::exists(srcPath, ec)) << "Source file missing";
+    std::filesystem::create_directories(outDir, ec);
+
+    const std::string srcUtf8 = tools3000::core::WinUtils::wstringToUtf8(srcPath.wstring());
+    const uint64_t srcBytes = std::filesystem::file_size(srcPath, ec);
+
+    std::vector<cv::Mat> deck;
+    int srcW = 0, srcH = 0;
+    double srcDur = 0.0;
+    ASSERT_TRUE(StudioVideoCompositor::extractPreviewDeck(srcUtf8, 320, 48, deck, srcW, srcH, srcDur));
+    ASSERT_GT(srcW, 0);
+    ASSERT_GT(srcH, 0);
+    ASSERT_GT(srcDur, 1.0);
+
+    StudioTimelineData tl;
+    tl.sourceWidth = srcW;
+    tl.sourceHeight = srcH;
+    tl.fps = 30;
+    tl.durationMs = static_cast<int64_t>(std::llround(srcDur * 1000.0));
+    // 在真实原片上模拟一个带上半屏输入焦点与 1.60x 自动运镜的演播室项目
+    tl.clickEvents.push_back({4000, static_cast<float>(srcW) * 0.50f, static_cast<float>(srcH) * 0.17f, false});
+    tl.focusEvents.push_back({5000, static_cast<float>(srcW) * 0.52f, static_cast<float>(srcH) * 0.17f});
+    tl.zoomSegments = StudioTimelineAnalyzer::buildAutoZoomSegments(tl, 1.60f, true, 0.65f);
+
+    StudioRenderConfig cfg;
+    applyStudioZoomPreset(cfg, StudioZoomPreset::Balanced);
+    cfg.autoFrameEnabled = true;
+    cfg.paddingRatio = 0.06f;
+    cfg.insetBorderWidth = 7.0f;
+    cfg.cornerRadius = 4.0f;
+    cfg.shadowIntensity = 1.0f;
+    cfg.backgroundBlur = 8.0f;
+    cfg.exportSrtSidecar = false;
+
+    struct CaseSpec {
+        const char* label;
+        const wchar_t* filename;
+        StudioExportFormat fmt;
+        StudioExportResolution res;
+        int fps;
+        StudioExportQuality quality;
+        bool clip15s;
+    };
+    const std::vector<CaseSpec> cases = {
+        {"WebM_VP9_1080p24_Rec_Full55s", L"real_vp9_1080p24_rec.webm", StudioExportFormat::WebM_VP9, StudioExportResolution::Res1080P, 24, StudioExportQuality::Recommended, false},
+        {"MP4_H264_1080p30_Rec_Full55s", L"real_h264_1080p30_rec.mp4", StudioExportFormat::MP4_H264, StudioExportResolution::Res1080P, 30, StudioExportQuality::Recommended, false},
+        {"MP4_H264_1080p30_Compact_Full55s", L"real_h264_1080p30_compact.mp4", StudioExportFormat::MP4_H264, StudioExportResolution::Res1080P, 30, StudioExportQuality::Compact, false},
+        {"MP4_HEVC_1080p30_Rec_Full55s", L"real_hevc_1080p30_rec.mp4", StudioExportFormat::MP4_HEVC, StudioExportResolution::Res1080P, 30, StudioExportQuality::Recommended, false},
+        {"WebP_1080p20_Rec_15s", L"real_webp_1080p20_15s.webp", StudioExportFormat::WebP_Animated, StudioExportResolution::Res1080P, 20, StudioExportQuality::Recommended, true},
+        {"GIF_WeChat_15fps_Rec_15s", L"real_gif_wechat_15s.gif", StudioExportFormat::GIF_WeChat, StudioExportResolution::Res1080P, 15, StudioExportQuality::Recommended, true},
+        {"GIF_HD_15fps_Rec_15s", L"real_gif_hd_15s.gif", StudioExportFormat::GIF_HD, StudioExportResolution::Res720P, 15, StudioExportQuality::Recommended, true},
+    };
+
+    std::cout << "[BENCH] Source: " << srcW << "x" << srcH << ", " << srcDur << "s, "
+              << (static_cast<double>(srcBytes) / (1024.0 * 1024.0)) << " MB\n";
+
+    for (const auto& c : cases) {
+        StudioTimelineData caseTl = tl;
+        if (c.clip15s && caseTl.durationMs > 15000) {
+            caseTl.cutSegments.push_back({15000, caseTl.durationMs, 0.0f, true});
+        }
+        StudioExportOptions opts;
+        opts.format = c.fmt;
+        opts.resolution = c.res;
+        opts.fps = c.fps;
+        opts.quality = c.quality;
+
+        const std::filesystem::path dstPath = outDir / c.filename;
+        std::filesystem::remove(dstPath, ec);
+        const std::string dstUtf8 = tools3000::core::WinUtils::wstringToUtf8(dstPath.wstring());
+
+        std::string errDetail;
+        const auto t0 = std::chrono::steady_clock::now();
+        const bool ok = StudioVideoCompositor::exportStudioMedia(srcUtf8, dstUtf8, caseTl, cfg, opts, nullptr, nullptr, &errDetail);
+        const double elapsedSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+
+        ASSERT_TRUE(ok) << c.label << " failed: " << errDetail;
+        ASSERT_TRUE(std::filesystem::exists(dstPath, ec)) << c.label << " output missing";
+        const uint64_t outBytes = std::filesystem::file_size(dstPath, ec);
+        EXPECT_GT(outBytes, 2048u) << c.label;
+        const double outMB = static_cast<double>(outBytes) / (1024.0 * 1024.0);
+        const double estMB = static_cast<double>(
+            StudioVideoCompositor::estimateExportSizeBytes(srcW, srcH, c.clip15s ? 15.0 : srcDur, opts)) / (1024.0 * 1024.0);
+        std::cout << "[BENCH] " << c.label
+                  << " | size=" << outMB << " MB"
+                  << " | est=" << estMB << " MB"
+                  << " | time=" << elapsedSec << " s\n";
+    }
 }

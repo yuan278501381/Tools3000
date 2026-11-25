@@ -194,6 +194,17 @@ void SettingsWindow::preload(HINSTANCE hInstance) {
     }
 }
 
+UINT SettingsWindow::resolveIdleDestroyTimeoutMs() const noexcept {
+    try {
+        const auto appDataDir = tools3000::core::WinUtils::getAppDataDirectory();
+        if (tools3000::core::WinUtils::isPathOnRotationalDisk(appDataDir)) {
+            return IDLE_DESTROY_TIMEOUT_HDD_MS;
+        }
+    } catch (...) {
+    }
+    return IDLE_DESTROY_TIMEOUT_SSD_MS;
+}
+
 void SettingsWindow::hide() {
     if (m_hwnd && IsWindow(m_hwnd)) {
         persistGeometry();
@@ -211,9 +222,12 @@ void SettingsWindow::hide() {
         const bool autoRelease = tools3000::core::ConfigManager::instance().get<bool>(
             "/general/autoReleaseSettingsMemory", true);
         if (autoRelease) {
-            // 启动 1 分钟闲置销毁定时器：若用户 60 秒内未再次打开设置，则彻底销毁 WebView2 释放物理内存
-            SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
-            LOG_INFO("设置窗口已隐藏，已启动 1 分钟闲置自动销毁倒计时");
+            // 隐藏瞬间已挂起渲染器并修剪工作集；按磁盘介质自适应延时彻底销毁 WebView2（SSD 5 分钟 / HDD 15 分钟），
+            // 避免机械硬盘上频繁冷启动 Edge WebView2 造成高磁盘占用与界面卡顿
+            const UINT timeoutMs = resolveIdleDestroyTimeoutMs();
+            const UINT timeoutMin = timeoutMs / 60000u;
+            SetTimer(m_hwnd, IDT_IDLE_DESTROY, timeoutMs, nullptr);
+            LOG_INFO("设置窗口已隐藏，已启动 {} 分钟闲置自动销毁倒计时", timeoutMin);
         } else {
             KillTimer(m_hwnd, IDT_IDLE_DESTROY);
             LOG_INFO("设置窗口已隐藏（自动释放内存开关已关闭，保持后台常驻）");
@@ -984,7 +998,7 @@ LRESULT CALLBACK SettingsWindow::windowProc(HWND hwnd, UINT msg, WPARAM wParam, 
                 const bool autoRelease = tools3000::core::ConfigManager::instance().get<bool>(
                     "/general/autoReleaseSettingsMemory", true);
                 if (autoRelease && self && !self->isVisible()) {
-                    LOG_INFO("设置窗口已闲置 1 分钟，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存");
+                    LOG_INFO("设置窗口已闲置到期，自动销毁 Win32 窗口并释放 WebView2 渲染进程物理内存");
                     self->destroy();
                 }
                 return 0;

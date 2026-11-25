@@ -236,66 +236,124 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
     for (auto* parser : parsers) {
         if (!parser) continue;
 
-        // 直接在遍历回调里构造字符串池与紧凑 Pod 数组：全盘索引有数百万条记录，
-        // 先物化成 std::vector<FileRecord> 会让保存快照的瞬间内存翻倍。
-        std::vector<wchar_t> stringPool;
-        std::vector<DbRecordPod> pods;
-        bool serializationFailed = false;
+        const bool isHdd = parser->isRotationalDisk();
+        uint64_t volumeRecords = 0;
+        const bool volumeOk = parser->withSnapshotLock(
+            [&](const tools3000::service::FileIndexStore& store,
+                uint64_t lastUsn,
+                uint32_t volumeSerial) -> bool {
+                // Pass 1: 零堆分配统计记录数与宽字符池总字节数（300 万条耗时 < 8ms）
+                uint32_t recCount = 0;
+                uint64_t totalWChars = 0;
+                const size_t slots = store.slotCount();
+                for (size_t i = 0; i < slots; ++i) {
+                    const auto* rec = store.at(i);
+                    if (!rec) continue;
+                    const uint16_t nLen = rec->nameLength();
+                    if (recCount == (std::numeric_limits<uint32_t>::max)() ||
+                        totalWChars > static_cast<uint64_t>((std::numeric_limits<uint32_t>::max)() / sizeof(wchar_t)) - nLen) {
+                        return false;
+                    }
+                    ++recCount;
+                    totalWChars += nLen;
+                }
 
-        uint64_t lastUsn = 0;
-        uint32_t volumeSerial = 0;
-        parser->exportSnapshot([&](const FileRecord& r) {
-            if (serializationFailed) return;
-            if (r.fileName.size() > (std::numeric_limits<uint16_t>::max)() ||
-                stringPool.size() > (std::numeric_limits<uint32_t>::max)() ||
-                r.fileName.size() > (std::numeric_limits<uint32_t>::max)() - stringPool.size() ||
-                pods.size() >= (std::numeric_limits<uint32_t>::max)()) {
-                serializationFailed = true;
-                return;
-            }
-            DbRecordPod pod{};
-            pod.frn = r.fileReferenceNumber;
-            pod.parentFrn = r.parentFileReferenceNumber;
-            pod.attributes = r.fileAttributes;
-            pod.isDirectory = r.isDirectory ? 1 : 0;
-            pod.fileSize = r.fileSize;
-            pod.creationTime = r.creationTime;
-            pod.lastWriteTime = r.lastWriteTime;
+                DbVolumeHeader volHeader{};
+                volHeader.driveLetter = toUpperDriveChar(parser->getDriveLetter());
+                volHeader.volumeSerial = volumeSerial;
+                volHeader.lastUsn = lastUsn;
+                volHeader.recordCount = recCount;
+                volHeader.stringPoolBytes = static_cast<uint32_t>(totalWChars * sizeof(wchar_t));
 
-            pod.nameOffset = static_cast<uint32_t>(stringPool.size());
-            pod.nameLen = static_cast<uint16_t>(r.fileName.size());
-            stringPool.insert(stringPool.end(), r.fileName.begin(), r.fileName.end());
+                if (!writeAll(hFile, &volHeader, sizeof(volHeader))) {
+                    return false;
+                }
 
-            pods.push_back(pod);
-        }, lastUsn, volumeSerial);
+                // Pass 2: 固定 2 MiB 分块流式写出 StringPool（消除 100+ MB 整卷字符串池峰值）
+                static constexpr size_t kStringChunkWChars = 1024u * 1024u;  // 2 MiB
+                // 机械盘后台快照平滑限速：每写 4 MiB 让出 12ms，避免 5400/7200rpm 机械盘队列飙到 90%+ 卡顿
+                static constexpr uint64_t kHddYieldIntervalBytes = 4ULL * 1024ULL * 1024ULL;
+                static constexpr DWORD kHddYieldSleepMs = 12;
+                std::wstring stringChunk;
+                stringChunk.reserve(kStringChunkWChars + 1024u);
+                uint64_t hddWrittenSinceYield = 0;
 
-        if (serializationFailed ||
-            stringPool.size() > (std::numeric_limits<uint32_t>::max)() / sizeof(wchar_t)) {
+                auto flushStringChunk = [&]() -> bool {
+                    if (stringChunk.empty()) return true;
+                    const size_t bytes = stringChunk.size() * sizeof(wchar_t);
+                    if (!writeAll(hFile, stringChunk.data(), bytes)) return false;
+                    stringChunk.clear();
+                    if (isHdd) {
+                        hddWrittenSinceYield += bytes;
+                        if (hddWrittenSinceYield >= kHddYieldIntervalBytes) {
+                            hddWrittenSinceYield = 0;
+                            Sleep(kHddYieldSleepMs);
+                        }
+                    }
+                    return true;
+                };
+
+                for (size_t i = 0; i < slots; ++i) {
+                    const auto* rec = store.at(i);
+                    if (!rec) continue;
+                    store.appendNameTo(*rec, stringChunk);
+                    if (stringChunk.size() >= kStringChunkWChars) {
+                        if (!flushStringChunk()) return false;
+                    }
+                }
+                if (!flushStringChunk()) return false;
+                stringChunk.shrink_to_fit();
+
+                // Pass 3: 固定 ~2 MiB 分块流式写出 DbRecordPod（消除 140+ MB 整卷 POD 峰值）
+                constexpr size_t kPodChunkCount = 43690u;  // ~2 MiB
+                std::vector<DbRecordPod> podChunk;
+                podChunk.reserve(kPodChunkCount);
+                uint32_t runningNameOffset = 0;
+
+                auto flushPodChunk = [&]() -> bool {
+                    if (podChunk.empty()) return true;
+                    const size_t bytes = podChunk.size() * sizeof(DbRecordPod);
+                    if (!writeAll(hFile, podChunk.data(), bytes)) return false;
+                    podChunk.clear();
+                    if (isHdd) {
+                        hddWrittenSinceYield += bytes;
+                        if (hddWrittenSinceYield >= kHddYieldIntervalBytes) {
+                            hddWrittenSinceYield = 0;
+                            Sleep(kHddYieldSleepMs);
+                        }
+                    }
+                    return true;
+                };
+
+                for (size_t i = 0; i < slots; ++i) {
+                    const auto* rec = store.at(i);
+                    if (!rec) continue;
+                    DbRecordPod pod{};
+                    pod.frn = rec->frn;
+                    pod.parentFrn = rec->parentFrn;
+                    pod.attributes = static_cast<uint32_t>(rec->attributes16);
+                    pod.isDirectory = rec->isDirectory() ? 1 : 0;
+                    pod.fileSize = store.fileSizeOf(*rec);
+                    pod.creationTime = store.creationTimeOf(*rec);
+                    pod.lastWriteTime = store.lastWriteTimeOf(*rec);
+                    pod.nameOffset = runningNameOffset;
+                    pod.nameLen = rec->nameLength();
+                    runningNameOffset += pod.nameLen;
+                    podChunk.push_back(pod);
+                    if (podChunk.size() >= kPodChunkCount) {
+                        if (!flushPodChunk()) return false;
+                    }
+                }
+                if (!flushPodChunk()) return false;
+
+                volumeRecords = recCount;
+                return true;
+            });
+
+        if (!volumeOk) {
             return failSave();
         }
-
-        totalRecordsAll += pods.size();
-
-        DbVolumeHeader volHeader{};
-        volHeader.driveLetter = toUpperDriveChar(parser->getDriveLetter());
-        volHeader.volumeSerial = volumeSerial;
-        volHeader.lastUsn = lastUsn;
-        volHeader.recordCount = static_cast<uint32_t>(pods.size());
-        volHeader.stringPoolBytes = static_cast<uint32_t>(stringPool.size() * sizeof(wchar_t));
-
-        // 写入 VolHeader
-        if (!writeAll(hFile, &volHeader, sizeof(volHeader))) return failSave();
-
-        // 写入 String Pool
-        if (!stringPool.empty()) {
-            if (!writeAll(hFile, stringPool.data(), volHeader.stringPoolBytes)) return failSave();
-        }
-
-        // 写入 Pod Array
-        if (!pods.empty()) {
-            const size_t podsBytes = pods.size() * sizeof(DbRecordPod);
-            if (!writeAll(hFile, pods.data(), podsBytes)) return failSave();
-        }
+        totalRecordsAll += volumeRecords;
         ++header.volumeCount;
     }
 

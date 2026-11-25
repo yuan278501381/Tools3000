@@ -568,15 +568,22 @@ export const ClipboardApp: FC = () => {
     clearMultiSelection();
   }, [selectedIds, mergeSeparator, windowPinned, clearMultiSelection]);
 
+  const deletingBatchRef = useRef(false);
   const handleBatchDelete = useCallback(async () => {
-    if (selectedIds.length === 0) return;
-    await bridgeRequest('clipboard.deleteItems', {
-      ids: selectedIds,
-      skipPinned: false,
-    });
-    clearMultiSelection();
-    void fetchGroups();
-    void fetchItems(query, filterKind, activeGroupId);
+    if (deletingBatchRef.current || selectedIds.length === 0) return;
+    deletingBatchRef.current = true;
+    const idsToDelete = [...selectedIds];
+    try {
+      await bridgeRequest('clipboard.deleteItems', {
+        ids: idsToDelete,
+        skipPinned: false,
+      });
+      clearMultiSelection();
+      void fetchGroups();
+      void fetchItems(query, filterKind, activeGroupId);
+    } finally {
+      deletingBatchRef.current = false;
+    }
   }, [selectedIds, clearMultiSelection, fetchGroups, fetchItems, query, filterKind, activeGroupId]);
 
   const handleAssignGroup = useCallback(
@@ -720,9 +727,12 @@ export const ClipboardApp: FC = () => {
   const handleItemMouseDown = useCallback(
     (item: ClipboardItemSummary, idx: number, e: ReactMouseEvent<HTMLButtonElement>) => {
       if (e.button !== 0) return;
-      const isMultiGesture = e.shiftKey || e.ctrlKey || e.metaKey || multiSelectMode;
+      const target = e.target as HTMLElement | null;
+      const isCheckboxHit = Boolean(target?.closest('[data-clip-checkbox="true"]'));
+      const isMultiGesture = e.shiftKey || e.ctrlKey || e.metaKey || multiSelectMode || isCheckboxHit;
       if (isMultiGesture) {
         // 在 mousedown 当拍拦截 Shift/Ctrl 原生文字蓝底选区并即时完成勾选/连选（对齐 Windows 原生 ListView 手感，0 吞点击）
+        // 直接点击复选框区域时独立切换勾选，绝不清空既有选区
         e.preventDefault();
         try {
           window.getSelection()?.removeAllRanges();
@@ -732,13 +742,16 @@ export const ClipboardApp: FC = () => {
         e.currentTarget.focus({ preventScroll: true });
         handledInMouseDownRef.current = item.id;
         suppressClickItemIdRef.current = null;
-        applyItemSelection(item, idx, e);
+        applyItemSelection(item, idx, {
+          shiftKey: e.shiftKey,
+          ctrlKey: e.ctrlKey || (isCheckboxHit && !e.shiftKey),
+          metaKey: e.metaKey,
+        });
         return;
       }
 
       handledInMouseDownRef.current = null;
       if (editingItemId !== null) return;
-      const target = e.target as HTMLElement | null;
       if (target?.closest('input, textarea, select, a, [data-no-item-drag="true"]')) return;
 
       // 左键拖动移动距离 >= 5px 时触发 Win32 原生 OLE DoDragDrop（拖入任意输入框直接粘贴且保持面板不关闭）
@@ -821,10 +834,16 @@ export const ClipboardApp: FC = () => {
         return;
       }
       handledInMouseDownRef.current = null;
-      if (e.shiftKey || e.ctrlKey || e.metaKey) {
+      const target = e.target as HTMLElement | null;
+      const isCheckboxHit = Boolean(target?.closest('[data-clip-checkbox="true"]'));
+      if (e.shiftKey || e.ctrlKey || e.metaKey || isCheckboxHit) {
         e.preventDefault();
       }
-      applyItemSelection(item, idx, e);
+      applyItemSelection(item, idx, {
+        shiftKey: e.shiftKey,
+        ctrlKey: e.ctrlKey || (isCheckboxHit && !e.shiftKey),
+        metaKey: e.metaKey,
+      });
     },
     [applyItemSelection],
   );
@@ -945,7 +964,7 @@ export const ClipboardApp: FC = () => {
       void handleTogglePin(selectedItem);
       return;
     }
-    if (e.key === 'Delete' && !isInSearchInput) {
+    if (e.key === 'Delete' && (!isInSearchInput || (query.length === 0 && selectedIds.length > 0))) {
       e.preventDefault();
       if (selectedIds.length > 0) {
         void handleBatchDelete();
@@ -1431,7 +1450,12 @@ export const ClipboardApp: FC = () => {
                   <div className="clip-popup__item-top">
                     <span className="clip-popup__item-kind">
                       {showCheckboxes ? (
-                        <span className="clip-popup__check-indicator" aria-hidden="true">
+                        <span
+                          className="clip-popup__check-indicator"
+                          data-clip-checkbox="true"
+                          data-no-item-drag="true"
+                          aria-hidden="true"
+                        >
                           {isChecked ? <CheckSquare size={15} strokeWidth={2.2} /> : <Square size={15} strokeWidth={2} />}
                           {orderBadge > 0 && <span className="clip-popup__order-num">{orderBadge}</span>}
                         </span>
@@ -1669,14 +1693,27 @@ export const ClipboardApp: FC = () => {
                       <span>{selectedItem.pinned ? t('clipboard.actionUnpin', 'Unpin') : t('clipboard.actionPin', 'Pin')}</span>
                     </button>
 
-                    <button
-                      type="button"
-                      className="clip-popup__action-btn"
-                      onClick={() => void handleDelete(selectedItem)}
-                    >
-                      <Trash2 size={14} aria-hidden="true" />
-                      <span>{t('clipboard.actionDelete', 'Delete')}</span>
-                    </button>
+                    {selectedIds.length > 0 ? (
+                      <button
+                        type="button"
+                        data-testid="detail-batch-delete-btn"
+                        className="clip-popup__action-btn clip-popup__action-btn--danger"
+                        onClick={() => void handleBatchDelete()}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        <span>{t('clipboard.batchDelete', { count: selectedIds.length, defaultValue: `Delete (${selectedIds.length})` })}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid="detail-delete-btn"
+                        className="clip-popup__action-btn"
+                        onClick={() => void handleDelete(selectedItem)}
+                      >
+                        <Trash2 size={14} aria-hidden="true" />
+                        <span>{t('clipboard.actionDelete', 'Delete')}</span>
+                      </button>
+                    )}
                   </>
                 )}
               </div>

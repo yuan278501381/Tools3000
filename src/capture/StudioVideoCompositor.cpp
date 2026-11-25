@@ -466,8 +466,8 @@ uint64_t StudioVideoCompositor::estimateExportSizeBytes(
             const int safeFps = static_cast<int>(std::floor(static_cast<double>(kWeChatGifMaxFrames) / (std::max)(1.0, safeDur)));
             effFps = std::clamp((std::min)(effFps, safeFps), 5, 15);
         }
-        // 含 +transdiff 帧间透明差分下的实证桌面动图平均每像素压缩率
-        const double bytesPerFrame = static_cast<double>(outSz.width) * static_cast<double>(outSz.height) * 0.055 * qScale;
+        // 含静态帧时长合并 + +transdiff 帧间透明差分下的实证桌面动图平均每像素压缩率
+        const double bytesPerFrame = static_cast<double>(outSz.width) * static_cast<double>(outSz.height) * 0.036 * qScale;
         uint64_t est = static_cast<uint64_t>(std::llround(bytesPerFrame * effFps * safeDur));
         est = (std::max<uint64_t>)(est, 64ULL * 1024ULL);
         if (exportOpts.format == StudioExportFormat::GIF_WeChat && est > kWeChatGifSafeMaxBytes) {
@@ -478,17 +478,20 @@ uint64_t StudioVideoCompositor::estimateExportSizeBytes(
 
     if (exportOpts.format == StudioExportFormat::WebP_Animated) {
         const int effFps = std::clamp(exportOpts.fps > 0 ? exportOpts.fps : 24, 6, 60);
-        const double bytesPerFrame = static_cast<double>(outSz.width) * static_cast<double>(outSz.height) * 0.022 * qScale;
+        // 静态帧时长合并 + 桌面真彩帧间差分压缩后的实证估算
+        const double bytesPerFrame = static_cast<double>(outSz.width) * static_cast<double>(outSz.height) * 0.012 * qScale;
         return (std::max<uint64_t>)(48ULL * 1024ULL, static_cast<uint64_t>(std::llround(bytesPerFrame * effFps * safeDur)));
     }
 
-    // MP4 / HEVC / WebM (配合静态帧智能 VFR 抽帧与桌面专属编码配置，实际平均码率极低)
+    // MP4 (x264 CRF) / HEVC / WebM (VP9 CQ) + 静态帧 VFR 抽帧与长 GOP 桌面专属高压缩实证估算
     const int effFps = std::clamp(exportOpts.fps > 0 ? exportOpts.fps : 30, 10, 120);
     const double fpsRatio = std::clamp(static_cast<double>(effFps) / 30.0, 0.5, 2.2);
     const bool isHevc = (exportOpts.format == StudioExportFormat::MP4_HEVC);
-    const double effMbps = std::clamp(areaRatio * fpsRatio * qScale * (isHevc ? 0.90 : 1.32), 0.35, 22.0);
+    const bool isWebm = (exportOpts.format == StudioExportFormat::WebM_VP9);
+    const double baseMbps = isWebm ? 0.85 : (isHevc ? 0.90 : 1.15);
+    const double effMbps = std::clamp(areaRatio * fpsRatio * qScale * baseMbps, 0.22, 16.0);
     const uint64_t videoBytes = static_cast<uint64_t>(std::llround((effMbps * 1'000'000.0 / 8.0) * safeDur));
-    const uint64_t audioBytes = static_cast<uint64_t>(std::llround(16'000.0 * safeDur));
+    const uint64_t audioBytes = static_cast<uint64_t>(std::llround((isWebm ? 12'000.0 : 16'000.0) * safeDur));
     return (std::max<uint64_t>)(64ULL * 1024ULL, videoBytes + audioBytes);
 }
 

@@ -285,6 +285,33 @@ ResolvedBackupConfig ConfigBackupService::resolveRuntimeConfig(const nlohmann::j
 }
 
 std::vector<DetectedSyncFolder> ConfigBackupService::detectLocalSyncFolders() {
+    const std::wstring userProfile = getEnvVarW(L"USERPROFILE");
+    const std::wstring localAppData = getEnvVarW(L"LOCALAPPDATA");
+    const std::wstring oneDriveEnv = getEnvVarW(L"OneDrive");
+    const std::wstring oneDriveConsumer = getEnvVarW(L"OneDriveConsumer");
+    const std::wstring oneDriveCommercial = getEnvVarW(L"OneDriveCommercial");
+
+    const std::wstring cacheKey =
+        userProfile + L"|" + localAppData + L"|" + oneDriveEnv + L"|" +
+        oneDriveConsumer + L"|" + oneDriveCommercial;
+
+    static std::mutex s_detectCacheMutex;
+    static std::wstring s_cachedKey;
+    static std::vector<DetectedSyncFolder> s_cachedFolders;
+    static ULONGLONG s_cachedTickMs = 0;
+    constexpr ULONGLONG kDetectCacheTtlMs = 600'000ull;  // 10 分钟内复用探测结果，避免打开设置页重复触碰磁盘
+
+    const ULONGLONG nowTick = GetTickCount64();
+    {
+        std::lock_guard<std::mutex> lock(s_detectCacheMutex);
+        if (s_cachedTickMs != 0 &&
+            s_cachedKey == cacheKey &&
+            nowTick >= s_cachedTickMs &&
+            (nowTick - s_cachedTickMs) < kDetectCacheTtlMs) {
+            return s_cachedFolders;
+        }
+    }
+
     std::vector<DetectedSyncFolder> out;
     std::unordered_set<std::string> seenPaths;
     std::error_code ec;
@@ -302,12 +329,10 @@ std::vector<DetectedSyncFolder> ConfigBackupService::detectLocalSyncFolders() {
         }
     };
 
-    const std::wstring userProfile = getEnvVarW(L"USERPROFILE");
     const std::filesystem::path home(userProfile);
 
     // 1. Microsoft OneDrive
-    for (const wchar_t* envKey : {L"OneDrive", L"OneDriveConsumer", L"OneDriveCommercial"}) {
-        const std::wstring val = getEnvVarW(envKey);
+    for (const auto& val : {oneDriveEnv, oneDriveConsumer, oneDriveCommercial}) {
         if (!val.empty()) {
             tryAdd("onedrive", "Microsoft OneDrive", std::filesystem::path(val));
         }
@@ -321,14 +346,23 @@ std::vector<DetectedSyncFolder> ConfigBackupService::detectLocalSyncFolders() {
         tryAdd("google-drive", "Google Drive", home / L"Google Drive");
         tryAdd("google-drive", "Google Drive", home / L"My Drive");
     }
-    for (wchar_t drive = L'G'; drive <= L'Z'; ++drive) {
-        const std::wstring root = std::wstring(1, drive) + L":\\";
-        if (GetDriveTypeW(root.c_str()) == DRIVE_NO_ROOT_DIR) continue;
-        for (const wchar_t* sub : {L"My Drive", L"我的云端硬盘", L"我的雲端硬碟"}) {
-            const std::filesystem::path p = std::filesystem::path(root) / sub;
-            if (std::filesystem::is_directory(p, ec)) {
-                tryAdd("google-drive", "Google Drive", p);
-                break;
+    // 仅在本机存在 Google Drive for Desktop 元数据目录时才探测 G:..Z: 挂载盘，
+    // 防止未安装 Google Drive 的用户在打开设置页时唤醒休眠中的机械硬盘或触发断连盘符卡顿。
+    const bool hasGoogleDriveFs =
+        !localAppData.empty() &&
+        std::filesystem::is_directory(std::filesystem::path(localAppData) / L"Google" / L"DriveFS", ec);
+    if (hasGoogleDriveFs) {
+        const DWORD logicalMask = GetLogicalDrives();
+        for (wchar_t drive = L'G'; drive <= L'Z'; ++drive) {
+            if ((logicalMask & (1u << (drive - L'A'))) == 0) continue;
+            const std::wstring root = std::wstring(1, drive) + L":\\";
+            if (GetDriveTypeW(root.c_str()) != DRIVE_FIXED) continue;
+            for (const wchar_t* sub : {L"My Drive", L"我的云端硬盘", L"我的雲端硬碟"}) {
+                const std::filesystem::path p = std::filesystem::path(root) / sub;
+                if (std::filesystem::is_directory(p, ec)) {
+                    tryAdd("google-drive", "Google Drive", p);
+                    break;
+                }
             }
         }
     }
@@ -338,6 +372,13 @@ std::vector<DetectedSyncFolder> ConfigBackupService::detectLocalSyncFolders() {
         tryAdd("dropbox", "Dropbox", home / L"Dropbox");
         tryAdd("icloud", "iCloud Drive", home / L"iCloudDrive");
         tryAdd("nutstore", "Nutstore", home / L"Nutstore");
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(s_detectCacheMutex);
+        s_cachedKey = cacheKey;
+        s_cachedFolders = out;
+        s_cachedTickMs = GetTickCount64();
     }
     return out;
 }

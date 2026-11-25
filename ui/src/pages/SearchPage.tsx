@@ -141,7 +141,7 @@ export const SearchPage: FC = () => {
     liveRefreshEnabled: true,
     rankingProfile: 'balanced_frecency',
     memoryMode: 'idle_trim',
-    idleTrimMinutes: 5,
+    idleTrimMinutes: 2,
     idleStopMinutes: 30,
     iconStyle: 'native',
     autoBypassFullscreen: true,
@@ -160,7 +160,7 @@ export const SearchPage: FC = () => {
     workingSetBytes: 0,
     privateBytes: 0,
     memoryMode: 'idle_trim',
-    idleTrimMinutes: 5,
+    idleTrimMinutes: 2,
     idleStopMinutes: 30,
     idleSeconds: 0,
     lastTrimmedAt: 0,
@@ -548,7 +548,7 @@ export const SearchPage: FC = () => {
         : t('searchPage.rankingBalancedDesc', 'Pin high-confidence apps and exact commands at the top (capped at 3 so files are never buried) and automatically boost frequently used items via Frecency.');
 
   const activeMemoryMode: SearchMemoryMode = settings.memoryMode ?? 'idle_trim';
-  const activeIdleTrimMinutes = settings.idleTrimMinutes ?? 5;
+  const activeIdleTrimMinutes = settings.idleTrimMinutes ?? 2;
   const activeIdleStopMinutes = settings.idleStopMinutes ?? 30;
   const isServiceRunning = Boolean(serviceStatus.running || serviceStatus.available);
   const workingSetText = isServiceRunning

@@ -2599,8 +2599,18 @@ void MessageBridge::registerBuiltinHandlers() {
         return arr;
     });
     registerHandler("perf.trimMemory", [](const json&) -> json {
-        WinUtils::scheduleQuietIdleTrim(250);
-        return {{"success", true}};
+        const auto before = PerformanceMonitor::instance().sampleNow();
+        WinUtils::trimWorkingSet(true);
+        const auto after = PerformanceMonitor::instance().sampleNow();
+        WinUtils::scheduleQuietIdleTrim(1500);
+        return {
+            {"success", true},
+            {"beforePrivateMemoryMB", before.privateMemoryMB},
+            {"afterPrivateMemoryMB", after.privateMemoryMB},
+            {"beforeMemoryMB", before.memoryMB},
+            {"afterMemoryMB", after.memoryMB},
+            {"metrics", after.toJson()}
+        };
     });
 
     // ── 配置管理（导入/导出/重置）────────────────────────────────────────

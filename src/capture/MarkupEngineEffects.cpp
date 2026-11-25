@@ -94,14 +94,22 @@ namespace {
         }
     }
     cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false,
-                                 float maxBoxWidth = 0.0f) {
+                                 float maxBoxWidth = 0.0f,
+                                 bool fixedBoxWidth = false,
+                                 float minBoxHeight = 0.0f) {
         ensureGdiplusStartup();
         const int safeFontSize = (std::max)(12, fontSize);
         const int padW = tools3000::capture::CaptureTextEditor::computeBoxHorizontalPadding(safeFontSize);
         const int padH = tools3000::capture::CaptureTextEditor::computeBoxVerticalPadding(safeFontSize);
         if (!isGdiplusStarted()) {
             int w = text.empty() ? (124 + padW) : static_cast<int>((std::max)(40.0f, safeFontSize * 2.0f)) + padW;
+            if (fixedBoxWidth && maxBoxWidth > 0.0f) {
+                w = (std::max)(w, static_cast<int>(std::ceil(maxBoxWidth)));
+            }
             int h = static_cast<int>((std::max)(24.0f, safeFontSize * 1.3f)) + padH;
+            if (minBoxHeight > 0.0f) {
+                h = (std::max)(h, static_cast<int>(std::ceil(minBoxHeight)));
+            }
             return cv::Size((std::max)(w, 24 + padW), (std::max)(h, safeFontSize + padH));
         }
 
@@ -112,7 +120,7 @@ namespace {
         const auto layout = tools3000::capture::CaptureTextEditor::buildLayout(
             measureStr, safeFontSize, maxContentW);
         const auto [w, h] = tools3000::capture::CaptureTextEditor::computeBoxSize(
-            layout, safeFontSize, maxBoxWidth);
+            layout, safeFontSize, maxBoxWidth, fixedBoxWidth, minBoxHeight);
         return cv::Size(w, h);
     }
 
@@ -122,7 +130,9 @@ namespace {
                                  const tools3000::capture::MarkupColor& outlineColor = tools3000::capture::MarkupColor::Auto(),
                                  size_t caretIndex = 0, size_t selAnchor = 0, uint32_t lastCaretTick = 0,
                                  float outlineThicknessScale = 1.0f,
-                                 float maxBoxWidth = 0.0f) {
+                                 float maxBoxWidth = 0.0f,
+                                 bool fixedBoxWidth = false,
+                                 float minBoxHeight = 0.0f) {
         ensureGdiplusStartup();
         std::wstring wtext = utf8ToWide(text);
         if (wtext.empty() && !isEditing && !isSelected) {
@@ -138,10 +148,11 @@ namespace {
 
         cv::Size sz(0, 0);
         if (wtext.empty()) {
-            sz = measureSnipasteText(wtext, safeFontSize, isEditing || isSelected, maxBoxWidth);
+            sz = measureSnipasteText(wtext, safeFontSize, isEditing || isSelected,
+                                     maxBoxWidth, fixedBoxWidth, minBoxHeight);
         } else {
             const auto [bw, bh] = tools3000::capture::CaptureTextEditor::computeBoxSize(
-                textLayout, safeFontSize, maxBoxWidth);
+                textLayout, safeFontSize, maxBoxWidth, fixedBoxWidth, minBoxHeight);
             sz = cv::Size(bw, bh);
         }
         outSize = sz;
@@ -561,22 +572,41 @@ public:
 
 class TextHandler : public DefaultBoxHandler {
 public:
+    static int computeMinCustomBoxWidth(float fontSize) noexcept {
+        const int safeFontSize = (std::max)(12, static_cast<int>(fontSize));
+        const int padW = tools3000::capture::CaptureTextEditor::computeBoxHorizontalPadding(safeFontSize);
+        return (std::max)(44, static_cast<int>(std::ceil(static_cast<float>(safeFontSize) * 1.4f)) + padW);
+    }
+
     cv::Rect getBoundingBox(const MarkupElement& element) const override {
         if (element.textRenderSize.width <= 0 || element.textRenderSize.height <= 0) {
             std::wstring wtext = utf8ToWide(element.text);
             const_cast<MarkupElement&>(element).textRenderSize =
                 measureSnipasteText(wtext, static_cast<int>(element.fontSize),
                                     element.isEditing || element.isActive,
-                                    element.textMaxWidth);
+                                    element.textMaxWidth,
+                                    element.hasCustomTextWidth,
+                                    element.customTextBoxHeight);
         }
         int bw = element.textRenderSize.width;
         int bh = element.textRenderSize.height;
+        if (element.hasCustomTextWidth && element.textMaxWidth > 0.0f) {
+            bw = (std::max)(bw, static_cast<int>(std::ceil(element.textMaxWidth)));
+        }
+        if (element.customTextBoxHeight > 0.0f) {
+            bh = (std::max)(bh, static_cast<int>(std::ceil(element.customTextBoxHeight)));
+        }
         if (element.text.empty()) {
-            int minEmptyW = static_cast<int>((std::max)(140.0f, element.fontSize * 5.0f));
-            if (element.textMaxWidth > 0.0f) {
-                minEmptyW = (std::min)(minEmptyW, static_cast<int>(std::ceil(element.textMaxWidth)));
+            if (!element.hasCustomTextWidth) {
+                int minEmptyW = static_cast<int>((std::max)(140.0f, element.fontSize * 5.0f));
+                if (element.textMaxWidth > 0.0f) {
+                    minEmptyW = (std::min)(minEmptyW, static_cast<int>(std::ceil(element.textMaxWidth)));
+                }
+                if (bw < minEmptyW) bw = (std::max)(32, minEmptyW);
+            } else {
+                const int minCustomW = computeMinCustomBoxWidth(element.fontSize);
+                if (bw < minCustomW) bw = minCustomW;
             }
-            if (bw < minEmptyW) bw = (std::max)(32, minEmptyW);
             if (bh < static_cast<int>(element.fontSize + 12)) bh = static_cast<int>((std::max)(28.0f, element.fontSize + 12.0f));
         } else {
             if (bw < 32) bw = static_cast<int>((std::max)(32.0f, element.fontSize * 1.5f));
@@ -613,40 +643,126 @@ public:
             element.moveBy(dx, dy);
             return;
         }
-        cv::Rect oldBox = getBoundingBox(element);
-        int oldW = oldBox.width;
-        int oldH = oldBox.height;
+        const cv::Rect oldBox = getBoundingBox(element);
+        const int oldW = oldBox.width;
+        const int oldH = oldBox.height;
 
-        int delta = HandleGeometry::computeScalarDelta(dx, dy, handle);
-        element.fontSize += delta * 0.35f;
-        if (element.fontSize < 12.0f) element.fontSize = 12.0f;
-        if (element.fontSize > 180.0f) element.fontSize = 180.0f;
+        // 1. 左右边中点手柄 (L / R)：独立调整文本框宽度并实时重排换行，严格保持字号不变且对侧边零漂移
+        if (handle == HitArea::L || handle == HitArea::R) {
+            const int minW = computeMinCustomBoxWidth(element.fontSize);
+            constexpr int kMaxCustomW = 8192;
+            const int rightEdge = oldBox.x + oldBox.width;
+            const int targetW = (handle == HitArea::R) ? (oldW + dx) : (oldW - dx);
+            const int clampedW = std::clamp(targetW, minW, kMaxCustomW);
+
+            element.hasCustomTextWidth = true;
+            element.textMaxWidth = static_cast<float>(clampedW);
+            element.textRenderSize = cv::Size(0, 0);
+
+            if (handle == HitArea::L) {
+                element.startPt.x = rightEdge - clampedW;
+            }
+            const cv::Rect newBox = getBoundingBox(element);
+            if (handle == HitArea::L) {
+                element.startPt.x = rightEdge - newBox.width;
+            }
+            element.endPt = cv::Point(element.startPt.x + newBox.width, element.startPt.y + newBox.height);
+            return;
+        }
+
+        // 2. 上下边中点手柄 (T / B)：独立拉长或收紧文本框高度，严格保持字号与宽度不变且对侧边零漂移
+        if (handle == HitArea::T || handle == HitArea::B) {
+            const std::wstring wtext = utf8ToWide(element.text);
+            const cv::Size natSz = measureSnipasteText(
+                wtext, static_cast<int>(element.fontSize),
+                element.isEditing || element.isActive,
+                element.textMaxWidth, element.hasCustomTextWidth, 0.0f);
+            int natH = natSz.height;
+            if (element.text.empty()) {
+                natH = (std::max)(natH, static_cast<int>((std::max)(28.0f, element.fontSize + 12.0f)));
+            } else {
+                natH = (std::max)(natH, static_cast<int>((std::max)(24.0f, element.fontSize * 1.2f)));
+            }
+
+            constexpr int kMaxCustomH = 8192;
+            const int bottomEdge = oldBox.y + oldBox.height;
+            const int targetH = (handle == HitArea::B) ? (oldH + dy) : (oldH - dy);
+            if (targetH <= natH + 2) {
+                element.customTextBoxHeight = 0.0f;
+            } else {
+                element.customTextBoxHeight = static_cast<float>(std::clamp(targetH, natH, kMaxCustomH));
+            }
+            element.textRenderSize = cv::Size(0, 0);
+
+            const cv::Rect newBox = getBoundingBox(element);
+            if (handle == HitArea::T) {
+                element.startPt.y = bottomEdge - newBox.height;
+            }
+            element.endPt = cv::Point(element.startPt.x + newBox.width, element.startPt.y + newBox.height);
+            return;
+        }
+
+        // 3. 四角手柄 (LT / RT / LB / RB)：等比缩放字号，同步等比缩放自定义宽高以保持多行排版形态不变
+        const float oldFontSize = element.fontSize;
+        const int delta = HandleGeometry::computeScalarDelta(dx, dy, handle);
+        element.fontSize = std::clamp(element.fontSize + delta * 0.35f, 12.0f, 180.0f);
+        if (oldFontSize > 1.0f && std::abs(element.fontSize - oldFontSize) > 1e-4f) {
+            const float ratio = element.fontSize / oldFontSize;
+            if (element.hasCustomTextWidth && element.textMaxWidth > 0.0f) {
+                const float minScaledW = static_cast<float>(computeMinCustomBoxWidth(element.fontSize));
+                element.textMaxWidth = std::clamp(element.textMaxWidth * ratio, minScaledW, 8192.0f);
+            }
+            if (element.customTextBoxHeight > 0.0f) {
+                element.customTextBoxHeight = std::clamp(
+                    element.customTextBoxHeight * ratio,
+                    (std::max)(24.0f, element.fontSize * 1.2f), 8192.0f);
+            }
+        }
         element.textRenderSize = cv::Size(0, 0);
 
-        cv::Rect newBox = getBoundingBox(element);
-        int newW = newBox.width;
-        int newH = newBox.height;
-        int dW = newW - oldW;
-        int dH = newH - oldH;
+        const cv::Rect newBox = getBoundingBox(element);
+        const int newW = newBox.width;
+        const int newH = newBox.height;
+        const int dW = newW - oldW;
+        const int dH = newH - oldH;
 
         element.startPt = HandleGeometry::computeAnchoredOrigin(element.startPt, dW, dH, handle);
         element.endPt = cv::Point(element.startPt.x + newW, element.startPt.y + newH);
     }
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
-        if (element.isEditing) {
-            // 编辑态已绘制高颜值亮蓝聚焦虚线框，此处仅点缀 8 个小巧字号缩放手柄，避免双层框线重叠杂乱
-            const cv::Rect bbox = getBoundingBox(element);
-            const cv::Scalar activeColor(246, 130, 59);
-            const auto handles = HandleGeometry::getBoxHandles(bbox);
-            for (const auto& hp : handles) {
-                const cv::Rect hrect(hp.point.x - 4, hp.point.y - 4, 8, 8);
-                cv::rectangle(canvas, hrect, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
-                cv::rectangle(canvas, hrect, activeColor, 1, cv::LINE_AA);
-            }
-            return;
+        const cv::Rect bbox = getBoundingBox(element);
+        const cv::Scalar activeColor = element.isEditing
+            ? cv::Scalar(246, 130, 59)   // 编辑态：亮蓝 (#3B82F6 in BGR)
+            : cv::Scalar(255, 140, 0);   // 选中态：高辨识度科技蓝 (#008CFF in BGR)
+
+        if (!element.isEditing) {
+            cv::rectangle(canvas, cv::Rect(bbox.x - 1, bbox.y - 1, bbox.width + 2, bbox.height + 2),
+                          cv::Scalar(255, 255, 255), 1, cv::LINE_AA);
+            cv::rectangle(canvas, bbox, activeColor, 1, cv::LINE_AA);
         }
-        DefaultBoxHandler::renderActiveHandles(canvas, element);
+
+        // Figma / Keynote 级双语义视觉区分：
+        // - 四角手柄绘为圆形锚点（传达等比缩放字号）
+        // - 左右/上下中点绘为方向胶囊短条（直观传达独立拉宽重排与拉长高度）
+        const auto handles = HandleGeometry::getBoxHandles(bbox);
+        for (const auto& hp : handles) {
+            if (hp.area == HitArea::L || hp.area == HitArea::R) {
+                const int pillHalfH = (std::min)(7, (std::max)(4, bbox.height / 4));
+                const cv::Rect pill(hp.point.x - 2, hp.point.y - pillHalfH, 5, pillHalfH * 2 + 1);
+                cv::rectangle(canvas, pill, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+                cv::rectangle(canvas, pill, activeColor, 1, cv::LINE_AA);
+            } else if (hp.area == HitArea::T || hp.area == HitArea::B) {
+                const int pillHalfW = (std::min)(7, (std::max)(4, bbox.width / 4));
+                const cv::Rect pill(hp.point.x - pillHalfW, hp.point.y - 2, pillHalfW * 2 + 1, 5);
+                cv::rectangle(canvas, pill, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+                cv::rectangle(canvas, pill, activeColor, 1, cv::LINE_AA);
+            } else {
+                const int r = element.isEditing ? 4 : 5;
+                cv::circle(canvas, hp.point, r + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+                cv::circle(canvas, hp.point, r, activeColor, 1, cv::LINE_AA);
+            }
+        }
     }
 
     void render(cv::Mat& canvas, const MarkupElement& element) const override {
@@ -655,7 +771,7 @@ public:
         const bool effOutline = element.textOutline && (!element.hasCustomOutline || element.outlineThickness > 0.05f);
         const float outlineScale = element.hasCustomOutline ? (element.outlineThickness / 2.0f) : 1.0f;
         float effectiveMaxBoxWidth = element.textMaxWidth;
-        if (effectiveMaxBoxWidth <= 0.0f && canvas.cols > 0) {
+        if (!element.hasCustomTextWidth && effectiveMaxBoxWidth <= 0.0f && canvas.cols > 0) {
             effectiveMaxBoxWidth = tools3000::capture::CaptureTextEditor::computeAvailableBoxWidth(
                 canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
             const_cast<MarkupElement&>(element).textMaxWidth = effectiveMaxBoxWidth;
@@ -664,7 +780,8 @@ public:
                                 element.isEditing, element.isActive, element.fill, renderedSize,
                                 effOutline, element.textOutlineColor,
                                 element.textCaret, element.textSelAnchor, element.textLastCaretTick,
-                                outlineScale, effectiveMaxBoxWidth);
+                                outlineScale, effectiveMaxBoxWidth,
+                                element.hasCustomTextWidth, element.customTextBoxHeight);
         const_cast<MarkupElement&>(element).textRenderSize = renderedSize;
         if (renderedSize.width > 0 && renderedSize.height > 0) {
             const_cast<MarkupElement&>(element).endPt = cv::Point(element.startPt.x + renderedSize.width, element.startPt.y + renderedSize.height);

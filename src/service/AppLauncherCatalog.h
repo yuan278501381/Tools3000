@@ -15,12 +15,15 @@
 #include "db/RunHistoryManager.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cwctype>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -375,9 +378,10 @@ struct CachedAppEntry {
     std::wstring pinyinFull;
 };
 
-// Per-user TTL cache enumerating `FOLDERID_AppsFolder` (`SHGetKnownFolderItem`)
-// so modern UWP / MSIX / Windows system apps (Calculator, Settings, Microsoft Store, etc.)
-// are seamlessly searchable alongside NTFS Start Menu & Desktop shortcuts (`U-04`).
+// Per-user Stale-While-Revalidate (SWR) TTL cache enumerating `FOLDERID_AppsFolder`
+// (`SHGetKnownFolderItem`) so modern UWP / MSIX / Windows system apps (Calculator, Settings,
+// Microsoft Store, etc.) are seamlessly searchable alongside NTFS Start Menu & Desktop shortcuts
+// without blocking interactive searches on slow Shell COM refreshes (`U-04`).
 class AppsFolderCatalog {
 public:
     static AppsFolderCatalog& instance() {
@@ -385,10 +389,35 @@ public:
         return s_catalog;
     }
 
+    ~AppsFolderCatalog() {
+        shutdown();
+    }
+
     void invalidate() {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_sessions.clear();
         m_sessions.shrink_to_fit();
+    }
+
+    void shutdown() {
+        m_shuttingDown.store(true, std::memory_order_release);
+        std::vector<std::thread> workersToJoin;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (auto& w : m_refreshWorkers) {
+                if (w.thread.joinable()) {
+                    workersToJoin.push_back(std::move(w.thread));
+                }
+            }
+            m_refreshWorkers.clear();
+            m_sessions.clear();
+            m_sessions.shrink_to_fit();
+        }
+        for (auto& t : workersToJoin) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
     }
 
     std::vector<CachedAppEntry> getSnapshot(
@@ -399,37 +428,40 @@ public:
         const std::wstring key = clientSid.empty() ? L"__default__" : std::wstring(clientSid);
         const auto now = std::chrono::steady_clock::now();
 
+        std::vector<CachedAppEntry> staleEntries;
+        bool hasStale = false;
+        bool shouldTriggerAsyncRefresh = false;
+
         {
             std::lock_guard<std::mutex> lock(m_mutex);
-            for (const auto& session : m_sessions) {
-                if (session.sidKey == key && (now - session.capturedAt) < kCacheTtl) {
-                    return session.entries;
+            reapFinishedWorkersLocked();
+            for (auto& session : m_sessions) {
+                if (session.sidKey == key) {
+                    if ((now - session.capturedAt) < kCacheTtl) {
+                        return session.entries;
+                    }
+                    staleEntries = session.entries;
+                    hasStale = true;
+                    if (!session.refreshing && !m_shuttingDown.load(std::memory_order_acquire)) {
+                        session.refreshing = true;
+                        shouldTriggerAsyncRefresh = true;
+                    }
+                    break;
                 }
             }
+        }
+
+        if (hasStale) {
+            if (shouldTriggerAsyncRefresh) {
+                startAsyncRefresh(key, hClientToken, isSameUserProcessSid, std::wstring(clientSid));
+            }
+            return staleEntries;
         }
 
         std::vector<CachedAppEntry> fresh = enumerateFromShell(
             hClientToken, isSameUserProcessSid, clientSid);
 
-        {
-            std::lock_guard<std::mutex> lock(m_mutex);
-            const auto refreshTime = std::chrono::steady_clock::now();
-            bool updated = false;
-            for (auto& session : m_sessions) {
-                if (session.sidKey == key) {
-                    session.entries = fresh;
-                    session.capturedAt = refreshTime;
-                    updated = true;
-                    break;
-                }
-            }
-            if (!updated) {
-                if (m_sessions.size() >= kMaxCachedSessions) {
-                    m_sessions.erase(m_sessions.begin());
-                }
-                m_sessions.push_back(SessionCache{key, fresh, refreshTime});
-            }
-        }
+        storeSessionSnapshot(key, fresh);
         return fresh;
     }
 
@@ -505,14 +537,126 @@ public:
     }
 
 private:
-    static constexpr auto kCacheTtl = std::chrono::seconds(120);
+    static constexpr auto kCacheTtl = std::chrono::seconds(600);
     static constexpr size_t kMaxCachedSessions = 8;
 
     struct SessionCache {
         std::wstring sidKey;
         std::vector<CachedAppEntry> entries;
         std::chrono::steady_clock::time_point capturedAt{};
+        bool refreshing = false;
     };
+
+    struct RefreshWorker {
+        std::shared_ptr<std::atomic<bool>> done;
+        std::thread thread;
+    };
+
+    void reapFinishedWorkersLocked() {
+        for (auto it = m_refreshWorkers.begin(); it != m_refreshWorkers.end();) {
+            if (it->done && it->done->load(std::memory_order_acquire)) {
+                if (it->thread.joinable()) {
+                    it->thread.join();
+                }
+                it = m_refreshWorkers.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    void storeSessionSnapshot(const std::wstring& key, const std::vector<CachedAppEntry>& fresh) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_shuttingDown.load(std::memory_order_acquire)) {
+            return;
+        }
+        const auto refreshTime = std::chrono::steady_clock::now();
+        bool updated = false;
+        for (auto& session : m_sessions) {
+            if (session.sidKey == key) {
+                session.entries = fresh;
+                session.capturedAt = refreshTime;
+                session.refreshing = false;
+                updated = true;
+                break;
+            }
+        }
+        if (!updated) {
+            if (m_sessions.size() >= kMaxCachedSessions) {
+                m_sessions.erase(m_sessions.begin());
+            }
+            m_sessions.push_back(SessionCache{key, fresh, refreshTime, false});
+        }
+    }
+
+    void clearRefreshingFlag(const std::wstring& key) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        for (auto& session : m_sessions) {
+            if (session.sidKey == key) {
+                session.refreshing = false;
+                break;
+            }
+        }
+    }
+
+    void startAsyncRefresh(
+        const std::wstring& key,
+        HANDLE hClientToken,
+        bool isSameUserProcessSid,
+        std::wstring clientSid
+    ) {
+        HANDLE dupToken = nullptr;
+        if (hClientToken != nullptr && hClientToken != INVALID_HANDLE_VALUE) {
+            if (!DuplicateTokenEx(
+                    hClientToken,
+                    TOKEN_IMPERSONATE | TOKEN_QUERY | TOKEN_DUPLICATE,
+                    nullptr,
+                    SecurityImpersonation,
+                    TokenImpersonation,
+                    &dupToken)) {
+                dupToken = nullptr;
+                if (!isSameUserProcessSid) {
+                    clearRefreshingFlag(key);
+                    return;
+                }
+            }
+        }
+
+        auto doneFlag = std::make_shared<std::atomic<bool>>(false);
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_shuttingDown.load(std::memory_order_acquire)) {
+            if (dupToken) CloseHandle(dupToken);
+            for (auto& session : m_sessions) {
+                if (session.sidKey == key) {
+                    session.refreshing = false;
+                    break;
+                }
+            }
+            return;
+        }
+        reapFinishedWorkersLocked();
+        m_refreshWorkers.push_back(RefreshWorker{
+            doneFlag,
+            std::thread([this, key, dupToken, isSameUserProcessSid, clientSid = std::move(clientSid), doneFlag]() {
+                struct TokenGuard {
+                    HANDLE h;
+                    ~TokenGuard() { if (h) CloseHandle(h); }
+                } tokenGuard{dupToken};
+                try {
+                    if (!m_shuttingDown.load(std::memory_order_acquire)) {
+                        std::vector<CachedAppEntry> fresh = enumerateFromShell(
+                            dupToken, isSameUserProcessSid, clientSid);
+                        if (!m_shuttingDown.load(std::memory_order_acquire)) {
+                            storeSessionSnapshot(key, fresh);
+                        }
+                    }
+                } catch (...) {
+                    clearRefreshingFlag(key);
+                }
+                doneFlag->store(true, std::memory_order_release);
+            })
+        });
+    }
 
     static std::vector<CachedAppEntry> enumerateFromShell(
         HANDLE hClientToken,
@@ -656,7 +800,9 @@ private:
     }
 
     std::mutex m_mutex;
+    std::atomic<bool> m_shuttingDown{false};
     std::vector<SessionCache> m_sessions;
+    std::vector<RefreshWorker> m_refreshWorkers;
 };
 
 }  // namespace tools3000::service::launcher

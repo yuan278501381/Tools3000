@@ -104,7 +104,34 @@ VolumeStorageTopology detectVolumeStorageTopology(char driveLetter) noexcept {
         return false;
     };
 
+    // 二级兜底：部分老式 SATA/IDE/RAID 或 Win10 LTSC 驱动未实现 SeekPenalty 属性，
+    // 补充探测 TRIM 支持（机械硬盘不支持 TRIM -> TrimEnabled == FALSE）。
+    auto queryTrimFallback = [](HANDLE hTarget, bool& outRotational) noexcept -> bool {
+        STORAGE_PROPERTY_QUERY query{};
+        query.PropertyId = StorageDeviceTrimProperty;
+        query.QueryType = PropertyStandardQuery;
+        DEVICE_TRIM_DESCRIPTOR desc{};
+        DWORD returned = 0;
+        if (DeviceIoControl(
+                hTarget,
+                IOCTL_STORAGE_QUERY_PROPERTY,
+                &query,
+                sizeof(query),
+                &desc,
+                sizeof(desc),
+                &returned,
+                nullptr) &&
+            returned >= sizeof(desc)) {
+            outRotational = (desc.TrimEnabled == FALSE);
+            return true;
+        }
+        return false;
+    };
+
     bool detected = querySeekPenalty(hVol, topo.isRotational);
+    if (!detected) {
+        detected = queryTrimFallback(hVol, topo.isRotational);
+    }
     CloseHandle(hVol);
 
     if (!detected && topo.hasDiskNumber) {
@@ -118,7 +145,9 @@ VolumeStorageTopology detectVolumeStorageTopology(char driveLetter) noexcept {
             0,
             nullptr);
         if (hDisk != INVALID_HANDLE_VALUE) {
-            (void)querySeekPenalty(hDisk, topo.isRotational);
+            if (!querySeekPenalty(hDisk, topo.isRotational)) {
+                (void)queryTrimFallback(hDisk, topo.isRotational);
+            }
             CloseHandle(hDisk);
         }
     }
@@ -732,7 +761,8 @@ void MftParser::BackgroundHydrateLoop() {
         {
             std::unique_lock writeLock(m_MapMutex);
             for (const auto& item : batch) {
-                m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
+                // 全盘后台水合不向内存侧表灌入数百万条 creationTime（搜索展示前排按需水合即可拿到精确创建时间）
+                m_Store.updateMetadata(item.frn, item.fileSize, 0ULL, item.lastWriteTime);
             }
             m_IndexGeneration.fetch_add(1, std::memory_order_release);
         }
@@ -1127,7 +1157,8 @@ void MftParser::EnumerateFiles() {
                 reusableRecord.lastWriteTime = parsed.timeStamp;
                 reusableRecord.fileName.assign(parsed.fileName.data(), parsed.fileName.size());
 
-                m_Store.upsert(reusableRecord);
+                // 冷扫描结束后第 1152 行统一运行 recomputeHierarchyMetadata()，此处走 bulkImport=true 跳过冗余逐条层级计算
+                m_Store.upsert(reusableRecord, /*metadataHydrated=*/false, /*bulkImport=*/true);
                 count++;
             }
 
@@ -1179,8 +1210,8 @@ std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
     const auto* stored = m_Store.find(fileReferenceNumber);
     if (!stored) return L"";
 
-    std::vector<std::wstring_view> parts;
-    parts.reserve(16);
+    const tools3000::service::StoredFileRecord* chain[512];
+    size_t chainLen = 0;
     DWORDLONG visited[512];
     size_t visitedLen = 0;
     DWORDLONG current = fileReferenceNumber;
@@ -1190,26 +1221,36 @@ std::wstring MftParser::buildFullPath(DWORDLONG fileReferenceNumber) const {
         }
         const auto* node = m_Store.find(current);
         if (!node) break;
-        const FileRecord rec = m_Store.view(*node);
-        if (!rec.fileName.empty() && rec.fileName != L".") {
-            parts.push_back(rec.fileName);
+        const uint16_t nLen = node->nameLength();
+        bool isDot = false;
+        if (nLen == 1) {
+            tools3000::service::FileViewScratch dotScratch;
+            const auto rec = m_Store.view(*node, dotScratch);
+            isDot = (rec.fileName == L".");
         }
-        if (rec.parentFileReferenceNumber == current || rec.parentFileReferenceNumber == 0) break;
-        if (std::find(visited, visited + visitedLen, rec.parentFileReferenceNumber) !=
+        if (nLen > 0 && !isDot) {
+            chain[chainLen++] = node;
+        }
+        if (node->parentFrn == current || node->parentFrn == 0) break;
+        if (std::find(visited, visited + visitedLen, node->parentFrn) !=
             (visited + visitedLen)) {
             break;
         }
-        current = rec.parentFileReferenceNumber;
+        current = node->parentFrn;
     }
-    if (parts.empty()) return L"";
+    if (chainLen == 0) return L"";
 
+    size_t estimatedLen = 3;
+    for (size_t i = 0; i < chainLen; ++i) {
+        estimatedLen += chain[i]->nameLength() + 1;
+    }
     std::wstring path;
-    path.reserve(256);
+    path.reserve(estimatedLen);
     path += static_cast<wchar_t>(m_DriveLetter);
     path += L":\\";
-    for (auto pit = parts.rbegin(); pit != parts.rend(); ++pit) {
+    for (size_t i = chainLen; i > 0; --i) {
         if (path.size() > 3 && path.back() != L'\\') path += L'\\';
-        path += *pit;
+        m_Store.appendNameTo(*chain[i - 1], path);
     }
     return path;
 }
@@ -1235,12 +1276,19 @@ uint32_t MftParser::getVolumeSerialNumber() const {
 void MftParser::exportSnapshot(const SnapshotVisitor& visit, uint64_t& outLastUsn, uint32_t& outVolumeSerial) const {
     std::shared_lock lock(m_MapMutex);
     if (visit) {
+        tools3000::service::FileViewScratch scratch;
         m_Store.forEach([&](const tools3000::service::StoredFileRecord& record) {
-            visit(m_Store.view(record));
+            visit(m_Store.view(record, scratch));
         });
     }
     outLastUsn = getCurrentUsn();
     outVolumeSerial = getVolumeSerialNumber();
+}
+
+bool MftParser::withSnapshotLock(const StoreSnapshotCallback& fn) const {
+    if (!fn) return false;
+    std::shared_lock lock(m_MapMutex);
+    return fn(m_Store, getCurrentUsn(), getVolumeSerialNumber());
 }
 
 bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedRecords,
