@@ -54,7 +54,7 @@
     "clipboard": "剪貼簿歷史",
     "file_locksmith": "檔案佔用解鎖",
     "text_expander": "文字擴展器",
-    "performance": "效能與記憶體"
+    "performance": "記憶體策略"
   },
   "navSubtitle": {
     "stats": "按鍵與滑鼠活動使用統計",
@@ -79,7 +79,7 @@
     "clipboard": "持久化剪貼簿記錄、毫秒級檢索與圖片一鍵貼圖／翻譯",
     "file_locksmith": "零常駐檢視檔案佔用程序與一鍵安全解鎖",
     "text_expander": "在任意視窗輸入簡短觸發詞，自動展開完整片語、動態日期與程式碼範本",
-    "performance": "即時資源遙測、子系統回應延遲與全鏈路記憶體回收策略看板"
+    "performance": "各子系統按需掛起、閒置卸載與自動記憶體回收時間表"
   },
   "extension": {
     "statusRunning": "執行中",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "雙階純離線深度學習 OCR（DirectML GPU + WinML），整合條碼辨識與原位改字",
       "ifilterShellProps": "Office/WPS/郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取"
     },
-    "geekMode": "效能監控面板",
-    "enablePerfMonitor": "開啟效能監控",
-    "enablePerfMonitorDesc": "即時顯示記憶體、CPU 以及子系統延遲",
-    "perfMemory": "專用私有記憶體",
-    "perfWorkingSet": "實體工作集",
-    "perfCpu": "CPU 使用率",
-    "perfGestureLatency": "手勢延遲",
-    "perfUiLatency": "UI 渲染延遲",
     "exportLogsTip": "匯出系統診斷紀錄與環境報告",
     "authorGithubTip": "造訪原作者 GitHub 主頁",
     "repository": "開源存放庫",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "已略過 {{version}} 版本更新提醒",
     "viewChangelogShort": "檢視更新內容",
     "viewUpdate": "檢視更新",
-    "openPerformancePageBtn": "效能與記憶體看板",
+    "openPerformancePageBtn": "記憶體策略",
     "techStackSummary": "微核心原生雙引擎架構 · 點擊展開完整依賴與開源致謝（共 {{count}} 項）"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "剪貼簿 歷史 複製 貼上 釘選 持久化 clipboard",
     "kw_file_locksmith": "檔案佔用 解鎖 控制代碼 程序 右鍵選單 locksmith unlock",
     "kw_text_expander": "文字擴展器 片語 縮寫 範本 巨集 自動補全 輸入替換 text expander snippet",
-    "kw_performance": "效能 記憶體 工作集 延遲 回收 休眠 釋放 監控 xingneng neicun"
+    "kw_performance": "記憶體 策略 回收 休眠 掛起 卸載 釋放 工作集 效能 neicun celue huishou"
   },
   "onboarding": {
     "welcomeTitle": "歡迎使用 Tools3000",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "還原設定失敗"
   },
   "performancePage": {
-    "telemetryGroup": "即時資源與回應延遲監控",
-    "telemetryDesc": "開啟後每秒取樣目前主程序真實實體記憶體、處理器佔用與核心互動延遲",
-    "enableLiveMonitor": "開啟即時遙測取樣",
-    "enableLiveMonitorDesc": "僅在本頁面停留期間按秒輪詢，離開頁面自動停止零開銷",
-    "trimNowBtn": "立即執行靜默回收",
-    "trimNowDone": "已完成堆積緊縮與靜默工作集修剪",
-    "metricPrivateWs": "專用工作集記憶體",
-    "metricTotalWs": "總實體工作集",
-    "metricCpu": "處理器使用率",
-    "metricCaptureLatency": "最近截圖耗時",
-    "metricGestureLatency": "手勢辨識耗時",
-    "metricUiLatency": "介面渲染耗時",
-    "notTriggeredYet": "尚未觸發",
     "lifecycleGroup": "全鏈路記憶體生命週期與自動回收時間表",
     "lifecycleSubtitle": "透明展示各子系統閒置回收門檻。帶設定關聯的項目隨對應設定即時更新；底層防抖保護項由核心鎖定不可修改。",
     "badgeReadonly": "唯讀透明看板",

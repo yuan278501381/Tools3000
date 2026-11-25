@@ -16,7 +16,7 @@ import {
   History,
   FileText,
   BarChart3,
-  Gauge,
+  MemoryStick,
   Info,
   FolderSymlink,
   Sparkles,
@@ -97,7 +97,7 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
 
   // ── 洞察与关于 ────────────────────────────────────────────────────────────
   { id: 'stats', labelKey: 'nav.stats', subtitleKey: 'navSubtitle.stats', category: 'insights', icon: BarChart3, toneStart: '#22c55e', toneEnd: '#16a34a', canvasWidth: 'workspace' },
-  { id: 'performance', labelKey: 'nav.performance', subtitleKey: 'navSubtitle.performance', category: 'insights', icon: Gauge, toneStart: '#06b6d4', toneEnd: '#3b82f6', canvasWidth: 'reading' },
+  { id: 'performance', labelKey: 'nav.performance', subtitleKey: 'navSubtitle.performance', category: 'insights', icon: MemoryStick, toneStart: '#06b6d4', toneEnd: '#3b82f6', canvasWidth: 'reading' },
   { id: 'about', labelKey: 'nav.about', subtitleKey: 'navSubtitle.about', category: 'insights', icon: Info, toneStart: '#6366f1', toneEnd: '#8b5cf6', canvasWidth: 'reading' },
 ];
 

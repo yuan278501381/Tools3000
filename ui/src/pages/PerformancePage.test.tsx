@@ -54,9 +54,8 @@ describe('PerformancePage (Read-Only Memory Lifecycle Matrix)', () => {
       render(<PerformancePage onNavigate={onNavigate} />);
     });
 
-    // Live telemetry metrics & manual trim button removed
-    expect(screen.queryByText('performancePage.metricPrivateWs')).toBeNull();
-    expect(screen.queryByText('performancePage.trimNowBtn')).toBeNull();
+    // Live telemetry switches & manual trim controls remain absent
+    expect(screen.queryByRole('switch')).toBeNull();
     expect(bridgeSpy).not.toHaveBeenCalledWith('perf.getMetrics', expect.anything(), expect.anything());
     expect(bridgeSpy).not.toHaveBeenCalledWith('perf.trimMemory');
 

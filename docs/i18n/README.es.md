@@ -211,7 +211,7 @@ Compatibilidad total con carpetas de instalación y nombres de usuario de Window
 | Función / Archivo | Dónde acceder / Instalación estándar | Versión portátil |
 | :--- | :--- | :--- |
 | **Copia de Seguridad en la Nube** | `Sistema -> General -> Copia de Seguridad en Nube y Carpeta` (detección automática de OneDrive/Google Drive/Dropbox/iCloud, WebDAV, S3 y cifrado de extremo a extremo opcional) | Igual (la versión portátil también se actualiza en el mismo sitio desde `Configuración -> Acerca de`) |
-| **Rendimiento y Memoria** | `Estadísticas y Acerca de -> Rendimiento y Memoria` (telemetría en vivo, liberación en 1 clic y calendario de 10 reglas automáticas) | Igual |
+| **Política de Memoria** | `Estadísticas y Acerca de -> Política de Memoria` (calendario de solo lectura con 10 reglas de suspensión, descarga por inactividad y liberación automática) | Igual |
 | **Auto-OCR en Pines y Regiones** | `Productividad -> Captura y Grabación -> Pines y Regiones Fijas` (opción «Reconocer texto automáticamente al fijar» y gestor de regiones) | Igual |
 | **Desbloqueo de Archivos** | Configuración: `Sistema -> Módulos`, `Productividad -> Desbloqueo de Archivos`; centro de bandeja, clic derecho en Explorador y en Búsqueda | Igual (menú solo de usuario, 0 MB inactivo, limpieza automática al desactivar) |
 | **Iconos de Búsqueda / Live / RAM** | `Productividad -> Búsqueda de Archivos` (estilo de iconos / Live Watch / memoria); interruptor Live también en la barra inferior | Igual (los iconos de marcadores se leen localmente sin conexión) |

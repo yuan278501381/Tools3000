@@ -54,7 +54,7 @@
     "clipboard": "클립보드 기록",
     "file_locksmith": "파일 잠금 해제",
     "text_expander": "텍스트 확장기",
-    "performance": "성능 및 메모리"
+    "performance": "메모리 정책"
   },
   "navSubtitle": {
     "stats": "키보드 및 마우스 사용 활동 통계",
@@ -79,7 +79,7 @@
     "clipboard": "재부팅 후에도 유지되는 클립보드 기록, 초고속 검색 및 이미지 핀/번역",
     "file_locksmith": "상주 메모리 0으로 파일 점유 프로세스 확인 및 안전 해제",
     "text_expander": "어디서나 짧은 키워드로 상용구, 동적 날짜 및 템플릿을 즉시 확장",
-    "performance": "실시간 리소스 원격 측정, 응답 지연 시간 및 자동 메모리 회수 일정"
+    "performance": "각 하위 시스템의 온디맨드 일시 중단, 유휴 해제 및 자동 메모리 회수 일정표"
   },
   "extension": {
     "statusRunning": "실행 중",
@@ -294,7 +294,7 @@
     "reopenOnboardingBtn": "Open Guide",
     "localConfigTransfer": "Manual Local Configuration Import & Export",
     "localConfigTransferDesc": "Export all settings to a JSON file or restore from an existing backup",
-    "viewMemoryLifecycleBtn": "View Memory Lifecycle Schedule",
+    "viewMemoryLifecycleBtn": "메모리 회수 일정표 보기",
     "hotkeyGroupCore": "핵심 생산성 진입점",
     "hotkeyGroupPinOcr": "스티커 이미지 · OCR · 번역",
     "hotkeyGroupRecording": "고화질 화면 녹화 및 오디오 제어",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "2단계 완전 오프라인 딥러닝 OCR(DirectML GPU + WinML), QR/바코드 및 제자리 텍스트 편집",
       "ifilterShellProps": "Office/WPS/이메일 본문 전문 추출 및 30개 이상 확장 열 메타데이터 온디맨드 조회"
     },
-    "geekMode": "성능 모니터",
-    "enablePerfMonitor": "실시간 지표 활성화",
-    "enablePerfMonitorDesc": "메모리, CPU, 제스처 지연 및 UI 렌더링 지연을 실시간으로 표시합니다",
-    "perfMemory": "전용 메모리",
-    "perfWorkingSet": "작업 집합 (Working Set)",
-    "perfCpu": "CPU 사용률",
-    "perfGestureLatency": "제스처 지연",
-    "perfUiLatency": "UI 렌더링 지연",
     "exportLogsTip": "시스템 진단 로그 및 환경 보고서 내보내기",
     "authorGithubTip": "원작자 GitHub 프로필 방문",
     "repository": "오픈소스 저장소",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "{{version}} 업데이트 배지를 숨겼습니다",
     "viewChangelogShort": "변경 내역 보기",
     "viewUpdate": "업데이트 보기",
-    "openPerformancePageBtn": "Performance & Memory",
+    "openPerformancePageBtn": "메모리 정책",
     "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "클립보드 기록 복사 붙여넣기 고정 영구 clipboard",
     "kw_file_locksmith": "파일 잠금 해제 프로세스 우클릭 메뉴 locksmith unlock",
     "kw_text_expander": "텍스트 확장기 상용구 스니펫 매크로 자동완성 약어 템플릿 text expander snippet",
-    "kw_performance": "성능 메모리 지연 회수 모니터링 performance memory"
+    "kw_performance": "메모리 정책 회수 일시 중단 해제 유휴 일정표 성능 memory policy"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000에 오신 것을 환영합니다",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "설정 복원에 실패했습니다"
   },
   "performancePage": {
-    "telemetryGroup": "Live Resource & Latency Telemetry",
-    "telemetryDesc": "Samples private working set, total working set, CPU usage, and core subsystem latencies once per second",
-    "enableLiveMonitor": "Enable Live Telemetry Sampling",
-    "enableLiveMonitorDesc": "Polls metrics only while viewing this page; zero background overhead when closed",
-    "trimNowBtn": "Run Quiet Trim Now",
-    "trimNowDone": "Heap compaction and working-set trim completed",
-    "metricPrivateWs": "Private Working Set",
-    "metricTotalWs": "Total Working Set",
-    "metricCpu": "CPU Usage",
-    "metricCaptureLatency": "Last Capture Latency",
-    "metricGestureLatency": "Gesture Recognition",
-    "metricUiLatency": "UI Render Latency",
-    "notTriggeredYet": "Not triggered",
     "lifecycleGroup": "Memory Lifecycle & Auto-Reclamation Schedule",
     "lifecycleSubtitle": "Read-only overview of idle reclamation timers across all layers. Settings-linked items reflect your active configuration; kernel anti-thrash guards are permanently locked.",
     "badgeReadonly": "Read-Only Schedule",

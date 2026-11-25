@@ -130,5 +130,5 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'fl-menu', navId: 'file_locksmith', labelKey: 'general.shellMenuFileLocksmith', descKey: 'general.shellMenuFileLocksmithDesc', keywords: 'file locksmith unlock lock handle process context menu explorer shift wenjian zhanyong jiesuo' },
   { id: 'fl-inspect', navId: 'file_locksmith', labelKey: 'fileLocksmith.instantInspectGroup', descKey: 'fileLocksmith.instantInspectDesc', keywords: 'inspect locked file folder process kill unlock jiance zhanyong' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
-  { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory ram trim suspend destroy lifecycle idle latency xingneng neicun huishou' },
+  { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory policy ram trim suspend unload destroy lifecycle idle schedule neicun celue huishou shijianbiao xingneng' },
 ];

@@ -40,6 +40,36 @@ constexpr const char* kGoogleBatchSentinel = "\n[[T3K_SEG_91827]]\n";
 constexpr const char* kGoogleBatchSentinelCore = "T3K_SEG_91827";
 constexpr size_t kMaxConcurrentTranslateBatches = 4;
 constexpr size_t kMaxSessionCacheEntries = 512;
+constexpr int kTransientRetryDelayMs = 600;
+constexpr int kTransientRetrySliceMs = 50;
+constexpr int kMaxBinarySplitDepth = 4;
+
+// 渠道隔离 User-Agent 常量：
+// - 免费网页通道（Edge/Google）使用标准浏览器 UA；
+// - Bilibili Index-Translate 官方公开接口强制使用官方客户端 UA，避免被 CDN WAF 对无 Cookie 浏览器伪装 POST 返回 412；
+// - 通用 OpenAI 兼容 / DeepL / 本机 Ollama API 使用诚实原生客户端 UA，杜绝第三方 WAF 误拦。
+constexpr const wchar_t* kBrowserUserAgent =
+    L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
+constexpr const wchar_t* kIndexTranslateUserAgent = L"Index-Translate-Client/1.0";
+constexpr const wchar_t* kApiClientUserAgent = L"Tools3000/1.4";
+
+bool sleepCancelAwareMs(
+    int totalMs,
+    const std::atomic<bool>* cancelFlag,
+    const std::atomic<bool>& localAbort) noexcept {
+    int elapsed = 0;
+    while (elapsed < totalMs) {
+        if (localAbort.load(std::memory_order_acquire) ||
+            (cancelFlag && cancelFlag->load(std::memory_order_acquire))) {
+            return false;
+        }
+        const int step = (std::min)(kTransientRetrySliceMs, totalMs - elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(step));
+        elapsed += step;
+    }
+    return !localAbort.load(std::memory_order_acquire) &&
+           !(cancelFlag && cancelFlag->load(std::memory_order_acquire));
+}
 
 std::string trimAscii(std::string_view sv);
 
@@ -321,7 +351,8 @@ WinHttpResult executeHttpRequest(
     const std::wstring& headers,
     const std::string& requestBody,
     int timeoutMs,
-    const std::atomic<bool>* cancelFlag) {
+    const std::atomic<bool>* cancelFlag,
+    const wchar_t* userAgentOverride = nullptr) {
     WinHttpResult result{};
     if (!url.valid) {
         result.win32Error = ERROR_INVALID_PARAMETER;
@@ -334,16 +365,19 @@ WinHttpResult executeHttpRequest(
 
     const int clampedTimeout = std::clamp(
         timeoutMs, TranslationConstants::kMinTimeoutMs, TranslationConstants::kMaxTimeoutMs);
+    const wchar_t* effectiveUa = (userAgentOverride && userAgentOverride[0] != L'\0')
+        ? userAgentOverride
+        : kBrowserUserAgent;
 
     HINTERNET session = WinHttpOpen(
-        L"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+        effectiveUa,
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
         0);
     if (!session) {
         session = WinHttpOpen(
-            L"Tools3000/1.4",
+            effectiveUa,
             WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
             WINHTTP_NO_PROXY_NAME,
             WINHTTP_NO_PROXY_BYPASS,
@@ -536,13 +570,16 @@ std::string stripReasoningThinkBlocks(std::string_view raw) {
         const size_t closePos = lower.rfind(closeTag);
         if (closePos != std::string::npos) {
             std::string afterClose = trimAscii(text.substr(closePos + closeTag.size()));
-            if (!afterClose.empty()) {
-                text = std::move(afterClose);
+            if (afterClose.empty()) {
+                // 仅有思考链而无最终正文，绝不从思考内容中误提取 JSON 或原文
+                return {};
             }
+            text = std::move(afterClose);
             continue;
         }
         if (startsWithNoCase(text, openTag)) {
-            text = trimAscii(text.substr(openTag.size()));
+            // 未闭合的思考链（输出被 max_tokens 截断），返回空串交由调用方触发二分补译
+            return {};
         }
     }
     return text;
@@ -1083,8 +1120,44 @@ public:
             headers += L"Authorization: Bearer " + WinUtils::utf8ToWstring(settings.openaiApiKey) + L"\r\n";
         }
 
-        const auto batches = splitIntoBatches(texts, 8000, 32);
-        for (const auto& [beginIdx, endIdx] : batches) {
+        const OpenAiBatchPolicy policy = TranslationService::resolveOpenAiBatchPolicy(
+            fullUrl, model, settings.timeoutMs);
+        const wchar_t* effectiveUa = isKeylessPublic ? kIndexTranslateUserAgent : kApiClientUserAgent;
+        const auto batches = splitIntoBatches(texts, policy.maxCharsPerBatch, policy.maxItemsPerBatch);
+
+        std::atomic<bool> abortFlag{false};
+        std::atomic<size_t> translatedItemCount{0};
+        std::mutex errMutex;
+        std::string firstFatalErrCode;
+        std::string firstFatalErrDetail;
+        std::string firstSoftErrCode;
+        std::string firstSoftErrDetail;
+
+        auto recordFatal = [&](const std::string& ec, const std::string& ed) {
+            abortFlag.store(true, std::memory_order_release);
+            std::lock_guard<std::mutex> lock(errMutex);
+            if (firstFatalErrCode.empty()) {
+                firstFatalErrCode = ec;
+                firstFatalErrDetail = ed;
+            }
+        };
+        auto recordSoft = [&](const std::string& ec, const std::string& ed) {
+            std::lock_guard<std::mutex> lock(errMutex);
+            if (firstSoftErrCode.empty()) {
+                firstSoftErrCode = ec;
+                firstSoftErrDetail = ed;
+            }
+        };
+
+        std::function<void(size_t, size_t, int, std::atomic<bool>&)> translateRange;
+        translateRange = [&](size_t beginIdx, size_t endIdx, int depth, std::atomic<bool>& localAbort) {
+            if (beginIdx >= endIdx) return;
+            if (localAbort.load(std::memory_order_acquire) ||
+                (cancelFlag && cancelFlag->load(std::memory_order_acquire))) {
+                return;
+            }
+
+            const size_t count = endIdx - beginIdx;
             json items = json::array();
             for (size_t i = beginIdx; i < endIdx; ++i) {
                 items.push_back(json{{"id", static_cast<int>(i - beginIdx)}, {"text", texts[i]}});
@@ -1101,43 +1174,129 @@ public:
                 // 对齐 Index-Translate 官方推荐参数，显式关闭思考链以降低延迟并避免思维块污染 JSON 输出
                 reqJson["chat_template_kwargs"] = json{{"enable_thinking", false}};
             }
+            const std::string payload = reqJson.dump();
 
-            const WinHttpResult http = executeHttpRequest(
-                parsed, L"POST", headers, reqJson.dump(), settings.timeoutMs, cancelFlag);
-            if (http.cancelled) {
-                out.errorCode = "cancelled";
-                return out;
+            WinHttpResult http{};
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                http = executeHttpRequest(
+                    parsed, L"POST", headers, payload, policy.effectiveTimeoutMs, cancelFlag, effectiveUa);
+                if (http.cancelled) {
+                    recordFatal("cancelled", "");
+                    return;
+                }
+                const bool isTimeout = (!http.transportOk && http.win32Error == ERROR_WINHTTP_TIMEOUT);
+                const bool isTransientHttp = (http.transportOk &&
+                    (http.statusCode == 429 || http.statusCode == 500 ||
+                     http.statusCode == 502 || http.statusCode == 503 || http.statusCode == 504));
+                if ((isTimeout || isTransientHttp) && attempt == 0) {
+                    LOG_WARN("TranslationService: {} transient error (status={}, win32={}), retrying once (items={}, model={})",
+                             out.providerUsed, http.statusCode, http.win32Error, count, model);
+                    if (!sleepCancelAwareMs(kTransientRetryDelayMs, cancelFlag, localAbort)) {
+                        if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+                            recordFatal("cancelled", "");
+                        }
+                        return;
+                    }
+                    continue;
+                }
+                break;
             }
+
             if (!http.transportOk) {
-                out.errorCode = "network";
-                out.errorDetail = "winhttp_error=" + std::to_string(http.win32Error);
-                return out;
+                if (http.win32Error == ERROR_WINHTTP_TIMEOUT && count > 1 && depth < kMaxBinarySplitDepth) {
+                    const size_t mid = beginIdx + count / 2;
+                    LOG_WARN("TranslationService: {} batch timeout (items={}, depth={}), splitting",
+                             out.providerUsed, count, depth);
+                    translateRange(beginIdx, mid, depth + 1, localAbort);
+                    translateRange(mid, endIdx, depth + 1, localAbort);
+                    return;
+                }
+                recordFatal("network", "winhttp_error=" + std::to_string(http.win32Error));
+                return;
             }
+
             if (http.statusCode == 401 || http.statusCode == 403) {
-                out.errorCode = "auth_failed";
-                out.errorDetail = "openai_http_" + std::to_string(http.statusCode);
-                return out;
+                recordFatal("auth_failed", "openai_http_" + std::to_string(http.statusCode));
+                return;
             }
             if (http.statusCode == 429) {
-                out.errorCode = "rate_limited";
-                out.errorDetail = "openai_http_429";
-                return out;
+                recordFatal("rate_limited", "openai_http_429");
+                return;
             }
             if (http.statusCode < 200 || http.statusCode >= 300) {
-                out.errorCode = "http_error";
-                out.errorDetail = "openai_http_" + std::to_string(http.statusCode);
-                return out;
+                const bool isSplittableRejection =
+                    (http.statusCode == 400 || http.statusCode == 412 ||
+                     http.statusCode == 413 || http.statusCode == 422 ||
+                     http.statusCode == 451);
+                if (isSplittableRejection && count > 1 && depth < kMaxBinarySplitDepth) {
+                    const size_t mid = beginIdx + count / 2;
+                    LOG_WARN("TranslationService: {} upstream rejected batch (status={}, items={}, depth={}), splitting",
+                             out.providerUsed, http.statusCode, count, depth);
+                    translateRange(beginIdx, mid, depth + 1, localAbort);
+                    translateRange(mid, endIdx, depth + 1, localAbort);
+                    return;
+                }
+                if (isSplittableRejection && count == 1 && texts.size() > 1) {
+                    out.translations[beginIdx] = texts[beginIdx];
+                    recordSoft("http_error", "openai_http_" + std::to_string(http.statusCode));
+                    LOG_WARN("TranslationService: {} preserved single rejected item verbatim (status={}, model={})",
+                             out.providerUsed, http.statusCode, model);
+                    return;
+                }
+                recordFatal("http_error", "openai_http_" + std::to_string(http.statusCode));
+                return;
             }
 
             std::vector<std::string> chunkTranslations;
-            if (!TranslationService::parseOpenAiBatchResponse(
-                    http.body, endIdx - beginIdx, chunkTranslations)) {
-                out.errorCode = "invalid_response";
-                out.errorDetail = "openai_parse_failed";
-                return out;
+            if (!TranslationService::parseOpenAiBatchResponse(http.body, count, chunkTranslations)) {
+                if (count > 1 && depth < kMaxBinarySplitDepth) {
+                    const size_t mid = beginIdx + count / 2;
+                    LOG_WARN("TranslationService: {} batch parse incomplete (items={}, depth={}), splitting",
+                             out.providerUsed, count, depth);
+                    translateRange(beginIdx, mid, depth + 1, localAbort);
+                    translateRange(mid, endIdx, depth + 1, localAbort);
+                    return;
+                }
+                if (count == 1 && texts.size() > 1) {
+                    out.translations[beginIdx] = texts[beginIdx];
+                    recordSoft("invalid_response", "openai_parse_failed");
+                    LOG_WARN("TranslationService: {} preserved single unparseable item verbatim (model={})",
+                             out.providerUsed, model);
+                    return;
+                }
+                recordFatal("invalid_response", "openai_parse_failed");
+                return;
             }
-            for (size_t i = 0; i < chunkTranslations.size(); ++i) {
+
+            for (size_t i = 0; i < count; ++i) {
                 out.translations[beginIdx + i] = std::move(chunkTranslations[i]);
+            }
+            translatedItemCount.fetch_add(count, std::memory_order_relaxed);
+        };
+
+        runBatchesConcurrently(
+            batches.size(), policy.maxConcurrency, cancelFlag, abortFlag,
+            [&](size_t bIdx, std::atomic<bool>& localAbort) {
+                translateRange(batches[bIdx].first, batches[bIdx].second, 0, localAbort);
+            });
+
+        if (!firstFatalErrCode.empty()) {
+            out.errorCode = std::move(firstFatalErrCode);
+            out.errorDetail = std::move(firstFatalErrDetail);
+            return out;
+        }
+        if (cancelFlag && cancelFlag->load(std::memory_order_acquire)) {
+            out.errorCode = "cancelled";
+            return out;
+        }
+        if (translatedItemCount.load(std::memory_order_acquire) == 0 && !firstSoftErrCode.empty()) {
+            out.errorCode = std::move(firstSoftErrCode);
+            out.errorDetail = std::move(firstSoftErrDetail);
+            return out;
+        }
+        for (size_t i = 0; i < texts.size(); ++i) {
+            if (out.translations[i].empty() && !texts[i].empty()) {
+                out.translations[i] = texts[i];
             }
         }
 
@@ -1185,6 +1344,7 @@ public:
         }
 
         const auto batches = splitIntoBatches(texts, 16000, 40);
+        std::atomic<bool> localAbort{false};
         for (const auto& [beginIdx, endIdx] : batches) {
             json arr = json::array();
             for (size_t i = beginIdx; i < endIdx; ++i) arr.push_back(texts[i]);
@@ -1192,11 +1352,27 @@ public:
                 {"text", arr},
                 {"target_lang", deeplLang}
             };
-            const WinHttpResult http = executeHttpRequest(
-                parsed, L"POST", headers, reqJson.dump(), settings.timeoutMs, cancelFlag);
-            if (http.cancelled) {
-                out.errorCode = "cancelled";
-                return out;
+            const std::string payload = reqJson.dump();
+            WinHttpResult http{};
+            for (int attempt = 0; attempt < 2; ++attempt) {
+                http = executeHttpRequest(
+                    parsed, L"POST", headers, payload, settings.timeoutMs, cancelFlag, kApiClientUserAgent);
+                if (http.cancelled) {
+                    out.errorCode = "cancelled";
+                    return out;
+                }
+                const bool isRetryable =
+                    (!http.transportOk && http.win32Error == ERROR_WINHTTP_TIMEOUT) ||
+                    (http.transportOk && (http.statusCode == 429 || http.statusCode == 502 ||
+                                          http.statusCode == 503 || http.statusCode == 504));
+                if (isRetryable && attempt == 0) {
+                    if (!sleepCancelAwareMs(kTransientRetryDelayMs, cancelFlag, localAbort)) {
+                        out.errorCode = "cancelled";
+                        return out;
+                    }
+                    continue;
+                }
+                break;
             }
             if (!http.transportOk) {
                 out.errorCode = "network";
@@ -1508,14 +1684,16 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
     auto& sessionCache = SessionTranslationCache::instance();
     for (size_t i = 0; i < request.texts.size(); ++i) {
         const std::string& src = request.texts[i];
-        if (textAlreadyInTargetLanguage(src, effectiveTarget, batchHasHan)) {
-            mergedOut[i] = src;
-            continue;
-        }
-        std::string cachedVal;
-        if (sessionCache.lookup(cacheScope + "|" + src, cachedVal)) {
-            mergedOut[i] = std::move(cachedVal);
-            continue;
+        if (!request.bypassCache) {
+            if (textAlreadyInTargetLanguage(src, effectiveTarget, batchHasHan)) {
+                mergedOut[i] = src;
+                continue;
+            }
+            std::string cachedVal;
+            if (sessionCache.lookup(cacheScope + "|" + src, cachedVal)) {
+                mergedOut[i] = std::move(cachedVal);
+                continue;
+            }
         }
         auto it = uniqueIndex.find(src);
         if (it == uniqueIndex.end()) {
@@ -1543,9 +1721,11 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         if (!subRes.success || subRes.translations.size() != uniqueToTranslate.size()) {
             return stampElapsed(std::move(subRes));
         }
-        for (size_t u = 0; u < uniqueToTranslate.size(); ++u) {
-            if (!subRes.translations[u].empty()) {
-                sessionCache.put(cacheScope + "|" + uniqueToTranslate[u], subRes.translations[u]);
+        if (!request.bypassCache) {
+            for (size_t u = 0; u < uniqueToTranslate.size(); ++u) {
+                if (!subRes.translations[u].empty()) {
+                    sessionCache.put(cacheScope + "|" + uniqueToTranslate[u], subRes.translations[u]);
+                }
             }
         }
         for (const auto& [origIdx, uIdx] : slotToUnique) {
@@ -1738,6 +1918,58 @@ bool TranslationService::isKeylessPublicOpenAiUrl(std::string_view url) noexcept
     return host == TranslationConstants::kIndexTranslateHost;
 }
 
+OpenAiBatchPolicy TranslationService::resolveOpenAiBatchPolicy(
+    std::string_view fullUrl,
+    std::string_view model,
+    int configuredTimeoutMs) noexcept {
+    OpenAiBatchPolicy policy{};
+    const int clampedConfigured = std::clamp(
+        configuredTimeoutMs, TranslationConstants::kMinTimeoutMs, TranslationConstants::kMaxTimeoutMs);
+
+    if (isKeylessPublicOpenAiUrl(fullUrl)) {
+        const std::string lowModel = toLowerAscii(trimAscii(model));
+        int minTimeout = 20000;
+        if (lowModel.find("35b") != std::string::npos) {
+            policy.maxCharsPerBatch = 1600;
+            policy.maxItemsPerBatch = 8;
+            minTimeout = 25000;
+        } else if (lowModel.find("2b") != std::string::npos) {
+            policy.maxCharsPerBatch = 3200;
+            policy.maxItemsPerBatch = 18;
+            minTimeout = 15000;
+        } else {
+            // 9B 均衡推荐档及 Nailong / Homura 等衍生模型
+            policy.maxCharsPerBatch = 2400;
+            policy.maxItemsPerBatch = 12;
+            minTimeout = 20000;
+        }
+        policy.maxConcurrency = 2;
+        policy.effectiveTimeoutMs = std::clamp(
+            (std::max)(clampedConfigured, minTimeout),
+            TranslationConstants::kMinTimeoutMs,
+            TranslationConstants::kMaxTimeoutMs);
+        return policy;
+    }
+
+    if (isLoopbackHttpUrl(fullUrl)) {
+        // 本机 Ollama / LM Studio / vLLM 多为单卡串行推理队列，严禁高并发争抢显存引发排队超时
+        policy.maxCharsPerBatch = 2800;
+        policy.maxItemsPerBatch = 12;
+        policy.maxConcurrency = 1;
+        policy.effectiveTimeoutMs = std::clamp(
+            (std::max)(clampedConfigured, 25000),
+            TranslationConstants::kMinTimeoutMs,
+            TranslationConstants::kMaxTimeoutMs);
+        return policy;
+    }
+
+    policy.maxCharsPerBatch = 4500;
+    policy.maxItemsPerBatch = 20;
+    policy.maxConcurrency = 2;
+    policy.effectiveTimeoutMs = clampedConfigured;
+    return policy;
+}
+
 bool TranslationService::normalizeOpenAiChatUrl(std::string_view baseUrl, std::string& outFullUrl) {
     outFullUrl.clear();
     std::string url = trimAscii(baseUrl);
@@ -1894,6 +2126,67 @@ bool TranslationService::parseOpenAiBatchResponse(
     std::vector<std::string>& outTranslations) {
     outTranslations.clear();
     if (expectedCount == 0) return true;
+
+    auto extractSafeId = [](const json& item) noexcept -> int {
+        if (!item.is_object() || !item.contains("id")) return -1;
+        const auto& idVal = item["id"];
+        if (idVal.is_number_integer()) {
+            const int64_t v = idVal.get<int64_t>();
+            if (v >= 0 && v <= static_cast<int64_t>((std::numeric_limits<int>::max)())) {
+                return static_cast<int>(v);
+            }
+            return -1;
+        }
+        if (idVal.is_string()) {
+            const std::string s = trimAscii(idVal.get<std::string>());
+            if (s.empty() || s.size() > 9) return -1;
+            int acc = 0;
+            for (unsigned char c : s) {
+                if (c < '0' || c > '9') return -1;
+                acc = acc * 10 + static_cast<int>(c - '0');
+            }
+            return acc;
+        }
+        return -1;
+    };
+
+    auto extractSafeText = [](const json& item) -> std::string {
+        if (!item.is_object()) return {};
+        static constexpr const char* kKeys[] = {"text", "translation", "translated"};
+        for (const char* key : kKeys) {
+            if (!item.contains(key)) continue;
+            const auto& val = item[key];
+            if (val.is_string()) return val.get<std::string>();
+            if (val.is_number() || val.is_boolean()) return val.dump();
+        }
+        return {};
+    };
+
+    auto trySinglePlainTextFallback = [&](const std::string& rawContent) -> bool {
+        if (expectedCount != 1) return false;
+        std::string plain = stripReasoningThinkBlocks(rawContent);
+        if (plain.rfind("```", 0) == 0) {
+            const size_t firstNewline = plain.find('\n');
+            if (firstNewline != std::string::npos) {
+                plain = plain.substr(firstNewline + 1);
+                const size_t closeFence = plain.rfind("```");
+                if (closeFence != std::string::npos) {
+                    plain = plain.substr(0, closeFence);
+                }
+                plain = trimAscii(plain);
+            }
+        }
+        if (plain.empty()) return false;
+        // 若明显是截断或畸形的 JSON 对象/数组片段，绝不冒充自然语言译文落画布
+        if (plain.front() == '{' || plain.front() == '[' ||
+            plain.find("\"translations\"") != std::string::npos) {
+            return false;
+        }
+        outTranslations = {std::move(plain)};
+        return true;
+    };
+
+    std::string content;
     try {
         const auto envelope = json::parse(responseBody.begin(), responseBody.end());
         if (!envelope.is_object() || !envelope.contains("choices") ||
@@ -1905,9 +2198,22 @@ bool TranslationService::parseOpenAiBatchResponse(
             !firstChoice["message"].is_object()) {
             return false;
         }
-        const std::string content = firstChoice["message"].value("content", "");
+        const auto& msg = firstChoice["message"];
+        if (msg.contains("content") && msg["content"].is_string()) {
+            content = msg["content"].get<std::string>();
+        }
+    } catch (...) {
+        outTranslations.clear();
+        return false;
+    }
+
+    if (content.empty()) return false;
+
+    try {
         const std::string jsonStr = extractJsonPayloadFromModelContent(content);
-        if (jsonStr.empty()) return false;
+        if (jsonStr.empty()) {
+            return trySinglePlainTextFallback(content);
+        }
 
         const auto parsed = json::parse(jsonStr);
         const json* arr = nullptr;
@@ -1915,8 +2221,17 @@ bool TranslationService::parseOpenAiBatchResponse(
             arr = &parsed["translations"];
         } else if (parsed.is_array()) {
             arr = &parsed;
+        } else if (parsed.is_object() && expectedCount == 1) {
+            const std::string directText = extractSafeText(parsed);
+            if (!trimAscii(directText).empty()) {
+                outTranslations = {directText};
+                return true;
+            }
+            return false;
         }
-        if (!arr || arr->empty()) return false;
+        if (!arr || arr->empty()) {
+            return trySinglePlainTextFallback(content);
+        }
 
         outTranslations.assign(expectedCount, {});
         std::vector<bool> filled(expectedCount, false);
@@ -1924,28 +2239,46 @@ bool TranslationService::parseOpenAiBatchResponse(
 
         for (const auto& item : *arr) {
             if (item.is_object()) {
-                const int id = item.value("id", -1);
-                const std::string text = item.value("text", "");
+                const int id = extractSafeId(item);
+                const std::string text = extractSafeText(item);
+                if (trimAscii(text).empty()) continue;
                 if (id >= 0 && static_cast<size_t>(id) < expectedCount) {
                     outTranslations[static_cast<size_t>(id)] = text;
                     filled[static_cast<size_t>(id)] = true;
-                } else if (sequentialCursor < expectedCount) {
+                } else {
+                    while (sequentialCursor < expectedCount && filled[sequentialCursor]) {
+                        ++sequentialCursor;
+                    }
+                    if (sequentialCursor < expectedCount) {
+                        outTranslations[sequentialCursor] = text;
+                        filled[sequentialCursor] = true;
+                        ++sequentialCursor;
+                    }
+                }
+            } else if (item.is_string()) {
+                const std::string text = item.get<std::string>();
+                if (trimAscii(text).empty()) continue;
+                while (sequentialCursor < expectedCount && filled[sequentialCursor]) {
+                    ++sequentialCursor;
+                }
+                if (sequentialCursor < expectedCount) {
                     outTranslations[sequentialCursor] = text;
                     filled[sequentialCursor] = true;
                     ++sequentialCursor;
                 }
-            } else if (item.is_string() && sequentialCursor < expectedCount) {
-                outTranslations[sequentialCursor] = item.get<std::string>();
-                filled[sequentialCursor] = true;
-                ++sequentialCursor;
             }
         }
 
         const size_t filledCount = static_cast<size_t>(std::count(filled.begin(), filled.end(), true));
-        return filledCount > 0;
-    } catch (...) {
+        // 严格要求整批 100% 完整回填，杜绝模型输出截断导致半页被静默擦白；不完整时交由调用方自动二分补译
+        if (filledCount == expectedCount) {
+            return true;
+        }
         outTranslations.clear();
         return false;
+    } catch (...) {
+        outTranslations.clear();
+        return trySinglePlainTextFallback(content);
     }
 }
 

@@ -68,6 +68,12 @@ public:
     /// 判断 URL 是否指向官方内置免 Key 公网 OpenAI 兼容端点（如 index-translate.bilibili.com）
     static bool isKeylessPublicOpenAiUrl(std::string_view url) noexcept;
 
+    /// 按接口类型（内置免 Key 公网 / 本机环回 / 通用云端 BYOK）与模型规模计算自适应分批与安全并发策略
+    static OpenAiBatchPolicy resolveOpenAiBatchPolicy(
+        std::string_view fullUrl,
+        std::string_view model,
+        int configuredTimeoutMs) noexcept;
+
     /// 规范化 DeepL 端点地址（空值时自动按 :fx 后缀路由免费/专业端点）
     static bool normalizeDeepLUrl(std::string_view customBaseUrl,
                                   std::string_view apiKey,

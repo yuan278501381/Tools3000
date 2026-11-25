@@ -10,7 +10,7 @@ import {
   Download,
   GitBranch,
   BellOff,
-  Gauge,
+  MemoryStick,
   ChevronDown,
 } from 'lucide-react';
 import type { NavId } from '../config/routes';
@@ -272,7 +272,7 @@ export const AboutPage: FC<AboutPageProps> = ({ onNavigate }) => {
 
             {onNavigate && (
               <Button variant="secondary" size="sm" onClick={() => onNavigate('performance')}>
-                <Gauge size={13} />
+                <MemoryStick size={13} />
                 <span>{t('about.openPerformancePageBtn')}</span>
               </Button>
             )}

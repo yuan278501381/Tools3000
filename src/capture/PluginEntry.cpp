@@ -2068,6 +2068,7 @@ public:
             TranslationBatchRequest req;
             req.texts = {"Hello, Tools3000!"};
             req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
+            req.bypassCache = true;
             const auto res = TranslationService::instance().translateBatchWithSettings(req, candidate);
             const std::string sampleOutput = res.translations.empty() ? "" : res.translations[0];
             return {

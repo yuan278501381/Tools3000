@@ -54,7 +54,7 @@
     "clipboard": "剪贴板历史",
     "file_locksmith": "文件占用解锁",
     "text_expander": "文本扩展器",
-    "performance": "性能与内存"
+    "performance": "内存策略"
   },
   "navSubtitle": {
     "stats": "按键和鼠标活动使用统计",
@@ -79,7 +79,7 @@
     "clipboard": "持久化剪贴板记录、毫秒级检索与图片一键贴图/翻译",
     "file_locksmith": "零常驻查看文件占用进程与一键安全解锁",
     "text_expander": "在任意窗口输入短触发词，自动展开完整短语、动态日期与代码模板",
-    "performance": "实时资源遥测、子系统响应延迟与全链路内存回收策略看板"
+    "performance": "各子系统按需挂起、闲置卸载与自动内存回收时间表"
   },
   "extension": {
     "statusRunning": "运行中",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "双阶纯离线深度学习 OCR（DirectML GPU + WinML），集成二维码/条码与原位改字",
       "ifilterShellProps": "Office/WPS/邮件正文全文解析与 30+ 媒体/哈希/EXIF 扩展列属性按需提取"
     },
-    "geekMode": "性能监控面板",
-    "enablePerfMonitor": "开启性能监控",
-    "enablePerfMonitorDesc": "实时显示内存、CPU以及子系统延迟",
-    "perfMemory": "专用私有内存",
-    "perfWorkingSet": "物理工作集",
-    "perfCpu": "CPU 使用率",
-    "perfGestureLatency": "手势延迟",
-    "perfUiLatency": "UI 渲染延迟",
     "exportLogsTip": "导出系统诊断日志与环境报告",
     "authorGithubTip": "访问原作者 GitHub 主页",
     "repository": "开源仓库",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "已忽略 {{version}} 版本更新提醒",
     "viewChangelogShort": "查看更新内容",
     "viewUpdate": "查看更新",
-    "openPerformancePageBtn": "性能与内存看板",
+    "openPerformancePageBtn": "内存策略",
     "techStackSummary": "微内核原生双引擎架构 · 点击展开完整依赖与开源致谢（共 {{count}} 项）"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "剪贴板 历史 复制 粘贴 置顶 持久化 clipboard",
     "kw_file_locksmith": "文件占用 解锁 句柄 进程 右键菜单 locksmith unlock",
     "kw_text_expander": "文本扩展器 短语 缩写 模板 宏 自动补全 输入替换 text expander snippet",
-    "kw_performance": "性能 内存 工作集 延迟 回收 休眠 释放 监控 xingneng neicun"
+    "kw_performance": "内存 策略 回收 休眠 挂起 卸载 释放 工作集 性能 neicun celue huishou"
   },
   "onboarding": {
     "welcomeTitle": "欢迎使用 Tools3000",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "恢复配置失败"
   },
   "performancePage": {
-    "telemetryGroup": "实时资源与响应延迟监控",
-    "telemetryDesc": "开启后每秒采样当前主进程真实物理内存、处理器占用与核心交互链路延迟",
-    "enableLiveMonitor": "开启实时遥测采样",
-    "enableLiveMonitorDesc": "仅在本页面停留期间按秒轮询，离开页面自动停止零开销",
-    "trimNowBtn": "立即执行静默回收",
-    "trimNowDone": "已完成堆紧缩与静默工作集修剪",
-    "metricPrivateWs": "专用工作集内存",
-    "metricTotalWs": "总物理工作集",
-    "metricCpu": "处理器使用率",
-    "metricCaptureLatency": "最近截图耗时",
-    "metricGestureLatency": "手势识别耗时",
-    "metricUiLatency": "界面渲染耗时",
-    "notTriggeredYet": "尚未触发",
     "lifecycleGroup": "全链路内存生命周期与自动回收时间表",
     "lifecycleSubtitle": "透明展示各子系统闲置回收阈值。带设置关联的条目随对应配置实时更新；底层防抖保护项由内核锁定不可修改。",
     "badgeReadonly": "只读透明看板",

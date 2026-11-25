@@ -225,7 +225,7 @@ Full compatibility with install folders and Windows usernames containing Chinese
 | Feature / Resource | UI Entry / Standard Installer Path | Portable Archive Path |
 | :--- | :--- | :--- |
 | **Cloud & Sync-Folder Backup** | `System -> General -> Cloud & Sync Folder Backup` (OneDrive/Google Drive/Dropbox/iCloud/Nutstore auto-detect, WebDAV & S3 with optional AES-256-GCM E2E encryption) | Same (local credentials protected via Windows DPAPI; pre-restore safety snapshot saved automatically) |
-| **Performance & Memory Schedule** | `Insights & About -> Performance & Memory` (live working-set/latency telemetry, 1-click trim & 10-rule reclaim schedule) | Same |
+| **Memory Policy Schedule** | `Insights & About -> Memory Policy` (read-only 10-rule schedule of on-demand suspension, idle unloading & auto-reclamation) | Same |
 | **Pin Auto-OCR & Region Manager** | `Productivity -> Capture & Record -> Pin & Fixed Regions` (`Auto-Recognize Text When Pinning` toggle & pinned capture regions) | Same |
 | **File Locksmith** | `System -> Modules` / `Productivity -> File Locksmith` / `Tray Control Center`; also via Explorer & Search right-click | Same (user-level menu only, zero background RAM, auto-cleaned when disabled) |
 | **Search Icons / Live Watch / RAM Tiers** | `Productivity -> File Search` (Icon Style / Live Watch / Service Memory); Live toggle also in Search status bar | Same (bookmark icons read locally offline, zero network) |

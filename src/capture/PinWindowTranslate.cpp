@@ -55,7 +55,29 @@ std::wstring buildFriendlyTranslateErrorToast(
             L"翻译网络请求失败，请检查网络连接或在设置中切换翻译引擎",
             L"Translation network request failed — check connectivity or switch provider in Settings");
     }
-    if (res.errorCode == "http_error" || res.errorCode == "auth_failed" || res.errorCode == "rate_limited") {
+    if (res.errorCode == "auth_failed") {
+        return tools3000::core::trWCstrFor(
+            isZh,
+            L"翻译服务响应异常，请检查密钥额度或切换备用引擎",
+            L"Translation service returned an error — check API quota or switch provider");
+    }
+    if (res.errorCode == "rate_limited") {
+        return tools3000::core::trWCstrFor(
+            isZh,
+            L"翻译服务触发频率限制，请稍后重试或切换其他翻译引擎",
+            L"Translation service rate-limited — please retry later or switch provider");
+    }
+    if (res.errorCode == "http_error") {
+        const bool isKeylessChannel =
+            (res.providerUsed == "index_translate" ||
+             res.providerUsed == "edge_free" ||
+             res.providerUsed == "google_free");
+        if (isKeylessChannel) {
+            return tools3000::core::trWCstrFor(
+                isZh,
+                L"翻译服务暂时响应异常，请稍后重试或切换其他翻译引擎",
+                L"Translation service temporarily unavailable — please retry later or switch provider");
+        }
         return tools3000::core::trWCstrFor(
             isZh,
             L"翻译服务响应异常，请检查密钥额度或切换备用引擎",
