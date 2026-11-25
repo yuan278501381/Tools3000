@@ -12,6 +12,7 @@
 #include "DialogRibbonOverlay.h"
 #include "ExplorerTracker.h"
 #include "PathMemoryManager.h"
+#include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/DpiUtils.h"
 #include "core/utils/WinUtils.h"
@@ -30,8 +31,29 @@ namespace {
 using namespace std::chrono_literals;
 
 constexpr UINT WM_DIALOG_SYNC_DYNAMIC_HOOKS = WM_APP + 0x21;
+constexpr UINT WM_DIALOG_SYNC_HOTKEYS       = WM_APP + 0x22;
+constexpr int kDialogQuickJumpHotkeyId      = 0x5441;
+constexpr int kDialogInlineSearchHotkeyId   = 0x5442;
 constexpr auto kEnterLatchWindow = 600ms;
 constexpr unsigned kMaxPendingControlWaitAttempts = 5;
+
+NonStandardDialogKind detectForegroundNonStandardDialog(HWND root) {
+    if (!root || !IsWindow(root) || !IsWindowVisible(root) || IsIconic(root)) {
+        return NonStandardDialogKind::None;
+    }
+    wchar_t className[96]{};
+    const int clsLen = GetClassNameW(root, className, static_cast<int>(std::size(className)));
+    if (clsLen <= 0) return NonStandardDialogKind::None;
+    const std::wstring_view clsView(className, static_cast<size_t>(clsLen));
+    if (clsView == L"#32770") return NonStandardDialogKind::None;
+
+    const LONG_PTR style = GetWindowLongPtrW(root, GWL_STYLE);
+    const bool hasOwnerOrPopup = (GetWindow(root, GW_OWNER) != nullptr) || ((style & WS_POPUP) != 0);
+    const std::string procUtf8 = tools3000::core::WinUtils::getProcessNameFromWindow(root);
+    if (procUtf8.empty()) return NonStandardDialogKind::None;
+    const std::wstring procW = tools3000::core::WinUtils::utf8ToWstring(procUtf8);
+    return classifyNonStandardDialogCandidate(clsView, procW, hasOwnerOrPopup);
+}
 
 bool equalsIgnoreCase(const std::string& left, const std::string& right) {
     if (left.size() != right.size()) return false;
@@ -212,6 +234,218 @@ void DialogEngine::syncDynamicHooksAndTracker(bool hasActiveSessions) {
     }
 }
 
+void DialogEngine::syncScopedHotkeys() {
+    if (!m_running.load(std::memory_order_acquire)) return;
+    const DWORD hookTid = m_hookThreadId.load(std::memory_order_acquire);
+    if (hookTid == 0) return;
+    if (GetCurrentThreadId() == hookTid) {
+        applyScopedHotkeysOnHookThread();
+    } else {
+        PostThreadMessageW(hookTid, WM_DIALOG_SYNC_HOTKEYS, 0, 0);
+    }
+}
+
+void DialogEngine::unregisterAllScopedHotkeysOnHookThread() {
+    if (m_quickJumpHotkeyRegistered) {
+        UnregisterHotKey(nullptr, kDialogQuickJumpHotkeyId);
+        m_quickJumpHotkeyRegistered = false;
+        m_registeredQuickJumpHotkey.clear();
+    }
+    if (m_inlineSearchHotkeyRegistered) {
+        UnregisterHotKey(nullptr, kDialogInlineSearchHotkeyId);
+        m_inlineSearchHotkeyRegistered = false;
+        m_registeredInlineSearchHotkey.clear();
+    }
+}
+
+void DialogEngine::applyScopedHotkeysOnHookThread() {
+    auto& mgr = PathMemoryManager::instance();
+    if (!m_running.load(std::memory_order_acquire) || !mgr.isEnabled()) {
+        unregisterAllScopedHotkeysOnHookThread();
+        return;
+    }
+
+    const HWND fg = GetForegroundWindow();
+    const HWND fgRoot = rootWindow(fg);
+    bool isStandardDialogForeground = false;
+    bool isNonStandardDialogForeground = false;
+    if (fgRoot && IsWindow(fgRoot) && IsWindowVisible(fgRoot) && !IsIconic(fgRoot)) {
+        if (DialogRibbonOverlay::instance().isOwnOverlayWindow(fg) ||
+            DialogRibbonOverlay::instance().isOwnOverlayWindow(fgRoot)) {
+            const HWND overlayTarget = DialogRibbonOverlay::instance().getTargetDialog();
+            if (overlayTarget && IsWindow(overlayTarget)) {
+                isStandardDialogForeground = true;
+            }
+        } else if (isDialogHostClass(fgRoot)) {
+            std::lock_guard lock(m_mutex);
+            auto it = m_sessions.find(fgRoot);
+            if (it != m_sessions.end() && !it->second.closeRequested) {
+                isStandardDialogForeground = true;
+            }
+        } else if (detectForegroundNonStandardDialog(fgRoot) != NonStandardDialogKind::None) {
+            isNonStandardDialogForeground = true;
+        }
+    }
+
+    const bool wantAnyDialogScope = isStandardDialogForeground || isNonStandardDialogForeground;
+    const std::string desiredQuickJump =
+        (wantAnyDialogScope && mgr.isQuickSwitchEnabled()) ? mgr.getQuickJumpHotkey() : std::string{};
+    std::string desiredInlineSearch =
+        (isStandardDialogForeground && mgr.isInlineSearchEnabled()) ? mgr.getInlineSearchHotkey() : std::string{};
+
+    // 若两项热键被设为相同组合键，一键直跳优先，避免重复注册冲突
+    if (!desiredQuickJump.empty() && !desiredInlineSearch.empty() &&
+        equalsIgnoreCase(desiredQuickJump, desiredInlineSearch)) {
+        desiredInlineSearch.clear();
+    }
+
+    auto syncOne = [](int hotkeyId,
+                      const std::string& desired,
+                      bool& isReg,
+                      std::string& curStr) {
+        if (desired.empty()) {
+            if (isReg) {
+                UnregisterHotKey(nullptr, hotkeyId);
+                isReg = false;
+                curStr.clear();
+            }
+            return;
+        }
+        if (isReg && equalsIgnoreCase(curStr, desired)) {
+            return;
+        }
+        if (isReg) {
+            UnregisterHotKey(nullptr, hotkeyId);
+            isReg = false;
+            curStr.clear();
+        }
+        const auto def = tools3000::core::HotkeyDef::fromString(desired);
+        if (!def.has_value() || !def->isSafe()) {
+            return;
+        }
+        const UINT mods = static_cast<UINT>(def->modifiers) | MOD_NOREPEAT;
+        if (RegisterHotKey(nullptr, hotkeyId, mods, def->virtualKey)) {
+            isReg = true;
+            curStr = def->toString();
+        }
+    };
+
+    syncOne(kDialogQuickJumpHotkeyId, desiredQuickJump, m_quickJumpHotkeyRegistered, m_registeredQuickJumpHotkey);
+    syncOne(kDialogInlineSearchHotkeyId, desiredInlineSearch, m_inlineSearchHotkeyRegistered, m_registeredInlineSearchHotkey);
+}
+
+void DialogEngine::triggerQuickJumpForActiveDialog() {
+    auto& mgr = PathMemoryManager::instance();
+    if (!m_running.load(std::memory_order_acquire) || !mgr.isEnabled() || !mgr.isQuickSwitchEnabled()) {
+        return;
+    }
+
+    const HWND fg = GetForegroundWindow();
+    const HWND fgRoot = rootWindow(fg);
+    if (!fgRoot || !IsWindow(fgRoot)) return;
+
+    HWND targetDialog = fgRoot;
+    bool isStandard = false;
+    NonStandardDialogKind nonStdKind = NonStandardDialogKind::None;
+
+    if (DialogRibbonOverlay::instance().isOwnOverlayWindow(fg) ||
+        DialogRibbonOverlay::instance().isOwnOverlayWindow(fgRoot)) {
+        targetDialog = DialogRibbonOverlay::instance().getTargetDialog();
+        if (targetDialog && IsWindow(targetDialog)) {
+            isStandard = true;
+        }
+    } else if (isDialogHostClass(fgRoot)) {
+        std::lock_guard lock(m_mutex);
+        auto it = m_sessions.find(fgRoot);
+        if (it != m_sessions.end() && it->second.initialized && !it->second.closeRequested) {
+            isStandard = true;
+        } else if (it != m_sessions.end() && !it->second.closeRequested) {
+            // 对话框刚打开尚未满 40ms 初始化期，也允许快速兜底直跳
+            isStandard = true;
+        }
+    } else {
+        nonStdKind = detectForegroundNonStandardDialog(fgRoot);
+    }
+
+    if (!isStandard && nonStdKind == NonStandardDialogKind::None) {
+        applyScopedHotkeysOnHookThread();
+        return;
+    }
+    if (!targetDialog || !IsWindow(targetDialog)) return;
+
+    DialogNavigator::instance().postAsyncTask([this, targetDialog, isStandard, nonStdKind]() {
+        if (!m_running.load(std::memory_order_acquire) || !IsWindow(targetDialog)) return;
+        const std::string targetDir = ExplorerTracker::instance().getActiveExplorerPathFresh(260);
+        if (targetDir.empty() || !IsWindow(targetDialog)) {
+            LOG_DEBUG("DialogEngine: quick jump skipped because no active file manager path is available");
+            return;
+        }
+
+        bool ok = false;
+        if (isStandard) {
+            ok = DialogNavigator::instance().navigateToFolder(targetDialog, targetDir);
+            if (ok) {
+                {
+                    std::lock_guard lock(m_mutex);
+                    auto it = m_sessions.find(targetDialog);
+                    if (it != m_sessions.end()) {
+                        it->second.currentFolder = targetDir;
+                        it->second.enterObserved = false;
+                    }
+                }
+                DialogRibbonOverlay::instance().setCachedDialogFolder(targetDialog, targetDir);
+            }
+        } else {
+            ok = DialogNavigator::instance().navigateNonStandardDialog(targetDialog, nonStdKind, targetDir);
+        }
+        LOG_INFO("DialogEngine: quick jump hotkey executed: hwnd=0x{:X}, standard={}, target={}, ok={}",
+                 reinterpret_cast<uintptr_t>(targetDialog), isStandard, targetDir, ok);
+    });
+}
+
+void DialogEngine::triggerInlineSearchForActiveDialog() {
+    auto& mgr = PathMemoryManager::instance();
+    if (!m_running.load(std::memory_order_acquire) || !mgr.isEnabled() || !mgr.isInlineSearchEnabled()) {
+        return;
+    }
+
+    const HWND fg = GetForegroundWindow();
+    const HWND fgRoot = rootWindow(fg);
+    if (!fgRoot || !IsWindow(fgRoot)) return;
+
+    if (DialogRibbonOverlay::instance().isOwnOverlayWindow(fg) ||
+        DialogRibbonOverlay::instance().isOwnOverlayWindow(fgRoot)) {
+        DialogRibbonOverlay::instance().toggleInlineSearch();
+        return;
+    }
+
+    if (!isDialogHostClass(fgRoot)) {
+        applyScopedHotkeysOnHookThread();
+        return;
+    }
+
+    std::string processName;
+    std::string cachedFolder;
+    DialogArchitecture arch = DialogArchitecture::Unknown;
+    DialogMode mode = DialogMode::Unknown;
+    bool found = false;
+    {
+        std::lock_guard lock(m_mutex);
+        auto it = m_sessions.find(fgRoot);
+        if (it != m_sessions.end() && it->second.initialized && !it->second.closeRequested) {
+            found = true;
+            processName = it->second.processName;
+            cachedFolder = it->second.currentFolder;
+            arch = it->second.architecture;
+            mode = it->second.mode;
+        }
+    }
+    if (found) {
+        DialogRibbonOverlay::instance().toggleInlineSearchForDialog(
+            fgRoot, processName, arch, mode, cachedFolder);
+    }
+}
+
 void DialogEngine::hookThreadMain() {
     MSG msg{};
     PeekMessageW(&msg, nullptr, 0, 0, PM_NOREMOVE);
@@ -251,10 +485,24 @@ void DialogEngine::hookThreadMain() {
             applyDynamicHooksOnHookThread(msg.wParam != 0);
             continue;
         }
+        if (msg.hwnd == nullptr && msg.message == WM_DIALOG_SYNC_HOTKEYS) {
+            applyScopedHotkeysOnHookThread();
+            continue;
+        }
+        if (msg.hwnd == nullptr && msg.message == WM_HOTKEY) {
+            const int hotkeyId = static_cast<int>(msg.wParam);
+            if (hotkeyId == kDialogQuickJumpHotkeyId) {
+                triggerQuickJumpForActiveDialog();
+            } else if (hotkeyId == kDialogInlineSearchHotkeyId) {
+                triggerInlineSearchForActiveDialog();
+            }
+            continue;
+        }
         TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
+    unregisterAllScopedHotkeysOnHookThread();
     applyDynamicHooksOnHookThread(false);
     if (HWINEVENTHOOK h = m_hookShow.exchange(nullptr))       { UnhookWinEvent(h); }
     if (HWINEVENTHOOK h = m_hookForeground.exchange(nullptr)) { UnhookWinEvent(h); }
@@ -479,6 +727,7 @@ void DialogEngine::handleDialogShown(HWND hwnd) {
     }
     if (added) {
         syncDynamicHooksAndTracker(true);
+        syncScopedHotkeys();
         LOG_DEBUG("DialogEngine: received candidate dialog SHOW, hwnd=0x{:X}, pid={}",
                   reinterpret_cast<uintptr_t>(hwnd), processId);
         m_monitorCv.notify_one();
@@ -596,6 +845,7 @@ void DialogEngine::handleDialogHiding(HWND hwnd) {
     if (DialogRibbonOverlay::instance().getTargetDialog() == hwnd) {
         DialogRibbonOverlay::instance().hide();
     }
+    syncScopedHotkeys();
     m_monitorCv.notify_one();
 }
 
@@ -643,17 +893,23 @@ void DialogEngine::handleDialogDestroyed(HWND hwnd) {
     if (DialogRibbonOverlay::instance().getTargetDialog() == hwnd) {
         DialogRibbonOverlay::instance().hide();
     }
+    syncScopedHotkeys();
     m_monitorCv.notify_one();
 }
 
 void DialogEngine::handleForegroundChange(HWND hwnd) {
+    // 始终零开销追踪最近激活的任意文件管理器窗口顺序（LRU，即使窗口随后被最小化也能在 Ctrl+G 时精确命中）
+    if (hwnd && ExplorerTracker::detectFileManagerKind(hwnd) != FileManagerKind::None) {
+        ExplorerTracker::instance().notifyFileManagerActivated(hwnd);
+    }
+
     // 仅在存在活动文件对话框会话或即将打开对话框时才按需刷新 Explorer，杜绝无对话框空闲刷新
     bool hasSessions = false;
     {
         std::lock_guard lock(m_mutex);
         hasSessions = !m_sessions.empty();
     }
-    if (hwnd && isExplorerWindowClass(hwnd) && hasSessions) {
+    if (hwnd && ExplorerTracker::detectFileManagerKind(hwnd) != FileManagerKind::None && hasSessions) {
         ExplorerTracker::instance().requestRefresh();
     }
 
@@ -661,6 +917,8 @@ void DialogEngine::handleForegroundChange(HWND hwnd) {
         ExplorerTracker::instance().requestRefresh();
         handleDialogShown(hwnd);
     }
+
+    syncScopedHotkeys();
 
     // 若前台切到胶囊或内嵌搜索浮层自身，保持当前附着态不动
     if (DialogRibbonOverlay::instance().isOwnOverlayWindow(hwnd)) {
@@ -881,6 +1139,7 @@ void DialogEngine::monitorThreadMain() {
                         DialogRibbonOverlay::instance().attachToDialog(
                             hwnd, processName, ctrlSnap.architecture, ctrlSnap.mode, initialFolder);
                     }
+                    syncScopedHotkeys();
                     continue;
                 }
 
@@ -1007,6 +1266,7 @@ void DialogEngine::finalizeDialog(HWND hwnd, bool windowStillReadable) {
     if (sessionsEmptyAfter) {
         syncDynamicHooksAndTracker(false);
     }
+    syncScopedHotkeys();
 
     if (!session.initialized) return;
 

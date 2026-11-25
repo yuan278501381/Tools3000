@@ -8,6 +8,7 @@
 
 #include "PathMemoryManager.h"
 #include "core/config/ConfigManager.h"
+#include "core/hotkey/HotkeyManager.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include <chrono>
@@ -87,6 +88,24 @@ std::string PathMemoryManager::sanitizeRibbonPosition(const std::string& pos) {
     return "top-right";
 }
 
+std::string PathMemoryManager::sanitizeHotkeyString(const std::string& raw, const std::string& fallback) {
+    std::string trimmed = raw;
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.front()))) {
+        trimmed.erase(trimmed.begin());
+    }
+    while (!trimmed.empty() && std::isspace(static_cast<unsigned char>(trimmed.back()))) {
+        trimmed.pop_back();
+    }
+    if (trimmed.empty()) {
+        return "";
+    }
+    const auto parsed = tools3000::core::HotkeyDef::fromString(trimmed);
+    if (!parsed.has_value() || !parsed->isSafe()) {
+        return fallback;
+    }
+    return parsed->toString();
+}
+
 void PathMemoryManager::loadConfig() {
     std::lock_guard lock(m_mutex);
     auto& cfg = tools3000::core::ConfigManager::instance();
@@ -101,6 +120,10 @@ void PathMemoryManager::loadConfig() {
     m_ribbonEnabled = cfg.get<bool>("/dialog/ribbonEnabled", true);
     m_inlineSearchEnabled = cfg.get<bool>("/dialog/enableInlineSearch", true);
     m_ribbonPosition = sanitizeRibbonPosition(cfg.get<std::string>("/dialog/ribbonPosition", "top-right"));
+    m_quickJumpHotkey = sanitizeHotkeyString(
+        cfg.get<std::string>("/dialog/quickJumpHotkey", "Ctrl+G"), "Ctrl+G");
+    m_inlineSearchHotkey = sanitizeHotkeyString(
+        cfg.get<std::string>("/dialog/inlineSearchHotkey", "Ctrl+Shift+G"), "Ctrl+Shift+G");
 
     std::vector<std::string> defaultFavs;
     std::string desktop = getKnownFolderUtf8(CSIDL_DESKTOPDIRECTORY);
@@ -160,6 +183,8 @@ void PathMemoryManager::saveConfig() {
             {"ribbonEnabled", m_ribbonEnabled},
             {"enableInlineSearch", m_inlineSearchEnabled},
             {"ribbonPosition", m_ribbonPosition},
+            {"quickJumpHotkey", m_quickJumpHotkey},
+            {"inlineSearchHotkey", m_inlineSearchHotkey},
             {"favorites", m_favorites},
             {"recentPaths", m_recentPaths},
             {"blacklist", m_blacklist},
@@ -206,6 +231,16 @@ std::string PathMemoryManager::getRibbonPosition() const {
     return m_ribbonPosition;
 }
 
+std::string PathMemoryManager::getQuickJumpHotkey() const {
+    std::lock_guard lock(m_mutex);
+    return m_quickJumpHotkey;
+}
+
+std::string PathMemoryManager::getInlineSearchHotkey() const {
+    std::lock_guard lock(m_mutex);
+    return m_inlineSearchHotkey;
+}
+
 void PathMemoryManager::setEnabled(bool enabled) {
     {
         std::lock_guard lock(m_mutex);
@@ -250,6 +285,22 @@ void PathMemoryManager::setRibbonPosition(const std::string& pos) {
     {
         std::lock_guard lock(m_mutex);
         m_ribbonPosition = sanitizeRibbonPosition(pos);
+    }
+    saveConfig();
+}
+
+void PathMemoryManager::setQuickJumpHotkey(const std::string& hotkey) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_quickJumpHotkey = sanitizeHotkeyString(hotkey, m_quickJumpHotkey);
+    }
+    saveConfig();
+}
+
+void PathMemoryManager::setInlineSearchHotkey(const std::string& hotkey) {
+    {
+        std::lock_guard lock(m_mutex);
+        m_inlineSearchHotkey = sanitizeHotkeyString(hotkey, m_inlineSearchHotkey);
     }
     saveConfig();
 }

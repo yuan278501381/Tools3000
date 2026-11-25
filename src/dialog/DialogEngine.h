@@ -31,6 +31,7 @@ public:
 
     void onWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChild);
     void refreshActiveDialogOverlay(bool clearDismissed = false);
+    void syncScopedHotkeys();
     static bool shouldProcessWinEvent(DWORD event, HWND hwnd, LONG idObject, LONG idChild) noexcept;
 
 private:
@@ -57,6 +58,10 @@ private:
     void finalizeDialog(HWND hwnd, bool windowStillReadable = false);
     void syncDynamicHooksAndTracker(bool hasActiveSessions);
     void applyDynamicHooksOnHookThread(bool enable);
+    void applyScopedHotkeysOnHookThread();
+    void unregisterAllScopedHotkeysOnHookThread();
+    void triggerQuickJumpForActiveDialog();
+    void triggerInlineSearchForActiveDialog();
     static HWND rootWindow(HWND hwnd);
 
     void hookThreadMain();
@@ -72,6 +77,10 @@ private:
     std::thread m_hookThread;
     std::atomic<DWORD> m_hookThreadId{0};
     std::atomic<bool> m_hookReady{false};
+    bool m_quickJumpHotkeyRegistered{false};
+    std::string m_registeredQuickJumpHotkey;
+    bool m_inlineSearchHotkeyRegistered{false};
+    std::string m_registeredInlineSearchHotkey;
     std::mutex m_hookStartupMutex;
     std::condition_variable m_hookStartupCv;
 

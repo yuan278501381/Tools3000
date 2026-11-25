@@ -390,4 +390,203 @@ inline bool computeSafeRibbonPlacement(
     return true;
 }
 
+/// 支持读取当前目录的文件管理器类型（按策略模式路由，Windows 资源管理器 + 主流第三方管理器）
+enum class FileManagerKind : uint8_t {
+    None = 0,
+    WindowsExplorer = 1,   // CabinetWClass / ExploreWClass (Win10/Win11 多标签)
+    TotalCommander = 2,    // TTOTAL_CMD
+    DirectoryOpus = 3,     // dopus.lister
+    Xyplorer = 4,          // XYplorer.exe
+    QDir = 5,              // Q-Dir*.exe
+    ModernThirdParty = 6,  // Files.exe / OneCommander.exe / DoubleCmd.exe / FreeCommander.exe / MultiCommander.exe
+};
+
+/// 可安全通过 UIA 导航的非标准文件对话框类型（纯 GPU 黑盒如 Blender 严禁匹配）
+enum class NonStandardDialogKind : uint8_t {
+    None = 0,
+    QtFileDialog = 1,         // Qt5QWindow* / Qt6QWindow* (如 OBS / qBittorrent / WPS 部分弹窗)
+    JetBrainsFileDialog = 2,  // SunAwtDialog (IDEA / PyCharm / WebStorm / CLion / GoLand / Rider 等)
+};
+
+inline std::wstring toLowerAsciiW(std::wstring_view raw) {
+    std::wstring out;
+    out.reserve(raw.size());
+    for (wchar_t ch : raw) {
+        out.push_back(foldUnicodeLowerInvariant(ch));
+    }
+    return out;
+}
+
+/// 纯函数识别支持的文件管理器窗口类型（结合 Win32 类名与可执行文件名，零磁盘 I/O）
+inline FileManagerKind classifyFileManagerWindow(
+    std::wstring_view className,
+    std::wstring_view processName) noexcept {
+    if (className == L"CabinetWClass" || className == L"ExploreWClass") {
+        return FileManagerKind::WindowsExplorer;
+    }
+    if (className == L"TTOTAL_CMD") {
+        return FileManagerKind::TotalCommander;
+    }
+    if (className == L"dopus.lister") {
+        return FileManagerKind::DirectoryOpus;
+    }
+
+    auto ieq = [](std::wstring_view a, std::wstring_view b) noexcept -> bool {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (foldUnicodeLowerInvariant(a[i]) != foldUnicodeLowerInvariant(b[i])) return false;
+        }
+        return true;
+    };
+
+    if (ieq(processName, L"xyplorer.exe")) {
+        return FileManagerKind::Xyplorer;
+    }
+    if (ieq(processName, L"q-dir.exe") || ieq(processName, L"q-dir_x64.exe") || ieq(processName, L"q-dir_x86.exe")) {
+        return FileManagerKind::QDir;
+    }
+    if (ieq(processName, L"totalcmd.exe") || ieq(processName, L"totalcmd64.exe")) {
+        return FileManagerKind::TotalCommander;
+    }
+    if (ieq(processName, L"dopus.exe") && className.find(L"dopus") != std::wstring_view::npos) {
+        return FileManagerKind::DirectoryOpus;
+    }
+    if (ieq(processName, L"files.exe") ||
+        ieq(processName, L"onecommander.exe") ||
+        ieq(processName, L"doublecmd.exe") ||
+        ieq(processName, L"freecommander.exe") ||
+        ieq(processName, L"multicommander.exe")) {
+        return FileManagerKind::ModernThirdParty;
+    }
+    return FileManagerKind::None;
+}
+
+/// 纯函数识别可安全按需导航的非标准文件对话框候选（仅在用户显式按快捷键时做 UIA 二次校验）
+inline NonStandardDialogKind classifyNonStandardDialogCandidate(
+    std::wstring_view className,
+    std::wstring_view processName,
+    bool hasOwnerOrPopupStyle) noexcept {
+    if (className.empty() || className == L"#32770") {
+        return NonStandardDialogKind::None;
+    }
+
+    auto ieq = [](std::wstring_view a, std::wstring_view b) noexcept -> bool {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (foldUnicodeLowerInvariant(a[i]) != foldUnicodeLowerInvariant(b[i])) return false;
+        }
+        return true;
+    };
+
+    if (className == L"SunAwtDialog") {
+        if (ieq(processName, L"idea64.exe") || ieq(processName, L"idea.exe") ||
+            ieq(processName, L"pycharm64.exe") || ieq(processName, L"pycharm.exe") ||
+            ieq(processName, L"webstorm64.exe") || ieq(processName, L"webstorm.exe") ||
+            ieq(processName, L"clion64.exe") || ieq(processName, L"clion.exe") ||
+            ieq(processName, L"goland64.exe") || ieq(processName, L"goland.exe") ||
+            ieq(processName, L"rider64.exe") || ieq(processName, L"rider.exe") ||
+            ieq(processName, L"phpstorm64.exe") || ieq(processName, L"rubymine64.exe") ||
+            ieq(processName, L"datagrip64.exe") || ieq(processName, L"studio64.exe")) {
+            return NonStandardDialogKind::JetBrainsFileDialog;
+        }
+    }
+
+    if (hasOwnerOrPopupStyle &&
+        (className.rfind(L"Qt5QWindow", 0) == 0 || className.rfind(L"Qt6QWindow", 0) == 0)) {
+        return NonStandardDialogKind::QtFileDialog;
+    }
+
+    return NonStandardDialogKind::None;
+}
+
+/// 纯函数从第三方文件管理器路径栏/标题栏原始文本中清洗并提取本地盘符或 UNC 目录路径
+inline std::wstring extractDirectoryFromFileManagerText(
+    FileManagerKind kind,
+    std::wstring_view rawText) {
+    if (rawText.empty()) return {};
+
+    std::wstring s;
+    s.reserve(rawText.size());
+    for (wchar_t ch : rawText) {
+        if (ch == 0x200E || ch == 0x200F || (ch >= 0x202A && ch <= 0x202E) || (ch >= 0x2066 && ch <= 0x2069)) {
+            continue;
+        }
+        if (ch == L'\r' || ch == L'\n') break;
+        s.push_back(ch);
+    }
+
+    auto trimSpaces = [](std::wstring& str) {
+        while (!str.empty() && std::iswspace(str.front())) str.erase(str.begin());
+        while (!str.empty() && std::iswspace(str.back())) str.pop_back();
+    };
+    trimSpaces(s);
+    if (s.empty()) return {};
+
+    // Total Commander TPathPanel 经典格式: "D:\Projects\Demo\*.*" 或 "D:\Projects\Demo\>"
+    if (kind == FileManagerKind::TotalCommander) {
+        while (!s.empty() && (s.back() == L'>' || std::iswspace(s.back()))) {
+            s.pop_back();
+        }
+        if (s.size() >= 4 && s.compare(s.size() - 4, 4, L"\\*.*") == 0) {
+            s.erase(s.size() - 4);
+        } else if (s.size() >= 3 && s.compare(s.size() - 3, 3, L"*.*") == 0) {
+            s.erase(s.size() - 3);
+        } else if (s.size() >= 2 && s.compare(s.size() - 2, 2, L"\\*") == 0) {
+            s.erase(s.size() - 2);
+        }
+    }
+
+    // 剥离外部引号
+    if (s.size() >= 2 && s.front() == L'"' && s.back() == L'"') {
+        s = s.substr(1, s.size() - 2);
+        trimSpaces(s);
+    }
+
+    // 若文本带前后装饰（如 "Address: D:\Work" 或 "D:\Work - XYplorer"），定位盘符或 UNC 起点
+    size_t startPos = std::wstring::npos;
+    for (size_t i = 0; i + 2 < s.size(); ++i) {
+        if (std::iswalpha(s[i]) && s[i + 1] == L':' && (s[i + 2] == L'\\' || s[i + 2] == L'/')) {
+            if (i == 0 || !std::iswalnum(s[i - 1])) {
+                startPos = i;
+                break;
+            }
+        }
+    }
+    if (startPos == std::wstring::npos) {
+        const size_t uncPos = s.find(L"\\\\");
+        if (uncPos != std::wstring::npos && uncPos + 3 < s.size() && s[uncPos + 2] != L'\\') {
+            startPos = uncPos;
+        }
+    }
+    if (startPos == std::wstring::npos) {
+        // 兼容纯根盘符 "C:"
+        if (s.size() == 2 && std::iswalpha(s[0]) && s[1] == L':') {
+            return s + L"\\";
+        }
+        return {};
+    }
+
+    std::wstring candidate = s.substr(startPos);
+    // 剥离常见窗体标题尾缀如 " - XYplorer" / " - Directory Opus" / " - OneCommander"
+    for (const wchar_t* sep : {L" - XYplorer", L" - Directory Opus", L" - Total Commander",
+                               L" - OneCommander", L" - Files", L" - FreeCommander", L" - Q-Dir"}) {
+        const size_t pos = candidate.find(sep);
+        if (pos != std::wstring::npos) {
+            candidate.erase(pos);
+        }
+    }
+    trimSpaces(candidate);
+
+    for (wchar_t& ch : candidate) {
+        if (ch == L'/') ch = L'\\';
+    }
+    while (candidate.size() > 3 && candidate.back() == L'\\') {
+        candidate.pop_back();
+    }
+    if (candidate.size() == 2 && std::iswalpha(candidate[0]) && candidate[1] == L':') {
+        candidate.push_back(L'\\');
+    }
+    return candidate;
+}
+
 }  // namespace tools3000::dialog

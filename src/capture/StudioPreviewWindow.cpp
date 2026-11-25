@@ -801,6 +801,7 @@ bool StudioPreviewWindow::ensureWindowCreated() {
     m_restoreWindowRect = {posX, posY, posX + fitted.cx, posY + fitted.cy};
     tools3000::core::WinUtils::allowWindowCapture(m_hwnd);
     applyWindowRoundingForCurrentState(fitted.cx, fitted.cy);
+    m_imeGuard.sync(m_hwnd, false, true);
     return true;
 }
 

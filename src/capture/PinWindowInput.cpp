@@ -879,8 +879,19 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
+        case WM_ACTIVATE: {
+            if (self) {
+                self->syncImeState(true);
+            }
+            break;
+        }
+
         case WM_SETFOCUS: {
-            if (self) { self->m_focused = true; InvalidateRect(hwnd, nullptr, FALSE); }
+            if (self) {
+                self->m_focused = true;
+                self->syncImeState(true);
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
             return 0;
         }
 
@@ -896,9 +907,21 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
             return 0;
         }
 
-        case WM_IME_STARTCOMPOSITION: {
-            if (self && self->m_editingTextReplaceIdx >= 0) {
-                self->updateImeCompositionAnchor();
+        case WM_IME_SETCONTEXT:
+        case WM_IME_STARTCOMPOSITION:
+        case WM_IME_COMPOSITION:
+        case WM_IME_ENDCOMPOSITION:
+        case WM_IME_CHAR: {
+            if (self) {
+                const bool allowText = self->isTextInputActive();
+                LRESULT imeResult = 0;
+                if (tools3000::core::WindowImeGuard::filterNonTextImeMessage(
+                        hwnd, msg, wParam, lParam, allowText, imeResult)) {
+                    return imeResult;
+                }
+                if (msg == WM_IME_STARTCOMPOSITION && allowText) {
+                    self->updateImeCompositionAnchor();
+                }
             }
             break;
         }
@@ -915,6 +938,10 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
         case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!self) break;
+            const bool allowText = self->isTextInputActive();
+            self->syncImeState(false);
+            wParam = tools3000::core::WindowImeGuard::resolveShortcutVirtualKey(
+                hwnd, wParam, lParam, allowText);
             const bool isPureModifier =
                 wParam == VK_SHIFT || wParam == VK_CONTROL || wParam == VK_MENU ||
                 wParam == VK_LSHIFT || wParam == VK_RSHIFT ||

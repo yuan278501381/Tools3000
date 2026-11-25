@@ -44,10 +44,10 @@ function buildCategoryFilters(order: readonly SearchCategoryId[]): CategoryFilte
 }
 
 describe('SearchCategoryBar pure ordering & pinned invariants', () => {
-  it('locks All and Content in the first two slots regardless of corrupted or partial input', () => {
-    expect(PINNED_SEARCH_CATEGORY_IDS).toEqual(['all', 'content']);
+  it('locks only All in the first slot while allowing Content and all other categories to be freely reordered', () => {
+    expect(PINNED_SEARCH_CATEGORY_IDS).toEqual(['all']);
     expect(isPinnedSearchCategory('all')).toBe(true);
-    expect(isPinnedSearchCategory('content')).toBe(true);
+    expect(isPinnedSearchCategory('content')).toBe(false);
     expect(isPinnedSearchCategory('bookmark')).toBe(false);
 
     const normalized = normalizeSearchCategoryOrder([
@@ -58,27 +58,35 @@ describe('SearchCategoryBar pure ordering & pinned invariants', () => {
       'all',
       'bookmark',
     ]);
-    expect(normalized.slice(0, 4)).toEqual(['all', 'content', 'bookmark', 'image']);
+    expect(normalized.slice(0, 4)).toEqual(['all', 'bookmark', 'content', 'image']);
     expect(normalized.length).toBe(DEFAULT_SEARCH_CATEGORY_ORDER.length);
     expect(isDefaultSearchCategoryOrder(normalized)).toBe(false);
     expect(isDefaultSearchCategoryOrder(DEFAULT_SEARCH_CATEGORY_ORDER)).toBe(true);
+
+    // 兼容旧版已持久化顺序（未显式包含 content 时平滑接在 all 之后）
+    const legacyNormalized = normalizeSearchCategoryOrder(['bookmark', 'doc', 'image']);
+    expect(legacyNormalized.slice(0, 4)).toEqual(['all', 'content', 'bookmark', 'doc']);
   });
 
-  it('refuses moving pinned categories or dropping into pinned slots, while reordering movable ones cleanly', () => {
+  it('refuses moving All or dropping into All slot, while reordering Content and other movable ones cleanly', () => {
     const base = [...DEFAULT_SEARCH_CATEGORY_ORDER];
 
-    // 严禁拖动固定项或向固定项前/后插队
+    // 严禁拖动固定项「全部」或向「全部」前/后直接插队
     expect(reorderSearchCategories(base, 'all', 'doc', 'after')).toEqual(base);
-    expect(reorderSearchCategories(base, 'content', 'bookmark', 'after')).toEqual(base);
     expect(reorderSearchCategories(base, 'bookmark', 'all', 'before')).toEqual(base);
-    expect(reorderSearchCategories(base, 'bookmark', 'content', 'after')).toEqual(base);
 
-    // 正常将 bookmark 移到 doc 之前（紧随固定区）
-    const moved = reorderSearchCategories(base, 'bookmark', 'doc', 'before');
+    // 允许自由拖动「文档内容 (content)」至任意位置
+    const movedContent = reorderSearchCategories(base, 'content', 'bookmark', 'after');
+    expect(movedContent[0]).toBe('all');
+    expect(movedContent[1]).toBe('doc');
+    expect(movedContent[movedContent.length - 1]).toBe('content');
+
+    // 允许将 app / bookmark 拖至 content 之前（紧随「全部」）
+    const moved = reorderSearchCategories(base, 'bookmark', 'content', 'before');
     expect(moved).toEqual([
       'all',
-      'content',
       'bookmark',
+      'content',
       'doc',
       'image',
       'video',
@@ -129,23 +137,23 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
     // 1. 固定区与可拖拽区之间存在分隔线
     expect(container.querySelector('.search-categories-divider')).toBeTruthy();
 
-    // 2. 尝试拖动固定项「Content」：完全忽略，不触发重排
-    const contentBtn = container.querySelector<HTMLButtonElement>('[data-category-id="content"]')!;
-    fireEvent.mouseDown(contentBtn, { button: 0, clientX: 90, clientY: 20 });
+    // 2. 尝试拖动固定项「All」：完全忽略，不触发重排
+    const allBtn = container.querySelector<HTMLButtonElement>('[data-category-id="all"]')!;
+    fireEvent.mouseDown(allBtn, { button: 0, clientX: 20, clientY: 20 });
     fireEvent.mouseMove(window, { clientX: 300, clientY: 20 });
     fireEvent.mouseUp(window, { clientX: 300, clientY: 20 });
     expect(onReorderCategories).not.toHaveBeenCalled();
 
-    // 3. 拖动「Bookmarks (idx=9)」至固定区「All (x=20)」上方 -> 自动磁吸到首个可排序位（doc 之前）
+    // 3. 拖动「Bookmarks (idx=10)」至固定区「All (x=20)」上方 -> 自动磁吸到首个可排序位（content 之前）
     const bookmarkBtn = container.querySelector<HTMLButtonElement>('[data-category-id="bookmark"]')!;
-    fireEvent.mouseDown(bookmarkBtn, { button: 0, clientX: 660, clientY: 20 });
+    fireEvent.mouseDown(bookmarkBtn, { button: 0, clientX: 730, clientY: 20 });
     fireEvent.mouseMove(window, { clientX: 20, clientY: 20 });
     fireEvent.mouseUp(window, { clientX: 20, clientY: 20 });
 
     const expectedCustomOrder: SearchCategoryId[] = [
       'all',
-      'content',
       'bookmark',
+      'content',
       'doc',
       'image',
       'video',
@@ -159,7 +167,17 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
     expect(onReorderCategories).toHaveBeenCalledWith(expectedCustomOrder);
     expect(onSelectCategory).not.toHaveBeenCalled();
 
-    // 4. 键盘无障碍微调：在已定制顺序中对「doc」按 Ctrl+Shift+ArrowLeft 挪到 bookmark 之前
+    // 4. 拖动「Content (idx=1)」到末尾「Bookmarks」之后 -> 正常可自由排序
+    onReorderCategories.mockClear();
+    const contentBtn = container.querySelector<HTMLButtonElement>('[data-category-id="content"]')!;
+    fireEvent.mouseDown(contentBtn, { button: 0, clientX: 90, clientY: 20 });
+    fireEvent.mouseMove(window, { clientX: 760, clientY: 20 });
+    fireEvent.mouseUp(window, { clientX: 760, clientY: 20 });
+    expect(onReorderCategories).toHaveBeenCalledTimes(1);
+    expect(onReorderCategories.mock.calls[0][0][0]).toBe('all');
+    expect(onReorderCategories.mock.calls[0][0][onReorderCategories.mock.calls[0][0].length - 1]).toBe('content');
+
+    // 5. 键盘无障碍微调：在已定制顺序中对「doc」按 Ctrl+Shift+ArrowLeft 挪到 content 之前
     rerender(
       <SearchCategoryBar
         categories={buildCategoryFilters(expectedCustomOrder)}
@@ -173,9 +191,9 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
     fireEvent.keyDown(docBtn, { key: 'ArrowLeft', ctrlKey: true, shiftKey: true });
     expect(onReorderCategories).toHaveBeenLastCalledWith([
       'all',
-      'content',
-      'doc',
       'bookmark',
+      'doc',
+      'content',
       'image',
       'video',
       'audio',
@@ -185,7 +203,7 @@ describe('SearchCategoryBar drag-and-drop & context menu interaction', () => {
       'app',
     ]);
 
-    // 5. 右键分类栏弹出菜单，点击「恢复默认分类顺序」触发回调
+    // 6. 右键分类栏弹出菜单，点击「恢复默认分类顺序」触发回调
     const bar = container.querySelector<HTMLDivElement>('.search-categories')!;
     fireEvent.contextMenu(bar, { clientX: 200, clientY: 24 });
     const resetItem = screen.getByRole('menuitem', { name: 'Reset category order' });

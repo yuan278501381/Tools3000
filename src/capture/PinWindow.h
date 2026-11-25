@@ -18,6 +18,7 @@
 #include "capture/PinOcrTypes.h"
 #include "capture/MarkupEngine.h"
 #include "capture/InPlaceTranslateEngine.h"
+#include "core/utils/WindowImeGuard.h"
 #include "ocr/OcrEngine.h"
 #include <windows.h>
 #include <d2d1.h>
@@ -593,6 +594,9 @@ private:
     D2D1_RECT_F m_btnTrDoneRect = {};
     int m_hoveredTrBtnId = -1;
     void updateImeCompositionAnchor() noexcept;
+    void syncImeState(bool force = false) noexcept;
+    bool isTextInputActive() const noexcept { return m_editingTextReplaceIdx >= 0; }
+    tools3000::core::WindowImeGuard m_imeGuard;
     void clearTextReplaceToolbarRects() noexcept;
     int m_hoveredQrBadgeIndex = -1;
     bool m_lastChromeIsDark = true;

@@ -232,6 +232,7 @@ bool PinWindow::startInPlaceTextReplace() {
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         focusWindow();
+        syncImeState(true);
         SetTimer(m_hwnd, 3, 530, nullptr);
         updateImeCompositionAnchor();
     }
@@ -261,11 +262,16 @@ bool PinWindow::startInPlaceTextReplaceOnElement(size_t elementIdx) {
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         focusWindow();
+        syncImeState(true);
         SetTimer(m_hwnd, 3, 530, nullptr);
         updateImeCompositionAnchor();
     }
     recompositeMarkupPreservingOcr();
     return true;
+}
+
+void PinWindow::syncImeState(bool force) noexcept {
+    m_imeGuard.sync(m_hwnd, isTextInputActive(), force);
 }
 
 void PinWindow::commitInPlaceTextReplace(bool keepChanges) {
@@ -276,6 +282,7 @@ void PinWindow::commitInPlaceTextReplace(bool keepChanges) {
 
     const int idx = m_editingTextReplaceIdx;
     m_editingTextReplaceIdx = -1;
+    syncImeState(false);
     m_isSelectingReplaceText = false;
     m_isDraggingReplacePos = false;
     m_hoverReplaceDragHandle = false;

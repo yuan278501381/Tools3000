@@ -8,6 +8,7 @@
 
 #include "capture/StudioTimeline.h"
 #include "capture/StudioVideoCompositor.h"
+#include "core/utils/WindowImeGuard.h"
 
 #include <windows.h>
 #include <d2d1.h>
@@ -406,6 +407,10 @@ private:
     std::wstring m_pendingExportDirWide;
 
     // 原位导出模态窗、未导出防丢关闭确认窗与导出完成交付结果卡片状态
+    bool isTextInputActive() const noexcept {
+        return m_editingExportName || m_editingAnnotationText || m_editingWatermarkText;
+    }
+    tools3000::core::WindowImeGuard m_imeGuard;
     bool m_exportModalOpen = false;
     bool m_exportCompletedCard = false;
     bool m_closeConfirmModalOpen = false;

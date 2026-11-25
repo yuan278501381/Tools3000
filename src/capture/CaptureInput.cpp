@@ -1176,12 +1176,30 @@ void CaptureInput::ensureActiveTextBoundsAfterEdit(MarkupElement& elem) {
     elem.textRenderSize = cv::Size(0, 0);
 }
 
+bool CaptureInput::isTextInputActive() const noexcept {
+    return m_state != nullptr &&
+           m_state->state.load() != OverlayState::Idle &&
+           m_state->activeElement != nullptr &&
+           m_state->activeElement->tool == MarkupTool::Text &&
+           m_state->activeElement->isEditing;
+}
+
+void CaptureInput::syncImeState(HWND hwnd, bool force) noexcept {
+    HWND target = hwnd ? hwnd : m_hwnd;
+    m_imeGuard.sync(target, isTextInputActive(), force);
+}
+
+void CaptureInput::resetImeState() noexcept {
+    m_imeGuard.reset();
+}
+
 void CaptureInput::syncImeCompositionWindow(HWND hwnd) const {
     if (!hwnd || !m_state || !m_state->activeElement ||
         m_state->activeElement->tool != MarkupTool::Text ||
         !m_state->activeElement->isEditing) {
         return;
     }
+    const_cast<CaptureInput*>(this)->m_imeGuard.sync(hwnd, true);
     HIMC hImc = ImmGetContext(hwnd);
     if (!hImc) return;
     auto& elem = *m_state->activeElement;
@@ -2039,6 +2057,33 @@ LRESULT CaptureInput::handleMessage(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     // 窗口过程兜底：渲染/标注路径含 OpenCV 分配、std::format 等可抛操作，异常绝不能逃逸到
     // Win32 派发层（否则 std::terminate 崩溃）。
     try {
+    // 非文字输入态下拦截孤立 IME 浮窗并剥离 WM_IME_SETCONTEXT 视觉标志；切焦时幂等重申窗口级 IME 绑定态
+    if (msg == WM_SETFOCUS || msg == WM_ACTIVATE) {
+        syncImeState(hwnd, true);
+    }
+    const bool allowTextInput = isTextInputActive();
+    LRESULT imeResult = 0;
+    if (tools3000::core::WindowImeGuard::filterNonTextImeMessage(
+            hwnd, msg, wParam, lParam, allowTextInput, imeResult)) {
+        return imeResult;
+    }
+
+    // 任一交互消息返回前自动按最新 isTextInputActive() 幂等同步 IME，杜绝状态漂移漏关
+    struct ScopedImeSync {
+        CaptureInput* input;
+        HWND hwnd;
+        ~ScopedImeSync() noexcept {
+            if (input && hwnd) {
+                input->syncImeState(hwnd, false);
+            }
+        }
+    };
+    const bool trackImeTransition =
+        (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_LBUTTONDBLCLK ||
+         msg == WM_RBUTTONUP || msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN ||
+         msg == WM_CHAR || msg == WM_IME_COMPOSITION || msg == WM_IME_ENDCOMPOSITION);
+    ScopedImeSync imeSyncGuard{trackImeTransition ? this : nullptr, hwnd};
+
     switch (msg) {
         case WM_CAPTURE_ELEMENT_REFINED:
             handleAsyncElementRefined(hwnd);

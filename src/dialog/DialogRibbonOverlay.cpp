@@ -58,7 +58,6 @@ constexpr UINT WM_RIBBON_TOGGLE_SEARCH      = WM_USER + 106;
 constexpr UINT WM_SEARCH_RESULTS_READY      = WM_USER + 107;
 constexpr UINT WM_SEARCH_RETRY_AFTER_WARMUP = WM_USER + 108;
 
-constexpr int kInlineSearchHotkeyId         = 0x5431;
 constexpr UINT_PTR kSearchDebounceTimerId   = 0x5432;
 constexpr UINT_PTR kSearchEditSubclassId    = 0x5433;
 constexpr UINT kSearchEditControlId         = 0x5434;
@@ -587,24 +586,35 @@ void DialogRibbonOverlay::toggleInlineSearch() {
     }
 }
 
-void DialogRibbonOverlay::syncInlineSearchHotkey(bool wantRegistered) {
-    HWND hwnd = nullptr;
+void DialogRibbonOverlay::toggleInlineSearchForDialog(
+    HWND dialogHwnd,
+    const std::string& processName,
+    DialogArchitecture architecture,
+    DialogMode mode,
+    const std::string& cachedFolder) {
+    if (!dialogHwnd || !IsWindow(dialogHwnd)) return;
     {
         std::lock_guard lock(m_mutex);
-        hwnd = m_hwnd;
-    }
-    if (!hwnd || !IsWindow(hwnd)) {
-        m_hotkeyRegistered = false;
-        return;
-    }
-    if (wantRegistered && !m_hotkeyRegistered) {
-        if (RegisterHotKey(hwnd, kInlineSearchHotkeyId, MOD_CONTROL | MOD_NOREPEAT, 'G')) {
-            m_hotkeyRegistered = true;
+        if (m_targetDialog != dialogHwnd) {
+            m_targetDialog = dialogHwnd;
+            GetWindowThreadProcessId(dialogHwnd, &m_targetProcessId);
+            m_targetProcess = processName;
+            m_targetArchitecture = architecture;
+            m_targetDialogMode = mode;
+            m_cachedFolderOwner = dialogHwnd;
+            m_cachedDialogFolder = cachedFolder;
+            const float winScale = tools3000::core::dpi::scaleForWindow(dialogHwnd);
+            const float monScale = tools3000::core::dpi::scaleForMonitor(
+                MonitorFromWindow(dialogHwnd, MONITOR_DEFAULTTONEAREST));
+            m_dpiScale = computeEffectiveDialogDpiScale(winScale, monScale);
         }
-    } else if (!wantRegistered && m_hotkeyRegistered) {
-        UnregisterHotKey(hwnd, kInlineSearchHotkeyId);
-        m_hotkeyRegistered = false;
     }
+    toggleInlineSearch();
+}
+
+void DialogRibbonOverlay::syncInlineSearchHotkey(bool /*wantRegistered*/) {
+    // 作用域快捷键已统一上收至 DialogEngine 可配置双热键管家（支持自定义改键且脱离胶囊开关限制），此处不再硬编码注册。
+    m_hotkeyRegistered = false;
 }
 
 void DialogRibbonOverlay::applyRelativeZOrder(
@@ -1173,11 +1183,16 @@ void DialogRibbonOverlay::updateButtonsLayout(float dpiScale, int maxAvailableWi
 
     float currentX = paddingX;
     if (hasSearch) {
+        const std::string configuredSearchKey = PathMemoryManager::instance().getInlineSearchHotkey();
+        const std::string baseSearchTip = tools3000::core::trUtf8("即搜即跳", "Quick Search & Jump");
+        const std::string searchTip = configuredSearchKey.empty()
+            ? baseSearchTip
+            : (baseSearchTip + " (" + configuredSearchKey + ")");
         m_buttons.push_back({
             RibbonButtonRect::Type::Search,
             D2D1::RectF(currentX, btnY, currentX + searchW, btnY + btnH),
             "",
-            tools3000::core::trUtf8("即搜即跳 (Ctrl+G)", "Quick Search & Jump (Ctrl+G)"),
+            searchTip,
             0, false, 0.0f, 0.0f
         });
         currentX += searchW + ((hasSync || hasRecent || hasFav || hasClose) ? interButtonGap : 0.0f);
@@ -2163,13 +2178,21 @@ void DialogRibbonOverlay::layoutSearchPopup() {
     const int desiredH = headerH + visibleRows * rowH + footerH + static_cast<int>(std::lround(8.0f * dpiScale));
 
     const int gap = static_cast<int>(std::lround(6.0f * dpiScale));
-    int popX = ribbonX + ribbonW - desiredW;
-    if (popX < frameRect.left + static_cast<int>(12.0f * dpiScale)) {
-        popX = ribbonX;
-    }
-    int popY = ribbonY + ribbonH + gap;
-    if (work.bottom > work.top && popY + desiredH > work.bottom) {
-        popY = ribbonY - desiredH - gap;
+    int popX = 0;
+    int popY = 0;
+    if (ribbonW > 0 && ribbonH > 0) {
+        popX = ribbonX + ribbonW - desiredW;
+        if (popX < frameRect.left + static_cast<int>(12.0f * dpiScale)) {
+            popX = ribbonX;
+        }
+        popY = ribbonY + ribbonH + gap;
+        if (work.bottom > work.top && popY + desiredH > work.bottom) {
+            popY = ribbonY - desiredH - gap;
+        }
+    } else {
+        // 脱离胶囊条独立快捷键触发时，自动居中悬停于文件对话框顶部下方
+        popX = frameRect.left + (dlgW - desiredW) / 2;
+        popY = frameRect.top + static_cast<int>(std::lround(42.0f * dpiScale));
     }
 
     const RECT clamped = tools3000::core::dpi::clampWindowToWorkArea(
@@ -2979,25 +3002,6 @@ LRESULT CALLBACK DialogRibbonOverlay::WndProc(HWND hwnd, UINT msg, WPARAM wParam
 
     if (self) {
         switch (msg) {
-            case WM_HOTKEY:
-                if (static_cast<int>(wParam) == kInlineSearchHotkeyId &&
-                    PathMemoryManager::instance().isInlineSearchEnabled()) {
-                    const HWND fg = GetForegroundWindow();
-                    const HWND fgRoot = fg ? GetAncestor(fg, GA_ROOT) : nullptr;
-                    const HWND target = self->getTargetDialog();
-                    if (target && IsWindow(target) &&
-                        (fg == target || fgRoot == target ||
-                         self->isOwnOverlayWindow(fg) || self->isOwnOverlayWindow(fgRoot))) {
-                        if (self->m_searchOpen) {
-                            self->closeInlineSearchPopup(true);
-                        } else {
-                            self->openInlineSearchPopup();
-                        }
-                    } else {
-                        self->syncInlineSearchHotkey(false);
-                    }
-                }
-                return 0;
             case WM_RIBBON_TOGGLE_SEARCH:
                 if (self->m_searchOpen) {
                     self->closeInlineSearchPopup(true);

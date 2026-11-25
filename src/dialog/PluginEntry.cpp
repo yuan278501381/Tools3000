@@ -100,7 +100,9 @@ private:
                 {"quickSwitch", mgr.isQuickSwitchEnabled()},
                 {"ribbonEnabled", mgr.isRibbonEnabled()},
                 {"inlineSearchEnabled", mgr.isInlineSearchEnabled()},
-                {"ribbonPosition", mgr.getRibbonPosition()}
+                {"ribbonPosition", mgr.getRibbonPosition()},
+                {"quickJumpHotkey", mgr.getQuickJumpHotkey()},
+                {"inlineSearchHotkey", mgr.getInlineSearchHotkey()}
             };
         });
 
@@ -133,9 +135,16 @@ private:
             if (params.contains("ribbonPosition") && params["ribbonPosition"].is_string()) {
                 mgr.setRibbonPosition(params["ribbonPosition"].get<std::string>());
             }
+            if (params.contains("quickJumpHotkey") && params["quickJumpHotkey"].is_string()) {
+                mgr.setQuickJumpHotkey(params["quickJumpHotkey"].get<std::string>());
+            }
+            if (params.contains("inlineSearchHotkey") && params["inlineSearchHotkey"].is_string()) {
+                mgr.setInlineSearchHotkey(params["inlineSearchHotkey"].get<std::string>());
+            }
             const bool reEnabledRibbon =
                 params.contains("ribbonEnabled") && params["ribbonEnabled"].is_boolean() &&
                 params["ribbonEnabled"].get<bool>();
+            DialogEngine::instance().syncScopedHotkeys();
             DialogEngine::instance().refreshActiveDialogOverlay(reEnabledRibbon);
             return {{"success", true}};
         });

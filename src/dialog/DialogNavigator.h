@@ -62,6 +62,11 @@ public:
     // 尝试将目标文件对话框导航至指定文件夹路径（全球化通用、零语言依赖、实测验证到位）
     bool navigateToFolder(HWND dialogHwnd, const std::string& folderPath);
 
+    // 安全导航经 UIA 验证的非标准文件对话框（Qt QFileDialog / JetBrains SunAwtDialog），对纯 GPU 黑盒直接返回 false
+    bool navigateNonStandardDialog(HWND dialogHwnd,
+                                   NonStandardDialogKind kind,
+                                   const std::string& folderPath);
+
     // 按对话框模式安全执行内嵌搜索结果跳转：
     // - 目录 / Ctrl+Enter / SaveFile / PickFolder / Unknown：强制仅跳目录，绝不改写文件名、绝不提交；
     // - OpenFile + 文件：先跳父目录并验证到位 -> 再填入文件名到 Edit 1152 -> Shift+Enter 才确认打开。

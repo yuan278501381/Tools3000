@@ -160,4 +160,79 @@ describe('InPlaceTranslateCard', () => {
       );
     });
   });
+
+  it('applies Bilibili Index-Translate free keyless preset and switches between 2B/9B/35B models', async () => {
+    bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'translate.getSettings') {
+        return {
+          provider: 'openai',
+          targetLang: 'zh-Hans',
+          secondaryTargetLang: 'en',
+          freePrimary: 'edge',
+          openaiBaseUrl: 'https://api.openai.com/v1',
+          openaiModel: 'gpt-4o-mini',
+          hasOpenaiApiKey: true,
+          openaiApiKeyMasked: 'sk-...9876',
+          deeplEndpoint: '',
+          hasDeeplApiKey: false,
+          deeplApiKeyMasked: '',
+          timeoutSec: 15,
+        };
+      }
+      if (method === 'translate.updateSettings') {
+        return {
+          success: true,
+          settings: {
+            provider: 'openai',
+            targetLang: 'zh-Hans',
+            secondaryTargetLang: 'en',
+            freePrimary: 'edge',
+            openaiBaseUrl: (params?.openaiBaseUrl as string) || 'https://index-translate.bilibili.com/v1',
+            openaiModel: (params?.openaiModel as string) || 'Index-Translate-9B',
+            hasOpenaiApiKey: true,
+            openaiApiKeyMasked: 'sk-...9876',
+            deeplEndpoint: '',
+            hasDeeplApiKey: false,
+            deeplApiKeyMasked: '',
+            timeoutSec: 15,
+          },
+        };
+      }
+      return { success: true };
+    });
+
+    render(<InPlaceTranslateCard />);
+
+    const presetBtn = await screen.findByRole('button', { name: /translate\.presetIndexTranslate/i });
+    fireEvent.click(presetBtn);
+
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith(
+        'translate.updateSettings',
+        expect.objectContaining({
+          provider: 'openai',
+          openaiBaseUrl: 'https://index-translate.bilibili.com/v1',
+          openaiModel: 'Index-Translate-9B',
+        }),
+      );
+    });
+
+    // 命中免 Key 公网预设后显示公益提示与快捷模型切换按钮
+    expect(await screen.findByText('translate.indexTranslateKeylessPlaceholder')).toBeTruthy();
+    expect(await screen.findByText('translate.indexTranslateNotice')).toBeTruthy();
+
+    const fastModelBtn = await screen.findByRole('button', { name: /translate\.indexModelFast/i });
+    fireEvent.click(fastModelBtn);
+
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith(
+        'translate.updateSettings',
+        expect.objectContaining({
+          provider: 'openai',
+          openaiBaseUrl: 'https://index-translate.bilibili.com/v1',
+          openaiModel: 'Index-Translate-2B',
+        }),
+      );
+    });
+  });
 });

@@ -910,6 +910,73 @@ TEST(DialogNavigatorTest, AllowsSelfProcessFileDialogWhenEnabled) {
     DestroyWindow(selfFileDlg);
 }
 
+TEST(DialogQuickJumpAndCompatibilityTest, SanitizesConfigurableHotkeysAndSupportsDisable) {
+    using tools3000::dialog::PathMemoryManager;
+    // 允许空字符串表示禁用该快捷键，绝不强行写回默认值
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("", "Ctrl+G"), "");
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("   ", "Ctrl+G"), "");
+    // 合法组合键规范化输出
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("ctrl+g", "Ctrl+Shift+G"), "Ctrl+G");
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("Ctrl+Shift+G", "Ctrl+G"), "Ctrl+Shift+G");
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("Alt+F2", "Ctrl+G"), "Alt+F2");
+    // 不安全裸字母回退至 fallback，杜绝打字劫持
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("G", "Ctrl+G"), "Ctrl+G");
+    EXPECT_EQ(PathMemoryManager::sanitizeHotkeyString("not-a-key", "Ctrl+Shift+G"), "Ctrl+Shift+G");
+}
+
+TEST(DialogQuickJumpAndCompatibilityTest, ClassifiesFileManagersAndExtractsCleanPaths) {
+    using tools3000::dialog::FileManagerKind;
+    using tools3000::dialog::classifyFileManagerWindow;
+    using tools3000::dialog::extractDirectoryFromFileManagerText;
+
+    EXPECT_EQ(classifyFileManagerWindow(L"CabinetWClass", L"explorer.exe"), FileManagerKind::WindowsExplorer);
+    EXPECT_EQ(classifyFileManagerWindow(L"TTOTAL_CMD", L"TOTALCMD64.EXE"), FileManagerKind::TotalCommander);
+    EXPECT_EQ(classifyFileManagerWindow(L"dopus.lister", L"dopus.exe"), FileManagerKind::DirectoryOpus);
+    EXPECT_EQ(classifyFileManagerWindow(L"ThunderRT6FormDC", L"XYplorer.exe"), FileManagerKind::Xyplorer);
+    EXPECT_EQ(classifyFileManagerWindow(L"ATL:00001", L"Q-Dir_x64.exe"), FileManagerKind::QDir);
+    EXPECT_EQ(classifyFileManagerWindow(L"WinUIDesktopWin32WindowClass", L"Files.exe"), FileManagerKind::ModernThirdParty);
+    EXPECT_EQ(classifyFileManagerWindow(L"HwndWrapper", L"OneCommander.exe"), FileManagerKind::ModernThirdParty);
+    EXPECT_EQ(classifyFileManagerWindow(L"Chrome_WidgetWin_1", L"chrome.exe"), FileManagerKind::None);
+
+    // Total Commander TPathPanel 经典尾部 \*.* 与 > 剥离
+    EXPECT_EQ(extractDirectoryFromFileManagerText(FileManagerKind::TotalCommander, L"D:\\Projects\\Demo\\*.*"),
+              L"D:\\Projects\\Demo");
+    EXPECT_EQ(extractDirectoryFromFileManagerText(FileManagerKind::TotalCommander, L"C:\\Users\\Demo\\>"),
+              L"C:\\Users\\Demo");
+    // XYplorer / Directory Opus 标题与装饰前缀清洗 + UNC 支持 + 零宽方向符剥离
+    EXPECT_EQ(extractDirectoryFromFileManagerText(FileManagerKind::Xyplorer, L"\x202A" L"E:/Work/2026 - XYplorer"),
+              L"E:\\Work\\2026");
+    EXPECT_EQ(extractDirectoryFromFileManagerText(FileManagerKind::DirectoryOpus, L"Address: \\\\nas01\\share\\docs\\"),
+              L"\\\\nas01\\share\\docs");
+    // 根盘符保留反斜杠
+    EXPECT_EQ(extractDirectoryFromFileManagerText(FileManagerKind::WindowsExplorer, L"C:\\"), L"C:\\");
+}
+
+TEST(DialogQuickJumpAndCompatibilityTest, ClassifiesNonStandardDialogsSafelyWithoutBlackBoxFalsePositives) {
+    using tools3000::dialog::NonStandardDialogKind;
+    using tools3000::dialog::classifyNonStandardDialogCandidate;
+
+    // 精准放行 Qt 模态文件框与 JetBrains IDE 对话框
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"Qt6QWindowIcon", L"obs64.exe", true),
+              NonStandardDialogKind::QtFileDialog);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"Qt5QWindowIcon", L"qbittorrent.exe", true),
+              NonStandardDialogKind::QtFileDialog);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"SunAwtDialog", L"idea64.exe", true),
+              NonStandardDialogKind::JetBrainsFileDialog);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"SunAwtDialog", L"pycharm64.exe", false),
+              NonStandardDialogKind::JetBrainsFileDialog);
+
+    // 严禁误认标准 #32770（由标准引擎处理）、顶层无 owner 的 Qt 主窗、或纯 GPU 黑盒如 Blender/游戏
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"#32770", L"chrome.exe", true),
+              NonStandardDialogKind::None);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"Qt6QWindowIcon", L"obs64.exe", false),
+              NonStandardDialogKind::None);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"GHOST_WindowClass", L"blender.exe", true),
+              NonStandardDialogKind::None);
+    EXPECT_EQ(classifyNonStandardDialogCandidate(L"Chrome_WidgetWin_1", L"chrome.exe", true),
+              NonStandardDialogKind::None);
+}
+
 // -----------------------------------------------------------------------------
 // 56. 选区圆角手柄交互与实时调节测试套件
 // -----------------------------------------------------------------------------

@@ -5111,6 +5111,15 @@ TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     EXPECT_TRUE(TranslationService::isLoopbackHttpUrl("http://[::1]:11434/v1"));
     EXPECT_FALSE(TranslationService::isLoopbackHttpUrl("https://api.openai.com/v1"));
 
+    // 2b. 内置免 Key 公网端点判定（严格 HTTPS + 精确主机名匹配，杜绝伪造域名绕过）
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com/v1"));
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com/v1/chat/completions"));
+    EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl("HTTPS://INDEX-TRANSLATE.BILIBILI.COM/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("http://index-translate.bilibili.com/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://evil-index-translate.bilibili.com/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://index-translate.bilibili.com.attacker.test/v1"));
+    EXPECT_FALSE(TranslationService::isKeylessPublicOpenAiUrl("https://api.openai.com/v1"));
+
     ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-key:fx", fullUrl));
     EXPECT_EQ(fullUrl, "https://api-free.deepl.com/v2/translate");
     ASSERT_TRUE(TranslationService::normalizeDeepLUrl("", "abc-pro-key", fullUrl));
@@ -5145,6 +5154,14 @@ TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     ASSERT_EQ(out.size(), 2u);
     EXPECT_EQ(out[0], "保存");
     EXPECT_EQ(out[1], "取消");
+
+    // 3a. 思考链 <think>...</think> 内含干扰 JSON 花括号时，必须剥离思考块并提取最终译文 JSON
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"<think>Input schema is {\"id\":0,\"text\":\"Settings\"} so keep JSON valid.</think>\n```json\n{\"translations\":[{\"id\":0,\"text\":\"设置\"},{\"id\":1,\"text\":\"导出\"}]}\n```"}}]})",
+        2, out));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "设置");
+    EXPECT_EQ(out[1], "导出");
 
     ASSERT_TRUE(TranslationService::parseDeepLTranslateResponse(
         R"({"translations":[{"detected_source_language":"EN","text":"打开"},{"text":"关闭"}]})",
@@ -5231,6 +5248,94 @@ TEST(TranslationServiceTest, LiveNetworkFreeChannelsSmokeWhenEnabled) {
     ASSERT_EQ(googleRes.translations.size(), 2u);
     EXPECT_FALSE(googleRes.translations[0].empty());
     EXPECT_FALSE(googleRes.translations[1].empty());
+}
+
+#include "core/utils/WindowImeGuard.h"
+#include <imm.h>
+
+TEST(WindowImeGuardTest, ResolvesProcessKeyViaImmAndScanCodeAndFiltersNonTextImeMessages) {
+    using tools3000::core::WindowImeGuard;
+
+    // 1. 非文字输入态下，优先使用 ImmGetVirtualKey 返回值反解 VK_PROCESSKEY (0xE5)
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, 0, 'R', /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, 0, VK_LSHIFT, /*allowTextInput=*/false),
+        static_cast<WPARAM>(VK_SHIFT));
+
+    // 2. 当 ImmGetVirtualKey 无效(0 或仍为 0xE5)时，按 lParam 硬件扫描码精准还原物理键（如 'R' / 'C'）
+    const UINT scanR = MapVirtualKeyW('R', MAPVK_VK_TO_VSC);
+    ASSERT_NE(scanR, 0u);
+    const LPARAM lParamR = static_cast<LPARAM>(scanR) << 16;
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, 0, /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, VK_PROCESSKEY, /*allowTextInput=*/false),
+        static_cast<WPARAM>('R'));
+
+    // 3. 文字编辑态下绝不篡改 VK_PROCESSKEY，确保 CJK 输入法正常组词上屏
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey(VK_PROCESSKEY, lParamR, 'R', /*allowTextInput=*/true),
+        static_cast<WPARAM>(VK_PROCESSKEY));
+
+    // 4. 非 VK_PROCESSKEY 普通键原样透传
+    EXPECT_EQ(
+        WindowImeGuard::resolveVirtualKeyFromProcessKey('S', 0, 'R', /*allowTextInput=*/false),
+        static_cast<WPARAM>('S'));
+
+    // 5. 第三层视觉护栏：非输入态剥离 WM_IME_SETCONTEXT 组合窗/候选窗标志并拦截孤立组合消息
+    LPARAM setCtxLParam = ISC_SHOWUICOMPOSITIONWINDOW | ISC_SHOWUIALLCANDIDATEWINDOW | 0x1;
+    LRESULT outRes = -1;
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_SETCONTEXT, TRUE, setCtxLParam, /*allowTextInput=*/false, outRes));
+    EXPECT_EQ(setCtxLParam & ISC_SHOWUICOMPOSITIONWINDOW, 0);
+    EXPECT_EQ(setCtxLParam & ISC_SHOWUIALLCANDIDATEWINDOW, 0);
+
+    outRes = -1;
+    EXPECT_TRUE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_STARTCOMPOSITION, 0, setCtxLParam, /*allowTextInput=*/false, outRes));
+    EXPECT_EQ(outRes, 0);
+
+    // 文字输入态放行一切 IME 消息
+    LPARAM editCtxLParam = ISC_SHOWUICOMPOSITIONWINDOW | ISC_SHOWUIALLCANDIDATEWINDOW;
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_SETCONTEXT, TRUE, editCtxLParam, /*allowTextInput=*/true, outRes));
+    EXPECT_NE(editCtxLParam & ISC_SHOWUICOMPOSITIONWINDOW, 0);
+    EXPECT_FALSE(WindowImeGuard::filterNonTextImeMessage(
+        nullptr, WM_IME_STARTCOMPOSITION, 0, editCtxLParam, /*allowTextInput=*/true, outRes));
+
+    // 6. 真实 Win32 窗口级 ImmAssociateContextEx 动态卸载/恢复与幂等状态机校验
+    HWND testHwnd = CreateWindowExW(
+        0, L"STATIC", L"T3K_ImeGuard_Test", WS_POPUP,
+        0, 0, 16, 16, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(testHwnd, nullptr);
+
+    WindowImeGuard guard;
+    EXPECT_EQ(guard.cachedState(), -1);
+
+    guard.sync(testHwnd, /*allowTextInput=*/false, /*force=*/true);
+    EXPECT_EQ(guard.cachedState(), 0);
+    HIMC detachedImc = ImmGetContext(testHwnd);
+    EXPECT_EQ(detachedImc, nullptr);
+    if (detachedImc) ImmReleaseContext(testHwnd, detachedImc);
+
+    guard.sync(testHwnd, /*allowTextInput=*/true);
+    EXPECT_EQ(guard.cachedState(), 1);
+    HIMC restoredImc = ImmGetContext(testHwnd);
+    EXPECT_NE(restoredImc, nullptr);
+    if (restoredImc) ImmReleaseContext(testHwnd, restoredImc);
+
+    guard.sync(testHwnd, /*allowTextInput=*/false);
+    EXPECT_EQ(guard.cachedState(), 0);
+    HIMC detachedAgain = ImmGetContext(testHwnd);
+    EXPECT_EQ(detachedAgain, nullptr);
+    if (detachedAgain) ImmReleaseContext(testHwnd, detachedAgain);
+
+    guard.reset();
+    EXPECT_EQ(guard.cachedState(), -1);
+    DestroyWindow(testHwnd);
 }
 
 #include "clipboard/ClipboardManager.h"

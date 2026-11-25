@@ -816,6 +816,10 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
         case WM_SYSKEYUP:
         case WM_KEYUP: {
             if (!this) break;
+            const bool allowTextInput = isTextInputActive();
+            m_imeGuard.sync(hwnd, allowTextInput);
+            wParam = tools3000::core::WindowImeGuard::resolveShortcutVirtualKey(
+                hwnd, wParam, lParam, allowTextInput);
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool alt = (msg == WM_SYSKEYUP) || ((GetKeyState(VK_MENU) & 0x8000) != 0);
             const auto keyCtx = CaptureShortcutPolicy::snapshotFromState(*m_state);
@@ -840,6 +844,12 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
         case WM_SYSKEYDOWN:
         case WM_KEYDOWN: {
             if (!this) break;
+
+            // 非文字编辑态下防御性同步关闭 IME，并兜底将残余 VK_PROCESSKEY (0xE5) 反解为物理按键（如 R / Shift+R）
+            const bool allowTextInput = isTextInputActive();
+            m_imeGuard.sync(hwnd, allowTextInput);
+            wParam = tools3000::core::WindowImeGuard::resolveShortcutVirtualKey(
+                hwnd, wParam, lParam, allowTextInput);
 
             const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;

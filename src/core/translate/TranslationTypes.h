@@ -25,6 +25,9 @@ namespace TranslationConstants {
 
     inline constexpr const char* kDefaultOpenAiBaseUrl = "https://api.openai.com/v1";
     inline constexpr const char* kDefaultOpenAiModel = "gpt-4o-mini";
+    inline constexpr const char* kIndexTranslateHost = "index-translate.bilibili.com";
+    inline constexpr const char* kIndexTranslateBaseUrl = "https://index-translate.bilibili.com/v1";
+    inline constexpr const char* kIndexTranslateDefaultModel = "Index-Translate-9B";
 
     inline constexpr int kDefaultTimeoutMs = 15000;
     inline constexpr int kMinTimeoutMs = 3000;

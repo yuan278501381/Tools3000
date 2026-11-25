@@ -48,10 +48,16 @@ interface TranslateProbeResponse {
 }
 
 type OpenAiPresetLabelKey =
+  | 'translate.presetIndexTranslate'
   | 'translate.presetOpenAi'
   | 'translate.presetDeepSeek'
   | 'translate.presetOllama'
   | 'translate.presetGemini';
+
+type IndexTranslateModelLabelKey =
+  | 'translate.indexModelFast'
+  | 'translate.indexModelBalanced'
+  | 'translate.indexModelFlagship';
 
 interface OpenAiPreset {
   id: string;
@@ -60,7 +66,21 @@ interface OpenAiPreset {
   model: string;
 }
 
+interface IndexTranslateModelOption {
+  id: string;
+  labelKey: IndexTranslateModelLabelKey;
+}
+
+const INDEX_TRANSLATE_BASE_URL = 'https://index-translate.bilibili.com/v1';
+
+const INDEX_TRANSLATE_MODELS: readonly IndexTranslateModelOption[] = [
+  { id: 'Index-Translate-2B', labelKey: 'translate.indexModelFast' },
+  { id: 'Index-Translate-9B', labelKey: 'translate.indexModelBalanced' },
+  { id: 'Index-Translate-35B-A3B', labelKey: 'translate.indexModelFlagship' },
+];
+
 const OPENAI_PRESETS: readonly OpenAiPreset[] = [
+  { id: 'index_translate', labelKey: 'translate.presetIndexTranslate', baseUrl: INDEX_TRANSLATE_BASE_URL, model: 'Index-Translate-9B' },
   { id: 'openai', labelKey: 'translate.presetOpenAi', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
   { id: 'deepseek', labelKey: 'translate.presetDeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
   { id: 'ollama', labelKey: 'translate.presetOllama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
@@ -145,10 +165,21 @@ export const InPlaceTranslateCard: FC = () => {
   const handleApplyPreset = (preset: OpenAiPreset) => {
     setOpenaiBaseUrlDraft(preset.baseUrl);
     setOpenaiModelDraft(preset.model);
+    setProbeResult(null);
     void patchSettings({
       provider: 'openai',
       openaiBaseUrl: preset.baseUrl,
       openaiModel: preset.model,
+    }, true);
+  };
+
+  const handleSelectIndexModel = (modelId: string) => {
+    setOpenaiModelDraft(modelId);
+    setProbeResult(null);
+    void patchSettings({
+      provider: 'openai',
+      openaiBaseUrl: openaiBaseUrlDraft.trim() || INDEX_TRANSLATE_BASE_URL,
+      openaiModel: modelId,
     }, true);
   };
 
@@ -252,10 +283,14 @@ export const InPlaceTranslateCard: FC = () => {
     settings.provider === 'openai' &&
     /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(\/|$)/i.test(openaiBaseUrlDraft.trim());
 
+  const isIndexTranslate =
+    settings.provider === 'openai' &&
+    /^https:\/\/index-translate\.bilibili\.com(?:\/|$)/i.test(openaiBaseUrlDraft.trim());
+
   const byokDirty = settings.provider === 'openai'
     ? (openaiBaseUrlDraft.trim() !== settings.openaiBaseUrl ||
        openaiModelDraft.trim() !== settings.openaiModel ||
-       openaiKeyDraft.trim().length > 0)
+       (!isIndexTranslate && openaiKeyDraft.trim().length > 0))
     : (deeplEndpointDraft.trim() !== settings.deeplEndpoint ||
        deeplKeyDraft.trim().length > 0);
 
@@ -275,11 +310,13 @@ export const InPlaceTranslateCard: FC = () => {
                   text={
                     isLocalOllama
                       ? t('translate.badgeLocalOffline')
-                      : settings.provider === 'free_auto'
-                        ? t('translate.badgeZeroConfig')
-                        : t('translate.badgeByokEncrypted')
+                      : isIndexTranslate
+                        ? t('translate.badgePublicFreeAi')
+                        : settings.provider === 'free_auto'
+                          ? t('translate.badgeZeroConfig')
+                          : t('translate.badgeByokEncrypted')
                   }
-                  variant={isLocalOllama || settings.provider === 'free_auto' ? 'success' : 'primary'}
+                  variant={isLocalOllama || isIndexTranslate || settings.provider === 'free_auto' ? 'success' : 'primary'}
                 />
               </div>
             }
@@ -385,9 +422,35 @@ export const InPlaceTranslateCard: FC = () => {
                       id="translate-openai-model"
                       value={openaiModelDraft}
                       onChange={setOpenaiModelDraft}
-                      placeholder="gpt-4o-mini"
+                      placeholder={isIndexTranslate ? 'Index-Translate-9B' : 'gpt-4o-mini'}
                     />
                   </div>
+
+                  {isIndexTranslate && (
+                    <div className="translate-card__field translate-card__field--full">
+                      <div className="translate-card__index-box">
+                        <div className="translate-card__index-header">
+                          <span className="translate-card__field-label">{t('translate.indexTranslateModelsLabel')}</span>
+                          <div className="translate-card__presets">
+                            {INDEX_TRANSLATE_MODELS.map((item) => {
+                              const isActiveModel = openaiModelDraft.trim().toLowerCase() === item.id.toLowerCase();
+                              return (
+                                <button
+                                  key={item.id}
+                                  type="button"
+                                  className={`translate-card__preset-btn${isActiveModel ? ' translate-card__preset-btn--active' : ''}`}
+                                  onClick={() => handleSelectIndexModel(item.id)}
+                                >
+                                  <span>{t(item.labelKey)}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        <p className="translate-card__index-notice">{t('translate.indexTranslateNotice')}</p>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="translate-card__field translate-card__field--full">
                     <label htmlFor="translate-openai-api-key" className="translate-card__field-label">
@@ -401,21 +464,28 @@ export const InPlaceTranslateCard: FC = () => {
                       )}
                     </label>
                     <div className="translate-card__key-row">
-                      <div className="translate-card__key-input">
-                        <TextInput
-                          id="translate-openai-api-key"
-                          type="password"
-                          value={openaiKeyDraft}
-                          onChange={setOpenaiKeyDraft}
-                          placeholder={
-                            isLocalOllama
-                              ? t('translate.ollamaKeyOptionalPlaceholder')
-                              : settings.hasOpenaiApiKey
-                                ? t('translate.keyKeepExistingPlaceholder')
-                                : t('translate.apiKeyPlaceholder')
-                          }
-                        />
-                      </div>
+                      {isIndexTranslate ? (
+                        <div className="translate-card__keyless-note">
+                          <ShieldCheck size={15} strokeWidth={2.2} aria-hidden="true" />
+                          <span>{t('translate.indexTranslateKeylessPlaceholder')}</span>
+                        </div>
+                      ) : (
+                        <div className="translate-card__key-input">
+                          <TextInput
+                            id="translate-openai-api-key"
+                            type="password"
+                            value={openaiKeyDraft}
+                            onChange={setOpenaiKeyDraft}
+                            placeholder={
+                              isLocalOllama
+                                ? t('translate.ollamaKeyOptionalPlaceholder')
+                                : settings.hasOpenaiApiKey
+                                  ? t('translate.keyKeepExistingPlaceholder')
+                                  : t('translate.apiKeyPlaceholder')
+                            }
+                          />
+                        </div>
+                      )}
                       {settings.hasOpenaiApiKey && (
                         <Button
                           variant="secondary"

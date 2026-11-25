@@ -45,14 +45,19 @@
   border-color: var(--input-border, rgba(255, 255, 255, 0.08));
 }
 
-.hotkey-recorder:hover {
+.hotkey-recorder:hover:not(:disabled) {
   background: var(--bg-surface-hover, rgba(0, 0, 0, 0.04));
   border-color: var(--primary-hover, rgba(59, 130, 246, 0.35));
 }
 
-[data-theme="dark"] .hotkey-recorder:hover {
+[data-theme="dark"] .hotkey-recorder:hover:not(:disabled) {
   background: rgba(255, 255, 255, 0.06);
   border-color: var(--primary-hover, rgba(96, 165, 250, 0.35));
+}
+
+.hotkey-recorder:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
 }
 
 /* ── 录入中状态 ─────────────────────────────────────────────────────────── */

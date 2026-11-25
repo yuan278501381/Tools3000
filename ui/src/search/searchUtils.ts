@@ -1187,9 +1187,10 @@ export function isPinnedSearchCategory(id: string): boolean {
 
 /**
  * 规范化搜索分类顺序：
- *   1. 固定核心分类（全部 / 文档内容）永远锁死在最左前两位；
- *   2. 其余合法可排序分类严格保留用户偏好顺序并去重；
- *   3. 任何缺失的默认/未来新增分类自动按官方默认顺序补齐至末尾。
+ *   1. 固定核心分类（仅「全部」）永远锁死在最左首位；
+ *   2. 其余合法可排序分类（含「文档内容」）严格保留用户偏好顺序并去重；
+ *   3. 兼容旧版偏好（曾将 content 锁定未写入数组）：若旧自定义顺序不含 content，平滑将其置于首位（紧随 all）且支持继续自由拖动；
+ *   4. 任何其他缺失的默认/未来新增分类自动按官方默认顺序补齐至末尾。
  */
 export function normalizeSearchCategoryOrder(rawOrder?: readonly string[] | null): SearchCategoryId[] {
   const custom: SearchCategoryId[] = [];
@@ -1204,6 +1205,9 @@ export function normalizeSearchCategoryOrder(rawOrder?: readonly string[] | null
         custom.push(item as SearchCategoryId);
       }
     }
+  }
+  if (custom.length > 0 && !custom.includes('content')) {
+    custom.unshift('content');
   }
   for (const fallback of DEFAULT_CUSTOM_CATEGORY_ORDER) {
     if (!custom.includes(fallback)) {

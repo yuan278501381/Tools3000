@@ -110,7 +110,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'rec-video', navId: 'capture', tabId: 'recording', labelKey: 'recording.title', descKey: 'recording.formatDesc', keywords: 'record mp4 gif webm fps audio microphone luping' },
   { id: 'rec-autozoom', navId: 'capture', tabId: 'studio', labelKey: 'recording.studioAutoZoom', descKey: 'recording.studioAutoZoomDesc', keywords: 'studio auto zoom camera motion waveform yunjing zidongyunjing boxing' },
   { id: 'ocr-lang', navId: 'ocr', tabId: 'recognize', labelKey: 'ocr.language', descKey: 'ocr.languageDesc', keywords: 'ocr text extract japanese korean french german vietnamese arabic thai english shibie fawen yuenanyu alaboyu taiyu' },
-  { id: 'ocr-translate', navId: 'ocr', tabId: 'translate', labelKey: 'translate.groupTitle', descKey: 'translate.providerDesc', keywords: 'translate in-place edge bing google openai deepseek ollama deepl fanyi yuanwei' },
+  { id: 'ocr-translate', navId: 'ocr', tabId: 'translate', labelKey: 'translate.groupTitle', descKey: 'translate.providerDesc', keywords: 'translate in-place edge bing google openai deepseek ollama deepl bilibili index-translate fanyi yuanwei' },
   { id: 'ocr-models', navId: 'ocr', tabId: 'models', labelKey: 'ocr.tabModels', descKey: 'ocr.tabModelsDesc', keywords: 'ppocr ppocrv6 model offline download pack arabic thai korean cyrillic moxing xiazai' },
   { id: 'his-recent', navId: 'history', labelKey: 'history.title', descKey: 'history.subtitle', keywords: 'history recent screenshot pin lishi' },
 
@@ -119,6 +119,8 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'spt-focus', navId: 'spotlight', labelKey: 'spotlight.animStyle', descKey: 'spotlight.animStyleDesc', keywords: 'spotlight double ctrl shake cursor juguangdeng' },
   { id: 'spt-ripple', navId: 'spotlight', labelKey: 'spotlight.clickRipple', descKey: 'spotlight.clickRippleDesc', keywords: 'click ripple trail sonar bowen' },
   { id: 'dlg-memory', navId: 'dialog_enhancer', labelKey: 'dialog.perAppMemory', descKey: 'dialog.perAppMemoryDesc', keywords: 'dialog open save explorer favorite folder duihuakuang' },
+  { id: 'dlg-quick-jump', navId: 'dialog_enhancer', labelKey: 'dialog.quickJumpHotkeyLabel', descKey: 'dialog.quickJumpHotkeyDesc', keywords: 'ctrl+g listary quick switch jump explorer total commander opus xyplorer q-dir files qt jetbrains tiaozhuan mulu' },
+  { id: 'dlg-inline-search', navId: 'dialog_enhancer', labelKey: 'dialog.inlineSearchHotkeyLabel', descKey: 'dialog.inlineSearchHotkeyDesc', keywords: 'ctrl+shift+g dialog inline search jump duihuakuang sousuo' },
   { id: 'rmt-tunnel', navId: 'remote_boost', labelKey: 'remoteBoost.hotkeyTunnelTitle', descKey: 'remoteBoost.hotkeyTunnelDesc', keywords: 'remote rdp mstsc tododesk sunlogin win alt tab yuancheng' },
   { id: 'rmt-flush', navId: 'remote_boost', labelKey: 'remoteBoost.emergencyFlushTitle', descKey: 'remoteBoost.emergencyFlushDesc', keywords: 'stuck modifier keyup flush release kajian' },
   { id: 'rmt-ime', navId: 'remote_boost', labelKey: 'remoteBoost.imeSanitizerTitle', descKey: 'remoteBoost.imeSanitizerDesc', keywords: 'ime english input method shurufa' },
