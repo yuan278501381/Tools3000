@@ -211,7 +211,7 @@ Compatibilidade total com pastas de instalação e nomes de usuário do Windows 
 | Recurso / Arquivo | Onde acessar / Instalação padrão | Versão portátil |
 | :--- | :--- | :--- |
 | **Backup em Nuvem e Pastas** | `Sistema -> Geral -> Backup em Nuvem e Pasta Sincronizada` (detecção automática de OneDrive/Google Drive/Dropbox/iCloud, WebDAV, S3 e criptografia ponta a ponta opcional) | Igual (versão portátil também atualiza no local em `Configurações -> Sobre`) |
-| **Desempenho e Memória** | `Análises e Sobre -> Desempenho e Memória` (telemetria ao vivo, liberação em 1 clique e cronograma de 10 regras de recuperação) | Igual |
+| **Política de Memória** | `Análises e Sobre -> Política de Memória` (cronograma somente leitura de 10 regras de suspensão, descarregamento ocioso e recuperação automática) | Igual |
 | **Auto-OCR em Pins e Regiões** | `Produtividade -> Captura e Gravação -> Fixação e Regiões` (opção «Reconhecer texto automaticamente ao fixar» e gerenciador de regiões) | Igual |
 | **Desbloqueio de Arquivos** | Configurações: `Sistema -> Módulos`, `Produtividade -> Desbloqueio de Arquivos`; central da bandeja, clique direito no Explorer e na Busca | Igual (menu apenas do usuário, 0 MB ocioso, limpeza automática ao desligar) |
 | **Ícones da Busca / Live / RAM** | `Produtividade -> Busca de Arquivos` (estilo de ícones / Live Watch / memória); alternador Live também na barra inferior da Busca | Igual (ícones de favoritos lidos localmente offline, zero rede) |

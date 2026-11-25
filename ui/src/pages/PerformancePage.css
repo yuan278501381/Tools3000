@@ -1,5 +1,5 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * PerformancePage.css — 实时遥测仪表盘与全链路内存回收时间表 (Warm Precision)
+ * PerformancePage.css — 全链路内存策略与自动回收时间表 (Warm Precision)
  * ───────────────────────────────────────────────────────────────────────────── */
 
 .perf-page {
@@ -8,135 +8,7 @@
   animation: fadeIn 0.25s ease;
 }
 
-.perf-spin {
-  animation: perf-rotate 0.9s linear infinite;
-}
-
-@keyframes perf-rotate {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-/* ── Section 1: 顶栏主开关 + 静默回收操作条 ────────────────────────────────── */
-.perf-telemetry-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 8px 8px 14px;
-  border-bottom: 1px solid var(--hairline);
-  flex-wrap: wrap;
-}
-
-.perf-telemetry-head__toggle {
-  flex: 1 1 280px;
-  padding: 0;
-  min-height: 0;
-}
-
-.perf-telemetry-head__trim-btn {
-  flex-shrink: 0;
-  white-space: nowrap;
-}
-
-/* ── 6 宫格微晶遥测指标矩阵 ───────────────────────────────────────────────── */
-.perf-telemetry-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  padding: 14px 8px 8px;
-}
-
-.perf-metric-tile {
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 13px 15px;
-  border-radius: 10px;
-  background: var(--well-bg);
-  border: 1px solid var(--well-border);
-  box-shadow: var(--well-shadow);
-  transition: border-color var(--transition-fast), background var(--transition-fast);
-}
-
-.perf-metric-tile:hover {
-  border-color: color-mix(in srgb, var(--primary) 28%, var(--well-border));
-}
-
-.perf-metric-tile__label {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--text-muted);
-  font-size: 0.84rem;
-  font-weight: 550;
-  line-height: 1.4;
-}
-
-.perf-metric-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.perf-metric-dot--primary {
-  background: var(--primary);
-  box-shadow: 0 0 0 2px var(--primary-dim);
-}
-
-.perf-metric-dot--info {
-  background: var(--info);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 18%, transparent);
-}
-
-.perf-metric-dot--success {
-  background: var(--success);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
-}
-
-.perf-metric-icon {
-  color: var(--text-muted);
-  flex-shrink: 0;
-}
-
-.perf-metric-tile__value {
-  display: flex;
-  align-items: baseline;
-  gap: 5px;
-  min-height: 28px;
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1;
-}
-
-.perf-metric-tile__num {
-  font-family: var(--font-mono);
-  font-size: 1.32rem;
-  font-weight: 700;
-  line-height: 1.4;
-  letter-spacing: -0.02em;
-  color: var(--text-primary);
-  font-variant-numeric: tabular-nums lining-nums;
-  font-feature-settings: "tnum" 1;
-}
-
-.perf-metric-tile__unit {
-  font-family: var(--font-mono);
-  font-size: 0.84rem;
-  font-weight: 600;
-  line-height: 1.4;
-  color: var(--text-muted);
-}
-
-.perf-metric-tile__idle {
-  font-size: 0.88rem;
-  font-weight: 550;
-  line-height: 1.45;
-  color: var(--text-muted);
-}
-
-/* ── Section 2: 4 大架构层级全链路只读生命周期时间表 ─────────────────────── */
+/* ── 4 大架构层级全链路只读生命周期时间表 ──────────────────────────────────── */
 .perf-lifecycle {
   display: flex;
   flex-direction: column;
@@ -246,10 +118,6 @@
 }
 
 @container (max-width: 720px) {
-  .perf-telemetry-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .perf-schedule-row {
     flex-direction: column;
     align-items: flex-start;
@@ -257,11 +125,5 @@
 
   .perf-schedule-row__meta {
     justify-content: flex-start;
-  }
-}
-
-@container (max-width: 460px) {
-  .perf-telemetry-grid {
-    grid-template-columns: 1fr;
   }
 }

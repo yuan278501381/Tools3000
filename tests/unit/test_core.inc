@@ -5163,6 +5163,75 @@ TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     EXPECT_EQ(out[0], "设置");
     EXPECT_EQ(out[1], "导出");
 
+    // 3a-2. 字符串数字 id ("0"/"1")、别名字段 ("translation"/"translated")、防截断全量门禁与单条纯文本降级
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"{\"translations\":[{\"id\":\"0\",\"translation\":\"保存\"},{\"id\":\"1\",\"translated\":\"取消\"}]}"}}]})",
+        2, out));
+    ASSERT_EQ(out.size(), 2u);
+    EXPECT_EQ(out[0], "保存");
+    EXPECT_EQ(out[1], "取消");
+
+    // 多条批处理若模型仅返回部分条目或含 null/空文本，必须判失败以触发二分补译，严禁静默留白
+    EXPECT_FALSE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"{\"translations\":[{\"id\":0,\"text\":\"仅有一条\"}]}"}}]})",
+        2, out));
+    EXPECT_FALSE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"{\"translations\":[{\"id\":0,\"text\":\"正常\"},{\"id\":1,\"text\":null}]}"}}]})",
+        2, out));
+
+    // 单条请求兼容直接对象与纯文本回复，但必须拦截未闭合思考链或截断的 JSON 残片
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"{\"id\":0,\"text\":\"你好，世界\"}"}}]})",
+        1, out));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0], "你好，世界");
+
+    ASSERT_TRUE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"你好，Tools3000！"}}]})",
+        1, out));
+    ASSERT_EQ(out.size(), 1u);
+    EXPECT_EQ(out[0], "你好，Tools3000！");
+
+    EXPECT_FALSE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"<think>thinking truncated without close tag"}}]})",
+        1, out));
+    EXPECT_FALSE(TranslationService::parseOpenAiBatchResponse(
+        R"({"choices":[{"message":{"content":"{\"translations\":[{\"id\":0"}}]})",
+        1, out));
+
+    // 3a-3. 模型自适应分批、超时下限与安全并发策略校验（Index-Translate 2B/9B/35B、本机 Ollama、通用 BYOK）
+    const auto p35b = TranslationService::resolveOpenAiBatchPolicy(
+        "https://index-translate.bilibili.com/v1/chat/completions", "Index-Translate-35B", 15000);
+    EXPECT_EQ(p35b.maxItemsPerBatch, 8u);
+    EXPECT_EQ(p35b.maxCharsPerBatch, 1600u);
+    EXPECT_EQ(p35b.effectiveTimeoutMs, 25000);
+    EXPECT_EQ(p35b.maxConcurrency, 2u);
+
+    const auto p9b = TranslationService::resolveOpenAiBatchPolicy(
+        "https://index-translate.bilibili.com/v1/chat/completions", "Index-Translate-9B", 15000);
+    EXPECT_EQ(p9b.maxItemsPerBatch, 12u);
+    EXPECT_EQ(p9b.maxCharsPerBatch, 2400u);
+    EXPECT_EQ(p9b.effectiveTimeoutMs, 20000);
+    EXPECT_EQ(p9b.maxConcurrency, 2u);
+
+    const auto p2b = TranslationService::resolveOpenAiBatchPolicy(
+        "https://index-translate.bilibili.com/v1/chat/completions", "Index-Translate-2B", 15000);
+    EXPECT_EQ(p2b.maxItemsPerBatch, 18u);
+    EXPECT_EQ(p2b.maxCharsPerBatch, 3200u);
+    EXPECT_EQ(p2b.effectiveTimeoutMs, 15000);
+    EXPECT_EQ(p2b.maxConcurrency, 2u);
+
+    const auto pLocal = TranslationService::resolveOpenAiBatchPolicy(
+        "http://127.0.0.1:11434/v1/chat/completions", "qwen2.5:7b", 10000);
+    EXPECT_EQ(pLocal.maxConcurrency, 1u);
+    EXPECT_EQ(pLocal.effectiveTimeoutMs, 25000);
+
+    const auto pGeneric = TranslationService::resolveOpenAiBatchPolicy(
+        "https://api.openai.com/v1/chat/completions", "gpt-4o-mini", 15000);
+    EXPECT_EQ(pGeneric.maxItemsPerBatch, 20u);
+    EXPECT_EQ(pGeneric.maxConcurrency, 2u);
+    EXPECT_EQ(pGeneric.effectiveTimeoutMs, 15000);
+
     ASSERT_TRUE(TranslationService::parseDeepLTranslateResponse(
         R"({"translations":[{"detected_source_language":"EN","text":"打开"},{"text":"关闭"}]})",
         2, out, detected));
@@ -5248,6 +5317,33 @@ TEST(TranslationServiceTest, LiveNetworkFreeChannelsSmokeWhenEnabled) {
     ASSERT_EQ(googleRes.translations.size(), 2u);
     EXPECT_FALSE(googleRes.translations[0].empty());
     EXPECT_FALSE(googleRes.translations[1].empty());
+
+    // 3. Bilibili Index-Translate 官方免 Key 通道实网回归（含曾触发 WAF 412 的 SAP Note + SQL 混合载荷）
+    TranslationBatchRequest indexReq;
+    indexReq.texts = {
+        "1727485 - Slow logon with SAP Business One client when UI API add-on is activated",
+        "You witness a slow logon with SAP Business One Client or a slow start of an add-on.",
+        "SELECT C.* FROM CDPM C, OCMN O, RDOC R WHERE C.Hidden = 'Y' AND O.Type = 'C' AND C.Name = O.Name AND R.DocName = o.Name AND R.[Status] = 'I'",
+        "Run the query again, there should be no result returned now."
+    };
+    indexReq.uiLanguageCode = "zh-CN";
+    indexReq.bypassCache = true;
+
+    TranslationSettings indexSettings;
+    indexSettings.provider = TranslationConstants::kProviderOpenAiCompatible;
+    indexSettings.openaiBaseUrl = TranslationConstants::kIndexTranslateBaseUrl;
+    indexSettings.openaiModel = TranslationConstants::kIndexTranslateDefaultModel;
+    indexSettings.targetLang = "zh-CN";
+    indexSettings.secondaryTargetLang = "en";
+    indexSettings.timeoutMs = 15000;
+
+    const auto indexRes = TranslationService::instance().translateBatchWithSettings(indexReq, indexSettings);
+    ASSERT_TRUE(indexRes.success) << indexRes.errorCode << " : " << indexRes.errorDetail;
+    EXPECT_EQ(indexRes.providerUsed, "index_translate");
+    ASSERT_EQ(indexRes.translations.size(), indexReq.texts.size());
+    for (const auto& line : indexRes.translations) {
+        EXPECT_FALSE(line.empty());
+    }
 }
 
 #include "core/utils/WindowImeGuard.h"

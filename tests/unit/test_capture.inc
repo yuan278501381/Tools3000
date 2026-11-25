@@ -16998,6 +16998,31 @@ TEST(InPlaceTranslateEngineTest, IsTranslatableTextSupportsArabicThaiVietnameseA
     EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("https://github.com/yuan278501381/Tools3000"));
     EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("Q"));
     EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText("12px"));
+
+    // SQL 代码防火墙：纯 SQL 查询语句与跨行 WHERE 谓词续行原样保护，且绝不误杀正常英文技术正文
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "SELECT C.* FROM CDPM C, OCMN O, RDOC R WHERE C.Hidden = 'Y' AND O.Type = 'C' AND C.Name = O.Name AND"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "R.DocName = o.Name AND R.[Status] = 'I'"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "SELECT C.* FROM CDPM C, OCMN O, RDOC R WHERE C.\"Hidden\" = 'Y' AND O.\"Type\" = 'C' AND C.\"Name\" = O.\"Name\""));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "AND R.\"DocName\" = O.\"Name\" AND R.\"Status\" = 'I';"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "UPDATE OCMN SET Name = 'Main' WHERE GUID = 'abc';"));
+    EXPECT_FALSE(InPlaceTranslateEngine::isTranslatableText(
+        "DELETE FROM CDPM WHERE Hidden = 'Y'"));
+
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText(
+        "Select an item from the list."));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText(
+        "Create a menu with a UniqueID of fewer than 32 characters."));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText(
+        "Delete all temporary files from the folder."));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText(
+        "Update the configuration before restarting."));
+    EXPECT_TRUE(InPlaceTranslateEngine::isTranslatableText(
+        "If you get results from the above query, try the following solution:"));
 }
 
 TEST(PinWindowActionPreferenceTest, ParsesAndProtectsDoubleClickAndMiddleClickActions) {

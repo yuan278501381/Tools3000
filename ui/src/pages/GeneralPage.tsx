@@ -61,7 +61,7 @@ import {
   Package,
   HardDrive,
   Sparkles,
-  Gauge,
+  MemoryStick,
   ArrowUpRight,
 } from 'lucide-react';
 import './GeneralPage.css';
@@ -845,7 +845,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
               description={t('performancePage.lifecycleSubtitle')}
             >
               <Button variant="secondary" onClick={() => onNavigate('performance')}>
-                <Gauge size={15} />
+                <MemoryStick size={15} />
                 <span>{t('general.viewMemoryLifecycleBtn')}</span>
                 <ArrowUpRight size={13} />
               </Button>

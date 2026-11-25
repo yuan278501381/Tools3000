@@ -232,7 +232,160 @@ bool isSingleCodeIdentifierToken(std::string_view token) noexcept {
     return false;
 }
 
-/// 开发软件与代码语义防火墙：精准拦截 JSON 键值行、模板变量、代码标识符、密钥/邮箱与 HTTP/技术缩写
+/// 纯 SQL 查询语句与跨行 WHERE 谓词续行防火墙（0 误杀正常英文句子，如 "Select an item from the list."）
+bool looksLikeSqlStatementOrClause(std::string_view sv) noexcept {
+    if (sv.size() < 10) return false;
+
+    std::string ascii;
+    ascii.reserve(sv.size());
+    for (size_t i = 0; i < sv.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(sv[i]);
+        if (c < 0x80) {
+            ascii.push_back(static_cast<char>(c));
+            continue;
+        }
+        // 允许 OCR 偶发输出的弯引号 ‘’“” 与不间断空格，将其归一为标准 ASCII 字符
+        if (c == 0xC2 && i + 1 < sv.size() && static_cast<unsigned char>(sv[i + 1]) == 0xA0) {
+            ascii.push_back(' ');
+            ++i;
+            continue;
+        }
+        if (c == 0xE2 && i + 2 < sv.size() && static_cast<unsigned char>(sv[i + 1]) == 0x80) {
+            const unsigned char b2 = static_cast<unsigned char>(sv[i + 2]);
+            if (b2 == 0x98 || b2 == 0x99) {
+                ascii.push_back('\'');
+                i += 2;
+                continue;
+            }
+            if (b2 == 0x9C || b2 == 0x9D) {
+                ascii.push_back('"');
+                i += 2;
+                continue;
+            }
+        }
+        // 含非 ASCII 自然语言脚本（中日韩/俄/阿等）直接交由翻译引擎处理
+        return false;
+    }
+
+    // 扫描结构化 SQL 代码特征
+    bool hasDottedIdent = false;
+    bool hasComparisonOp = false;
+    bool hasQuotedLiteral = false;
+    for (size_t i = 0; i < ascii.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(ascii[i]);
+        if (c == '=' || (c == '<' && i + 1 < ascii.size() && ascii[i + 1] == '>')) {
+            hasComparisonOp = true;
+        } else if (c == '.' && i > 0 && i + 1 < ascii.size()) {
+            const unsigned char prev = static_cast<unsigned char>(ascii[i - 1]);
+            const unsigned char next = static_cast<unsigned char>(ascii[i + 1]);
+            const bool prevOk = std::isalnum(prev) || prev == '_' || prev == '"' || prev == ']' || prev == '`';
+            const bool nextOk = std::isalpha(next) || next == '_' || next == '*' || next == '"' || next == '[' || next == '`';
+            if (prevOk && nextOk) {
+                // 排除纯数字小数（向前确认前缀包含至少一个字母或下划线）
+                size_t p = i;
+                bool prefixHasAlpha = false;
+                while (p > 0) {
+                    const unsigned char pc = static_cast<unsigned char>(ascii[p - 1]);
+                    if (std::isalnum(pc) || pc == '_' || pc == '"' || pc == '[' || pc == ']' || pc == '`') {
+                        if (std::isalpha(pc) || pc == '_') prefixHasAlpha = true;
+                        --p;
+                    } else {
+                        break;
+                    }
+                }
+                if (prefixHasAlpha) {
+                    hasDottedIdent = true;
+                }
+            }
+        } else if (c == '\'' && (i == 0 || !std::isalpha(static_cast<unsigned char>(ascii[i - 1])))) {
+            const size_t closeQ = ascii.find('\'', i + 1);
+            if (closeQ != std::string::npos && (closeQ - i) <= 64) {
+                hasQuotedLiteral = true;
+                i = closeQ;
+            }
+        }
+    }
+
+    // 提取全部大写 ASCII 单词序列
+    std::vector<std::string> words;
+    words.reserve(16);
+    for (size_t i = 0; i < ascii.size();) {
+        const unsigned char c = static_cast<unsigned char>(ascii[i]);
+        if (std::isalpha(c) || c == '_') {
+            size_t j = i;
+            std::string w;
+            while (j < ascii.size() &&
+                   (std::isalpha(static_cast<unsigned char>(ascii[j])) || ascii[j] == '_')) {
+                w.push_back(static_cast<char>(std::toupper(static_cast<unsigned char>(ascii[j]))));
+                ++j;
+            }
+            words.push_back(std::move(w));
+            i = j;
+        } else {
+            ++i;
+        }
+    }
+    if (words.size() < 2) return false;
+
+    auto hasWord = [&](std::string_view target) noexcept -> bool {
+        for (const auto& w : words) {
+            if (w == target) return true;
+        }
+        return false;
+    };
+    auto isEnglishArticleOrPronoun = [](std::string_view w) noexcept -> bool {
+        return w == "THE" || w == "A" || w == "AN" || w == "YOUR" || w == "THIS" ||
+               w == "THAT" || w == "THESE" || w == "THOSE" || w == "ALL" || w == "ANY" ||
+               w == "OUR" || w == "MY" || w == "ITS" || w == "THEIR" || w == "SOME" ||
+               w == "EACH" || w == "EVERY";
+    };
+
+    const bool hasSemicolonEnd = (!ascii.empty() && ascii.back() == ';');
+    const bool hasSqlStar = (ascii.find(".*") != std::string::npos) ||
+                            (words[0] == "SELECT" && ascii.find('*') != std::string::npos);
+
+    // 情形 A：完整 SQL 主句（SELECT / UPDATE / DELETE / INSERT / DDL）
+    if (words[0] == "SELECT") {
+        if (hasWord("FROM") &&
+            (hasSqlStar || hasDottedIdent || hasComparisonOp || hasQuotedLiteral || hasSemicolonEnd)) {
+            return true;
+        }
+    } else if (words[0] == "UPDATE") {
+        if (hasWord("SET") && hasComparisonOp) {
+            return true;
+        }
+    } else if (words[0] == "DELETE") {
+        if (words.size() >= 3 && words[1] == "FROM" && !isEnglishArticleOrPronoun(words[2]) &&
+            (hasWord("WHERE") || hasComparisonOp || hasDottedIdent || hasQuotedLiteral || hasSemicolonEnd)) {
+            return true;
+        }
+    } else if (words[0] == "INSERT") {
+        if (words.size() >= 3 && words[1] == "INTO" && !isEnglishArticleOrPronoun(words[2]) &&
+            (hasWord("VALUES") || hasWord("SELECT") || hasDottedIdent || hasSemicolonEnd ||
+             ascii.find('(') != std::string::npos)) {
+            return true;
+        }
+    } else if (words[0] == "CREATE" || words[0] == "ALTER" || words[0] == "DROP" || words[0] == "TRUNCATE") {
+        if (words.size() >= 3 &&
+            (words[1] == "TABLE" || words[1] == "VIEW" || words[1] == "INDEX" ||
+             words[1] == "DATABASE" || words[1] == "SCHEMA" || words[1] == "PROCEDURE" ||
+             words[1] == "TRIGGER") &&
+            !isEnglishArticleOrPronoun(words[2])) {
+            return true;
+        }
+    }
+
+    // 情形 B：多行 SQL 折行后的 WHERE/AND/OR 谓词续行（如 `R.DocName = o.Name AND R.[Status] = 'I'`）
+    if (hasDottedIdent && hasComparisonOp &&
+        (hasWord("AND") || hasWord("OR") || hasWord("WHERE") || hasWord("ON") ||
+         hasWord("HAVING") || hasQuotedLiteral || hasSemicolonEnd)) {
+        return true;
+    }
+
+    return false;
+}
+
+/// 开发软件与代码语义防火墙：精准拦截 JSON 键值行、模板变量、SQL 语句、代码标识符、密钥/邮箱与 HTTP/技术缩写
 bool looksLikeCodeOrTechToken(std::string_view sv) noexcept {
     const std::string t = trimWhitespace(sv);
     if (t.empty()) return false;
@@ -248,6 +401,11 @@ bool looksLikeCodeOrTechToken(std::string_view sv) noexcept {
     // 2. 模板占位符（如 `{{BaseUrl}}/Login`）
     const size_t openTpl = t.find("{{");
     if (openTpl != std::string::npos && t.find("}}", openTpl + 2) != std::string::npos) {
+        return true;
+    }
+
+    // 2b. 纯 SQL 查询语句与谓词续行（保留技术文档原始可执行 SQL，防止翻译破坏且节省 Token）
+    if (looksLikeSqlStatementOrClause(t)) {
         return true;
     }
 

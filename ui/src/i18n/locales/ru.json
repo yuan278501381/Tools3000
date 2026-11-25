@@ -54,7 +54,7 @@
     "clipboard": "История буфера",
     "file_locksmith": "Разблокировка файлов",
     "text_expander": "Автозамена текста",
-    "performance": "Производительность и память"
+    "performance": "Политика памяти"
   },
   "navSubtitle": {
     "stats": "Статистика активности клавиатуры и мыши",
@@ -79,7 +79,7 @@
     "clipboard": "Постоянная история буфера обмена после перезагрузки, быстрый поиск и закрепление/перевод изображений",
     "file_locksmith": "Поиск блокирующих процессов и безопасная разблокировка без фона",
     "text_expander": "Мгновенное раскрытие коротких сокращений во фразы, даты и шаблоны в любом окне",
-    "performance": "Мониторинг ресурсов, задержки подсистем и расписание очистки памяти"
+    "performance": "Прозрачное расписание приостановки, выгрузки при простое и автоматической очистки памяти"
   },
   "extension": {
     "statusRunning": "Работает",
@@ -294,7 +294,7 @@
     "reopenOnboardingBtn": "Open Guide",
     "localConfigTransfer": "Manual Local Configuration Import & Export",
     "localConfigTransferDesc": "Export all settings to a JSON file or restore from an existing backup",
-    "viewMemoryLifecycleBtn": "View Memory Lifecycle Schedule",
+    "viewMemoryLifecycleBtn": "Открыть расписание очистки памяти",
     "hotkeyGroupCore": "Основные инструменты",
     "hotkeyGroupPinOcr": "Закрепление, OCR и перевод",
     "hotkeyGroupRecording": "Запись экрана и управление звуком",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "Двухэтапный офлайн-OCR глубокого обучения (DirectML GPU + WinML) с QR/штрихкодами",
       "ifilterShellProps": "Извлечение текста Office/WPS/почты и загрузка 30+ расширенных свойств столбцов по требованию"
     },
-    "geekMode": "Монитор производительности",
-    "enablePerfMonitor": "Показать метрики в реальном времени",
-    "enablePerfMonitorDesc": "Отображать память, ЦП и задержки жестов и интерфейса в реальном времени",
-    "perfMemory": "Частная память",
-    "perfWorkingSet": "Рабочий набор",
-    "perfCpu": "Загрузка ЦП",
-    "perfGestureLatency": "Задержка жестов",
-    "perfUiLatency": "Задержка UI",
     "exportLogsTip": "Экспортировать диагностические логи и отчёт о среде",
     "authorGithubTip": "Открыть профиль автора на GitHub",
     "repository": "Репозиторий",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "Напоминание о версии {{version}} скрыто",
     "viewChangelogShort": "Список изменений",
     "viewUpdate": "Подробнее",
-    "openPerformancePageBtn": "Performance & Memory",
+    "openPerformancePageBtn": "Политика памяти",
     "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "буфер обмена история копировать вставить закрепить clipboard",
     "kw_file_locksmith": "блокировка файла разблокировка процесс меню locksmith unlock",
     "kw_text_expander": "автозамена текста сниппет шаблон макрос сокращение text expander snippet",
-    "kw_performance": "производительность память очистка мониторинг performance memory"
+    "kw_performance": "память политика очистка выгрузка простой расписание производительность memory policy"
   },
   "onboarding": {
     "welcomeTitle": "Добро пожаловать в Tools3000",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "Не удалось восстановить конфигурацию"
   },
   "performancePage": {
-    "telemetryGroup": "Live Resource & Latency Telemetry",
-    "telemetryDesc": "Samples private working set, total working set, CPU usage, and core subsystem latencies once per second",
-    "enableLiveMonitor": "Enable Live Telemetry Sampling",
-    "enableLiveMonitorDesc": "Polls metrics only while viewing this page; zero background overhead when closed",
-    "trimNowBtn": "Run Quiet Trim Now",
-    "trimNowDone": "Heap compaction and working-set trim completed",
-    "metricPrivateWs": "Private Working Set",
-    "metricTotalWs": "Total Working Set",
-    "metricCpu": "CPU Usage",
-    "metricCaptureLatency": "Last Capture Latency",
-    "metricGestureLatency": "Gesture Recognition",
-    "metricUiLatency": "UI Render Latency",
-    "notTriggeredYet": "Not triggered",
     "lifecycleGroup": "Memory Lifecycle & Auto-Reclamation Schedule",
     "lifecycleSubtitle": "Read-only overview of idle reclamation timers across all layers. Settings-linked items reflect your active configuration; kernel anti-thrash guards are permanently locked.",
     "badgeReadonly": "Read-Only Schedule",

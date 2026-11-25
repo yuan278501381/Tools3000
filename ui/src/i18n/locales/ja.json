@@ -54,7 +54,7 @@
     "clipboard": "クリップボード履歴",
     "file_locksmith": "ファイルロック解除",
     "text_expander": "テキスト展開",
-    "performance": "パフォーマンスとメモリ"
+    "performance": "メモリポリシー"
   },
   "navSubtitle": {
     "stats": "キーボード入力とマウス操作の利用アクティビティ",
@@ -79,7 +79,7 @@
     "clipboard": "再起動後も消えない永続クリップボード履歴・高速検索・画像ピン留め／翻訳",
     "file_locksmith": "常駐ゼロでファイル占有プロセスを確認・安全に解除",
     "text_expander": "短いキーワードをシステム全体で定型文・動的日付・テンプレートへ瞬時に展開",
-    "performance": "リアルタイムメモリ監視、応答遅延、自動メモリ解放スケジュール"
+    "performance": "各サブシステムのオンデマンド一時停止・アイドル解放・自動メモリ回収スケジュール"
   },
   "extension": {
     "statusRunning": "稼働中",
@@ -294,7 +294,7 @@
     "reopenOnboardingBtn": "Open Guide",
     "localConfigTransfer": "Manual Local Configuration Import & Export",
     "localConfigTransferDesc": "Export all settings to a JSON file or restore from an existing backup",
-    "viewMemoryLifecycleBtn": "View Memory Lifecycle Schedule",
+    "viewMemoryLifecycleBtn": "メモリ回収スケジュールを表示",
     "hotkeyGroupCore": "コア効率ランチャー",
     "hotkeyGroupPinOcr": "ピン留め・OCR・翻訳",
     "hotkeyGroupRecording": "画面録画・音声コントロール",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "2 段階完全オフライン深層学習 OCR（DirectML GPU / WinML）、QR・バーコード対応",
       "ifilterShellProps": "Office/WPS/メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得"
     },
-    "geekMode": "パフォーマンスモニター",
-    "enablePerfMonitor": "リアルタイム指標を表示",
-    "enablePerfMonitorDesc": "メモリ、CPU、ジェスチャー応答、UI 描画遅延をリアルタイム表示します",
-    "perfMemory": "プライベートメモリ",
-    "perfWorkingSet": "ワーキングセット",
-    "perfCpu": "CPU 使用率",
-    "perfGestureLatency": "ジェスチャー遅延",
-    "perfUiLatency": "UI 描画遅延",
     "exportLogsTip": "診断ログとシステム環境レポートをエクスポート",
     "authorGithubTip": "原作者の GitHub プロフィールを開く",
     "repository": "リポジトリ",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "{{version}} の更新バッジを非表示にしました",
     "viewChangelogShort": "更新内容を表示",
     "viewUpdate": "更新を表示",
-    "openPerformancePageBtn": "Performance & Memory",
+    "openPerformancePageBtn": "メモリポリシー",
     "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "クリップボード 履歴 コピー 貼り付け ピン留め clipboard",
     "kw_file_locksmith": "ファイルロック 解除 プロセス 右クリック locksmith unlock",
     "kw_text_expander": "テキスト展開 スニペット 定型文 辞書 テンプレート マクロ 省略 入力支援 text expander snippet",
-    "kw_performance": "パフォーマンス メモリ 遅延 解放 監視 performance memory"
+    "kw_performance": "メモリ ポリシー 解放 回収 一時停止 アンロード アイドル スケジュール パフォーマンス memory policy"
   },
   "onboarding": {
     "welcomeTitle": "Tools3000 へようこそ",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "設定の復元に失敗しました"
   },
   "performancePage": {
-    "telemetryGroup": "Live Resource & Latency Telemetry",
-    "telemetryDesc": "Samples private working set, total working set, CPU usage, and core subsystem latencies once per second",
-    "enableLiveMonitor": "Enable Live Telemetry Sampling",
-    "enableLiveMonitorDesc": "Polls metrics only while viewing this page; zero background overhead when closed",
-    "trimNowBtn": "Run Quiet Trim Now",
-    "trimNowDone": "Heap compaction and working-set trim completed",
-    "metricPrivateWs": "Private Working Set",
-    "metricTotalWs": "Total Working Set",
-    "metricCpu": "CPU Usage",
-    "metricCaptureLatency": "Last Capture Latency",
-    "metricGestureLatency": "Gesture Recognition",
-    "metricUiLatency": "UI Render Latency",
-    "notTriggeredYet": "Not triggered",
     "lifecycleGroup": "Memory Lifecycle & Auto-Reclamation Schedule",
     "lifecycleSubtitle": "Read-only overview of idle reclamation timers across all layers. Settings-linked items reflect your active configuration; kernel anti-thrash guards are permanently locked.",
     "badgeReadonly": "Read-Only Schedule",

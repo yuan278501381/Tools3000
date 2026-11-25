@@ -54,7 +54,7 @@
     "clipboard": "Clipboard History",
     "file_locksmith": "File Locksmith",
     "text_expander": "Text Expander",
-    "performance": "Performance & Memory"
+    "performance": "Memory Policy"
   },
   "navSubtitle": {
     "stats": "Keystrokes and mouse usage activity",
@@ -79,7 +79,7 @@
     "clipboard": "Reboot-persistent clipboard history, instant search & 1-click image Pin/Translate",
     "file_locksmith": "Zero-resident file lock inspector and safe unlocker",
     "text_expander": "Expand short keywords into full snippets, dynamic dates, and templates system-wide",
-    "performance": "Live resource telemetry, subsystem latency, and automatic memory reclamation lifecycle"
+    "performance": "Transparent schedule of on-demand suspension, idle unloading, and automatic memory reclamation"
   },
   "extension": {
     "statusRunning": "Running",
@@ -1550,14 +1550,6 @@
       "ppocrDirectml": "Dual-stage offline deep-learning OCR (DirectML GPU + WinML) with QR/barcode & in-place edit",
       "ifilterShellProps": "Office/WPS/email full-text extraction and on-demand 30+ extended column metadata properties"
     },
-    "geekMode": "Performance Monitor",
-    "enablePerfMonitor": "Enable live metrics",
-    "enablePerfMonitorDesc": "Show memory, CPU, gesture, and interface latency in real time",
-    "perfMemory": "Private Memory",
-    "perfWorkingSet": "Working Set",
-    "perfCpu": "CPU Usage",
-    "perfGestureLatency": "Gesture Latency",
-    "perfUiLatency": "UI Latency",
     "exportLogsTip": "Export system diagnostic logs and environment report",
     "authorGithubTip": "Visit original author GitHub profile",
     "repository": "Repository",
@@ -1585,7 +1577,7 @@
     "versionDismissedToast": "Dismissed update badge for {{version}}",
     "viewChangelogShort": "View release notes",
     "viewUpdate": "View Update",
-    "openPerformancePageBtn": "Performance & Memory",
+    "openPerformancePageBtn": "Memory Policy",
     "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
   },
   "sidebar": {
@@ -1627,7 +1619,7 @@
     "kw_clipboard": "clipboard history copy paste pin persistent",
     "kw_file_locksmith": "file lock unlock handle process context menu locksmith",
     "kw_text_expander": "text expander snippet phrase macro template shortcut abbreviation espanso beeftext",
-    "kw_performance": "performance memory ram working set latency trim suspend destroy idle monitor"
+    "kw_performance": "memory policy ram working set reclaim trim suspend unload destroy idle schedule performance"
   },
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",
@@ -3577,19 +3569,6 @@
     "restoreFailed": "Failed to restore configuration"
   },
   "performancePage": {
-    "telemetryGroup": "Live Resource & Latency Telemetry",
-    "telemetryDesc": "Samples private working set, total working set, CPU usage, and core subsystem latencies once per second",
-    "enableLiveMonitor": "Enable Live Telemetry Sampling",
-    "enableLiveMonitorDesc": "Polls metrics only while viewing this page; zero background overhead when closed",
-    "trimNowBtn": "Run Quiet Trim Now",
-    "trimNowDone": "Heap compaction and working-set trim completed",
-    "metricPrivateWs": "Private Working Set",
-    "metricTotalWs": "Total Working Set",
-    "metricCpu": "CPU Usage",
-    "metricCaptureLatency": "Last Capture Latency",
-    "metricGestureLatency": "Gesture Recognition",
-    "metricUiLatency": "UI Render Latency",
-    "notTriggeredYet": "Not triggered",
     "lifecycleGroup": "Memory Lifecycle & Auto-Reclamation Schedule",
     "lifecycleSubtitle": "Read-only overview of idle reclamation timers across all layers. Settings-linked items reflect your active configuration; kernel anti-thrash guards are permanently locked.",
     "badgeReadonly": "Read-Only Schedule",

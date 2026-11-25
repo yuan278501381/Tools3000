@@ -6,6 +6,22 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-26] Bilibili Index-Translate `HTTP 412` WAF 根因修复与全链路翻译引擎 MECE 8 维鲁棒性加固 (`fix/index-translate-robustness`)
+- **1. 实机根因定位（`TranslationService.cpp`）**：
+  - `executeHttpRequest` 此前对所有翻译通道硬编码 Edge 浏览器 `User-Agent`，导致无 Cookie 向 `https://index-translate.bilibili.com/v1/chat/completions` 发送含 SQL / 长文载荷的 POST 时被 B 站 CDN WAF 在 `205ms` 拦截返回空体 `HTTP 412 Precondition Failed`；
+  - 对照 A/B 实网复现证实：同一份含 SAP Note 与双段 SQL 查询的 JSON 载荷，携带 Edge 浏览器 UA 必返 `412`，改为 B 站官方客户端 UA `Index-Translate-Client/1.0` 后稳定返回 `HTTP 200` 完整译文。
+- **2. MECE 8 维全链路工程加固（`TranslationTypes.h`, `TranslationService.{h,cpp}`, `InPlaceTranslateEngine.cpp`, `PinWindowTranslate.cpp`, `PluginEntry.cpp`, 6 套原生词典）**：
+  - **维度 1（传输层 UA 物理隔离）**：`executeHttpRequest` 支持 `userAgentOverride`；仅 `EdgeFreeProvider`/`GoogleFreeProvider` 保留浏览器 UA，B 站 `index_translate` 使用 `Index-Translate-Client/1.0`，其余 OpenAI 兼容 / 本机 Ollama / DeepL API 使用诚实客户端 UA `Tools3000/1.4`，兼防第三方 CDN WAF 误拦；
+  - **维度 2（模型自适应分批、超时下限与安全并发 `resolveOpenAiBatchPolicy`）**：`35B`（8 条/1600 字/下限 25s/2 并发）、`9B`（12 条/2400 字/下限 20s/2 并发）、`2B`（18 条/3200 字/下限 15s/2 并发）、本机 Ollama（12 条/2800 字/下限 25s/**1 并发防单卡排队超时**）、通用云端 BYOK（20 条/4500 字/2 并发）；
+  - **维度 3（可取消瞬态重试 + 二分拆批自愈）**：`429/500/502/503/504` 与 `ERROR_WINHTTP_TIMEOUT` 自动执行 1 次 600ms（50ms 切片可瞬时取消）重试；多条批次遇超时、`400/412/413/422/451` 或解析不完整自动二分拆批（深度上限 4），单条离群项仍被上游拒绝时原样保留该条不连坐整页（仅当整页 0 条成功时才上报真实错误）；
+  - **维度 4（JSON 解析抗畸变与零静默擦白）**：`parseOpenAiBatchResponse` 兼容字符串数字 `"id":"0"` 与 `"translation"/"translated"` 别名且对 `null` 零异常；严格要求整批 100% 完整回填（缺条立即判失败交由二分补译，消灭半页留白）；单条请求支持直接对象与纯文本降级；`stripReasoningThinkBlocks` 拦截未闭合或无后续正文的截断 `<think>` 块；
+  - **维度 5（SQL 代码语义防火墙 `looksLikeSqlStatementOrClause`）**：精准保护技术文档中的 `SELECT`/`UPDATE`/`DELETE`/`INSERT`/DDL 语句及跨行 `WHERE/AND` 谓词续行原样展示（兼省 Token 与降 WAF 误报），且 0 误杀 `"Select an item from the list."` 等正常英文句子；
+  - **维度 6（精准非误导 8 语种错误 Toast）**：区分 `auth_failed`（提示检查密钥额度）、`rate_limited`（提示频率限制）与免 Key 通道 `http_error`（提示暂时响应异常，绝不再对免 Key 渠道误报检查密钥额度）；
+  - **维度 7（连通性探针真实穿透）**：`TranslationBatchRequest::bypassCache` 供 `translate.testConnection` 绕过会话 LRU 缓存与同语种跳过，防止换 Key 或断网后命中旧缓存假绿；
+  - **维度 8（结构化零密钥观测与实网单测）**：记录渠道/模型/状态码/批大小与拆批路径，并在 `test_core.inc` 与 `test_capture.inc` 补齐离线 + 实网 SAP SQL 载荷防回退回归测试。
+- **3. 「内存策略」页面命名、图标与全库 8 语种/文档一致性扫尾 (`routes.ts`, `AboutPage.tsx`, `GeneralPage.tsx`, `PerformancePage.{css,test.tsx}`, `settingsSearchIndex.ts`, 8 套 `locales/*.json`, 8 份 `README*.md`)**：
+  - 将原「性能与内存」导航菜单、页面主副标题及关于页/通用设置入口全面对齐为 **「内存策略」**（`Memory Policy`）与 `MemoryStick` 图标（内部路由 ID `performance` 与后端诊断接口 `perf.*` 保持向后兼容），移除 130 行已废弃 6 宫格遥测死 CSS 及 8 套语言包中 21 个僵尸遥测词条，补齐 5 套海外语种入口按钮译文并同步更新 8 份 README 表格。
+
 ### [2026-11-25] 对话框可配置双热键与多文件管理器/非标准框兼容（Issue `#30`）、搜索框 Win10 LTSC 黑屏再现根治（Issue `#29`）、纯应用模式零唤醒（Issue `#24`）、性能页极简减法与文档内容分类自由排序
 - **1. 快捷键唤起搜索框黑屏复现深度根治（Issue `#29 @xwshan`）（`SearchWindow.{h,cpp}`, `SearchApp.tsx`）**：
   - *根因*：① 后台 `preload` 在 `SW_HIDE + put_IsVisible(FALSE)` 下被 `SearchApp.tsx` 的 `setTimeout(64ms)` 提前假上报 `firstPaintReady`，导致 `25s` 后 `TrySuspend()` 冻死从未绘制过 1 帧的空壳；② 从 `TrySuspend` 恢复或隐藏切显时 `show()` 缺少 `put_Bounds` 同步与 DirectComposition 合成器刷新；③ `WM_SIZE` 无视 `m_webViewReady` 提前暴露控制器。

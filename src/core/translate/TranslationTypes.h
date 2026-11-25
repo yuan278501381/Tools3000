@@ -65,11 +65,20 @@ struct TranslationSettings {
     int timeoutMs = TranslationConstants::kDefaultTimeoutMs;
 };
 
+/// OpenAI 兼容通道模型自适应分批、超时下限与安全并发策略（单一事实源）
+struct OpenAiBatchPolicy {
+    size_t maxCharsPerBatch = 4500;
+    size_t maxItemsPerBatch = 20;
+    int effectiveTimeoutMs = TranslationConstants::kDefaultTimeoutMs;
+    size_t maxConcurrency = 2;
+};
+
 /// 批量翻译请求载荷
 struct TranslationBatchRequest {
     std::vector<std::string> texts;
     std::string targetLangOverride; // 非空时覆盖配置中的 targetLang
     std::string uiLanguageCode;     // 当前界面语种（如 "zh-CN" / "en" / "ja"），用于 auto 智能判定
+    bool bypassCache = false;       // 连通性实测探针置 true，强制绕过会话缓存与同语种跳过
 };
 
 /// 批量翻译结果载荷
