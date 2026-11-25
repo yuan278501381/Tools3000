@@ -6,6 +6,14 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-25] PP-OCRv6 与全 4 类离线模型下载完整校验修复 + Tools3000_Service 浏览器敏感凭据文件零句柄触碰守卫（`v1.4.9`，解决 Issue `#28`）
+- **1. PP-OCRv6 离线模型下载校验必败根因与全 4 类模型防截断加固 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEngineModel.cpp`, `TextReplaceEngine.cpp`, `OcrPage.tsx`)**：
+  - *根因*：`v1.4.8` 中 `DeepOcrEngineModel.cpp::verifyCandidatePath()` 仅对扩展语种包（`isScriptExtOnnx`）跳过了 OpenCV DNN 试解析，但对 `PP-OCRv6_rec_small.onnx` 与 `PP-OCRv6_rec_medium.onnx` 仍调用旧版 OpenCV 4.12 的 `cv::dnn::readNetFromONNX()`，因 OpenCV 4.12 不支持 PP-OCRv6 新算子直接抛异常删包并报错 `Failed to download or verify PP-OCRv6_rec_small.onnx`；同时 `OcrPage.tsx` 在老版 `v4` 升级失败时因 `next.state === 'installed'` 静默吞掉了错误 Toast；
+  - *根治*：① 新增 `DeepOcrEngine::isCompleteOnnxModelProto()` 全树无截断 Protobuf 结构校验（强制校验精确消耗全部字节、存在合法 `ir_version` 与非空 `graph`、拦截 HTML/JSON 伪页），取代 OpenCV 4.12 DNN 试解析并消灭 200 MB 瞬时内存峰值；② 为 OCR 与 MI-GAN (`migan_pipeline_v2.onnx`) 两大 WinHTTP 下载器补齐 HTTP `Content-Length` 字节级防截断断言、`DISALLOW_HTTPS_TO_HTTP` 重定向安全策略与 MI-GAN ONNX 结构校验；③ 修复 `OcrPage.tsx` 升级失败时 `else if (next.error)` 必显错误详情；配套离线单测与全 4 类真实下载实机端到端验收。
+- **2. 搜索服务浏览器敏感凭据文件零句柄触碰护栏（Issue `#28 @aungkokomm`）(`src/service/SensitivePathGuard.h`, `MftParser.cpp`, `MftParserQuery.cpp`, `src/service/main.cpp`, `test_search.inc`)**：
+  - *根因*：浏览器更新 `Login Data` / `logins.json` 时产生 NTFS USN 事件，`MftParser::UsnListenerLoop` 此前对其发起 `OpenFileById(..., FILE_READ_ATTRIBUTES, ...)` 刷新文件大小/时间戳，被杀软「浏览器密码保护盾」Minifilter 拦截并误报为访问浏览器保存密码；
+  - *根治*：抽象单一事实源 `SensitivePathGuard`，在 `UsnListenerLoop` 属性刷新、`BackgroundHydrateLoop` 后台目录水合、`hydrateResultProperties` 搜索结果属性查询与 `CollectContentCandidates`/`main.cpp` 全文内容搜索全部 4 条链路中严格跳过主流浏览器（Chrome/Edge/Brave/Opera/Vivaldi/Firefox 等）密码/Cookie/密钥文件与 Windows 凭据目录，做到内核 I/O 零句柄触碰。
+
 ### [2026-11-25] Win10 LTSC 搜索黑屏与机械盘 100% I/O 卡死根治、多路径精确排除文件夹、OCR 通用非过拟合双护栏、全目录原位翻译阿/泰/越语解锁与零剪贴板污染截图交付策略
 - **1. Win10 LTSC 搜索黑屏 + 机械盘 100% 磁盘占用根治（Linux.do `@zg2qxy` *薛定谔的狗子*）**：
   - *机械盘物理拓扑感知与低优串行化 (`src/service/MftParser.{h,cpp}`, `src/service/main.cpp`, `src/service/db/DatabaseManager.cpp`)*：

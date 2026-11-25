@@ -426,7 +426,7 @@ bool downloadHttpsUrlToFile(
     }
 
     HINTERNET hSession = WinHttpOpen(
-        L"Tools3000/1.0 (PP-OCRv4 Offline Model Installer)",
+        L"Tools3000/1.0 (PP-OCRv6 Offline Model Installer)",
         WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
         WINHTTP_NO_PROXY_NAME,
         WINHTTP_NO_PROXY_BYPASS,
@@ -444,7 +444,7 @@ bool downloadHttpsUrlToFile(
         }
     } guard{hSession, nullptr, nullptr};
 
-    WinHttpSetTimeouts(hSession, 10000, 12000, 15000, 25000);
+    WinHttpSetTimeouts(hSession, 12000, 15000, 15000, 30000);
     DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
@@ -475,6 +475,8 @@ bool downloadHttpsUrlToFile(
                              WINHTTP_HEADER_NAME_BY_INDEX,
                              &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX) ||
         statusCode < 200 || statusCode >= 300) {
+        LOG_WARN("DeepOcrEngine: mirror returned HTTP {} for {}",
+                 statusCode, tools3000::core::WinUtils::wstringToUtf8(url));
         return false;
     }
 
@@ -492,7 +494,7 @@ bool downloadHttpsUrlToFile(
     constexpr DWORD kChunkSize = 64 * 1024;
     std::vector<uint8_t> buffer(kChunkSize);
     uint64_t writtenTotal = 0;
-    constexpr uint64_t kMaxSingleModelBytes = 96ULL * 1024ULL * 1024ULL;
+    constexpr uint64_t kMaxSingleModelBytes = 128ULL * 1024ULL * 1024ULL;
 
     while (!stopToken.stop_requested() && !cancelFlag.load(std::memory_order_acquire)) {
         DWORD avail = 0;
@@ -520,7 +522,15 @@ bool downloadHttpsUrlToFile(
     }
 
     ofs.flush();
-    return static_cast<bool>(ofs) && writtenTotal > 0;
+    if (!ofs || writtenTotal == 0) {
+        return false;
+    }
+    if (contentLen > 0 && writtenTotal != contentLen) {
+        LOG_WARN("DeepOcrEngine: truncated download detected (got={} bytes, expected={} bytes) from {}",
+                 writtenTotal, contentLen, tools3000::core::WinUtils::wstringToUtf8(url));
+        return false;
+    }
+    return true;
 }
 
 
@@ -760,6 +770,87 @@ bool DeepOcrEngine::isValidOnnxBuffer(const uint8_t* data, size_t byteSize, size
     if (fieldNum == 0 || fieldNum > 20) return false;
     if (wireType != 0 && wireType != 2) return false;
     return true;
+}
+
+bool DeepOcrEngine::isCompleteOnnxModelProto(const uint8_t* data, size_t byteSize, size_t minBytes) noexcept {
+    if (!isValidOnnxBuffer(data, byteSize, minBytes)) {
+        return false;
+    }
+
+    size_t pos = 0;
+    bool hasIrVersion = false;
+    bool hasGraph = false;
+    while (pos < byteSize) {
+        uint64_t tag = 0;
+        uint32_t shift = 0;
+        bool ok = false;
+        while (pos < byteSize && shift < 64) {
+            const uint8_t b = data[pos++];
+            tag |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+            if ((b & 0x80u) == 0) {
+                ok = true;
+                break;
+            }
+            shift += 7;
+        }
+        if (!ok || tag == 0) {
+            return false;
+        }
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+        if (field == 0 || field > 64) {
+            return false;
+        }
+
+        if (wire == 0) {
+            uint64_t val = 0;
+            shift = 0;
+            ok = false;
+            while (pos < byteSize && shift < 64) {
+                const uint8_t b = data[pos++];
+                val |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                if ((b & 0x80u) == 0) {
+                    ok = true;
+                    break;
+                }
+                shift += 7;
+            }
+            if (!ok) return false;
+            if (field == 1 && val >= 1 && val <= 64) {
+                hasIrVersion = true;
+            }
+        } else if (wire == 2) {
+            uint64_t len = 0;
+            shift = 0;
+            ok = false;
+            while (pos < byteSize && shift < 64) {
+                const uint8_t b = data[pos++];
+                len |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                if ((b & 0x80u) == 0) {
+                    ok = true;
+                    break;
+                }
+                shift += 7;
+            }
+            if (!ok || len > byteSize - pos) {
+                return false;
+            }
+            if (field == 7 && len > 0) {
+                hasGraph = true;
+            }
+            pos += static_cast<size_t>(len);
+        } else if (wire == 1) {
+            if (byteSize - pos < 8) return false;
+            pos += 8;
+        } else if (wire == 5) {
+            if (byteSize - pos < 4) return false;
+            pos += 4;
+        } else {
+            return false;
+        }
+    }
+
+    return pos == byteSize && hasIrVersion && hasGraph;
 }
 
 namespace {
@@ -1396,7 +1487,7 @@ void DeepOcrEngine::downloadWorkerLoop(
             if (spec.isOnnx) {
                 std::vector<uint8_t> verifyBytes;
                 if (!readFileBytes(candidatePath, verifyBytes) ||
-                    !isValidOnnxBuffer(verifyBytes.data(), verifyBytes.size(), spec.minValidBytes)) {
+                    !isCompleteOnnxModelProto(verifyBytes.data(), verifyBytes.size(), spec.minValidBytes)) {
                     return false;
                 }
                 if (spec.requiresEmbeddedDict) {
@@ -1415,19 +1506,8 @@ void DeepOcrEngine::downloadWorkerLoop(
                     out.flush();
                     if (!out) return false;
                 }
-                if (spec.isScriptExtOnnx) {
-                    if (outByteLen) *outByteLen = static_cast<uint64_t>(verifyBytes.size());
-                    return true;
-                }
-                try {
-                    cv::dnn::Net probeNet = cv::dnn::readNetFromONNX(
-                        reinterpret_cast<const char*>(verifyBytes.data()), verifyBytes.size());
-                    if (probeNet.empty()) return false;
-                    if (outByteLen) *outByteLen = static_cast<uint64_t>(verifyBytes.size());
-                    return true;
-                } catch (...) {
-                    return false;
-                }
+                if (outByteLen) *outByteLen = static_cast<uint64_t>(verifyBytes.size());
+                return true;
             } else {
                 std::vector<std::string> probeKeys;
                 if (!loadDictionaryLines(candidatePath, probeKeys) ||

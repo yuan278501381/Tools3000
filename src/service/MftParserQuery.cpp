@@ -2,6 +2,7 @@
 #include "PathExclusionMatcher.h"
 #include "PinyinEngine.h"
 #include "QueryThreadPool.h"
+#include "SensitivePathGuard.h"
 #include "content/ContentSearchEngine.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -58,6 +59,10 @@ HydrateResult hydrateResultProperties(SearchResult& result, bool allowRecycleBin
              lowerPath.find(L"/microsoft/office/recent/") != std::wstring::npos)) {
             return HydrateResult::RejectedRecycleBin;
         }
+    }
+    // 对浏览器密码/Cookie/密钥库及 Windows 凭据存储目录零句柄触碰，避免触发杀软浏览器密码保护盾误报
+    if (tools3000::service::SensitivePathGuard::shouldSkipMetadataHandleTouch(result.fileName, result.fullPath)) {
+        return HydrateResult::Valid;
     }
     WIN32_FILE_ATTRIBUTE_DATA data{};
     if (!GetFileAttributesExW(result.fullPath.c_str(), GetFileExInfoStandard, &data)) {
@@ -1349,7 +1354,8 @@ std::vector<ContentCandidate> MftParser::CollectContentCandidates(
         }
         node.lowerDirPath = normalize(node.fullDirPath);
 
-        if (prunedByAlwaysNoise) {
+        if (prunedByAlwaysNoise ||
+            tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(node.lowerDirPath)) {
             node.pruned = true;
             return folderCache.emplace(parentFrn, std::move(node)).first->second;
         }

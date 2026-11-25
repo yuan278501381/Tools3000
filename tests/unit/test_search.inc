@@ -4,6 +4,7 @@
 
 #include "service/StringArena.h"
 #include "service/PathExclusionMatcher.h"
+#include "service/SensitivePathGuard.h"
 
 TEST(StringArenaTest, OversizedSideBlockPreservesActiveBlockCapacity) {
     tools3000::service::StringArena arena;
@@ -5245,4 +5246,80 @@ TEST(MftParserExclusionTest, CustomMultiPathExclusionsApplyToBothNameAndContentC
     EXPECT_FALSE(hasCand(L"movie_secret.txt"));
     EXPECT_FALSE(hasCand(L"movie_nested.txt"));
     EXPECT_FALSE(hasCand(L"movie_private.txt"));
+}
+
+TEST(SensitivePathGuardTest, SkipsBrowserCredentialFilesAndDirsWithoutFalsePositives) {
+    using tools3000::service::SensitivePathGuard;
+
+    // 1. 常见浏览器保存密码、Cookie 与密钥库文件名命中（大小写不敏感）
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"Login Data"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"LOGIN DATA-JOURNAL"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"Login Data For Account"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"Local State"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"logins.json"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"key4.db"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialFileName(L"cookies.sqlite"));
+    EXPECT_FALSE(SensitivePathGuard::isSensitiveCredentialFileName(L"readme.md"));
+    EXPECT_FALSE(SensitivePathGuard::isSensitiveCredentialFileName(L"login_controller.ts"));
+
+    // 2. 主流浏览器 User Data / Profiles 及 Windows 凭据目录精确边界匹配（兼容正反斜杠）
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:/Users/alice/AppData/Local/Microsoft/Edge/User Data/Profile 1/Cookies"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data\\Default"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles\\abc123.default-release\\logins.json"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Roaming\\Microsoft\\Credentials\\DFBE70A7E5CC19A398EBF1B96859CE5D"));
+    EXPECT_TRUE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Local\\Microsoft\\Vault"));
+
+    // 3. 普通用户项目路径绝不误伤
+    EXPECT_FALSE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"D:\\Work\\chrome-notes\\readme.md"));
+    EXPECT_FALSE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\Documents\\User Data Backup\\report.docx"));
+    EXPECT_FALSE(SensitivePathGuard::isSensitiveCredentialDirectoryPath(
+        L"C:\\Users\\alice\\AppData\\Local\\Google\\Chrome\\User Data2\\notes.txt"));
+
+    // 4. 集成验证：即使用户显式搜索 appdata，CollectContentCandidates 仍硬性拒绝扫描浏览器凭据目录
+    auto parser = std::make_unique<MftParser>();
+    std::vector<FileRecordInit> records;
+    auto addNode = [&](uint64_t frn, uint64_t parent, const wchar_t* name, bool isDir) {
+        FileRecordInit r{};
+        r.fileReferenceNumber = frn;
+        r.parentFileReferenceNumber = parent;
+        r.fileName = name;
+        r.isDirectory = isDir;
+        r.fileSize = isDir ? 0 : 2048;
+        records.push_back(std::move(r));
+    };
+
+    addNode(1, 0, L"Users", true);
+    addNode(2, 1, L"alice", true);
+    addNode(3, 2, L"AppData", true);
+    addNode(4, 3, L"Local", true);
+    addNode(5, 4, L"Google", true);
+    addNode(6, 5, L"Chrome", true);
+    addNode(7, 6, L"User Data", true);
+    addNode(8, 7, L"Default", true);
+    addNode(9, 8, L"appdata_prefs.json", false);
+    addNode(10, 4, L"MyTool", true);
+    addNode(11, 10, L"appdata_settings.json", false);
+
+    ASSERT_TRUE(parser->importSnapshot(std::move(records), 54321, /*volumeSerial=*/0));
+    ContentCandidateOptions opts{};
+    const auto expr = SearchExpression::parse(L"appdata content:hello");
+    const auto candidates = parser->CollectContentCandidates(expr, opts);
+
+    bool sawChromePref = false;
+    bool sawMyToolSettings = false;
+    for (const auto& c : candidates) {
+        if (c.fileName == L"appdata_prefs.json") sawChromePref = true;
+        if (c.fileName == L"appdata_settings.json") sawMyToolSettings = true;
+    }
+    EXPECT_FALSE(sawChromePref) << "Browser User Data must never be scanned by content search";
+    EXPECT_TRUE(sawMyToolSettings) << "Regular AppData config file should remain searchable when appdata is queried";
 }
