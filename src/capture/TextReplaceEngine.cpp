@@ -1297,7 +1297,7 @@ bool downloadUrlToFileWithProgress(const std::wstring& url,
     }
     ScopedHttp reqGuard{hReq};
 
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_ALWAYS;
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
     WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
 
     if (!WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
@@ -1317,11 +1317,15 @@ bool downloadUrlToFileWithProgress(const std::wstring& url,
 
     wchar_t clBuf[64]{};
     DWORD clSize = sizeof(clBuf);
+    uint64_t expectedContentLen = 0;
     uint64_t totalLen = kInpaintModelExpectedBytes;
     if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_CONTENT_LENGTH,
                             WINHTTP_HEADER_NAME_BY_INDEX, clBuf, &clSize, WINHTTP_NO_HEADER_INDEX)) {
         const uint64_t parsed = _wcstoui64(clBuf, nullptr, 10);
-        if (parsed >= kInpaintModelMinValidBytes) totalLen = parsed;
+        if (parsed >= kInpaintModelMinValidBytes) {
+            expectedContentLen = parsed;
+            totalLen = parsed;
+        }
     }
     outTotal.store(totalLen, std::memory_order_release);
 
@@ -1378,10 +1382,80 @@ bool downloadUrlToFileWithProgress(const std::wstring& url,
     ofs.flush();
     ofs.close();
 
-    if (received < kInpaintModelMinValidBytes) {
+    if (received < kInpaintModelMinValidBytes ||
+        (expectedContentLen > 0 && received != expectedContentLen)) {
         std::filesystem::remove(partPath, ec);
-        outError = "downloaded file too small";
+        outError = (expectedContentLen > 0 && received != expectedContentLen)
+            ? "downloaded file truncated"
+            : "downloaded file too small";
         return false;
+    }
+
+    // 校验 ONNX ModelProto 全树完整无截断（拒绝代理错误页、HTML 与残缺二进制落盘）
+    {
+        std::ifstream verifyIfs(partPath, std::ios::binary);
+        std::vector<uint8_t> verifyBytes(static_cast<size_t>(received));
+        bool validOnnx = false;
+        if (verifyIfs &&
+            verifyIfs.read(reinterpret_cast<char*>(verifyBytes.data()), static_cast<std::streamsize>(verifyBytes.size())) &&
+            static_cast<uint64_t>(verifyIfs.gcount()) == received) {
+            size_t pos = 0;
+            bool hasIrVersion = false;
+            bool hasGraph = false;
+            bool parseOk = (verifyBytes.size() >= 16 && verifyBytes[0] != '<' && verifyBytes[0] != '{' && verifyBytes[0] != '[');
+            while (parseOk && pos < verifyBytes.size()) {
+                uint64_t tag = 0;
+                uint32_t shift = 0;
+                bool ok = false;
+                while (pos < verifyBytes.size() && shift < 64) {
+                    const uint8_t b = verifyBytes[pos++];
+                    tag |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                    if ((b & 0x80u) == 0) { ok = true; break; }
+                    shift += 7;
+                }
+                if (!ok || tag == 0) { parseOk = false; break; }
+                const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+                const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+                if (field == 0 || field > 64) { parseOk = false; break; }
+                if (wire == 0) {
+                    uint64_t val = 0; shift = 0; ok = false;
+                    while (pos < verifyBytes.size() && shift < 64) {
+                        const uint8_t b = verifyBytes[pos++];
+                        val |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                        if ((b & 0x80u) == 0) { ok = true; break; }
+                        shift += 7;
+                    }
+                    if (!ok) { parseOk = false; break; }
+                    if (field == 1 && val >= 1 && val <= 64) hasIrVersion = true;
+                } else if (wire == 2) {
+                    uint64_t len = 0; shift = 0; ok = false;
+                    while (pos < verifyBytes.size() && shift < 64) {
+                        const uint8_t b = verifyBytes[pos++];
+                        len |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                        if ((b & 0x80u) == 0) { ok = true; break; }
+                        shift += 7;
+                    }
+                    if (!ok || len > verifyBytes.size() - pos) { parseOk = false; break; }
+                    if (field == 7 && len > 0) hasGraph = true;
+                    pos += static_cast<size_t>(len);
+                } else if (wire == 1) {
+                    if (verifyBytes.size() - pos < 8) { parseOk = false; break; }
+                    pos += 8;
+                } else if (wire == 5) {
+                    if (verifyBytes.size() - pos < 4) { parseOk = false; break; }
+                    pos += 4;
+                } else {
+                    parseOk = false;
+                    break;
+                }
+            }
+            validOnnx = parseOk && pos == verifyBytes.size() && hasIrVersion && hasGraph;
+        }
+        if (!validOnnx) {
+            std::filesystem::remove(partPath, ec);
+            outError = "ONNX integrity verification failed";
+            return false;
+        }
     }
 
     std::filesystem::remove(destPath, ec);

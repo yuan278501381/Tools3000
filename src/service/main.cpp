@@ -30,6 +30,7 @@
 #include <unordered_set>
 #include <nlohmann/json.hpp>
 #include "MftParser.h"
+#include "SensitivePathGuard.h"
 #include "QueryThreadPool.h"
 #include "AppLauncherCatalog.h"
 #include "PipeProtocol.h"
@@ -2239,6 +2240,9 @@ nlohmann::json ProcessSearchQuery(
                             return fileElapsedMs >= tools3000::service::search_limits::PerFileContentExtractBudgetMs;
                         };
 
+                        if (tools3000::service::SensitivePathGuard::isSensitiveCredentialPath(item.fullPath)) {
+                            continue;
+                        }
                         std::vector<tools3000::service::content::ContentSnippet> snippets;
                         if (contentEngine.searchFile(
                                 item.fullPath,

@@ -1063,6 +1063,54 @@ void clusterAlignedRowsInRegion(
         outResults.push_back(std::move(r));
     };
 
+    auto isIsolatedCodeEditorLineNumberGutter = [&](size_t selfRowIdx,
+                                                    const AtomicLayoutBlock& leftBlk,
+                                                    const AtomicLayoutBlock& rightBlk,
+                                                    float refH) -> bool {
+        // 代码编辑器左侧行号槽隔离：仅当左侧块为 1~4 位纯数字行号、中间有清晰槽隙、右侧为长代码行或结构起始符，
+        // 且紧邻下方存在与右侧正文左对齐、同时左侧行号槽留白的软折行续行时才分离（100% 保护普通表格序号列）。
+        if (leftBlk.utf8.empty() || leftBlk.utf8.size() > 4) return false;
+        for (unsigned char ch : leftBlk.utf8) {
+            if (ch < '0' || ch > '9') return false;
+        }
+        const float gap = rightBlk.left() - leftBlk.right();
+        if (gap < (std::max)(12.0f, refH * 0.85f)) return false;
+
+        const bool rightLooksLikeCodeLine =
+            (rightBlk.w() >= refH * 8.0f) ||
+            (!rightBlk.utf8.empty() &&
+             (rightBlk.utf8[0] == '{' || rightBlk.utf8[0] == '[' ||
+              rightBlk.utf8[0] == '<' || rightBlk.utf8[0] == '"'));
+        if (!rightLooksLikeCodeLine) return false;
+
+        int alignedWrappedFollowers = 0;
+        const size_t maxProbe = (std::min)(candidateRows.size(), selfRowIdx + 4u);
+        for (size_t rr = selfRowIdx + 1; rr < maxProbe; ++rr) {
+            const auto& nextCells = candidateRows[rr].cells;
+            if (nextCells.empty()) break;
+            const float verticalStep = candidateRows[rr].avgCy() - candidateRows[rr - 1].avgCy();
+            if (verticalStep > refH * 2.4f) break;
+
+            bool hasLeftGutterItem = false;
+            bool hasAlignedBodyItem = false;
+            for (const auto& nc : nextCells) {
+                if (nc.right() <= rightBlk.left() - 6.0f) {
+                    hasLeftGutterItem = true;
+                }
+                if (std::abs(nc.left() - rightBlk.left()) <= (std::max)(12.0f, refH * 0.9f) &&
+                    nc.w() >= refH * 6.0f) {
+                    hasAlignedBodyItem = true;
+                }
+            }
+            if (!hasLeftGutterItem && hasAlignedBodyItem) {
+                ++alignedWrappedFollowers;
+            } else {
+                break;
+            }
+        }
+        return alignedWrappedFollowers >= 1;
+    };
+
     for (size_t r = 0; r < candidateRows.size(); ++r) {
         auto& cells = candidateRows[r].cells;
         if (cells.empty()) continue;
@@ -1081,7 +1129,9 @@ void clusterAlignedRowsInRegion(
                     (gap > (std::max)(440.0f, refH * 24.0f)) ||
                     ((gap > (std::max)(195.0f, refH * 12.0f)) &&
                      !hasBridgeOrMultiRowTableSpan(r, prev.right(), cells[i].left()));
-                if (unbridgedHugeGap || straddlesAdjacentRow(r, cells[i])) {
+                const bool editorGutterSplit =
+                    (curGroup.size() == 1 && isIsolatedCodeEditorLineNumberGutter(r, prev, cells[i], refH));
+                if (unbridgedHugeGap || editorGutterSplit || straddlesAdjacentRow(r, cells[i])) {
                     emitSubRow(curGroup);
                     curGroup.clear();
                 }

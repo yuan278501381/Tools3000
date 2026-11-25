@@ -310,8 +310,10 @@ cv::Mat DeepOcrEngine::suppressRedStampForOcr(const cv::Mat& bgr, bool* outSuppr
         return bgr;
     }
 
-    // 4. 红色通道穿透漂白：红色印章在 R 通道几乎与纸面等亮，而在 G/B 通道显著发暗；
-    //    将命中的红章像素（及其 1px 抗锯齿红边，避开底层低饱和黑字）以 R 通道亮度柔和还原为纸面中性底色。
+    // 4. 红色通道光学反混合穿透：
+    //    真实半透明红章（如 alpha≈0.6~0.8）叠压在黑字上时，白纸处的红章 R 通道接近 stampBgR（约 225~250），
+    //    而压住黑字笔画处 R 通道出现清晰暗谷（如 140~180）；若直接把 R 当灰度写回，会把被压黑字漂成浅灰导致断行。
+    //    通过统计红章自身基准 R 亮度（85 分位）与周边纸面亮底，将纯红章漂白至纸面底色、同时把 R 暗谷线性反混合还原为锐利深黑笔画。
     cv::Mat stampRegionMask(bgr.rows, bgr.cols, CV_8UC1, cv::Scalar(0));
     for (int y = 0; y < bgr.rows; ++y) {
         const auto* lRow = labels.ptr<int>(y);
@@ -325,6 +327,43 @@ cv::Mat DeepOcrEngine::suppressRedStampForOcr(const cv::Mat& bgr, bool* outSuppr
     }
     cv::dilate(stampRegionMask, stampRegionMask,
                cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+
+    std::array<uint32_t, 256> stampRHist{};
+    uint32_t stampRCount = 0;
+    std::array<uint32_t, 256> paperLumHist{};
+    uint32_t paperLumCount = 0;
+    for (int y = 0; y < bgr.rows; ++y) {
+        const auto* row = bgr.ptr<cv::Vec3b>(y);
+        const auto* mRow = stampRegionMask.ptr<uint8_t>(y);
+        for (int x = 0; x < bgr.cols; ++x) {
+            const int b = row[x][0];
+            const int g = row[x][1];
+            const int r = row[x][2];
+            const int chroma = (std::max)({r, g, b}) - (std::min)({r, g, b});
+            const int lum = (b * 29 + g * 150 + r * 77) >> 8;
+            if (mRow[x] != 0) {
+                if ((r - g) >= 22 && (r - b) >= 22 && chroma >= 26) {
+                    ++stampRHist[static_cast<size_t>(std::clamp(r, 0, 255))];
+                    ++stampRCount;
+                }
+            } else if (lum >= 170 && chroma < 30) {
+                ++paperLumHist[static_cast<size_t>(std::clamp(lum, 0, 255))];
+                ++paperLumCount;
+            }
+        }
+    }
+    auto histPercentile = [](const std::array<uint32_t, 256>& hist, uint32_t total, uint32_t pct, int fallback) noexcept -> int {
+        if (total == 0) return fallback;
+        const uint32_t target = (total * pct) / 100u;
+        uint32_t acc = 0;
+        for (int i = 0; i < 256; ++i) {
+            acc += hist[static_cast<size_t>(i)];
+            if (acc >= target) return i;
+        }
+        return fallback;
+    };
+    const int stampBgR = (std::max)(165, histPercentile(stampRHist, stampRCount, 85u, 228));
+    const int paperLum = std::clamp(histPercentile(paperLumHist, paperLumCount, 80u, 244), 200, 252);
 
     cv::Mat cleaned = bgr.clone();
     for (int y = 0; y < cleaned.rows; ++y) {
@@ -341,8 +380,12 @@ cv::Mat DeepOcrEngine::suppressRedStampForOcr(const cv::Mat& bgr, bool* outSuppr
             // 严苛保护底层黑色/深灰文字笔画像素（即使在红章叠加处表现为深暗红褐，仍维持高暗度！）
             if (r < 95 && lum < 85) continue;
             if ((r - g) >= 22 && (r - b) >= 22 && chroma >= 26) {
-                // R 通道天然穿透红章墨水：红章覆盖白纸时 R≈225..250，覆盖黑字交叉处时 R≈30..115
-                const uint8_t v = static_cast<uint8_t>(std::clamp(r, 0, 255));
+                int restored = paperLum;
+                if (r < stampBgR - 14) {
+                    const float deficit = static_cast<float>(stampBgR - r);
+                    restored = static_cast<int>(std::lround(static_cast<float>(paperLum) - deficit * 2.85f));
+                }
+                const uint8_t v = static_cast<uint8_t>(std::clamp(restored, 14, paperLum));
                 row[x] = cv::Vec3b(v, v, v);
             }
         }

@@ -1,6 +1,7 @@
 #include "MftParser.h"
 #include "PinyinEngine.h"
 #include "QueryThreadPool.h"
+#include "SensitivePathGuard.h"
 #include "content/ContentSearchEngine.h"
 #include <spdlog/spdlog.h>
 #include <algorithm>
@@ -569,10 +570,14 @@ void MftParser::UsnListenerLoop() {
                                      (parsed.reason & USN_REASON_CLOSE) != 0 ||
                                      (parsed.reason & kDataModifyReasons) != 0 ||
                                      record.fileSize == 0) &&
+                                    !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(parsed.fileName) &&
                                     queuedFrns.insert(frn).second) {
-                                    pendingStatRefresh.emplace_back(
-                                        frn,
-                                        needPathFallback ? buildFullPath(frn) : std::wstring{});
+                                    const std::wstring fullPath = buildFullPath(frn);
+                                    if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
+                                        pendingStatRefresh.emplace_back(
+                                            frn,
+                                            needPathFallback ? fullPath : std::wstring{});
+                                    }
                                 }
                             }
                         } else if ((parsed.reason & USN_REASON_BASIC_INFO_CHANGE) ||
@@ -597,10 +602,14 @@ void MftParser::UsnListenerLoop() {
                                 if (!oldRec.isDirectory &&
                                     ((parsed.reason & USN_REASON_CLOSE) != 0 ||
                                      (parsed.reason & kDataModifyReasons) != 0) &&
+                                    !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(oldRec.fileName) &&
                                     queuedFrns.insert(frn).second) {
-                                    pendingStatRefresh.emplace_back(
-                                        frn,
-                                        needPathFallback ? buildFullPath(frn) : std::wstring{});
+                                    const std::wstring fullPath = buildFullPath(frn);
+                                    if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
+                                        pendingStatRefresh.emplace_back(
+                                            frn,
+                                            needPathFallback ? fullPath : std::wstring{});
+                                    }
                                 }
                             }
                         }
@@ -692,7 +701,10 @@ void MftParser::BackgroundHydrateLoop() {
             if (rec->parentFrn == 0) {
                 hydrateDriveRoot = true;
             } else if (seenParents.insert(rec->parentFrn).second) {
-                parentDirFrns.push_back(rec->parentFrn);
+                const std::wstring dirPath = buildFullPath(rec->parentFrn);
+                if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(dirPath)) {
+                    parentDirFrns.push_back(rec->parentFrn);
+                }
             }
         }
     }

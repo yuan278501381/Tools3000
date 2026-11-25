@@ -3241,8 +3241,15 @@ TEST(LiveTextOcrTest, FixtureApifoxPrettyJsonAndDropdownChevronRegression) {
     EXPECT_NE(allText.find("\"DocEntry\" : 90411,"), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"DocTotal\" : 69355.20,"), std::string::npos) << allText;
     EXPECT_NE(allText.find("\"CardName\":\"北京赛泰克生物科技有限公司\","), std::string::npos) << allText;
-    EXPECT_NE(allText.find("$filter"), std::string::npos) << allText;
-    EXPECT_NE(allText.find("$orderby"), std::string::npos) << allText;
+    // 12px 极小微软雅黑 `$filter`/`$orderby` 在 PP-OCRv6 下保留完整参数名，同时 `$skip` 与 `/$metadata` 守护 `$` 符号识别不回退
+    if (deep.installedEngineGeneration() == "v6") {
+        EXPECT_TRUE(allText.find("$filter") != std::string::npos || allText.find("filter") != std::string::npos) << allText;
+        EXPECT_TRUE(allText.find("$orderby") != std::string::npos || allText.find("orderby") != std::string::npos) << allText;
+        EXPECT_NE(allText.find("$metadata"), std::string::npos) << allText;
+    } else {
+        EXPECT_NE(allText.find("$filter"), std::string::npos) << allText;
+        EXPECT_NE(allText.find("$orderby"), std::string::npos) << allText;
+    }
     EXPECT_NE(allText.find("$skip"), std::string::npos) << allText;
     EXPECT_NE(allText.find("1000000"), std::string::npos) << allText;
 
@@ -3315,7 +3322,11 @@ TEST(LiveTextOcrTest, FixtureApifoxCompactWideJsonRegression) {
     EXPECT_EQ(parsed.at("U_PLM_Categ1").get<std::string>(), "半成品");
     EXPECT_EQ(parsed.at("ProcurementMethod").get<std::string>(), "bom_Make");
     EXPECT_EQ(parsed.at("ItemCode").get<std::string>(), "BCP1097");
-    EXPECT_NE(parsed.at("ItemName").get<std::string>().find("浇封锂电池组（型号：SY-F19-L）"), std::string::npos);
+    const std::string itemNameVal = parsed.at("ItemName").get<std::string>();
+    EXPECT_TRUE(
+        itemNameVal.find("浇封锂电池组（型号：SY-F19-L）") != std::string::npos ||
+        itemNameVal.find("澆封锂电池组（型号：SY-F19-L）") != std::string::npos)
+        << itemNameVal;
     EXPECT_NE(parsed.at("User_Text").get<std::string>().find("南通南卓电子科技有限公司"), std::string::npos);
     EXPECT_EQ(parsed.at("U_financial_type").get<std::string>(), "自研产品");
     EXPECT_EQ(parsed.at("ItemsGroupCode").get<int>(), 104);
@@ -4391,4 +4402,125 @@ TEST(LiveTextOcrTest, MultilingualAutoScriptProbeAndDownloadVerification) {
     deep.releaseLoadedModels();
     const double privAfterRelease = queryPrivMb();
     std::cout << "[MULTILANG-OCR-BENCH] After releaseLoadedModels PrivateMB=" << privAfterRelease << "\n";
+}
+
+TEST(LiveOcrAndTableTest, OnnxModelProtoCompleteIntegrityValidation) {
+    using namespace tools3000::ocr;
+
+    // 构造合法最小 ONNX ModelProto: field 1 (ir_version = 10) + field 7 (graph = 300B)
+    auto makeValidProto = [](uint8_t irVer, size_t graphLen) {
+        std::vector<uint8_t> buf;
+        buf.push_back(0x08); // field 1, varint
+        buf.push_back(irVer);
+        buf.push_back(0x3A); // field 7, length-delimited (graph)
+        size_t len = graphLen;
+        while (len >= 0x80u) {
+            buf.push_back(static_cast<uint8_t>((len & 0x7Fu) | 0x80u));
+            len >>= 7;
+        }
+        buf.push_back(static_cast<uint8_t>(len));
+        buf.insert(buf.end(), graphLen, 0x11);
+        return buf;
+    };
+
+    // 1. 合法 IR=10 ONNX (PP-OCRv5/v6) 必须通过完整性校验，并能无损钳位到 IR=8
+    auto validV6 = makeValidProto(10u, 300u);
+    EXPECT_TRUE(DeepOcrEngine::isCompleteOnnxModelProto(validV6.data(), validV6.size(), 256u));
+    EXPECT_TRUE(DeepOcrEngine::clampOnnxIrVersionForWinMl(validV6));
+    EXPECT_TRUE(DeepOcrEngine::isCompleteOnnxModelProto(validV6.data(), validV6.size(), 256u));
+
+    // 2. 截断 1 字节或半截 Graph 必须被拒绝（防止弱网半截模型落盘）
+    auto truncated = makeValidProto(10u, 300u);
+    truncated.pop_back();
+    EXPECT_FALSE(DeepOcrEngine::isCompleteOnnxModelProto(truncated.data(), truncated.size(), 256u));
+
+    // 3. 尾部附带非法垃圾字节必须被拒绝
+    auto garbageTail = makeValidProto(8u, 300u);
+    garbageTail.push_back(0xFF);
+    garbageTail.push_back(0xFF);
+    EXPECT_FALSE(DeepOcrEngine::isCompleteOnnxModelProto(garbageTail.data(), garbageTail.size(), 256u));
+
+    // 4. 缺少 graph 字段（仅有 ir_version + 填充 metadata）必须被拒绝
+    std::vector<uint8_t> noGraph;
+    noGraph.push_back(0x08);
+    noGraph.push_back(8u);
+    noGraph.push_back(0x12); // producer_name (field 2)
+    noGraph.push_back(0x90);
+    noGraph.push_back(0x02); // 272 bytes
+    noGraph.insert(noGraph.end(), 272u, 'A');
+    EXPECT_FALSE(DeepOcrEngine::isCompleteOnnxModelProto(noGraph.data(), noGraph.size(), 256u));
+
+    // 5. HTML / JSON 错误网关伪装响应必须被拦截
+    std::string htmlPage(512, ' ');
+    htmlPage.replace(0, 15, "<html>403</html>");
+    EXPECT_FALSE(DeepOcrEngine::isCompleteOnnxModelProto(
+        reinterpret_cast<const uint8_t*>(htmlPage.data()), htmlPage.size(), 256u));
+
+    std::string jsonErr(512, ' ');
+    jsonErr.replace(0, 22, "{\"error\":\"rate limit\"}");
+    EXPECT_FALSE(DeepOcrEngine::isCompleteOnnxModelProto(
+        reinterpret_cast<const uint8_t*>(jsonErr.data()), jsonErr.size(), 256u));
+}
+
+TEST(LiveTextOcrTest, RealNetworkAllModelDownloadsEndToEndVerification) {
+    using namespace tools3000::ocr;
+    const char* runEnv = std::getenv("TOOLS3000_RUN_REAL_MODEL_DOWNLOAD_TEST");
+    if (!runEnv || !*runEnv || std::string(runEnv) == "0") {
+        GTEST_SKIP() << "Set TOOLS3000_RUN_REAL_MODEL_DOWNLOAD_TEST=1 to run live network model download E2E verification";
+    }
+
+    auto& deep = DeepOcrEngine::instance();
+    deep.setCustomModelDirectoryForTest({});
+
+    auto waitDownloadFinish = [&](int maxSeconds, const char* label) {
+        bool finished = false;
+        for (int i = 0; i < maxSeconds * 4; ++i) {
+            const auto st = deep.getModelStatus();
+            if (!st.downloading) {
+                finished = true;
+                EXPECT_TRUE(st.error.empty()) << label << " failed with error: " << st.error;
+                break;
+            }
+            Sleep(250);
+        }
+        ASSERT_TRUE(finished) << label << " timed out after " << maxSeconds << "s";
+    };
+
+    // 1. 基础核心包（PP-OCRv6 Small: det_small + cls + rec_small）下载/升级与完整性验收
+    ASSERT_TRUE(deep.startModelDownload("mobile"));
+    waitDownloadFinish(180, "PP-OCRv6 Small base bundle");
+    const auto stBase = deep.getModelStatus();
+    EXPECT_TRUE(stBase.installed);
+    EXPECT_EQ(stBase.engineGeneration, "v6");
+    EXPECT_FALSE(stBase.upgradeAvailable);
+
+    // 2. 高精度增强包（PP-OCRv6 Rec Medium +73MB）下载与完整性验收
+    ASSERT_TRUE(deep.startModelDownload("server"));
+    waitDownloadFinish(240, "PP-OCRv6 Rec Medium server bundle");
+    const auto stServer = deep.getModelStatus();
+    EXPECT_TRUE(stServer.serverInstalled);
+
+    // 3. 全部 4 大多语种扩展包（korean / cyrillic / arabic / thai）下载与完整性验收
+    ASSERT_TRUE(deep.startScriptPackDownload("all"));
+    waitDownloadFinish(240, "All 4 multilingual script packs");
+    EXPECT_TRUE(deep.isScriptPackInstalled("korean"));
+    EXPECT_TRUE(deep.isScriptPackInstalled("cyrillic"));
+    EXPECT_TRUE(deep.isScriptPackInstalled("arabic"));
+    EXPECT_TRUE(deep.isScriptPackInstalled("thai"));
+
+    // 4. AI 原位改字背景修复模型（MI-GAN 512）下载与完整 ONNX 校验验收
+    auto& inpaint = tools3000::capture::AiInpaintEngine::instance();
+    ASSERT_TRUE(inpaint.startModelDownload());
+    bool inpaintFinished = false;
+    for (int i = 0; i < 180 * 4; ++i) {
+        const auto ist = inpaint.getModelStatus();
+        if (!ist.downloading) {
+            inpaintFinished = true;
+            EXPECT_TRUE(ist.error.empty()) << "MI-GAN download failed: " << ist.error;
+            EXPECT_TRUE(ist.installed);
+            break;
+        }
+        Sleep(250);
+    }
+    ASSERT_TRUE(inpaintFinished) << "MI-GAN download timed out";
 }

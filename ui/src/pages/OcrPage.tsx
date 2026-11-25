@@ -333,7 +333,7 @@ export const OcrPage: FC = () => {
               }
             } else if (next.installed && !next.error) {
               toast.success(t('ocr.downloadCompleted'));
-            } else if (next.state === 'error' && next.error) {
+            } else if (next.error) {
               toast.error(t('ocr.downloadFailedToast'), { description: next.error });
             }
           }
