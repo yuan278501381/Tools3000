@@ -20,6 +20,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <userenv.h>
+#include <wtsapi32.h>
 #include <psapi.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>
@@ -31,6 +32,7 @@
 #include <nlohmann/json.hpp>
 #include "MftParser.h"
 #include "SensitivePathGuard.h"
+#include "ServiceLifecyclePolicy.h"
 #include "QueryThreadPool.h"
 #include "AppLauncherCatalog.h"
 #include "PipeProtocol.h"
@@ -49,8 +51,10 @@
 
 SERVICE_STATUS        g_ServiceStatus = {0};
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
+std::mutex            g_ServiceStatusMutex;
 HANDLE                g_ServiceStopEvent = INVALID_HANDLE_VALUE;
 std::atomic<bool>     g_IsRunning{false};
+std::atomic<bool>     g_ShutdownSnapshotFlushed{false};
 
 std::shared_mutex g_ParsersMutex;
 std::vector<std::shared_ptr<MftParser>> g_MftParsers;
@@ -1058,6 +1062,12 @@ void PerformServiceMemoryTrim(uint64_t* outBeforeWs = nullptr, uint64_t* outAfte
 }
 
 void flushHistoryAndSaveSnapshotIfNeeded(bool forceSave) {
+    if (!forceSave && g_ShutdownSnapshotFlushed.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    if (forceSave) {
+        g_ShutdownSnapshotFlushed.store(true, std::memory_order_release);
+    }
     try {
         tools3000::service::db::RunHistoryManager::instance().flush();
         tools3000::service::db::SearchHistoryManager::instance().save();
@@ -3068,39 +3078,95 @@ void IPCServerThread() {
 // --------------------------------------------------------------------------------------
 // Service Control
 // --------------------------------------------------------------------------------------
-void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
-    switch (CtrlCode) {
-        case SERVICE_CONTROL_STOP:
-            spdlog::info("SERVICE_CONTROL_STOP received.");
-            if (g_ServiceStatus.dwCurrentState != SERVICE_RUNNING)
-                break;
-            g_ServiceStatus.dwControlsAccepted = 0;
-            g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
-            g_ServiceStatus.dwWin32ExitCode = 0;
-            g_ServiceStatus.dwCheckPoint = 4;
-            SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
-            SetEvent(g_ServiceStopEvent);
-            break;
-        default:
-            break;
+uint32_t countRemainingInteractiveUserSessions(uint32_t excludedSessionId) noexcept {
+    PWTS_SESSION_INFOW rawSessions = nullptr;
+    DWORD sessionCount = 0;
+    if (!WTSEnumerateSessionsW(WTS_CURRENT_SERVER_HANDLE, 0, 1, &rawSessions, &sessionCount) || !rawSessions) {
+        spdlog::warn("WTSEnumerateSessionsW failed (err={}); keeping search service running conservatively.", GetLastError());
+        return 1;
     }
+    std::vector<tools3000::service::lifecycle::SessionDescriptor> descriptors;
+    descriptors.reserve(sessionCount);
+    for (DWORD i = 0; i < sessionCount; ++i) {
+        descriptors.push_back({rawSessions[i].SessionId, rawSessions[i].State});
+    }
+    WTSFreeMemory(rawSessions);
+    return tools3000::service::lifecycle::countRemainingInteractiveSessions(descriptors, excludedSessionId);
+}
+
+bool beginServiceStopPending(DWORD checkPoint) noexcept {
+    std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
+    if (g_ServiceStatus.dwCurrentState != SERVICE_RUNNING) {
+        return false;
+    }
+    g_ServiceStatus.dwControlsAccepted = 0;
+    g_ServiceStatus.dwCurrentState = SERVICE_STOP_PENDING;
+    g_ServiceStatus.dwWin32ExitCode = 0;
+    g_ServiceStatus.dwCheckPoint = checkPoint;
+    g_ServiceStatus.dwWaitHint = tools3000::service::lifecycle::kGracefulStopWaitHintMs;
+    if (g_StatusHandle) {
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    }
+    return true;
+}
+
+DWORD WINAPI ServiceCtrlHandlerEx(DWORD dwControl, DWORD dwEventType, LPVOID lpEventData, LPVOID lpContext) {
+    (void)lpContext;
+    if (dwControl == SERVICE_CONTROL_INTERROGATE) {
+        return NO_ERROR;
+    }
+    if (tools3000::service::lifecycle::shouldStopOnServiceControl(dwControl)) {
+        spdlog::info("Service stop control received (ctrlCode={}).", dwControl);
+        if (beginServiceStopPending(4) && g_ServiceStopEvent != INVALID_HANDLE_VALUE && g_ServiceStopEvent != nullptr) {
+            SetEvent(g_ServiceStopEvent);
+        }
+        return NO_ERROR;
+    }
+    if (dwControl == SERVICE_CONTROL_SESSIONCHANGE) {
+        if (dwEventType == WTS_SESSION_LOGOFF) {
+            const uint32_t loggedOffSessionId = lpEventData
+                ? reinterpret_cast<const WTSSESSION_NOTIFICATION*>(lpEventData)->dwSessionId
+                : tools3000::service::lifecycle::kInvalidSessionId;
+            const uint32_t remaining = countRemainingInteractiveUserSessions(loggedOffSessionId);
+            if (tools3000::service::lifecycle::shouldStopOnSessionChange(dwEventType, remaining)) {
+                spdlog::info(
+                    "All interactive user sessions logged off (sessionId={}); flushing snapshot and stopping search service so next boot starts clean.",
+                    loggedOffSessionId);
+                if (beginServiceStopPending(5) && g_ServiceStopEvent != INVALID_HANDLE_VALUE && g_ServiceStopEvent != nullptr) {
+                    SetEvent(g_ServiceStopEvent);
+                }
+            } else {
+                spdlog::info(
+                    "Session {} logged off, {} interactive session(s) remain active; keeping search service running.",
+                    loggedOffSessionId,
+                    remaining);
+            }
+        }
+        return NO_ERROR;
+    }
+    return ERROR_CALL_NOT_IMPLEMENTED;
 }
 
 void WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
-    g_StatusHandle = RegisterServiceCtrlHandlerW(SERVICE_NAME, ServiceCtrlHandler);
+    g_StatusHandle = RegisterServiceCtrlHandlerExW(SERVICE_NAME, ServiceCtrlHandlerEx, nullptr);
     if (!g_StatusHandle) return;
 
-    ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
-    g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwServiceSpecificExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
+    g_ShutdownSnapshotFlushed.store(false, std::memory_order_release);
 
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    {
+        std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
+        ZeroMemory(&g_ServiceStatus, sizeof(g_ServiceStatus));
+        g_ServiceStatus.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_START_PENDING;
+        g_ServiceStatus.dwWin32ExitCode = 0;
+        g_ServiceStatus.dwServiceSpecificExitCode = 0;
+        g_ServiceStatus.dwCheckPoint = 0;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    }
 
     if (!configurePipeEndpoint(argc, argv)) {
+        std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = ERROR_INVALID_PARAMETER;
         g_ServiceStatus.dwCheckPoint = 1;
@@ -3110,6 +3176,7 @@ void WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
 
     g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
     if (!g_ServiceStopEvent) {
+        std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
         g_ServiceStatus.dwControlsAccepted = 0;
         g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
         g_ServiceStatus.dwWin32ExitCode = GetLastError();
@@ -3118,11 +3185,15 @@ void WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
         return;
     }
 
-    g_ServiceStatus.dwControlsAccepted = SERVICE_ACCEPT_STOP;
-    g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 0;
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    {
+        std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
+        g_ServiceStatus.dwControlsAccepted = tools3000::service::lifecycle::acceptedServiceControls();
+        g_ServiceStatus.dwCurrentState = SERVICE_RUNNING;
+        g_ServiceStatus.dwWin32ExitCode = 0;
+        g_ServiceStatus.dwCheckPoint = 0;
+        g_ServiceStatus.dwWaitHint = 0;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    }
 
     spdlog::info("Service started successfully.");
     g_IsRunning = true;
@@ -3133,16 +3204,24 @@ void WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
     // Wait for stop event
     WaitForSingleObject(g_ServiceStopEvent, INFINITE);
 
+    // 在销毁内存解析器前落盘最新 USN 增量快照（由一次性原子标志防重复写盘），
+    // 确保快速启动关机 / 注销 / 系统重启后下次按需启动搜索服务时秒级恢复、无需重扫全盘。
+    flushHistoryAndSaveSnapshotIfNeeded(false);
+
     RequestServiceShutdown();
     if (ipcThread.joinable()) ipcThread.join();
 
     CloseHandle(g_ServiceStopEvent);
     g_ServiceStopEvent = INVALID_HANDLE_VALUE;
-    g_ServiceStatus.dwControlsAccepted = 0;
-    g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
-    g_ServiceStatus.dwWin32ExitCode = 0;
-    g_ServiceStatus.dwCheckPoint = 3;
-    SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    {
+        std::lock_guard<std::mutex> lock(g_ServiceStatusMutex);
+        g_ServiceStatus.dwControlsAccepted = 0;
+        g_ServiceStatus.dwCurrentState = SERVICE_STOPPED;
+        g_ServiceStatus.dwWin32ExitCode = 0;
+        g_ServiceStatus.dwCheckPoint = 3;
+        g_ServiceStatus.dwWaitHint = 0;
+        SetServiceStatus(g_StatusHandle, &g_ServiceStatus);
+    }
     spdlog::info("Service stopped successfully.");
 }
 

@@ -6,6 +6,15 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-26] 修复 Windows 快速启动（混合关机）导致搜索服务下次开机被原样复活 (`fix/search-service-fast-startup-exit`)
+- **实机现象与内核根因**：
+  - Windows 10/11 默认开启「快速启动（Fast Startup）」，用户点「关机」时系统注销交互式用户会话（退出 `Tools3000.exe`），但将 Session 0 内核及当时仍在运行的 Windows 服务（如前次用过搜索而按需启动的 `Tools3000_Service.exe`）整体冻结进 `hiberfil.sys`；下次按电源键开机（`Resume from Hibernate`）后旧服务进程被原封不动恢复，导致用户误以为未搜文件即自启。
+  - 根因在于 `src/service/main.cpp` 原先使用 `RegisterServiceCtrlHandlerW` 且仅声明 `SERVICE_ACCEPT_STOP`，未接收 `SERVICE_ACCEPT_SESSIONCHANGE` 与 `SERVICE_ACCEPT_SHUTDOWN`。
+- **终局架构加固 (`src/service/ServiceLifecyclePolicy.h`, `src/service/main.cpp`, `CMakeLists.txt`, `tests/unit/test_search.inc`)**：
+  - 升级为 `RegisterServiceCtrlHandlerExW`，注册 `SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE`（严格遵守 MSDN 不混用 `SHUTDOWN` 与 `PRESHUTDOWN`）；
+  - 收到 `WTS_SESSION_LOGOFF` 时通过 `WTSEnumerateSessionsW` 统计剩余已登录交互式用户会话（显式排除 Session 0、正在注销的 `loggedOffSessionId` 及 `WTSListen` RDP 监听占位会话）：当剩余为 `0`（单用户注销或快速启动关机）时，立即触发 `SERVICE_STOP_PENDING` 并在 `ServiceMain` 销毁解析器前落盘最新 USN 增量快照（带一次性原子去重守卫 `g_ShutdownSnapshotFlushed`）后优雅退出 `SERVICE_STOPPED`；
+  - 锁屏、解锁、睡眠、远程断连及多用户仍有他人在线时一律保持常驻不中断；新增 `ServiceLifecyclePolicyTest` 离线全场景防回退单元测试。
+
 ### [2026-11-26] 五维交互体验升维与硬核排障 (`feat/cinema-zoom-translate-search-copy-fixes`): 双击 `Ctrl` 电影级平滑交互放大 (`#34`)、热键级按前台应用自动让位（默认避让 SSMS / Emacs `Alt+X`）、`Alt+X` 透明空框根治与语种切换、搜索框 `Ctrl+C` 复制文件本体、消除「空格快速预览」幽灵侧边栏
 - **1. 双击 `Ctrl` 电影级平滑交互放大引擎 (`CinemaZoomEngine.{h,cpp}`, `SpotlightOverlay*`, `MouseHook.{h,cpp}`, `src/main.cpp`, `SpotlightPage.{tsx,css}`, `test_ui_lifecycle.inc`, GitHub Issue `#34 @cainiaoNO1`)**：
   - *技术路线*：动态加载 `Magnification.dll`（`MagInitialize` / `MagSetFullscreenTransform` / `MagUninitialize`，无静态库硬链接、天然兼容 x64/ARM64），结合 3 通道闭式解析临界阻尼物理弹簧（`zoom` / `centerX` / `centerY`，0 过冲不眩晕）+ `DwmFlush()` VSync 同步 + 中心柔和死区跟焦（`deadzoneRatio = 0.24`，点击微调画面稳如泰山，近边缘丝滑平移），**兼得电影级推拉与全程原生点击、拖拽、打字**；
