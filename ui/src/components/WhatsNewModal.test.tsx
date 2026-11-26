@@ -52,7 +52,12 @@ describe('WhatsNewModal', () => {
     expect(compareSemver('1.4.14', '1.4.11')).toBeGreaterThan(0);
     expect(compareSemver('1.4.2', '1.4.10')).toBeLessThan(0);
     expect(compareSemver('v1.4.0', '1.4.0')).toBe(0);
-    expect(formatLocalDate('2026-11-26T01:18:46+08:00')).toBe('2026-11-26');
+    // 构造跨时区稳健断言（覆盖 UTC+0 CI Runner、东八区及负偏移时区）
+    const sampleIso = '2026-11-26T01:18:46+08:00';
+    const sampleDate = new Date(sampleIso);
+    const expectedLocal = `${sampleDate.getFullYear()}-${String(sampleDate.getMonth() + 1).padStart(2, '0')}-${String(sampleDate.getDate()).padStart(2, '0')}`;
+    expect(formatLocalDate(sampleIso)).toBe(expectedLocal);
+    expect(formatLocalDate('2026-11-26T12:00:00Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(formatLocalDate('invalid-date')).toBe('');
 
     // 按自然日分组：同日多个版本应归入同一天且保持原顺序（不受跨日首版仅 1 条影响）
