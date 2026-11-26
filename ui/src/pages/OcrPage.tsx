@@ -24,6 +24,7 @@ import {
 } from '../components/UIKit';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
+import { HotkeyAppExclusionBar } from '../components/business/HotkeyAppExclusionBar';
 import { InPlaceTranslateCard } from '../components/InPlaceTranslateCard';
 import {
   consumePendingDeepNavigation,
@@ -557,6 +558,26 @@ export const OcrPage: FC = () => {
     }
   };
 
+  const updateHotkeyExclusions = async (hotkeyName: string, apps: string[]) => {
+    try {
+      const res = await bridgeRequest<OperationResult>('hotkey.setHotkeyExclusions', {
+        name: hotkeyName,
+        apps,
+      });
+      if (res && res.success === false) {
+        throw new Error(res.error || t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'));
+      }
+      const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
+      if (Array.isArray(refreshed)) {
+        setHotkeys(refreshed);
+      }
+    } catch (error) {
+      toast.error(t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'), {
+        description: String(error),
+      });
+    }
+  };
+
   if (loading) {
     return <PageSkeleton cards={2} rowsPerCard={4} />;
   }
@@ -883,6 +904,25 @@ export const OcrPage: FC = () => {
                   onChange={(v) => void rebindNamedShortcut(translateHotkeyEntry.name, v)}
                 />
               </SettingRow>
+              <SubSettingGroup disabled={!translateHotkeyEntry.shortcut}>
+                <SettingRow
+                  layout="vertical"
+                  label={t('ocr.translateExcludedAppsTitle', 'Auto-Yield in Professional Apps')}
+                  description={t(
+                    'ocr.translateExcludedAppsDesc',
+                    'Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active',
+                  )}
+                >
+                  <HotkeyAppExclusionBar
+                    apps={translateHotkeyEntry.excludedApps ?? []}
+                    disabled={!translateHotkeyEntry.shortcut}
+                    compact
+                    emptyText={t('hotkeyExclusion.emptyPerHotkey', 'Active in all apps; add process names to auto-yield')}
+                    pickerTitle={t('hotkeyExclusion.pickerPerHotkeyTitle', 'Pick App to Auto-Yield This Shortcut')}
+                    onChange={(nextApps) => void updateHotkeyExclusions(translateHotkeyEntry.name, nextApps)}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
             </Card>
           )}
 

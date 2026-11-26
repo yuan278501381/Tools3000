@@ -314,6 +314,21 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
       <div className="search-context-menu-divider" />
 
       <div className="search-context-menu-group">
+        {isDiskBackedItem && onCopyFile && (
+          <button
+            type="button"
+            className="search-context-menu-item"
+            onClick={() => {
+              onClose();
+              onCopyFile(res);
+            }}
+          >
+            <ClipboardCopy size={14} className="menu-icon" />
+            <span className="menu-label">{t('search.menuCopyFile', 'Copy File')}</span>
+            <kbd className="menu-shortcut">Ctrl+C</kbd>
+          </button>
+        )}
+
         <button
           type="button"
           className="search-context-menu-item"
@@ -334,23 +349,8 @@ export const SearchContextMenu: React.FC<SearchContextMenuProps> = ({
                 ? t('search.menuCopyUrl', 'Copy URL')
                 : t('search.menuCopyPath', 'Copy Full Path')}
           </span>
-          <kbd className="menu-shortcut">Ctrl+C</kbd>
+          <kbd className="menu-shortcut">{isDiskBackedItem ? 'Ctrl+Shift+C' : 'Ctrl+C'}</kbd>
         </button>
-
-        {isDiskBackedItem && onCopyFile && (
-          <button
-            type="button"
-            className="search-context-menu-item"
-            onClick={() => {
-              onClose();
-              onCopyFile(res);
-            }}
-          >
-            <ClipboardCopy size={14} className="menu-icon" />
-            <span className="menu-label">{t('search.menuCopyFile', 'Copy File Object (Paste to Chat/Folder)')}</span>
-            <kbd className="menu-shortcut">Ctrl+Shift+C</kbd>
-          </button>
-        )}
 
         <button
           type="button"

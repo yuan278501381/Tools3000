@@ -2714,6 +2714,8 @@ void MessageBridge::registerBuiltinHandlers() {
                 {"registered", entry.registered},
                 {"armed", entry.armed},
                 {"scope", entry.scope},
+                {"suspendedByApp", entry.suspendedByApp},
+                {"excludedApps", entry.excludedApps},
                 {"conflict", entry.conflict},
                 {"conflictType", entry.conflictType},
                 {"conflictWith", entry.conflictWith}
@@ -2855,6 +2857,60 @@ void MessageBridge::registerBuiltinHandlers() {
         const bool paused = params.value("paused", false);
         HotkeyManager::instance().setPaused(paused);
         return {{"success", true}, {"paused", paused}};
+    });
+    registerHandler("hotkey.getExclusions", [](const json&) -> json {
+        auto& manager = HotkeyManager::instance();
+        json perHotkey = json::object();
+        for (const auto& [name, apps] : manager.getAllPerHotkeyExcludedApps()) {
+            perHotkey[name] = apps;
+        }
+        return {
+            {"global", manager.getGlobalExcludedApps()},
+            {"perHotkey", perHotkey}
+        };
+    });
+    registerHandler("hotkey.setGlobalExclusions", [](const json& params) -> json {
+        std::vector<std::string> apps;
+        if (params.contains("apps") && params["apps"].is_array()) {
+            for (const auto& item : params["apps"]) {
+                if (item.is_string()) {
+                    apps.push_back(item.get<std::string>());
+                }
+            }
+        }
+        auto& manager = HotkeyManager::instance();
+        manager.setGlobalExcludedApps(apps);
+        const auto saved = manager.getGlobalExcludedApps();
+        ConfigManager::instance().mergePatch({
+            {"hotkeys", {
+                {"appExclusionInitialized", true},
+                {"globalExcludedApps", saved}
+            }}
+        }, "/hotkeys/globalExcludedApps");
+        return {{"success", true}, {"apps", saved}};
+    });
+    registerHandler("hotkey.setHotkeyExclusions", [](const json& params) -> json {
+        const std::string name = canonicalHotkeyName(params.value("name", ""));
+        if (name.empty()) {
+            return {{"success", false}, {"error", "invalid hotkey"}};
+        }
+        std::vector<std::string> apps;
+        if (params.contains("apps") && params["apps"].is_array()) {
+            for (const auto& item : params["apps"]) {
+                if (item.is_string()) {
+                    apps.push_back(item.get<std::string>());
+                }
+            }
+        }
+        auto& manager = HotkeyManager::instance();
+        manager.setHotkeyExcludedApps(name, apps);
+        json perHotkeyJson = json::object();
+        for (const auto& [k, v] : manager.getAllPerHotkeyExcludedApps()) {
+            perHotkeyJson[k] = v;
+        }
+        ConfigManager::instance().set("/hotkeys/appExclusionInitialized", true);
+        ConfigManager::instance().set("/hotkeys/perHotkeyExcludedApps", perHotkeyJson);
+        return {{"success", true}, {"name", name}, {"apps", manager.getHotkeyExcludedApps(name)}};
     });
 
     // ── 通用设置与系统交互 ───────────────────────────────────────────────

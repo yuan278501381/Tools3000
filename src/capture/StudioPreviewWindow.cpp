@@ -74,7 +74,7 @@ const wchar_t* formatLabel(StudioExportFormat f, bool isZh) noexcept {
     switch (f) {
         case StudioExportFormat::MP4_H264:      return tools3000::core::trWCstrFor(isZh, L"MP4 (通用视频 · 可放大)", L"MP4 (H.264 Video)");
         case StudioExportFormat::MP4_HEVC:      return tools3000::core::trWCstrFor(isZh, L"MP4 (HEVC 超清 · 可放大)", L"MP4 (HEVC Video)");
-        case StudioExportFormat::GIF_WeChat:    return tools3000::core::trWCstrFor(isZh, L"GIF (微信表情 · 免点直播)", L"GIF (WeChat Sticker)");
+        case StudioExportFormat::GIF_WeChat:    return tools3000::core::trWCstrFor(isZh, L"GIF (聊天动图 · 自动播放)", L"GIF (Chat Sticker)");
         case StudioExportFormat::GIF_HD:        return tools3000::core::trWCstrFor(isZh, L"GIF (高清大图 · 可双击放大)", L"GIF (HD · Zoomable)");
         case StudioExportFormat::WebP_Animated: return tools3000::core::trWCstrFor(isZh, L"WebP (网页真彩动图)", L"WebP (Web Animated)");
         case StudioExportFormat::WebM_VP9:      return tools3000::core::trWCstrFor(isZh, L"WebM (VP9 视频)", L"WebM (VP9)");
@@ -89,7 +89,7 @@ const wchar_t* resolutionLabel(StudioExportResolution r, bool isZh) noexcept {
         case StudioExportResolution::Res1440P: return L"2K (1440P)";
         case StudioExportResolution::Res1080P: return L"1080P";
         case StudioExportResolution::Res720P:  return L"720P";
-        case StudioExportResolution::Res640P:  return tools3000::core::trWCstrFor(isZh, L"640P (微信推荐)", L"640P (WeChat Fit)");
+        case StudioExportResolution::Res640P:  return tools3000::core::trWCstrFor(isZh, L"640P (轻量分享推荐)", L"640P (Compact Share)");
         case StudioExportResolution::Res480P:  return L"480P";
         default:                               return L"1080P";
     }

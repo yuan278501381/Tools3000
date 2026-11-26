@@ -85,6 +85,7 @@
 #include "ui/QuickLookNavigation.h"
 #include "ui/TrayWindow.h"
 #include "ui/ToastOverlay.h"
+#include "ui/CinemaZoomEngine.h"
 #include "ui/SpotlightOverlay.h"
 #include "ui/WebViewEnvironmentManager.h"
 #include "core/remote/RemoteMasterEngine.h"
@@ -182,6 +183,8 @@ void syncForegroundFullscreenState(bool forceRefresh = false) {
         gestureBypassEnabled && fg && tools3000::core::WinUtils::shouldSuspendGesturesForWindow(fg);
 
     auto& hotkeyMgr = tools3000::core::HotkeyManager::instance();
+    const std::string fgProcName = fg ? tools3000::core::WinUtils::getProcessNameFromWindow(fg) : std::string{};
+    hotkeyMgr.updateForegroundProcess(fgProcName);
     if (hotkeyMgr.isFullscreenSuspended() != suspendHotkeys) {
         hotkeyMgr.setFullscreenSuspended(suspendHotkeys);
     }
@@ -1156,6 +1159,49 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             tools3000::core::ConfigManager::instance().get<std::string>(
                 "/general/fullscreenMode", "smart")));
     tools3000::core::HotkeyManager::instance().initialize(hwnd);
+    {
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        auto& hkMgr = tools3000::core::HotkeyManager::instance();
+        const bool exclusionInitialized = cfg.get<bool>("/hotkeys/appExclusionInitialized", false);
+
+        std::vector<std::string> globalExcluded;
+        if (const auto rawGlobal = cfg.get<nlohmann::json>("/hotkeys/globalExcludedApps", nlohmann::json::array());
+            rawGlobal.is_array()) {
+            for (const auto& item : rawGlobal) {
+                if (item.is_string()) {
+                    globalExcluded.push_back(item.get<std::string>());
+                }
+            }
+        }
+        hkMgr.setGlobalExcludedApps(globalExcluded);
+
+        auto rawPerHotkey = cfg.get<nlohmann::json>("/hotkeys/perHotkeyExcludedApps", nlohmann::json::object());
+        if (!exclusionInitialized) {
+            if (!rawPerHotkey.is_object()) {
+                rawPerHotkey = nlohmann::json::object();
+            }
+            if (!rawPerHotkey.contains("Translate Selection")) {
+                rawPerHotkey["Translate Selection"] = nlohmann::json::array({"ssms.exe", "emacs.exe", "runemacs.exe"});
+            }
+            cfg.set("/hotkeys/perHotkeyExcludedApps", rawPerHotkey);
+            cfg.set("/hotkeys/appExclusionInitialized", true);
+        }
+        if (rawPerHotkey.is_object()) {
+            for (auto it = rawPerHotkey.begin(); it != rawPerHotkey.end(); ++it) {
+                if (!it.value().is_array()) continue;
+                std::vector<std::string> apps;
+                for (const auto& item : it.value()) {
+                    if (item.is_string()) {
+                        apps.push_back(item.get<std::string>());
+                    }
+                }
+                hkMgr.setHotkeyExcludedApps(it.key(), apps);
+            }
+        }
+        if (HWND initFg = GetForegroundWindow()) {
+            hkMgr.updateForegroundProcess(tools3000::core::WinUtils::getProcessNameFromWindow(initFg));
+        }
+    }
     if (pm.isEnabledAtLaunch("search")) {
         const tools3000::core::HotkeyDef searchFallback{tools3000::core::ModKey::Alt, VK_SPACE};
         const auto searchText = tools3000::core::ConfigManager::instance().get<std::string>(
@@ -1270,23 +1316,6 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 }
                 return {{"success", false}, {"error", "missing width or height"}};
             });
-        {
-            auto& cfg = tools3000::core::ConfigManager::instance();
-            const bool quickLookEnabled = cfg.has("/plugins/quick_look/enabled")
-                ? cfg.get<bool>("/plugins/quick_look/enabled", true)
-                : cfg.get<bool>("/quicklook/enabled", true);
-            g_quickLookEnabled.store(quickLookEnabled, std::memory_order_release);
-            tools3000::core::EventBus::instance().subscribe<tools3000::core::QuickLookStateChangedEvent>(
-                [](const tools3000::core::QuickLookStateChangedEvent& e) {
-                    g_quickLookEnabled.store(e.enabled, std::memory_order_release);
-                    if (!e.enabled) {
-                        tools3000::core::MainThreadDispatcher::instance().post([]() {
-                            tools3000::ui::QuickLookWindow::instance().destroy();
-                        });
-                    }
-                });
-        }
-
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.quickLook",
             [](const nlohmann::json& params) -> nlohmann::json {
@@ -1320,6 +1349,24 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                     }
                 });
                 return {{"success", true}};
+            });
+    }
+
+    // 独立初始化空格快速预览开关与事件订阅（绝不耦合 search 模块启停，防止关闭搜索后空格开关失效）
+    {
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        const bool quickLookEnabled = cfg.has("/plugins/quick_look/enabled")
+            ? cfg.get<bool>("/plugins/quick_look/enabled", true)
+            : cfg.get<bool>("/quicklook/enabled", true);
+        g_quickLookEnabled.store(quickLookEnabled, std::memory_order_release);
+        tools3000::core::EventBus::instance().subscribe<tools3000::core::QuickLookStateChangedEvent>(
+            [](const tools3000::core::QuickLookStateChangedEvent& e) {
+                g_quickLookEnabled.store(e.enabled, std::memory_order_release);
+                if (!e.enabled) {
+                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::ui::QuickLookWindow::instance().destroy();
+                    });
+                }
             });
     }
 
@@ -1961,6 +2008,24 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     tools3000::core::KeyboardHook::instance().setKeyboardActivityCallback([](DWORD vk, WPARAM wp) {
         tools3000::ui::SpotlightOverlay::instance().onKeyboardEvent(vk, wp);
     });
+    tools3000::core::MouseHook::instance().setPreInterceptor(
+        [](int /*nCode*/, WPARAM wParam, const MSLLHOOKSTRUCT& data) -> bool {
+            if (wParam != WM_MOUSEWHEEL) {
+                return false;
+            }
+            if (!tools3000::ui::CinemaZoomEngine::instance().isWheelAdjustActive()) {
+                return false;
+            }
+            if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) == 0) {
+                return false;
+            }
+            const int wheelDelta = GET_WHEEL_DELTA_WPARAM(data.mouseData);
+            if (wheelDelta == 0) {
+                return false;
+            }
+            tools3000::ui::CinemaZoomEngine::instance().adjustZoomByWheel(wheelDelta);
+            return true;
+        });
 
     tools3000::core::EventBus::instance().subscribe<tools3000::core::SpotlightStateChangedEvent>(
         [](const tools3000::core::SpotlightStateChangedEvent& e) {
@@ -1986,6 +2051,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             {"holdDurationMs", s.holdDurationMs},
             {"shakeThreshold", s.shakeThreshold},
             {"spotlightAnimStyle", s.spotlightAnimStyle},
+            {"doubleCtrlMode", s.doubleCtrlMode},
+            {"zoomLevel", s.zoomLevel},
+            {"zoomFollowCursor", s.zoomFollowCursor},
+            {"zoomWheelAdjust", s.zoomWheelAdjust},
             {"clickRippleEnabled", s.clickRippleEnabled},
             {"clickRippleStyle", s.clickRippleStyle},
             {"mouseTrailEnabled", s.mouseTrailEnabled},
@@ -2012,6 +2081,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (params.contains("holdDurationMs") && params["holdDurationMs"].is_number()) s.holdDurationMs = params["holdDurationMs"].get<int>();
         if (params.contains("shakeThreshold") && params["shakeThreshold"].is_number()) s.shakeThreshold = params["shakeThreshold"].get<int>();
         if (params.contains("spotlightAnimStyle") && params["spotlightAnimStyle"].is_string()) s.spotlightAnimStyle = params["spotlightAnimStyle"].get<std::string>();
+        if (params.contains("doubleCtrlMode") && params["doubleCtrlMode"].is_string()) s.doubleCtrlMode = params["doubleCtrlMode"].get<std::string>();
+        if (params.contains("zoomLevel") && params["zoomLevel"].is_number()) s.zoomLevel = params["zoomLevel"].get<float>();
+        if (params.contains("zoomFollowCursor") && params["zoomFollowCursor"].is_boolean()) s.zoomFollowCursor = params["zoomFollowCursor"].get<bool>();
+        if (params.contains("zoomWheelAdjust") && params["zoomWheelAdjust"].is_boolean()) s.zoomWheelAdjust = params["zoomWheelAdjust"].get<bool>();
 
         if (params.contains("clickRippleEnabled") && params["clickRippleEnabled"].is_boolean()) s.clickRippleEnabled = params["clickRippleEnabled"].get<bool>();
         if (params.contains("clickRippleStyle") && params["clickRippleStyle"].is_string()) s.clickRippleStyle = params["clickRippleStyle"].get<std::string>();
@@ -2702,7 +2775,9 @@ void shutdownSubsystems() {
     tools3000::text_expander::TextExpanderManager::instance().shutdown();
     tools3000::clipboard::ClipboardManager::instance().shutdown();
     tools3000::core::KeyboardHook::instance().uninstall();
+    tools3000::core::MouseHook::instance().setPreInterceptor(nullptr);
     tools3000::core::MouseHook::instance().uninstall();
+    tools3000::ui::CinemaZoomEngine::instance().shutdown();
     tools3000::core::LuaEngine::instance().shutdown();
     tools3000::core::PluginManager::instance().shutdownPlugins();
     tools3000::core::HotkeyManager::instance().shutdown();
@@ -2965,11 +3040,17 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
     }
 
+    if (msg == WM_DISPLAYCHANGE) {
+        tools3000::ui::CinemaZoomEngine::instance().handleSystemInterruption("display_change");
+        return 0;
+    }
+
     if (msg == WM_WTSSESSION_CHANGE) {
         tools3000::core::EventBus::instance().publish(tools3000::core::CancelTransientUiEvent{});
         tools3000::core::EventBus::instance().publish(tools3000::core::SystemSessionChangedEvent{static_cast<uint32_t>(wParam)});
         if (wParam == WTS_SESSION_LOCK || wParam == WTS_SESSION_LOGOFF) {
             LOG_INFO("检测到 Windows 系统会话锁屏或注销 (0x{:X})，主动挂起渲染并释放物理内存", wParam);
+            tools3000::ui::CinemaZoomEngine::instance().handleSystemInterruption("session_lock_or_logoff");
             tools3000::ui::SpotlightOverlay::instance().dismiss();
             tools3000::core::WinUtils::trimWorkingSet();
         } else if (wParam == WTS_SESSION_UNLOCK) {
@@ -2983,6 +3064,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         tools3000::core::EventBus::instance().publish(tools3000::core::SystemPowerChangedEvent{static_cast<uint32_t>(wParam)});
         if (wParam == PBT_APMSUSPEND) {
             LOG_INFO("检测到系统进入休眠或睡眠 (0x{:X})，主动挂起渲染并释放物理内存", wParam);
+            tools3000::ui::CinemaZoomEngine::instance().handleSystemInterruption("power_suspend");
             tools3000::ui::SpotlightOverlay::instance().dismiss();
             tools3000::core::WinUtils::trimWorkingSet();
         } else if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {

@@ -234,17 +234,17 @@ export function useSearchKeyboard({
       return;
     }
 
-    // 6. Ctrl+Shift+... 排序与复制文件快捷键
+    // 6. Ctrl+Shift+... 排序与复制完整路径快捷键（对齐 Win11 资源管理器 Ctrl+Shift+C 复制文件地址）
     if (event.ctrlKey && event.shiftKey && !event.altKey) {
       const k = event.key.toLowerCase();
       if (k === 'd') { event.preventDefault(); handleSelectSort('modified'); return; }
       if (k === 'n') { event.preventDefault(); handleSelectSort('name'); return; }
       if (k === 's') { event.preventDefault(); handleSelectSort('size'); return; }
-      if (k === 'c' && copyFileResult) {
+      if (k === 'c') {
         const current = sortedResults[selectedIndexRef.current];
         if (current) {
           event.preventDefault();
-          void copyFileResult(current);
+          copyPathResult(current);
           return;
         }
       }
@@ -408,7 +408,11 @@ export function useSearchKeyboard({
       event.preventDefault();
       const current = sortedResults[selectedIndexRef.current];
       if (current) {
-        copyPathResult(current);
+        if (copyFileResult) {
+          void copyFileResult(current);
+        } else {
+          copyPathResult(current);
+        }
       }
       return;
     }

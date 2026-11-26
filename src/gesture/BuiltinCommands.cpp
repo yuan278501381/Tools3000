@@ -236,7 +236,8 @@ bool BuiltinCommandDispatcher::dispatchAppCommand(BuiltinCommand cmd) const {
 }
 
 void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr) const {
-    tools3000::core::TraceId::Scope scope;
+    // 继承父级 TraceId（无则自动生成），保持整条手势/命令执行日志链路统一追踪
+    tools3000::core::TraceId::Scope scope(tools3000::core::TraceId::current());
 
     // 若注册了自定义 Handler (如应用级命令路由或测试 Mock 拦截)，优先通过 Handler 分发
     if (hasHandler(cmd)) {

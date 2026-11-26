@@ -29,7 +29,8 @@
     "enable": "啟用",
     "disable": "停用",
     "all": "全部",
-    "copy": "複製"
+    "copy": "複製",
+    "done": "完成"
   },
   "nav": {
     "capture": "擷圖與錄影",
@@ -59,15 +60,15 @@
   "navSubtitle": {
     "stats": "按鍵與滑鼠活動使用統計",
     "plugins": "按需啟用功能，保持輕量與專注",
-    "spotlight": "游標聚光燈聚焦、點擊波紋與移動流光軌跡",
-    "gesture": "設定手勢動作對應與作用域規則",
+    "spotlight": "雙擊 Ctrl 電影級互動放大、聚光燈聚焦、點擊波紋與流光軌跡",
+    "gesture": "全域滑鼠手勢、邊緣滾輪與專業軟體右鍵自動避讓設定",
     "hotcorner": "滑鼠移至螢幕四角觸發快捷動作",
-    "capture": "擷圖、貼圖、長擷圖與螢幕錄影設定",
+    "capture": "智慧截圖、貼圖、捲動長截圖與電影級自動運鏡錄影設定",
     "history": "瀏覽並重新開啟最近擷圖",
-    "ocr": "離線文字辨識引擎、語系與擷圖原位翻譯設定",
-    "search": "毫秒級 NTFS 磁碟索引設定與進階檢索語法",
+    "ocr": "多語種離線文字辨識、截圖原位翻譯與全域劃詞翻譯設定",
+    "search": "檔案、內容、書籤、應用與指令毫秒級聚合搜尋與索引設定",
     "keycast": "螢幕即時顯示按鍵與組合快速鍵，簡報錄影利器",
-    "dialog_enhancer": "檔案對話方塊智慧跳轉、釘選與路徑記憶",
+    "dialog_enhancer": "檔案對話方塊 Ctrl+G 目錄直達、內嵌即搜與智慧路徑記憶",
     "general": "啟動、語言、紀錄等一般設定",
     "about": "版本資訊與技術架構",
     "ai_assistant": "全域選詞翻譯、程式碼最佳化與智慧對話懸浮視窗",
@@ -301,7 +302,9 @@
     "hotkeyGroupRecording": "高畫質錄影與場控",
     "hotkeyGroupInput": "輸入與手勢控制",
     "showChangelogOnUpdate": "更新後自動顯示更新日誌",
-    "showChangelogOnUpdateDesc": "升級至新版本後首次開啟設定時，自動展示跨版亮點摘要（全新安裝絕不彈出）"
+    "showChangelogOnUpdateDesc": "升級至新版本後首次開啟設定時，自動展示跨版亮點摘要（全新安裝絕不彈出）",
+    "globalHotkeyExclusionsTitle": "全域熱鍵自動避讓應用程式",
+    "globalHotkeyExclusionsDesc": "當以下任意軟體位於前景時，暫時交還全部 Tools3000 全域快捷鍵，切離視窗後立即恢復"
   },
   "plugins": {
     "capabilities": "模組能力",
@@ -356,15 +359,15 @@
     "items": {
       "gesture": {
         "name": "滑鼠手勢",
-        "description": "全域滑鼠手勢、應用程式作用域、觸發角、流光軌跡與邊緣滾輪。"
+        "description": "全域滑鼠手勢、應用作用域、觸發角、邊緣滾輪調節，內建 CAD/3D 專業軟體右鍵零延遲自動避讓。"
       },
       "capture": {
         "name": "擷圖與錄影",
-        "description": "擷圖標註、貼圖、長擷圖、螢幕錄影、歷史紀錄與離線 OCR。"
+        "description": "截圖標註、桌面貼圖、捲動長截圖、電影級自動運鏡錄影工作室、多語離線 OCR 與無痕原位翻譯。"
       },
       "search": {
         "name": "快速檔案搜尋",
-        "description": "基於底層 NTFS MFT 中繼資料與即時 USN 日誌秒級檢索，支援檔名、拼音及文件內容深度搜尋。"
+        "description": "毫秒級聚合檢索全盤檔案、文件與程式碼全文、已安裝應用、瀏覽器書籤與系統指令，支援拼音與 0 MB 閒置休眠。"
       },
       "keycast": {
         "name": "按鍵顯示",
@@ -372,15 +375,15 @@
       },
       "dialogenhancer": {
         "name": "檔案對話方塊助手",
-        "description": "在軟體中開啟或儲存檔案時，一鍵秒切到目前瀏覽的資料夾與常用目錄，自動記住各軟體專屬路徑，告別層層翻找。"
+        "description": "在開啟/儲存對話方塊按 Ctrl+G 一鍵直達活躍目錄、Ctrl+Shift+G 內嵌全盤即搜，並自動記住各軟體專屬路徑。"
       },
       "dialog_enhancer": {
         "name": "檔案對話方塊助手",
-        "description": "在軟體中開啟或儲存檔案時，一鍵秒切到目前瀏覽的資料夾與常用目錄，自動記住各軟體專屬路徑，告別層層翻找。"
+        "description": "在開啟/儲存對話方塊按 Ctrl+G 一鍵直達活躍目錄、Ctrl+Shift+G 內嵌全盤即搜，並自動記住各軟體專屬路徑。"
       },
       "spotlight": {
         "name": "滑鼠簡報與特效",
-        "description": "提供游標快速聚焦、滑鼠左/中/右鍵點擊波紋動效與移動軌跡流光，專為會議簡報與教學錄影打造。"
+        "description": "支援雙擊 Ctrl 電影級平滑互動放大（放大期間可正常點擊打字）、聚光燈聚焦、點擊波紋與流光軌跡。"
       },
       "remote_boost": {
         "name": "遠端協助增強",
@@ -579,7 +582,7 @@
     "repeatLastCaptureShortcutDesc": "一鍵呼出截圖並自動套用最近一次歷史選區（免去先按截圖鍵再切換）",
     "regionCycleKeyLabel": "截圖內切換歷史選區快捷鍵",
     "regionCycleKeyDesc": "進入截圖或錄影框選後，單按往前翻歷史選區，按 Shift + 該鍵往回翻",
-    "regionKeyR": "R / Shift+R（PixPin 習慣，推薦）",
+    "regionKeyR": "R / Shift+R（推薦）",
     "regionKeyBackquote": "` / Shift+`（反引號鍵，與矩形 R 零衝突）",
     "regionKeyF2": "F2 / Shift+F2（功能鍵）",
     "regionKeyF4": "F4 / Shift+F4（功能鍵）",
@@ -624,7 +627,7 @@
     "pinMiddleClickActionDesc": "自訂中鍵單擊桌面貼圖時的行為（正在原位改字編輯期間自動保護防誤關）",
     "pinActionEdit": "進入標註編輯（預設）",
     "pinActionFold": "摺疊 / 展開貼圖",
-    "pinActionClose": "關閉貼圖（Snipaste 習慣）",
+    "pinActionClose": "關閉貼圖",
     "pinActionResetScale": "恢復 1:1 原始大小（預設）"
   },
   "history": {
@@ -752,7 +755,7 @@
     "studioExportMp4H264": "MP4 (H.264 通用影片)",
     "studioExportMp4Hevc": "MP4 (H.265 超高畫質小體積)",
     "studioExportGifHd": "GIF 高畫質大圖 (1080P 全域鎖色盤無偏色)",
-    "studioExportGifWeChat": "GIF 微信表情 (自動壓縮以符合聊天室直傳)",
+    "studioExportGifWeChat": "GIF 聊天動圖（自動壓縮適配直傳）",
     "studioExportWebp": "WebP 真彩循環動圖",
     "studioExportWebm": "WebM (VP9 網頁影片)",
     "studioExportAutoClose": "匯出完成後自動關閉演播室",
@@ -918,7 +921,9 @@
     "langDeDe": "德語辨識",
     "langViVn": "越南語辨識",
     "langArSa": "阿拉伯語辨識",
-    "langThTh": "泰語辨識"
+    "langThTh": "泰語辨識",
+    "translateExcludedAppsTitle": "專業軟體自動讓位",
+    "translateExcludedAppsDesc": "當以下軟體位於前景時自動交還此快捷鍵（如 ssms.exe 執行 SQL、emacs.exe 命令面板），其餘 Tools3000 快捷鍵照常生效"
   },
   "gesture": {
     "title": "滑鼠手勢設定",
@@ -1519,7 +1524,7 @@
   "about": {
     "title": "關於 Tools3000",
     "version": "版本資訊",
-    "description": "專為 Windows 日常辦公與創作打造的輕量效率工具箱。集檔案與文件內容秒搜、按空白鍵免開啟快速預覽、智慧擷圖/貼圖/捲動長擷圖、高畫質錄影、離線圖片文字辨識、全域滑鼠手勢與螢幕四角快捷觸發、按鍵螢幕提示、游標聚光燈簡報、開啟/儲存對話方塊一鍵跳轉常用資料夾、遠端桌面快速鍵防衝突於一體。開機安靜不佔記憶體，隨叫隨到，亦支援外掛與腳本按需擴充。",
+    "description": "專為 Windows 日常辦公與效率打造的輕量原生工具箱。一站整合全盤檔案/全文/應用/書籤與系統指令秒搜、空白鍵快速預覽、持久化剪貼簿、智慧截圖/貼圖/長截圖、多語離線 OCR 與原位/劃詞翻譯、電影級自動運鏡錄影工作室、檔案對話方塊 Ctrl+G 快跳與即搜、全域手勢（內建專業軟體自動避讓）、雙擊 Ctrl 電影級互動放大、文字擴充器、檔案佔用解鎖、輕量 Rust Picasa 看圖、遠控防卡鍵與端對端加密雲端備份。",
     "author": "開發者",
     "license": "開源授權",
     "components": "開源元件",
@@ -1562,7 +1567,7 @@
       "rustPicasaViewer": "純 Rust 零 CRT 獨立硬體加速看圖器（41 種圖片/動圖/SVG/RAW、物理阻尼與高斯陰影）",
       "ddcBrightness": "游標所在多螢幕獨立硬體亮度雙引擎（外接螢幕 DDC/CI + 筆電內建螢幕 WMI）",
       "ppocrDirectml": "雙階純離線深度學習 OCR 與 MI-GAN 512 紋理修復（DirectML GPU + WinML）",
-      "ifilterShellProps": "Office/WPS/郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取",
+      "ifilterShellProps": "Office / 常見辦公文件 / 郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取",
       "rustClipboard": "純 Rust 零依賴剪貼簿持久化儲存、去重與亞毫秒檢索核心（完全取代舊庫方案）",
       "rustCliMcp": "零依賴純 Rust 命令列與 MCP stdio 伺服器，面向 AI 代理開放本機全碟檢索",
       "winhttpTranslate": "原生 TLS 截圖原位翻譯閘道（預設免金鑰 Bilibili Index-Translate、雙源容災與 DPAPI 加密）",
@@ -1643,18 +1648,18 @@
   "onboarding": {
     "welcomeTitle": "歡迎使用 Tools3000",
     "welcomeSubtitle": "下一代世界級 Windows 極客效率神器",
-    "featureSearch": "檔案與內容搜尋",
-    "featureSearchDesc": "毫秒級極速檢索，支援拼音與文件程式碼內容穿透",
-    "featureGesture": "滑鼠與邊緣手勢",
-    "featureGestureDesc": "自訂手勢與螢幕邊緣滑動對應，高效操控全域應用程式",
-    "featureCapture": "全能擷圖與錄影",
-    "featureCaptureDesc": "高畫質無損錄影、智慧貼圖與離線 OCR 文字辨識",
+    "featureSearch": "全能秒搜",
+    "featureSearchDesc": "檔案、內容、書籤、應用與指令一站聚合，毫秒級極速定位",
+    "featureGesture": "全域手勢與邊緣控制",
+    "featureGestureDesc": "自訂手勢與邊緣滾輪調音量亮度，內建專業軟體右鍵自動避讓",
+    "featureCapture": "截圖、貼圖與原位翻譯",
+    "featureCaptureDesc": "智慧標註貼圖、多語離線 OCR、截圖原位翻譯與全域劃詞翻譯",
     "featureSpotlight": "螢幕簡報特效",
     "featureSpotlightDesc": "聚光燈焦點、滑鼠點擊水波紋與指標流光軌跡",
     "featureQuickLook": "快捷空白鍵預覽",
     "featureQuickLookDesc": "空白鍵一鍵秒級全息預覽文件、程式碼、影音與壓縮檔",
-    "featureDialogEnhancer": "檔案對話方塊增強",
-    "featureDialogEnhancerDesc": "自動記住開啟/儲存路徑，常用目錄一鍵直達",
+    "featureDialogEnhancer": "檔案對話方塊快跳",
+    "featureDialogEnhancerDesc": "開啟/儲存框按 Ctrl+G 一鍵直達目錄，支援內嵌即搜與路徑記憶",
     "featureKeycast": "按鍵顯示與統計",
     "featureKeycastDesc": "即時顯示按鍵操作，錄影教學利器與全天打字統計",
     "featureRemoteBoost": "遠端協助增強",
@@ -1665,7 +1670,7 @@
     "shortcutCapture": "螢幕擷圖",
     "shortcutRecord": "高畫質錄影",
     "shortcutOcr": "離線文字辨識",
-    "shortcutSpotlight": "螢幕聚光燈",
+    "shortcutSpotlight": "聚光燈 / 電影級平滑放大",
     "shortcutQuickLook": "空白鍵檔案預覽",
     "shortcutGesturePause": "手勢暫停",
     "shortcutRemoteFlush": "遠控輔助鍵急救",
@@ -1679,7 +1684,7 @@
     "gestureReopenTab": "→ ↓ 還原關閉分頁",
     "tabSpotlight": "簡報特效",
     "tabRemote": "遠端協助",
-    "spotlightItem1": "連按兩下 Ctrl / 晃動滑鼠 喚起聚光燈焦點",
+    "spotlightItem1": "雙擊 Ctrl 喚起聚光燈或電影級平滑放大（放大期間可點擊打字）",
     "spotlightItem2": "點擊水波漣漪 (左中右鍵分色點擊回饋)",
     "spotlightItem3": "指標流光軌跡 (絲滑跟隨游標移動路徑)",
     "spotlightItem4": "按鍵顯示投影 (即時投射鍵盤操作)",
@@ -1699,17 +1704,20 @@
     "completeTipTextExpander": "內建「文字擴展器」開箱即用，在任意應用輸入 ;date 或 ;now 即可展開（隨時可自訂或關閉）",
     "edgeWheelTip": "螢幕左右邊緣滾動滾輪：直接調整系統音量或外接顯示器硬體亮度",
     "featureClipboard": "持久化剪貼簿",
-    "featureClipboardDesc": "Alt+V 跨重開機保留歷史、多選合併貼上、釘選分離與原生拖放直貼",
+    "featureClipboardDesc": "跨重啟不遺失，支援多選合併、置頂分組、原生拖放與識圖翻譯",
     "featurePicasa": "輕量 Rust Picasa 看圖",
-    "featurePicasaDesc": "小於 2 MB 單體架構，支援 41 種格式與 4K 高分屏毫秒秒開",
-    "featurePresentRemote": "簡報特效與遠控增強",
-    "featurePresentRemoteDesc": "按鍵回顯、聚光燈聚焦與 RDP/RustDesk 修飾鍵卡死一鍵急救",
-    "featureStudio": "自動縮放錄影工作室",
-    "featureStudioDesc": "音軌波形剪輯、點擊自動放大與一鍵匯出高畫質 GIF/MP4",
+    "featurePicasaDesc": "不足 2 MB 單體架構，支援 41 種格式與 4K 高分屏毫秒秒開",
+    "featurePresentRemote": "簡報放大與遠控守護",
+    "featurePresentRemoteDesc": "雙擊 Ctrl 電影級互動放大、聚光燈、按鍵回顯與遠控防卡鍵",
+    "featureStudio": "電影級自動運鏡錄影",
+    "featureStudioDesc": "點擊自動平滑推拉、音軌波形剪輯與一鍵匯出高畫質 MP4/GIF",
     "searchSyntaxLabel": "全能搜尋前綴語法",
     "searchSyntaxQuickLook": "空白鍵快捷預覽",
     "shortcutClipboard": "剪貼簿歷史",
-    "shortcutPin": "剪貼簿快速貼圖"
+    "shortcutPin": "剪貼簿快速貼圖",
+    "shortcutTranslate": "全域劃詞與剪貼簿翻譯",
+    "shortcutDialogJump": "對話方塊目錄一鍵直達",
+    "completeTipCloudSync": "可在「通用設定」開啟端對端加密雲端備份（OneDrive / WebDAV / S3），多台電腦一鍵同步設定與快捷鍵"
   },
   "hotkey": {
     "pressKeys": "請按下按鍵或組合鍵...",
@@ -1890,7 +1898,7 @@
     "searchTimeTitle": "MFT 記憶體索引引擎比對耗時",
     "openFileTitle": "開啟目前選取的檔案 (Enter)",
     "openFolderTitle": "在檔案總管中定位並選取該檔案 (Ctrl+Enter)",
-    "copyPathTitle": "複製目前檔案完整路徑 (Ctrl+C)",
+    "copyPathTitle": "複製目前檔案完整路徑 (Ctrl+Shift+C)",
     "exportReportTitle": "匯出目前所有搜尋結果為 CSV 報表 (Ctrl+E)",
     "rescanIndexTitle": "重新掃描磁碟索引並儲存快照 (F5 / Ctrl+R)",
     "syntaxHelpBtnTitle": "檢視搜尋進階語法與運算式範例 (F1)",
@@ -1994,7 +2002,7 @@
     "syntaxExLogic2": "邏輯或 OR 條件組合檢索",
     "syntaxExLogic3": "正規表示式檢索 (以 app_數字 開頭)",
     "syntaxExLogic4": "區分大小寫精確比對",
-    "syntaxExLogic5": "明確拼音首字母/全拼檢索 (如 wx 搜微信)",
+    "syntaxExLogic5": "明確拼音首字母/全拼檢索（如 wd 搜「文檔」）",
     "disableExtTip": "點擊停用 .{{ext}}",
     "enableExtTip": "點擊啟用 .{{ext}}",
     "folderType": "資料夾",
@@ -2004,8 +2012,8 @@
     "visibleColumns": "顯示欄位與版面佔比",
     "resetViewPrefTooltip": "將清單密度、欄位排版、磁碟篩選及格式重設為出廠預設",
     "toastResetAllPref": "所有檢視與檢索偏好設定已重設為出廠預設值",
-    "menuCopyFile": "複製檔案本身 (可貼上至微信)",
-    "copiedFile": "已複製檔案到剪貼簿（可直接貼上至微信或資料夾）",
+    "menuCopyFile": "複製檔案",
+    "copiedFile": "已複製檔案到剪貼簿",
     "menuQuickLook": "快速預覽內容",
     "syntaxExSize": "依檔案大小篩選 (支援 >10mb、1mb..50mb 區間及 empty/tiny/huge)",
     "syntaxExDate": "依修改日期篩選 (支援 today / yesterday / thisweek / 2026-09)",
@@ -2233,7 +2241,9 @@
     "menuExcludeParentFolder": "在搜尋中排除所在資料夾",
     "menuExcludeParentFolderTip": "隱藏此檔案所在的整個資料夾與所有子檔案，不再顯示於後續搜尋結果",
     "excludedFolderToast": "已排除資料夾：{{path}}",
-    "undoAction": "復原"
+    "undoAction": "復原",
+    "copyFileShortcut": "複製檔案",
+    "copyFileTitle": "複製目前檔案到剪貼簿 (Ctrl+C)"
   },
   "searchPage": {
     "tabSettings": "基礎與快速鍵",
@@ -2248,7 +2258,7 @@
     "openNow": "喚起搜尋框",
     "searchBehavior": "搜尋偏好與行為",
     "pinyinTitle": "智慧拼音搜尋",
-    "pinyinDesc": "支援中文拼音首字母（如 wx 搜微信）與全拼檢索",
+    "pinyinDesc": "支援中文拼音首字母（如 wd 搜「文檔」）與全拼檢索",
     "matchPathTitle": "預設比對完整路徑",
     "matchPathDesc": "開啟後搜尋詞將在檔案絕對路徑中檢索，而非僅限檔名",
     "caseTitle": "區分大小寫",
@@ -2391,7 +2401,7 @@
     "syntaxSectionRegex": "正規表示式語法速查",
     "groupExclusions": "排除資料夾與隱私防護",
     "hideOnBlurTitle": "失去焦點時自動隱藏搜尋框",
-    "hideOnBlurDesc": "點選搜尋框外部區域後自動收起（類似 Listary / uTools 習慣）；置頂搜尋框、使用空白鍵預覽或展開右鍵選單時保持開啟",
+    "hideOnBlurDesc": "點選搜尋框外部區域後自動收起；置頂搜尋框、使用空白鍵預覽或展開右鍵選單時保持開啟",
     "hideOnOpenTitle": "開啟結果後自動隱藏搜尋框",
     "hideOnOpenDesc": "雙擊或按 Enter 開啟檔案、資料夾、應用程式、系統指令或書籤後自動收起搜尋框；置頂狀態下保持開啟方便連續尋找",
     "clearQueryOnShowTitle": "再次呼出時自動清空上次搜尋詞",
@@ -2419,13 +2429,13 @@
     "pillKeycast": "按鍵",
     "pillKeycastFullDesc": "按鍵顯示 (螢幕即時顯示按鍵與快速鍵)",
     "pillCapture": "擷圖",
-    "pillCaptureFullDesc": "擷圖與錄影 (區域擷圖、長擷圖、貼圖與錄影)",
+    "pillCaptureFullDesc": "截圖與錄影（標註貼圖、離線 OCR、原位翻譯與電影級運鏡錄影）",
     "pillSearch": "搜尋",
-    "pillSearchFullDesc": "檔案搜尋 (NTFS 毫秒級全文與檔名搜尋)",
+    "pillSearchFullDesc": "全能秒搜（檔案、全文、書籤、應用與指令毫秒直達）",
     "pillSpotlight": "特效",
-    "pillSpotlightFullDesc": "滑鼠特效 (游標聚光燈、點擊波紋與移動軌跡)",
+    "pillSpotlightFullDesc": "簡報與特效（雙擊 Ctrl 電影級互動放大、聚光燈與點擊波紋）",
     "pillDialog": "助手",
-    "pillDialogFullDesc": "檔案對話方塊助手 (快速跳轉與路徑記憶)",
+    "pillDialogFullDesc": "檔案對話方塊快跳（Ctrl+G 目錄直達、內嵌即搜與路徑記憶）",
     "quickControls": "模組快捷開關",
     "enabled": "已啟用",
     "disabled": "已停用",
@@ -2622,7 +2632,22 @@
     "clickColorsSectionDesc": "分別為滑鼠左鍵、右鍵與中鍵設定專屬點擊色彩",
     "spotlightGroupTitle": "游標聚光燈聚焦",
     "clickRippleGroupTitle": "滑鼠點擊波紋特效",
-    "mouseTrailGroupTitle": "滑鼠移動流光軌跡"
+    "mouseTrailGroupTitle": "滑鼠移動流光軌跡",
+    "doubleCtrlModeTitle": "雙擊 Ctrl 簡報模式",
+    "doubleCtrlModeDesc": "可選經典聚光燈暗角聚焦，或電影級平滑放大（放大期間可正常點擊、拖曳與打字）",
+    "modeSpotlight": "經典聚光燈",
+    "modeSpotlightDesc": "壓暗全螢幕並照亮游標周圍，簡報展示時一鍵定位滑鼠位置",
+    "modeCinemaZoom": "電影級平滑放大",
+    "modeCinemaZoomDesc": "以游標為中心絲滑推拉縮放，全程保留原生滑鼠點擊與鍵盤輸入",
+    "modeCinemaZoomRing": "電影放大 + 游標光環",
+    "modeCinemaZoomRingDesc": "電影級平滑放大同時疊加通透無暗角游標定位環，兼顧細節與焦點",
+    "zoomLevelTitle": "預設放大倍率",
+    "zoomLevelDesc": "雙擊 Ctrl 推近時的初始鏡頭倍率（1.25x 至 4.0x）",
+    "zoomFollowCursor": "鏡頭柔和跟焦",
+    "zoomFollowCursorDesc": "啟用中心死區阻尼平滑跟隨：微調點擊不晃屏，移近視野邊緣絲滑平移",
+    "zoomWheelAdjust": "Ctrl + 滾輪即時調倍",
+    "zoomWheelAdjustDesc": "放大期間按住 Ctrl 捲動滾輪（或按 Ctrl + / -）無段調節鏡頭倍率",
+    "zoomUsageHint": "再次雙擊 Ctrl 或按 Esc 即可絲滑拉回 1.0x；放大期間所有滑鼠點擊、拖曳與鍵盤打字均正常生效。"
   },
   "window": {
     "minimize": "最小化",
@@ -3148,7 +3173,7 @@
     "badgeByokEncrypted": "自備金鑰 · DPAPI 加密",
     "freePrimaryTitle": "免金鑰優先通道",
     "freePrimaryDesc": "主通道異常或限流時自動切換至備用通道，無需手動介入。",
-    "freePrimaryEdge": "Microsoft Edge 翻譯優先",
+    "freePrimaryEdge": "Microsoft Edge 翻譯優先（推薦）",
     "freePrimaryGoogle": "Google 翻譯優先",
     "targetLangTitle": "預設目標語言",
     "targetLangDesc": "截圖原位翻譯的目標語種，譯文將無縫回填至原文字位置並保留背景與字色。",
@@ -3657,5 +3682,23 @@
     "viewAllOnGitHub": "於 GitHub 檢視全部發佈",
     "gotItBtn": "我知道了",
     "clearSearch": "清除搜尋"
+  },
+  "hotkeyExclusion": {
+    "emptyHint": "尚未設定避讓應用程式",
+    "emptyPerHotkey": "目前在所有應用程式中生效；可新增處理程序名稱實現按應用自動讓位",
+    "emptyGlobal": "尚未設定全域勿擾應用程式",
+    "removeAppAria": "移除 {{app}}",
+    "inputPlaceholder": "輸入處理程序名稱，如 ssms.exe、emacs.exe",
+    "addBtn": "新增",
+    "pickWindowBtn": "從執行中視窗拾取",
+    "pickerTitle": "選擇需要自動讓位的應用程式",
+    "pickerPerHotkeyTitle": "選擇此快捷鍵需自動讓位的應用程式",
+    "pickerGlobalTitle": "選擇全域交還所有快捷鍵的應用程式",
+    "saveFailed": "儲存快捷鍵避讓規則失敗",
+    "badgeTooltip": "在以下應用程式中自動讓位：{{apps}}",
+    "configurePerHotkeyTip": "設定此快捷鍵按應用程式自動讓位規則",
+    "excludedCountBadge": "避讓 {{count}} 項",
+    "modalTitle": "按應用程式自動讓位 — {{name}}",
+    "modalDesc": "當下列處理程序位於前景時，僅暫時交還此快捷鍵給前景軟體，Tools3000 其他快捷鍵不受影響。"
   }
 }

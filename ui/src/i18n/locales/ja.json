@@ -29,7 +29,8 @@
     "enable": "有効化",
     "disable": "無効化",
     "all": "すべて",
-    "copy": "コピー"
+    "copy": "コピー",
+    "done": "完了"
   },
   "nav": {
     "capture": "キャプチャ＆録画",
@@ -59,15 +60,15 @@
   "navSubtitle": {
     "stats": "キーボード入力とマウス操作の利用アクティビティ",
     "plugins": "必要な機能だけを有効にし、軽快さと集中力を維持します",
-    "spotlight": "スポットライト強調、クリック波紋、カーソル軌跡エフェクト",
-    "gesture": "ジェスチャー動作の割り当てとアプリ別適用ルールを設定します",
+    "spotlight": "Ctrl 2回押しスムーズ拡大・スポットライト・クリック波紋・軌跡",
+    "gesture": "マウスジェスチャー・画面端ホイール操作と専門アプリ自動回避設定",
     "hotcorner": "画面の四隅にカーソルを移動してショートカット動作を起動します",
-    "capture": "スクリーンショット、ピン留め、スクロールキャプチャ、画面録画の設定",
+    "capture": "スマート撮影・ピン留め・縦長キャプチャとシネマ自動ズーム録画設定",
     "history": "最近のスクリーンショットを閲覧・再利用します",
-    "ocr": "オフラインOCRエンジン、言語、およびスクリーンショット原位翻訳の設定",
-    "search": "高速 NTFS ディスクインデックス設定と検索構文ガイド",
+    "ocr": "多言語オフライン OCR・スクリーンショット原位置翻訳・選択翻訳設定",
+    "search": "ファイル・全文・ブックマーク・アプリ・コマンドの高速統合検索設定",
     "keycast": "打鍵やショートカットを画面にリアルタイム表示（解説・録画向け）",
-    "dialog_enhancer": "ファイル選択ダイアログで開いているフォルダーへ即移動・経路を自動記憶",
+    "dialog_enhancer": "ファイルダイアログ内 Ctrl+G 即ジャンプ・内包検索とパス記憶",
     "general": "起動、言語、外観、診断ログなどの一般設定",
     "about": "バージョン情報と採用技術スタック",
     "ai_assistant": "選択テキストの翻訳・解説・フローティング AI チャット",
@@ -301,7 +302,9 @@
     "hotkeyGroupRecording": "画面録画・音声コントロール",
     "hotkeyGroupInput": "入力・ジェスチャー制御",
     "showChangelogOnUpdate": "アップデート後に更新履歴を自動表示",
-    "showChangelogOnUpdateDesc": "新バージョンへ更新後、初めて設定を開いた際に変更点のハイライトを表示します（新規インストール時は非表示）"
+    "showChangelogOnUpdateDesc": "新バージョンへ更新後、初めて設定を開いた際に変更点のハイライトを表示します（新規インストール時は非表示）",
+    "globalHotkeyExclusionsTitle": "全グローバルショートカット自動譲歩アプリ",
+    "globalHotkeyExclusionsDesc": "以下のいずれかのアプリが前面にある間、Tools3000 の全グローバルショートカットを一時解放し、別ウィンドウへ移ると即座に復帰します"
   },
   "plugins": {
     "capabilities": "モジュール機能",
@@ -356,15 +359,15 @@
     "items": {
       "gesture": {
         "name": "マウスジェスチャー",
-        "description": "グローバルマウスジェスチャー、アプリ別ルール、ホットコーナー、軌跡描画、画面端ホイール。"
+        "description": "グローバルマウスジェスチャー、アプリ別ルール、ホットコーナー、端ホイール操作、CAD/3D 専門アプリ右クリック自動回避。"
       },
       "capture": {
         "name": "キャプチャ＆録画",
-        "description": "画面注釈、ピン留め、スクロールキャプチャ、画面録画、履歴管理、オフライン OCR。"
+        "description": "注釈付きキャプチャ、デスクトップピン留め、縦長キャプチャ、シネマ自動ズーム録画スタジオ、多言語オフライン OCR と原位置翻訳。"
       },
       "search": {
         "name": "高速ファイル検索",
-        "description": "NTFS MFT メタデータと USN ジャーナルによるミリ秒検索。ファイル名・頭文字・ドキュメント全文検索に対応。"
+        "description": "ファイル・文書/コード全文・インストール済みアプリ・ブラウザブックマーク・システムコマンドをミリ秒検索。待機時 0 MB スリープ対応。"
       },
       "keycast": {
         "name": "キー入力表示",
@@ -372,15 +375,15 @@
       },
       "dialogenhancer": {
         "name": "ファイルダイアログ拡張",
-        "description": "「開く / 名前を付けて保存」ダイアログで開いているエクスプローラーやお気に入りフォルダーへ一発移動し、アプリ別経路を自動記憶します。"
+        "description": "開く/保存ダイアログで Ctrl+G 一発フォルダ移動、Ctrl+Shift+G 内包検索、アプリ別パス自動記憶を実現。"
       },
       "dialog_enhancer": {
         "name": "ファイルダイアログ拡張",
-        "description": "「開く / 名前を付けて保存」ダイアログで開いているエクスプローラーやお気に入りフォルダーへ一発移動し、アプリ別経路を自動記憶します。"
+        "description": "開く/保存ダイアログで Ctrl+G 一発フォルダ移動、Ctrl+Shift+G 内包検索、アプリ別パス自動記憶を実現。"
       },
       "spotlight": {
         "name": "マウス演出＆ハイライト",
-        "description": "会議プレゼンや操作解説向けに、スポットライト強調・クリック波紋・滑らかなカーソル軌跡を提供します。"
+        "description": "Ctrl 2回押しシネマ風スムーズ拡大（拡大中もクリック・入力可能）、スポットライト強調、クリック波紋と軌跡表示。"
       },
       "remote_boost": {
         "name": "リモート操作強化",
@@ -579,7 +582,7 @@
     "repeatLastCaptureShortcutDesc": "直前のキャプチャ範囲を自動適用してスクリーンショットを即座に開始",
     "regionCycleKeyLabel": "キャプチャ内の履歴領域切替キー",
     "regionCycleKeyDesc": "選択画面で単押しすると古い履歴へ、Shift + キーで新しい履歴へ移動",
-    "regionKeyR": "R / Shift+R（PixPin 方式・推奨）",
+    "regionKeyR": "R / Shift+R（推奨）",
     "regionKeyBackquote": "` / Shift+`（バッククォート・矩形 R と競合なし）",
     "regionKeyF2": "F2 / Shift+F2（ファンクションキー）",
     "regionKeyF4": "F4 / Shift+F4（ファンクションキー）",
@@ -624,7 +627,7 @@
     "pinMiddleClickActionDesc": "デスクトップピン留めを中クリックしたときの動作を選択します（その場文字編集中の誤終了を自動防止）。",
     "pinActionEdit": "注釈編集に入る（既定）",
     "pinActionFold": "折りたたみ / 展開",
-    "pinActionClose": "ピン留めを閉じる（Snipaste 風）",
+    "pinActionClose": "ピン留めを閉じる",
     "pinActionResetScale": "1:1 原寸に戻す（既定）"
   },
   "history": {
@@ -752,7 +755,7 @@
     "studioExportMp4H264": "MP4 (H.264 汎用動画)",
     "studioExportMp4Hevc": "MP4 (H.265 高精細・省容量)",
     "studioExportGifHd": "GIF 高画質ドキュメント (1080P グローバルパレット)",
-    "studioExportGifWeChat": "GIF チャット共有向け (自動軽量化・インライン再生)",
+    "studioExportGifWeChat": "GIF チャット動図（自動軽量化）",
     "studioExportWebp": "WebP フルカラーアニメーション",
     "studioExportWebm": "WebM (VP9 Web 動画)",
     "studioExportAutoClose": "書き出し完了後にスタジオを自動で閉じる",
@@ -918,7 +921,9 @@
     "langDeDe": "ドイツ語 OCR",
     "langViVn": "ベトナム語 OCR",
     "langArSa": "アラビア語 OCR",
-    "langThTh": "タイ語 OCR"
+    "langThTh": "タイ語 OCR",
+    "translateExcludedAppsTitle": "専門アプリでの自動一時譲歩",
+    "translateExcludedAppsDesc": "以下のアプリが前面にある間はこのショートカットを自動的に明け渡し（例: ssms.exe の SQL 実行、emacs.exe の M-x）、他の Tools3000 ショートカットは維持します"
   },
   "gesture": {
     "title": "マウスジェスチャー設定",
@@ -1519,7 +1524,7 @@
   "about": {
     "title": "Tools3000 について",
     "version": "バージョン",
-    "description": "Windows の日常業務とクリエイティブ作業のために設計された軽量・多機能な統合効率化ツールキットです。高速ファイル＆全文検索、Space キーによるクイックルック、高機能スクリーンショット・ピン留め・スクロールキャプチャ、高画質画面録画と自動ズームスタジオ、オフライン OCR、グローバルマウスジェスチャー＆ホットコーナー、キー入力表示、カーソルスポットライト演出、ファイル選択ダイアログ拡張、リモートデスクトップ操作強化を一体化。バックグラウンドでは静かに待機し、必要な瞬間に即応します。",
+    "description": "C++20 と Rust で構築された軽量ネイティブ Windows 効率化スイート。ファイル・全文・アプリ・ブックマーク・コマンドの高速統合検索、スペース即座プレビュー、永続クリップボード、スマート撮影/ピン留め/縦長キャプチャ、多言語オフライン OCR と原位置/選択翻訳、シネマ自動ズーム録画スタジオ、ファイルダイアログ Ctrl+G ジャンプ・内包検索、専門アプリ自動回避付きマウスジェスチャー、Ctrl 2回押しスムーズ拡大、テキスト展開、ロック解除、軽量 Rust Picasa ビューアー、リモート保護、E2E 暗号化クラウド同期を 1 つに集約します。",
     "author": "開発者",
     "license": "ライセンス",
     "components": "オープンソースコンポーネント",
@@ -1562,7 +1567,7 @@
       "rustPicasaViewer": "独立型ゼロ CRT ハードウェア加速画像ビューア（41 形式・物理慣性・ガウス影）",
       "ddcBrightness": "カーソル画面ごとのハードウェア輝度制御（外部 DDC/CI ＋ ノート内蔵 WMI）",
       "ppocrDirectml": "2 段階オフライン深層学習 OCR と MI-GAN 512 テクスチャ修復（DirectML GPU + WinML）",
-      "ifilterShellProps": "Office/WPS/メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得",
+      "ifilterShellProps": "Office・一般ドキュメント・メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得",
       "rustClipboard": "依存ゼロの純粋 Rust クリップボード永続化・重複排除・サブミリ秒検索カーネル",
       "rustCliMcp": "依存ゼロの Rust CLI および MCP stdio サーバー（AI エージェント向けローカル全文検索）",
       "winhttpTranslate": "ネイティブ TLS インプレース翻訳ゲートウェイ（既定 Bilibili キー不要・自動フェイルオーバー・DPAPI 暗号化）",
@@ -1643,18 +1648,18 @@
   "onboarding": {
     "welcomeTitle": "Tools3000 へようこそ",
     "welcomeSubtitle": "次世代 Windows デスクトップ向け統合生産性スイート",
-    "featureSearch": "ファイル＆全文検索",
-    "featureSearchDesc": "ミリ秒単位の全ドライブ高速検索とドキュメント・コード本文検索",
-    "featureGesture": "マウス＆画面端ジェスチャー",
-    "featureGestureDesc": "自由なジェスチャー割り当てと画面端操作でアプリを自在に制御",
-    "featureCapture": "多機能キャプチャ＆録画",
-    "featureCaptureDesc": "高画質画面録画、ピン留め、オフライン高精度 OCR 文字認識",
+    "featureSearch": "統合クイック検索",
+    "featureSearchDesc": "ファイル・全文・ブックマーク・アプリ・コマンドをミリ秒で検索",
+    "featureGesture": "マウスジェスチャーと端操作",
+    "featureGestureDesc": "カスタムジェスチャーと端ホイール音量/輝度調整、専門アプリ自動回避内蔵",
+    "featureCapture": "撮影・ピン留め・原位置翻訳",
+    "featureCaptureDesc": "注釈ピン・多言語オフライン OCR・画面原位置翻訳と選択即翻訳",
     "featureSpotlight": "プレゼン演出エフェクト",
     "featureSpotlightDesc": "スポットライト強調、クリック波紋、カーソル光彩軌跡",
     "featureQuickLook": "Space クイックルック",
     "featureQuickLookDesc": "Space キー一発で文書・コード・メディア・圧縮ファイルを即プレビュー",
-    "featureDialogEnhancer": "ファイルダイアログ拡張",
-    "featureDialogEnhancerDesc": "保存先フォルダーを自動記憶し、よく使うディレクトリへ瞬時に移動",
+    "featureDialogEnhancer": "ダイアログ瞬時ジャンプ",
+    "featureDialogEnhancerDesc": "開く/保存枠で Ctrl+G 一発移動、内包検索とパス自動記憶に対応",
     "featureKeycast": "キー入力表示＆利用統計",
     "featureKeycastDesc": "リアルタイム打鍵表示と終日のキーボード・マウス活動統計",
     "featureRemoteBoost": "リモート操作強化",
@@ -1665,7 +1670,7 @@
     "shortcutCapture": "スクリーンショット",
     "shortcutRecord": "高画質画面録画",
     "shortcutOcr": "オフライン OCR",
-    "shortcutSpotlight": "スポットライト",
+    "shortcutSpotlight": "スポットライト / シネマ拡大",
     "shortcutQuickLook": "Space プレビュー",
     "shortcutGesturePause": "ジェスチャー一時停止",
     "shortcutRemoteFlush": "修飾キー緊急解放",
@@ -1679,7 +1684,7 @@
     "gestureReopenTab": "→ ↓ 閉じたタブを復元",
     "tabSpotlight": "プレゼン演出",
     "tabRemote": "リモート強化",
-    "spotlightItem1": "Ctrl 2回押し / マウスを振ってスポットライト起動",
+    "spotlightItem1": "Ctrl 2回押しでスポットライトまたはクリック可能なシネマ拡大を起動",
     "spotlightItem2": "クリック波紋（左・右・中ボタン色分けフィードバック）",
     "spotlightItem3": "カーソル軌跡（滑らかに追従する光彩トレイル）",
     "spotlightItem4": "キー入力オーバーレイ（打鍵をリアルタイム投影）",
@@ -1699,17 +1704,20 @@
     "completeTipTextExpander": "内蔵の「テキスト展開」ですぐに ;date や ;now を展開可能（いつでも編集・オフにできます）",
     "edgeWheelTip": "画面左右端スクロール：システム音量や外部モニターのハードウェア輝度を直接調整",
     "featureClipboard": "永続クリップボード",
-    "featureClipboardDesc": "Alt+V で再起動後も履歴保持、結合貼付、ピン分離、ネイティブドラッグ貼付",
-    "featurePicasa": "2 MB 未満 Rust Picasa ビューアー",
-    "featurePicasaDesc": "41 形式対応、4K 高 DPI ＆ 単体バイナリで瞬時起動",
-    "featurePresentRemote": "プレゼン演出＆リモート強化",
-    "featurePresentRemoteDesc": "キー表示、スポットライト強調、RDP/RustDesk 修飾キー固着の一括解除",
-    "featureStudio": "自動ズーム録画スタジオ",
-    "featureStudioDesc": "音声波形編集、クリック自動ズーム、ワンクリック GIF/MP4 書き出し",
+    "featureClipboardDesc": "再起動後も保持、複数連結貼付・グループ・ドラッグ貼付・画像 OCR 対応",
+    "featurePicasa": "軽量 Rust Picasa ビューアー",
+    "featurePicasaDesc": "2 MB 未満の単体ネイティブ構成、41 形式と 4K 高精細ズームに即応",
+    "featurePresentRemote": "ズーム発表とリモート保護",
+    "featurePresentRemoteDesc": "Ctrl 2回押しスムーズ拡大・スポットライト・キー表示と修飾キー復旧",
+    "featureStudio": "シネマ自動ズーム録画",
+    "featureStudioDesc": "クリック追従スムーズズーム、波形トリミング、MP4/GIF ワンクリック書き出し",
     "searchSyntaxLabel": "万能検索プレフィックス",
     "searchSyntaxQuickLook": "QuickLook プレビュー",
     "shortcutClipboard": "クリップボード履歴",
-    "shortcutPin": "履歴から画面ピン留め"
+    "shortcutPin": "履歴から画面ピン留め",
+    "shortcutTranslate": "選択テキスト・クリップボード翻訳",
+    "shortcutDialogJump": "ダイアログ即フォルダ移動",
+    "completeTipCloudSync": "「一般設定」で E2E 暗号化クラウド同期（OneDrive / WebDAV / S3）を有効にすると複数 PC 間で設定とショートカットを同期できます"
   },
   "hotkey": {
     "pressKeys": "キーまたは組み合わせを押してください...",
@@ -1890,7 +1898,7 @@
     "searchTimeTitle": "MFT メモリインデックス照合所要時間",
     "openFileTitle": "選択中のファイルを開く (Enter)",
     "openFolderTitle": "エクスプローラーでファイルを選択表示 (Ctrl+Enter)",
-    "copyPathTitle": "フルパスをコピー (Ctrl+C)",
+    "copyPathTitle": "ファイルのフルパスをコピー (Ctrl+Shift+C)",
     "exportReportTitle": "検索結果を CSV レポートに書き出す (Ctrl+E)",
     "rescanIndexTitle": "ディスクインデックスを再スキャンして保存 (F5 / Ctrl+R)",
     "syntaxHelpBtnTitle": "高度な検索構文と使用例を表示 (F1)",
@@ -1994,7 +2002,7 @@
     "syntaxExLogic2": "論理和 OR による複数条件検索",
     "syntaxExLogic3": "正規表現検索（app_数字 で始まるファイル名）",
     "syntaxExLogic4": "大文字・小文字を厳密に区別して検索",
-    "syntaxExLogic5": "中国語ピンイン頭文字・全拼での明示検索（例: wx）",
+    "syntaxExLogic5": "ピンイン頭文字・全拼での明示検索（例: wd で wendang）",
     "disableExtTip": "クリックして .{{ext}} を無効化",
     "enableExtTip": "クリックして .{{ext}} を有効化",
     "folderType": "フォルダー",
@@ -2004,8 +2012,8 @@
     "visibleColumns": "表示列と幅バランス",
     "resetViewPrefTooltip": "表示密度、列レイアウト、ドライブ選択、拡張子設定を初期状態に戻します",
     "toastResetAllPref": "すべての表示・検索設定を初期値に戻しました",
-    "menuCopyFile": "ファイル自体をコピー（チャットやフォルダーへ貼付可）",
-    "copiedFile": "ファイルをクリップボードにコピーしました（そのまま貼り付け可能）",
+    "menuCopyFile": "ファイルをコピー",
+    "copiedFile": "ファイルをクリップボードにコピーしました",
     "menuQuickLook": "クイックルックでプレビュー",
     "syntaxExSize": "ファイルサイズで絞り込み（>10mb、1mb..50mb、empty/tiny/huge 対応）",
     "syntaxExDate": "更新日で絞り込み（today / yesterday / thisweek / 2026-09 対応）",
@@ -2233,7 +2241,9 @@
     "menuExcludeParentFolder": "親フォルダーを検索から除外",
     "menuExcludeParentFolderTip": "このファイルを含むフォルダー全体を今後の検索結果から非表示にします",
     "excludedFolderToast": "フォルダーを除外しました: {{path}}",
-    "undoAction": "元に戻す"
+    "undoAction": "元に戻す",
+    "copyFileShortcut": "ファイルをコピー",
+    "copyFileTitle": "選択したファイルをクリップボードにコピー (Ctrl+C)"
   },
   "searchPage": {
     "tabSettings": "基本設定・ホットキー",
@@ -2248,7 +2258,7 @@
     "openNow": "検索バーを開く",
     "searchBehavior": "検索の挙動と設定",
     "pinyinTitle": "中国語ピンイン検索",
-    "pinyinDesc": "中国語ファイル名のピンイン頭文字や全拼での検索に対応します",
+    "pinyinDesc": "中国語ピンイン頭文字（例: wd で wendang）と全拼検索に対応",
     "matchPathTitle": "既定でフルパス全体を検索",
     "matchPathDesc": "ファイル名だけでなく親ディレクトリを含むフルパス全体を対象にします",
     "caseTitle": "大文字・小文字を区別",
@@ -2391,7 +2401,7 @@
     "syntaxSectionRegex": "Regular Expression Quick Reference",
     "groupExclusions": "除外フォルダーとプライバシー保護",
     "hideOnBlurTitle": "フォーカス喪失時に自動で隠す",
-    "hideOnBlurDesc": "検索ウィンドウの外側をクリックすると自動で閉じます（Listary / uTools 風）。ピン留め中、QuickLook プレビュー中、またはメニュー表示中は開いたままになります。",
+    "hideOnBlurDesc": "検索ウィンドウ外をクリックすると自動で閉じます。ピン留め・プレビュー・メニュー表示中は維持されます。",
     "hideOnOpenTitle": "結果を開いた後に自動で隠す",
     "hideOnOpenDesc": "ダブルクリックや Enter でファイル・フォルダー・アプリ・コマンド・ブックマークを開いた直後に検索窓を自動で閉じます（ピン留め時は維持）。",
     "clearQueryOnShowTitle": "再呼び出し時に前回の検索語をクリア",
@@ -2419,13 +2429,13 @@
     "pillKeycast": "キー表示",
     "pillKeycastFullDesc": "キー入力表示（打鍵・ショートカットを画面へリアルタイム表示）",
     "pillCapture": "キャプチャ",
-    "pillCaptureFullDesc": "キャプチャ＆録画（範囲キャプチャ・スクロール・ピン留め・録画）",
+    "pillCaptureFullDesc": "撮影と録画（注釈ピン・オフライン OCR・原位置翻訳・自動ズーム録画）",
     "pillSearch": "検索",
-    "pillSearchFullDesc": "ファイル検索（NTFS 高速ファイル名・全文検索）",
+    "pillSearchFullDesc": "統合クイック検索（ファイル・全文・ブックマーク・アプリ・コマンド）",
     "pillSpotlight": "マウス演出",
-    "pillSpotlightFullDesc": "マウス演出（スポットライト・クリック波紋・カーソル軌跡）",
+    "pillSpotlightFullDesc": "プレゼン演出（Ctrl 2回押しスムーズ拡大・スポットライト・波紋）",
     "pillDialog": "ダイアログ",
-    "pillDialogFullDesc": "ダイアログ拡張（ファイル選択での即移動＆パス記憶）",
+    "pillDialogFullDesc": "ダイアログ快跳（Ctrl+G フォルダ移動・内包検索・パス記憶）",
     "quickControls": "モジュールクイック切替",
     "enabled": "有効",
     "disabled": "無効",
@@ -2622,7 +2632,22 @@
     "clickColorsSectionDesc": "左・右・中クリックごとに個別のエフェクト色を設定できます",
     "spotlightGroupTitle": "Cursor Spotlight Focus",
     "clickRippleGroupTitle": "Mouse Click Ripple Effects",
-    "mouseTrailGroupTitle": "Mouse Movement Trail Effects"
+    "mouseTrailGroupTitle": "Mouse Movement Trail Effects",
+    "doubleCtrlModeTitle": "Ctrl 2回押しプレゼンモード",
+    "doubleCtrlModeDesc": "従来のスポットライト暗転、またはクリックや入力を保ったシネマ風スムーズ拡大を選択します",
+    "modeSpotlight": "クラシック・スポットライト",
+    "modeSpotlightDesc": "画面を暗転させカーソル周辺を明るく照らし、ポインター位置を即座に強調します",
+    "modeCinemaZoom": "シネマ・スムーズ拡大",
+    "modeCinemaZoomDesc": "カーソル位置へ滑らかにズームインし、拡大中も通常のクリックや文字入力が可能です",
+    "modeCinemaZoomRing": "シネマ拡大 + カーソルリング",
+    "modeCinemaZoomRingDesc": "スムーズ拡大に暗転なしのクリアなカーソルガイドリングを重ねて表示します",
+    "zoomLevelTitle": "既定の拡大倍率",
+    "zoomLevelDesc": "Ctrl 2回押し時の初期ズーム倍率（1.25x 〜 4.0x）",
+    "zoomFollowCursor": "スムーズカーソル追従",
+    "zoomFollowCursorDesc": "中央デッドゾーンで細かなクリック時の揺れを抑え、画面端に近づくと滑らかにパンします",
+    "zoomWheelAdjust": "Ctrl + ホイールで倍率調整",
+    "zoomWheelAdjustDesc": "拡大中に Ctrl を押しながらホイール回転（または Ctrl + / -）で無段階に倍率を変更します",
+    "zoomUsageHint": "もう一度 Ctrl を2回押すか Esc キーで 1.0x へ滑らかに戻ります。拡大中もクリック・ドラッグ・文字入力がそのまま使えます。"
   },
   "window": {
     "minimize": "最小化",
@@ -3148,7 +3173,7 @@
     "badgeByokEncrypted": "BYOK・DPAPI 暗号化",
     "freePrimaryTitle": "無料優先チャンネル",
     "freePrimaryDesc": "優先チャンネルのエラーや制限時に自動的に予備チャンネルへ切り替えます。",
-    "freePrimaryEdge": "Microsoft Edge 翻訳を優先",
+    "freePrimaryEdge": "Microsoft Edge 翻訳優先（推奨）",
     "freePrimaryGoogle": "Google 翻訳を優先",
     "targetLangTitle": "デフォルト翻訳先言語",
     "targetLangDesc": "背景や文字色を保持したまま、スクリーンショット上の元の位置に訳文を自然に配置します。",
@@ -3657,5 +3682,23 @@
     "viewAllOnGitHub": "GitHub ですべて表示",
     "gotItBtn": "了解しました",
     "clearSearch": "検索をクリア"
+  },
+  "hotkeyExclusion": {
+    "emptyHint": "除外アプリは未設定です",
+    "emptyPerHotkey": "すべてのアプリで有効です。プロセス名を追加すると自動で譲歩します",
+    "emptyGlobal": "全体の自動譲歩アプリは未設定です",
+    "removeAppAria": "{{app}} を削除",
+    "inputPlaceholder": "例: ssms.exe, emacs.exe",
+    "addBtn": "追加",
+    "pickWindowBtn": "実行中アプリから選択",
+    "pickerTitle": "自動譲歩するアプリを選択",
+    "pickerPerHotkeyTitle": "このショートカットを譲歩するアプリを選択",
+    "pickerGlobalTitle": "全ショートカットを譲歩するアプリを選択",
+    "saveFailed": "除外アプリの保存に失敗しました",
+    "badgeTooltip": "自動譲歩対象: {{apps}}",
+    "configurePerHotkeyTip": "アプリ別の自動譲歩ルールを設定",
+    "excludedCountBadge": "{{count}} 件譲歩",
+    "modalTitle": "アプリ別自動譲歩 — {{name}}",
+    "modalDesc": "登録されたプロセスが前面にある場合、このショートカットのみ前面アプリへ解放し、他の Tools3000 ショートカットは有効のままにします。"
   }
 }

@@ -15,10 +15,12 @@ import {
   Select,
   Button,
   CodeBadge,
+  Modal,
   ConfirmModal,
   PageSkeleton,
 } from '../components/UIKit';
 import { CloudBackupCard } from '../components/business/CloudBackupCard';
+import { HotkeyAppExclusionBar } from '../components/business/HotkeyAppExclusionBar';
 import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import type { NavId } from '../config/routes';
@@ -63,6 +65,7 @@ import {
   Sparkles,
   MemoryStick,
   ArrowUpRight,
+  Shield,
 } from 'lucide-react';
 import './GeneralPage.css';
 
@@ -134,9 +137,55 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
   const [refreshingHotkeys, setRefreshingHotkeys] = useState(false);
   const [isRestartingElevated, setIsRestartingElevated] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
+  const [globalExcludedApps, setGlobalExcludedApps] = useState<string[]>([]);
+  const [editingExclusionHotkey, setEditingExclusionHotkey] = useState<HotkeyEntry | null>(null);
   const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
 
   const { t, i18n } = useTranslation();
+
+  const handleSaveGlobalExclusions = async (nextApps: string[]) => {
+    const previous = globalExcludedApps;
+    setGlobalExcludedApps(nextApps);
+    try {
+      const res = await bridgeRequest<OperationResult & { apps?: string[] }>('hotkey.setGlobalExclusions', {
+        apps: nextApps,
+      });
+      if (res && res.success === false) {
+        throw new Error(res.error || t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'));
+      }
+      if (res && Array.isArray(res.apps)) {
+        setGlobalExcludedApps(res.apps);
+      }
+    } catch (error) {
+      setGlobalExcludedApps(previous);
+      toast.error(t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'), {
+        description: String(error),
+      });
+    }
+  };
+
+  const handleSavePerHotkeyExclusions = async (hotkeyName: string, nextApps: string[]) => {
+    try {
+      const res = await bridgeRequest<OperationResult>('hotkey.setHotkeyExclusions', {
+        name: hotkeyName,
+        apps: nextApps,
+      });
+      if (res && res.success === false) {
+        throw new Error(res.error || t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'));
+      }
+      const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
+      if (Array.isArray(refreshed)) {
+        const sorted = sortHotkeysByPriority(refreshed);
+        setHotkeys(sorted);
+        const updated = sorted.find((item) => item.name === hotkeyName) ?? null;
+        setEditingExclusionHotkey(updated);
+      }
+    } catch (error) {
+      toast.error(t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'), {
+        description: String(error),
+      });
+    }
+  };
 
   const handleAccentChange = useCallback(async (id: string) => {
     if (!isAccentColor(id)) return;
@@ -186,7 +235,8 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
     Promise.all([
       bridgeRequest<GeneralSettings>('general.getSettings'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
-    ]).then(([res, hotkeyData]) => {
+      bridgeRequest<{ global?: string[] }>('hotkey.getExclusions').catch(() => ({ global: [] })),
+    ]).then(([res, hotkeyData, exclusionData]) => {
       if (cancelled) return;
       setSettings(prev => ({ ...prev, ...res }));
       if (isAccentColor(res.accentColor)) {
@@ -207,6 +257,9 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         void i18n.changeLanguage(targetLang);
       }
       setHotkeys(Array.isArray(hotkeyData) ? sortHotkeysByPriority(hotkeyData) : []);
+      if (exclusionData && Array.isArray(exclusionData.global)) {
+        setGlobalExcludedApps(exclusionData.global);
+      }
     })
     .catch((error) => {
       if (cancelled) return;
@@ -733,6 +786,27 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
                             </div>
                           </div>
                           <div className="general-page__hotkey-control">
+                            <button
+                              type="button"
+                              className={`general-page__hotkey-exclude-btn ${(hk.excludedApps?.length ?? 0) > 0 ? 'has-apps' : ''}`}
+                              onClick={() => setEditingExclusionHotkey(hk)}
+                              title={
+                                (hk.excludedApps?.length ?? 0) > 0
+                                  ? t('hotkeyExclusion.badgeTooltip', 'Auto-yields in: {{apps}}', {
+                                      apps: hk.excludedApps!.join(', '),
+                                    })
+                                  : t('hotkeyExclusion.configurePerHotkeyTip', 'Configure per-app auto-yield rules')
+                              }
+                            >
+                              <Shield size={13} aria-hidden="true" />
+                              {(hk.excludedApps?.length ?? 0) > 0 && (
+                                <span>
+                                  {t('hotkeyExclusion.excludedCountBadge', 'Yields {{count}}', {
+                                    count: hk.excludedApps!.length,
+                                  })}
+                                </span>
+                              )}
+                            </button>
                             <HotkeyRecorder
                               id={`general-hotkey-${hk.name.replace(/\s+/g, '-').toLowerCase()}`}
                               value={hk.shortcut}
@@ -748,8 +822,55 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
               ))}
             </div>
           )}
+
+          <div className="general-page__hotkey-global-exclusions">
+            <SettingRow
+              layout="vertical"
+              label={t('general.globalHotkeyExclusionsTitle', 'Global Hotkey Auto-Yield Apps')}
+              description={t(
+                'general.globalHotkeyExclusionsDesc',
+                'Automatically yields all Tools3000 global shortcuts when any listed app is focused, and restores them immediately on focus switch',
+              )}
+            >
+              <HotkeyAppExclusionBar
+                apps={globalExcludedApps}
+                compact
+                emptyText={t('hotkeyExclusion.emptyGlobal', 'No global do-not-disturb apps configured')}
+                pickerTitle={t('hotkeyExclusion.pickerGlobalTitle', 'Pick App to Auto-Yield All Global Shortcuts')}
+                onChange={(nextApps) => void handleSaveGlobalExclusions(nextApps)}
+              />
+            </SettingRow>
+          </div>
         </Card>
       </SettingGroup>
+
+      {editingExclusionHotkey && (
+        <Modal
+          open
+          title={t('hotkeyExclusion.modalTitle', 'Auto-Yield Apps — {{name}}', {
+            name: resolveHotkeyLabel(t, editingExclusionHotkey.name),
+          })}
+          onClose={() => setEditingExclusionHotkey(null)}
+          footer={
+            <Button variant="primary" onClick={() => setEditingExclusionHotkey(null)}>
+              {t('common.done', 'Done')}
+            </Button>
+          }
+        >
+          <p className="general-page__exclusion-modal-desc">
+            {t(
+              'hotkeyExclusion.modalDesc',
+              'When any listed process is in the foreground, only this shortcut is released to the active app while all other Tools3000 shortcuts stay active.',
+            )}
+          </p>
+          <HotkeyAppExclusionBar
+            apps={editingExclusionHotkey.excludedApps ?? []}
+            emptyText={t('hotkeyExclusion.emptyPerHotkey', 'Active in all apps; add process names to auto-yield')}
+            pickerTitle={t('hotkeyExclusion.pickerPerHotkeyTitle', 'Pick App to Auto-Yield This Shortcut')}
+            onChange={(nextApps) => void handleSavePerHotkeyExclusions(editingExclusionHotkey.name, nextApps)}
+          />
+        </Modal>
+      )}
 
       {/* ── 4. 版本更新与新手引导 ───────────────────────────────────── */}
       <SettingGroup title={t('general.updatesAndGuide')} icon={<Sparkles size={20} strokeWidth={2.5} />}>

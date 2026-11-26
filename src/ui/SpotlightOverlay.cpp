@@ -1,4 +1,5 @@
 #include "ui/SpotlightOverlay.h"
+#include "ui/CinemaZoomEngine.h"
 #include "core/logger/Logger.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/MouseHook.h"
@@ -94,6 +95,18 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
     m_settings.holdDurationMs = (std::max)(0, rawHoldDurationMs);
     m_settings.shakeThreshold = cfg.get<int>("/spotlight/shakeThreshold", 4);
     m_settings.spotlightAnimStyle = cfg.get<std::string>("/spotlight/spotlightAnimStyle", "inward_gravity");
+    {
+        const std::string mode = cfg.get<std::string>("/spotlight/doubleCtrlMode", "spotlight");
+        if (mode == "cinema_zoom" || mode == "cinema_zoom_ring" || mode == "spotlight") {
+            m_settings.doubleCtrlMode = mode;
+        } else {
+            m_settings.doubleCtrlMode = "spotlight";
+        }
+        m_settings.zoomLevel = CinemaZoomEngine::clampZoomLevel(
+            static_cast<float>(cfg.get<double>("/spotlight/zoomLevel", 2.0)));
+        m_settings.zoomFollowCursor = cfg.get<bool>("/spotlight/zoomFollowCursor", true);
+        m_settings.zoomWheelAdjust = cfg.get<bool>("/spotlight/zoomWheelAdjust", true);
+    }
 
     m_settings.clickRippleEnabled = cfg.get<bool>("/spotlight/clickRippleEnabled", false);
     m_settings.clickRippleStyle = cfg.get<std::string>("/spotlight/clickRippleStyle", "sparkle_burst");
@@ -122,6 +135,9 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
 
     // 接入通用高精度鼠标流核心基础设施
     tools3000::core::MouseStreamCore::instance().setWakeEvent(m_wakeEvent);
+    CinemaZoomEngine::instance().setOnSessionEndedCallback([this]() {
+        onCinemaZoomEnded();
+    });
     {
         std::lock_guard lock(m_mutex);
         updateNeedMouseMoveLocked();
@@ -133,6 +149,8 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
 }
 
 void SpotlightOverlay::shutdown() {
+    CinemaZoomEngine::instance().setOnSessionEndedCallback(nullptr);
+    CinemaZoomEngine::instance().shutdown();
     tools3000::core::MouseStreamCore::instance().setWakeEvent(nullptr);
     {
         std::lock_guard lock(m_mutex);
@@ -198,17 +216,36 @@ void SpotlightOverlay::updateNeedMouseMoveLocked() {
 
 void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {
     SpotlightSettings persisted;
+    bool shouldDismissZoom = false;
     {
         std::lock_guard lock(m_mutex);
         m_settings = settings;
         m_settings.holdDurationMs = (std::max)(0, m_settings.holdDurationMs);
+        if (m_settings.doubleCtrlMode != "spotlight" &&
+            m_settings.doubleCtrlMode != "cinema_zoom" &&
+            m_settings.doubleCtrlMode != "cinema_zoom_ring") {
+            m_settings.doubleCtrlMode = "spotlight";
+        }
+        m_settings.zoomLevel = CinemaZoomEngine::clampZoomLevel(m_settings.zoomLevel);
         if (!m_settings.enabled) {
             m_animState = AnimState::Idle;
+            m_ringOnlyMode = false;
             m_currentAlpha = 0.0f;
             m_ripples.clear();
             m_trail.clear();
+            shouldDismissZoom = true;
             hideNow();
         } else {
+            if (m_settings.doubleCtrlMode == "spotlight") {
+                shouldDismissZoom = true;
+                if (m_ringOnlyMode) {
+                    m_ringOnlyMode = false;
+                    m_animState = AnimState::Idle;
+                }
+            } else if (m_settings.doubleCtrlMode == "cinema_zoom" && m_ringOnlyMode) {
+                m_ringOnlyMode = false;
+                m_animState = AnimState::Idle;
+            }
             if (!m_settings.clickRippleEnabled) {
                 m_ripples.clear();
             }
@@ -223,6 +260,16 @@ void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {
         persisted = m_settings;
     }
 
+    if (shouldDismissZoom) {
+        CinemaZoomEngine::instance().dismiss(false);
+    } else {
+        CinemaZoomEngine::instance().updateConfig(CinemaZoomConfig{
+            persisted.zoomLevel,
+            persisted.zoomFollowCursor,
+            persisted.zoomWheelAdjust,
+        });
+    }
+
     tools3000::core::ConfigManager::instance().mergePatch({
         {"spotlight", {
             {"enabled", persisted.enabled},
@@ -235,6 +282,10 @@ void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {
             {"holdDurationMs", persisted.holdDurationMs},
             {"shakeThreshold", persisted.shakeThreshold},
             {"spotlightAnimStyle", persisted.spotlightAnimStyle},
+            {"doubleCtrlMode", persisted.doubleCtrlMode},
+            {"zoomLevel", persisted.zoomLevel},
+            {"zoomFollowCursor", persisted.zoomFollowCursor},
+            {"zoomWheelAdjust", persisted.zoomWheelAdjust},
             {"clickRippleEnabled", persisted.clickRippleEnabled},
             {"clickRippleStyle", persisted.clickRippleStyle},
             {"mouseTrailEnabled", persisted.mouseTrailEnabled},
@@ -274,6 +325,9 @@ void SpotlightOverlay::resetDefaults() {
 }
 
 bool SpotlightOverlay::isActive() const {
+    if (CinemaZoomEngine::instance().isActive()) {
+        return true;
+    }
     std::lock_guard lock(m_mutex);
     const_cast<SpotlightOverlay*>(this)->drainRawMovesLocked();
     return m_animState != AnimState::Idle || !m_ripples.empty() || !m_trail.empty() || !tools3000::core::MouseStreamCore::instance().empty();
@@ -282,18 +336,27 @@ bool SpotlightOverlay::isActive() const {
 SpotlightOverlay::ViewportBounds SpotlightOverlay::calculateViewportBoundsLocked() const {
     const_cast<SpotlightOverlay*>(this)->drainRawMovesLocked();
 
-    if (m_animState != AnimState::Idle) {
+    if (m_animState != AnimState::Idle && !m_ringOnlyMode) {
         // 聚光灯全屏暗角模式：物理尺寸微调避让 1 像素，打破 Explorer 全屏独占判定
         auto fb = tools3000::core::MouseViewportManager::computeFullscreenAvoidanceBounds();
         return {fb.x, fb.y, fb.width, fb.height, true};
     }
 
-    if (m_ripples.empty() && m_trail.empty()) {
+    if (m_animState == AnimState::Idle && m_ripples.empty() && m_trail.empty()) {
         return {0, 0, 0, 0, false};
     }
 
     // 局部自适应动态包围盒 (Dynamic Union Bounding Box)
     int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
+    if (m_animState != AnimState::Idle && m_ringOnlyMode) {
+        const float ringScale = std::clamp(
+            tools3000::core::MouseViewportManager::getDpiScaleForPoint(m_targetPos), 1.0f, 3.0f);
+        const int r = static_cast<int>(std::ceil(38.0f * ringScale));
+        minX = (std::min)(minX, static_cast<int>(m_targetPos.x - r));
+        minY = (std::min)(minY, static_cast<int>(m_targetPos.y - r));
+        maxX = (std::max)(maxX, static_cast<int>(m_targetPos.x + r));
+        maxY = (std::max)(maxY, static_cast<int>(m_targetPos.y + r));
+    }
     for (const auto& rip : m_ripples) {
         const float ripScale = std::clamp(
             tools3000::core::MouseViewportManager::getDpiScaleForPoint(rip.pt), 1.0f, 3.0f);
@@ -343,6 +406,7 @@ void SpotlightOverlay::hideNow() {
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
         m_animState = AnimState::Idle;
+        m_ringOnlyMode = false;
         m_currentAlpha = 0.0f;
         m_focusProgress = 0.0f;
         m_scalePulse = 1.0f;

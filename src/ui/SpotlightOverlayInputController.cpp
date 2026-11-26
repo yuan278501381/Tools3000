@@ -1,4 +1,5 @@
 #include "ui/SpotlightOverlay.h"
+#include "ui/CinemaZoomEngine.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
 #include "core/events/EventBus.h"
@@ -38,47 +39,103 @@ int randomIntInclusive(int minVal, int maxVal) {
 }
 }  // namespace
 
-void SpotlightOverlay::trigger(POINT pt, bool autoFetch) {
-    std::lock_guard lock(m_mutex);
-    if (!m_settings.enabled) return;
+void SpotlightOverlay::trigger(POINT pt, bool autoFetch, bool allowCinemaZoom) {
+    bool useCinemaZoom = false;
+    bool useRingCompanion = false;
+    CinemaZoomConfig zoomCfg{};
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_settings.enabled) return;
 
-    // 截图或长截图浮层激活期间（如连续按 Ctrl+Z / Ctrl+C 等），自动规避双击 Ctrl 触发全局鼠标聚光灯
-    if (isCaptureOverlayVisible()) {
-        return;
-    }
-
-    if (m_settings.autoBypassFullscreen) {
-        auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
-        HWND fg = GetForegroundWindow();
-        if (dispatcher.isInitialized() && dispatcher.isOwnerThread() && fg &&
-            m_cachedForegroundHwnd.load(std::memory_order_acquire) != reinterpret_cast<uintptr_t>(fg)) {
-            refreshFullscreenBypassState(fg);
+        // 截图或长截图浮层激活期间（如连续按 Ctrl+Z / Ctrl+C 等），自动规避双击 Ctrl 触发全局鼠标聚光灯或放大
+        if (isCaptureOverlayVisible()) {
+            return;
         }
-        if (fg && isFullscreenBypassActiveFast()) {
-            LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+
+        if (m_settings.autoBypassFullscreen) {
+            auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+            HWND fg = GetForegroundWindow();
+            if (dispatcher.isInitialized() && dispatcher.isOwnerThread() && fg &&
+                m_cachedForegroundHwnd.load(std::memory_order_acquire) != reinterpret_cast<uintptr_t>(fg)) {
+                refreshFullscreenBypassState(fg);
+            }
+            if (fg && isFullscreenBypassActiveFast()) {
+                LOG_INFO("前台处于全屏独占应用，自动免打扰跳过鼠标聚光灯触发: hwnd=0x{:X}", reinterpret_cast<uintptr_t>(fg));
+                return;
+            }
+        }
+
+        if (autoFetch || (pt.x == 0 && pt.y == 0)) {
+            GetCursorPos(&pt);
+        }
+
+        if (allowCinemaZoom &&
+            (m_settings.doubleCtrlMode == "cinema_zoom" || m_settings.doubleCtrlMode == "cinema_zoom_ring")) {
+            useCinemaZoom = true;
+            useRingCompanion = (m_settings.doubleCtrlMode == "cinema_zoom_ring");
+            zoomCfg.targetZoom = m_settings.zoomLevel;
+            zoomCfg.followCursor = m_settings.zoomFollowCursor;
+            zoomCfg.wheelAdjust = m_settings.zoomWheelAdjust;
+        } else {
+            m_targetPos = pt;
+            m_ringOnlyMode = false;
+            m_hideRequested.store(false, std::memory_order_release);
+            m_animState = AnimState::FadeIn;
+            m_animStartTime = std::chrono::steady_clock::now();
+            m_currentAlpha = 0.05f;
+            m_focusProgress = 0.0f;
+            m_scalePulse = 1.0f;
+            m_reticleAngle = 0.0f;
+            updateNeedMouseMoveLocked();
+
+            LOG_INFO("SpotlightOverlay: 聚光灯已触发, pos=({},{})", pt.x, pt.y);
+            wakeRenderThread();
             return;
         }
     }
 
-    if (autoFetch || (pt.x == 0 && pt.y == 0)) {
-        GetCursorPos(&pt);
+    if (useCinemaZoom) {
+        const bool engaged = CinemaZoomEngine::instance().toggle(pt, zoomCfg);
+        std::lock_guard lock(m_mutex);
+        if (engaged && useRingCompanion) {
+            m_targetPos = pt;
+            m_ringOnlyMode = true;
+            m_hideRequested.store(false, std::memory_order_release);
+            m_animState = AnimState::FadeIn;
+            m_animStartTime = std::chrono::steady_clock::now();
+            m_currentAlpha = 0.05f;
+            m_focusProgress = 0.0f;
+            m_scalePulse = 1.0f;
+            m_reticleAngle = 0.0f;
+            updateNeedMouseMoveLocked();
+            wakeRenderThread();
+        } else if (!engaged && m_ringOnlyMode && m_animState != AnimState::Idle) {
+            m_animState = AnimState::FadeOut;
+            m_animStartTime = std::chrono::steady_clock::now();
+            wakeRenderThread();
+        }
     }
-    m_targetPos = pt;
+}
 
-    m_hideRequested.store(false, std::memory_order_release);
-    m_animState = AnimState::FadeIn;
-    m_animStartTime = std::chrono::steady_clock::now();
-    m_currentAlpha = 0.05f;
-    m_focusProgress = 0.0f;
-    m_scalePulse = 1.0f;
-    m_reticleAngle = 0.0f;
-    updateNeedMouseMoveLocked();
-
-    LOG_INFO("SpotlightOverlay: 聚光灯已触发, pos=({},{})", pt.x, pt.y);
-    wakeRenderThread();
+void SpotlightOverlay::onCinemaZoomEnded() {
+    std::lock_guard lock(m_mutex);
+    if (!m_ringOnlyMode) return;
+    if (m_animState != AnimState::Idle) {
+        m_animState = AnimState::FadeOut;
+        m_animStartTime = std::chrono::steady_clock::now();
+        wakeRenderThread();
+    } else {
+        m_ringOnlyMode = false;
+        updateNeedMouseMoveLocked();
+    }
 }
 
 void SpotlightOverlay::dismiss() {
+    const bool zoomActive = CinemaZoomEngine::instance().isActive();
+    if (zoomActive) {
+        CinemaZoomEngine::instance().dismiss(false);
+    }
+
     std::lock_guard lock(m_mutex);
     if (m_animState == AnimState::Idle) {
         const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
@@ -105,11 +162,15 @@ void SpotlightOverlay::onKeyboardEvent(DWORD vkCode, WPARAM wParam) {
     bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
     bool isCtrl = (vkCode == VK_CONTROL || vkCode == VK_LCONTROL || vkCode == VK_RCONTROL);
 
+    const bool cinemaZoomActive = CinemaZoomEngine::instance().isActive();
     std::lock_guard lock(m_mutex);
 
     if (isDown) {
         if (vkCode == VK_ESCAPE) {
             m_ctrlState = CtrlDoubleTapState::Idle;
+            if (cinemaZoomActive) {
+                CinemaZoomEngine::instance().dismiss(false);
+            }
             const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
             if (m_animState != AnimState::Idle ||
                 m_visible.load(std::memory_order_relaxed) ||
@@ -120,9 +181,21 @@ void SpotlightOverlay::onKeyboardEvent(DWORD vkCode, WPARAM wParam) {
             return;
         }
 
-        if (m_animState != AnimState::Idle) {
+        // 仅在经典全屏聚光灯模式下按任意键退出；电影放大模式下全程允许自由打字（包括 Ctrl+C/V 等组合键）
+        if (m_animState != AnimState::Idle && !m_ringOnlyMode && !cinemaZoomActive) {
             dismiss();
             return;
+        }
+
+        // 电影放大活跃期间：支持 Ctrl+(=/+/- /0) 快捷键精细调倍，同时放行一切正常打字输入
+        if (cinemaZoomActive && m_ctrlIsPhysicallyDown && m_settings.zoomWheelAdjust && !isCtrl) {
+            if (vkCode == VK_OEM_PLUS || vkCode == VK_ADD) {
+                CinemaZoomEngine::instance().adjustZoomByStep(0.25f);
+            } else if (vkCode == VK_OEM_MINUS || vkCode == VK_SUBTRACT) {
+                CinemaZoomEngine::instance().adjustZoomByStep(-0.25f);
+            } else if (vkCode == '0' || vkCode == VK_NUMPAD0) {
+                CinemaZoomEngine::instance().resetZoomToConfigured();
+            }
         }
 
         if (isCtrl) {
@@ -201,29 +274,32 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
     // 鼠标点击重置双击 Ctrl 状态机（防止边点击鼠标边按 Ctrl 发生误判）
     m_ctrlState = CtrlDoubleTapState::Idle;
 
-    // 演示者模式：聚光灯活跃期间点击鼠标，在当前位置激发全屏水波涟漪并优雅退出
+    // 演示者模式：经典全屏聚光灯活跃期间点击鼠标退出；电影放大模式下点击鼠标绝不退出，允许全程真实点击与拖拽
     // 核心安全红线：严禁在输入线程同步调用 render() 与 SetWindowPos()，仅更新状态并异步唤醒 UI 线程
-    if (m_animState == AnimState::FadeIn || m_animState == AnimState::Holding) {
-        LOG_DEBUG("SpotlightOverlay: 聚光灯下点击鼠标退出 (button={})", button);
-        m_animState = AnimState::FadeOut;
-        m_animStartTime = std::chrono::steady_clock::now();
-        m_targetPos = pt;
-        wakeRenderThread();
-        return;
-    }
+    const bool cinemaZoomActive = CinemaZoomEngine::instance().isActive();
+    if (!cinemaZoomActive && !m_ringOnlyMode) {
+        if (m_animState == AnimState::FadeIn || m_animState == AnimState::Holding) {
+            LOG_DEBUG("SpotlightOverlay: 聚光灯下点击鼠标退出 (button={})", button);
+            m_animState = AnimState::FadeOut;
+            m_animStartTime = std::chrono::steady_clock::now();
+            m_targetPos = pt;
+            wakeRenderThread();
+            return;
+        }
 
-    if (m_animState == AnimState::FadeOut) {
-        hideNow();
-        return;
-    }
+        if (m_animState == AnimState::FadeOut) {
+            hideNow();
+            return;
+        }
 
-    const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
-    if (m_animState == AnimState::Idle &&
-        (m_visible.load(std::memory_order_relaxed) ||
-         (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
-         m_hasDcompSurface.load(std::memory_order_acquire))) {
-        hideNow();
-        return;
+        const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+        if (m_animState == AnimState::Idle &&
+            (m_visible.load(std::memory_order_relaxed) ||
+             (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
+             m_hasDcompSurface.load(std::memory_order_acquire))) {
+            hideNow();
+            return;
+        }
     }
 
     if (!m_settings.enabled || !m_settings.clickRippleEnabled) return;
@@ -574,7 +650,7 @@ void SpotlightOverlay::processMouseMoveLocked(POINT pt, bool bypass) {
                 if (m_shakeReversals >= threshold) {
                     m_shakeReversals = 0;
                     m_shakeWindowStart = {};
-                    trigger(pt, false);
+                    trigger(pt, false, /*allowCinemaZoom=*/false);
                 }
             } else {
                 m_lastMoveDir = dir;
@@ -661,8 +737,8 @@ void SpotlightOverlay::tickAnimation() {
                 m_currentAlpha = 1.0f;
                 m_focusProgress = 1.0f;
                 m_scalePulse = 1.0f;
-                if (m_ctrlIsPhysicallyDown) {
-                    // 用户持续按住 Ctrl 键不放时保持聚光灯常亮
+                if (m_ctrlIsPhysicallyDown || m_ringOnlyMode) {
+                    // 用户持续按住 Ctrl 键不放或处于电影放大伴随光环态时保持常亮，直到放大退出
                     m_holdStartTime = now;
                 } else if (m_settings.holdDurationMs > 0) {
                     const auto holdElapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -684,6 +760,7 @@ void SpotlightOverlay::tickAnimation() {
 
                 if (elapsedMs >= fadeOutDuration || m_currentAlpha <= 0.01f) {
                     m_animState = AnimState::Idle;
+                    m_ringOnlyMode = false;
                     m_currentAlpha = 0.0f;
                     m_focusProgress = 0.0f;
                     m_scalePulse = 1.0f;
@@ -744,6 +821,7 @@ void SpotlightOverlay::tickAnimation() {
                 snapshot.ripples = m_ripples;
                 snapshot.trail = m_trail;
                 snapshot.bounds = calculateViewportBoundsLocked();
+                snapshot.ringOnlyMode = m_ringOnlyMode;
             }
         }
     } // 释放 m_mutex！锁持有时间通常 < 1μs

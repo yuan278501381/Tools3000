@@ -2851,6 +2851,7 @@ export default function SearchApp() {
           onRebuildIndex={() => void rebuildIndex()}
           onOpenResult={(res) => void openResult(res)}
           onOpenFolderResult={(res) => void openFolderResult(res)}
+          onCopyFileResult={(res) => void copyFileResult(res)}
           onCopyPathResult={(res) => copyPathResult(res)}
           onExportResultsToCsv={() => void exportResultsToCsv()}
           onToggleSyntaxHelp={() => {

@@ -3602,6 +3602,90 @@ TEST(HotkeyManagerTest, RecordingPauseUnregistersAndRestoresOsHotkeys) {
     DestroyWindow(hwnd);
 }
 
+TEST(HotkeyManagerTest, AppExclusionYieldsSingleHotkeyAndRestoresOnFocusLeave) {
+    using tools3000::core::HotkeyDef;
+    using tools3000::core::HotkeyManager;
+    using tools3000::core::ModKey;
+
+    EXPECT_EQ(HotkeyManager::normalizeProcessName("  C:\\Program Files\\SSMS\\Ssms.EXE  "), "ssms.exe");
+    EXPECT_EQ(HotkeyManager::normalizeProcessName("emacs"), "emacs.exe");
+    EXPECT_EQ(HotkeyManager::normalizeProcessName("   "), "");
+
+    WNDCLASSEXW wcex{sizeof(WNDCLASSEXW)};
+    wcex.lpfnWndProc = DefWindowProcW;
+    wcex.hInstance = GetModuleHandleW(nullptr);
+    wcex.lpszClassName = L"Tools3000_AppExclusionHotkeyTestWnd";
+    RegisterClassExW(&wcex);
+    HWND hwnd = CreateWindowExW(
+        0, L"Tools3000_AppExclusionHotkeyTestWnd", L"Host", WS_POPUP,
+        0, 0, 10, 10, nullptr, nullptr, wcex.hInstance, nullptr);
+    HWND probeHwnd = CreateWindowExW(
+        0, L"Tools3000_AppExclusionHotkeyTestWnd", L"Probe", WS_POPUP,
+        0, 0, 10, 10, nullptr, nullptr, wcex.hInstance, nullptr);
+    ASSERT_NE(hwnd, nullptr);
+    ASSERT_NE(probeHwnd, nullptr);
+
+    auto& hotkeyMgr = HotkeyManager::instance();
+    hotkeyMgr.shutdown();
+    hotkeyMgr.initialize(hwnd);
+    hotkeyMgr.setFullscreenSuspended(false);
+    hotkeyMgr.setRemoteSuspended(false);
+    hotkeyMgr.setPaused(false);
+    hotkeyMgr.setGlobalExcludedApps({});
+    hotkeyMgr.setHotkeyExcludedApps("AppYieldTranslate", {"ssms.exe", "emacs.exe"});
+    hotkeyMgr.setHotkeyExcludedApps("AppYieldOther", {});
+
+    const HotkeyDef translateDef{ModKey::Ctrl | ModKey::Alt | ModKey::Shift, VK_F11};
+    const HotkeyDef otherDef{ModKey::Ctrl | ModKey::Alt | ModKey::Shift, VK_F12};
+    ASSERT_TRUE(hotkeyMgr.registerHotkey("AppYieldTranslate", translateDef, []() {}));
+    ASSERT_TRUE(hotkeyMgr.registerHotkey("AppYieldOther", otherDef, []() {}));
+
+    // 1. 焦点切入 ssms.exe：仅 AppYieldTranslate 交还 OS，AppYieldOther 仍保持占用且 getAllHotkeys 不误报冲突
+    hotkeyMgr.updateForegroundProcess("Ssms.EXE");
+    const UINT tMods = static_cast<UINT>(translateDef.modifiers) | MOD_NOREPEAT;
+    const UINT oMods = static_cast<UINT>(otherDef.modifiers) | MOD_NOREPEAT;
+
+    const BOOL translateClaimedInSsms = RegisterHotKey(probeHwnd, 0x7791, tMods, translateDef.virtualKey);
+    EXPECT_TRUE(translateClaimedInSsms);
+    if (translateClaimedInSsms) UnregisterHotKey(probeHwnd, 0x7791);
+
+    const BOOL otherClaimedInSsms = RegisterHotKey(probeHwnd, 0x7792, oMods, otherDef.virtualKey);
+    EXPECT_FALSE(otherClaimedInSsms);
+    if (otherClaimedInSsms) UnregisterHotKey(probeHwnd, 0x7792);
+
+    bool foundTranslate = false;
+    for (const auto& entry : hotkeyMgr.getAllHotkeys()) {
+        if (entry.name == "AppYieldTranslate") {
+            foundTranslate = true;
+            EXPECT_TRUE(entry.suspendedByApp);
+            EXPECT_TRUE(entry.registered);
+            EXPECT_FALSE(entry.conflict);
+            EXPECT_EQ(entry.excludedApps.size(), 2u);
+        }
+    }
+    EXPECT_TRUE(foundTranslate);
+
+    // 2. 切离至 chrome.exe：AppYieldTranslate 自动重新武装占用
+    hotkeyMgr.updateForegroundProcess("chrome.exe");
+    const BOOL translateClaimedInChrome = RegisterHotKey(probeHwnd, 0x7793, tMods, translateDef.virtualKey);
+    EXPECT_FALSE(translateClaimedInChrome);
+    if (translateClaimedInChrome) UnregisterHotKey(probeHwnd, 0x7793);
+
+    // 3. 全局免打扰名单命中 vmware.exe：两条热键全部交还 OS
+    hotkeyMgr.setGlobalExcludedApps({"vmware.exe"});
+    hotkeyMgr.updateForegroundProcess("vmware.exe");
+    const BOOL otherClaimedInVmware = RegisterHotKey(probeHwnd, 0x7794, oMods, otherDef.virtualKey);
+    EXPECT_TRUE(otherClaimedInVmware);
+    if (otherClaimedInVmware) UnregisterHotKey(probeHwnd, 0x7794);
+
+    // 清理全局状态以免污染后续测试
+    hotkeyMgr.setGlobalExcludedApps({});
+    hotkeyMgr.setHotkeyExcludedApps("AppYieldTranslate", {});
+    hotkeyMgr.shutdown();
+    DestroyWindow(probeHwnd);
+    DestroyWindow(hwnd);
+}
+
 TEST(LoggerTest, SetLevelTracePropagatesToUniversalFileSink) {
     const auto tempLogDir = std::filesystem::temp_directory_path() /
         (L"Tools3000_TraceSinkTest_" + std::to_wstring(GetCurrentProcessId()));

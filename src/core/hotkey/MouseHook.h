@@ -34,6 +34,7 @@ public:
 
     void setMouseActivityCallback(std::function<void(int button, long x, long y)> cb);
     void setRawMoveCallback(MouseRawMoveCallback cb);
+    void setPreInterceptor(MouseHookRawCallback interceptor);
     void setInterceptor(MouseHookRawCallback interceptor);
 
     bool isInstalled() const;
@@ -60,6 +61,11 @@ private:
     std::atomic<MouseRawMoveCallback*> m_rawMoveCallback{nullptr};
     std::unique_ptr<MouseRawMoveCallback> m_rawMoveCallbackHolder;
     std::vector<std::unique_ptr<MouseRawMoveCallback>> m_retiredRawMoveCallbacks;
+
+    std::atomic<bool> m_hasPreInterceptor{false};
+    std::atomic<MouseHookRawCallback*> m_preInterceptor{nullptr};
+    std::unique_ptr<MouseHookRawCallback> m_preInterceptorHolder;
+    std::vector<std::unique_ptr<MouseHookRawCallback>> m_retiredPreInterceptors;
 
     std::atomic<bool> m_hasInterceptor{false};
     std::atomic<MouseHookRawCallback*> m_interceptor{nullptr};

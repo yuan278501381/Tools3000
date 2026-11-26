@@ -871,7 +871,7 @@ export const CapturePage: FC = () => {
                 options={[
                   { value: 'edit', label: t('capture.pinActionEdit', 'Enter Markup Editor (Default)') },
                   { value: 'fold', label: t('capture.pinActionFold', 'Fold / Unfold Pin') },
-                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin (Snipaste Style)') },
+                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin') },
                 ]}
               />
             </SettingRow>
@@ -885,7 +885,7 @@ export const CapturePage: FC = () => {
                 onChange={(v) => updateCapture('pinMiddleClickAction', v as 'reset_scale' | 'close' | 'fold')}
                 options={[
                   { value: 'reset_scale', label: t('capture.pinActionResetScale', 'Reset to 1:1 Size (Default)') },
-                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin (Snipaste Style)') },
+                  { value: 'close', label: t('capture.pinActionClose', 'Close Pin') },
                   { value: 'fold', label: t('capture.pinActionFold', 'Fold / Unfold Pin') },
                 ]}
               />

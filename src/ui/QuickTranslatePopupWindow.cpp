@@ -287,6 +287,13 @@ std::string QuickTranslatePopupWindow::formatDirectionBadge(
     return src + " -> " + dst;
 }
 
+std::string QuickTranslatePopupWindow::nextQuickTargetLanguage(std::string_view currentOverride) noexcept {
+    if (currentOverride.empty()) return "zh-CN";
+    if (currentOverride == "zh-CN") return "en";
+    if (currentOverride == "en") return "ja";
+    return {};
+}
+
 bool QuickTranslatePopupWindow::initialize(HINSTANCE hInstance) {
     m_hInstance = hInstance ? hInstance : GetModuleHandleW(nullptr);
     m_shuttingDown.store(false, std::memory_order_release);
@@ -474,7 +481,11 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
 }
 
 void QuickTranslatePopupWindow::translateTextAsync(
-    const std::string& textUtf8, bool fromClipboard, POINT anchorPt, bool bypassCache) {
+    const std::string& textUtf8,
+    bool fromClipboard,
+    POINT anchorPt,
+    bool bypassCache,
+    const std::string& targetLangOverride) {
     if (m_shuttingDown.load(std::memory_order_acquire)) {
         return;
     }
@@ -489,12 +500,13 @@ void QuickTranslatePopupWindow::translateTextAsync(
 
     auto& svc = tools3000::core::translate::TranslationService::instance();
     const auto settings = svc.loadSettings();
-    const std::string effectiveTarget =
-        tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
-            {cleaned},
-            settings.targetLang,
-            settings.secondaryTargetLang,
-            tools3000::core::UiI18n::getEffectiveLanguageTag());
+    const std::string effectiveTarget = targetLangOverride.empty()
+        ? tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
+              {cleaned},
+              settings.targetLang,
+              settings.secondaryTargetLang,
+              tools3000::core::UiI18n::getEffectiveLanguageTag())
+        : targetLangOverride;
     const std::string providerLabel = formatProviderDisplayLabel(settings);
     const std::string initialDir = formatDirectionBadge("auto", effectiveTarget);
 
@@ -578,7 +590,10 @@ void QuickTranslatePopupWindow::ensureWindowCreated() {
         return;
     }
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
-    tools3000::core::WinUtils::applyTaskbarSafeOverlayStyle(hwnd);
+    // 严禁调用带 WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE 的 applyTaskbarSafeOverlayStyle：
+    // 本浮窗是可交互 ID2D1HwndRenderTarget 弹窗，叠加 WS_EX_LAYERED 会导致客户区全透明成空框且鼠标点击穿透。
+    SetPropW(hwnd, L"NonRudeHWND", reinterpret_cast<HANDLE>(TRUE));
+    tools3000::core::WinUtils::allowWindowCapture(hwnd);
     m_hwnd.store(hwnd, std::memory_order_release);
 }
 
@@ -752,7 +767,10 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     m_maxScrollY = (std::max)(0.0f, m_bodyContentHeight - bodyViewportH);
     m_scrollY = std::clamp(m_scrollY, 0.0f, m_maxScrollY);
 
-    // 顶栏按钮与拖拽区
+    // 顶栏语种胶囊命中区、按钮与拖拽区
+    const std::wstring dirWide = tools3000::core::WinUtils::utf8ToWstring(m_directionLabelUtf8);
+    const float dirBadgeW = (std::max)(74.0f, static_cast<float>(dirWide.size()) * 7.4f + 18.0f);
+    m_dirBadgeRect = D2D1::RectF(kOuterPadDip, 10.0f, kOuterPadDip + dirBadgeW, 32.0f);
     constexpr float iconBtnSize = 26.0f;
     const float topBtnY = (kHeaderHeightDip - iconBtnSize) * 0.5f;
     m_closeBtnRect = D2D1::RectF(
@@ -761,7 +779,7 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     m_pinBtnRect = D2D1::RectF(
         m_closeBtnRect.left - 6.0f - iconBtnSize, topBtnY,
         m_closeBtnRect.left - 6.0f, topBtnY + iconBtnSize);
-    m_headerDragRect = D2D1::RectF(0.0f, 0.0f, m_pinBtnRect.left - 4.0f, kHeaderHeightDip);
+    m_headerDragRect = D2D1::RectF(m_dirBadgeRect.right + 4.0f, 0.0f, m_pinBtnRect.left - 4.0f, kHeaderHeightDip);
 
     // 底栏按钮
     const float footerTopDip = desiredHeightDip - kFooterHeightDip;
@@ -916,6 +934,7 @@ void QuickTranslatePopupWindow::hide() {
     }
     m_state.store(PopupState::Hidden, std::memory_order_release);
     m_pinned = false;
+    m_targetLangOverride.clear();
     m_copiedFeedbackActive = false;
     m_hoveredButton = HitButton::None;
     if (HWND hwnd = m_hwnd.load(std::memory_order_acquire); hwnd && IsWindow(hwnd)) {
@@ -936,6 +955,7 @@ bool QuickTranslatePopupWindow::isVisible() const noexcept {
 QuickTranslatePopupWindow::HitButton QuickTranslatePopupWindow::hitTestButton(POINT clientPt) const noexcept {
     const float x = static_cast<float>(clientPt.x) / (std::max)(0.5f, m_dpiScale);
     const float y = static_cast<float>(clientPt.y) / (std::max)(0.5f, m_dpiScale);
+    if (pointInD2DRect(m_dirBadgeRect, x, y)) return HitButton::LangSwitch;
     if (pointInD2DRect(m_closeBtnRect, x, y)) return HitButton::Close;
     if (pointInD2DRect(m_pinBtnRect, x, y)) return HitButton::Pin;
     if (m_state.load(std::memory_order_acquire) == PopupState::Ready && pointInD2DRect(m_copyBtnRect, x, y)) {
@@ -967,7 +987,13 @@ void QuickTranslatePopupWindow::copyTranslationToClipboard() {
 
 void QuickTranslatePopupWindow::triggerRetry() {
     if (m_sourceTextUtf8.empty()) return;
-    translateTextAsync(m_sourceTextUtf8, m_fromClipboard, m_anchorPt, true);
+    translateTextAsync(m_sourceTextUtf8, m_fromClipboard, m_anchorPt, true, m_targetLangOverride);
+}
+
+void QuickTranslatePopupWindow::cycleTargetLanguage() {
+    if (m_sourceTextUtf8.empty()) return;
+    m_targetLangOverride = nextQuickTargetLanguage(m_targetLangOverride);
+    translateTextAsync(m_sourceTextUtf8, m_fromClipboard, m_anchorPt, false, m_targetLangOverride);
 }
 
 void QuickTranslatePopupWindow::render() {
@@ -1000,15 +1026,14 @@ void QuickTranslatePopupWindow::render() {
         D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f), kCornerRadiusDip, kCornerRadiusDip),
         brush.Get(), 1.0f);
 
-    // 2. 顶栏徽章：语种方向胶囊 + 翻译引擎短名 + 来源标签
+    // 2. 顶栏徽章：可点击切换目标语种的方向胶囊 + 翻译引擎短名 + 来源标签
     const std::wstring dirWide = tools3000::core::WinUtils::utf8ToWstring(m_directionLabelUtf8);
-    const float dirBadgeW = (std::max)(66.0f, static_cast<float>(dirWide.size()) * 7.2f + 16.0f);
-    const D2D1_RECT_F dirBadgeRc = D2D1::RectF(kOuterPadDip, 10.0f, kOuterPadDip + dirBadgeW, 32.0f);
-    brush->SetColor(palette.badgeBg);
+    const D2D1_RECT_F dirBadgeRc = m_dirBadgeRect;
+    brush->SetColor(m_hoveredButton == HitButton::LangSwitch ? palette.accent : palette.badgeBg);
     m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(dirBadgeRc, 6.0f, 6.0f), brush.Get());
     if (m_badgeFormat) {
         m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        brush->SetColor(palette.badgeText);
+        brush->SetColor(m_hoveredButton == HitButton::LangSwitch ? palette.accentText : palette.badgeText);
         m_renderTarget->DrawTextW(
             dirWide.c_str(), static_cast<UINT32>(dirWide.size()),
             m_badgeFormat.Get(), dirBadgeRc, brush.Get());
@@ -1125,7 +1150,7 @@ void QuickTranslatePopupWindow::render() {
         brush.Get(), 1.0f);
 
     if (m_badgeFormat) {
-        const std::wstring hint = zh ? L"Ctrl+C 复制 · Esc 关闭" : L"Ctrl+C Copy · Esc Close";
+        const std::wstring hint = zh ? L"点语种切换 · Ctrl+C 复制 · Esc" : L"Click lang · Ctrl+C Copy · Esc";
         brush->SetColor(palette.mutedText);
         m_renderTarget->DrawTextW(
             hint.c_str(), static_cast<UINT32>(hint.size()),
@@ -1272,6 +1297,10 @@ LRESULT QuickTranslatePopupWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wPa
         case WM_LBUTTONDOWN: {
             const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             const HitButton btn = hitTestButton(pt);
+            if (btn == HitButton::LangSwitch) {
+                cycleTargetLanguage();
+                return 0;
+            }
             if (btn == HitButton::Close) {
                 hide();
                 return 0;

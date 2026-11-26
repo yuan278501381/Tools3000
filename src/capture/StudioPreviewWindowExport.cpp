@@ -654,12 +654,12 @@ void StudioPreviewWindow::renderExportModalOverlay(float W, float H, bool dark, 
     {
         std::wstring fmtTip;
         if (m_exportOpts.format == StudioExportFormat::GIF_WeChat) {
-            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：<=800px 微信按「动态表情」气泡内免点自动播放（不支持双击放大）；如需在微信双击打开独立查看器滚轮放大，请选「GIF 高清大图」或 MP4。", L"Note: <=800px auto-plays inline in WeChat as a Sticker (no zoom viewer). Choose 'GIF (HD · Zoomable)' or MP4 to enable double-click viewer zoom.");
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：<=800px 适合在主流聊天软件中气泡内免点自动播放；如需点击独立查看器高清缩放细节，请选「GIF 高清大图」或 MP4。", L"Note: <=800px auto-plays inline as a compact chat sticker. Choose 'GIF (HD · Zoomable)' or MP4 for full-resolution viewer zoom.");
         } else if (m_exportOpts.format == StudioExportFormat::GIF_HD) {
-            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：长边 >=1080px 发微信按「普通高清动图」展示，支持双击打开微信独立查看器循环播放并滚轮无级放大看清细节。", L"Note: >=1080px sends as an HD animated image in WeChat — supports double-click viewer playback and scroll-wheel zoom.");
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：长边 >=1080px 以高清动图发送，支持在聊天软件与看图器中点击独立查看并滚轮无级放大细节。", L"Note: >=1080px exports as an HD animated image supporting standalone viewer playback and scroll-wheel zoom.");
         } else if (m_exportOpts.format == StudioExportFormat::MP4_H264 ||
                    m_exportOpts.format == StudioExportFormat::MP4_HEVC) {
-            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：完整保留立体声音轨与 24-bit 真彩锐利画质，微信/飞书/网页均支持独立大窗高清全屏放大播放。", L"Note: Preserves stereo audio & 24-bit crisp color with full-screen zoom playback across WeChat, Lark & web.");
+            fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：完整保留立体声音轨与 24-bit 真彩锐利画质，支持在主流聊天软件、文档与浏览器中全屏高清缩放播放。", L"Note: Preserves stereo audio & 24-bit crisp color with full-screen zoom playback across chat apps, docs & web.");
         } else {
             fmtTip = tools3000::core::trWCstrFor(isZh, L"提示：现代网页 24-bit 真彩动图/视频容器，无 256 色限制，适合嵌入文档、GitHub 与技术博客。", L"Note: 24-bit true-color web media container without 256-color limits, ideal for docs, GitHub & blogs.");
         }

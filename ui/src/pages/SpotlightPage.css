@@ -319,10 +319,29 @@
   font-size: 0.9rem;
   font-weight: 600;
   line-height: 1.4;
-  color: var(--text-primary);
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 6px;
+  color: var(--text-primary);
+}
+
+.spotlight-page__zoom-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.spotlight-page__zoom-hint {
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .spotlight-page__section-desc {

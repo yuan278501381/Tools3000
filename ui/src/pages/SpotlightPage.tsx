@@ -52,6 +52,10 @@ interface SpotlightSettings {
   holdDurationMs: number;
   shakeThreshold: number;
   spotlightAnimStyle: string;
+  doubleCtrlMode: string;
+  zoomLevel: number;
+  zoomFollowCursor: boolean;
+  zoomWheelAdjust: boolean;
 
   clickRippleEnabled: boolean;
   clickRippleStyle: string;
@@ -74,6 +78,10 @@ const DEFAULT_SETTINGS: SpotlightSettings = {
   holdDurationMs: 0,
   shakeThreshold: 4,
   spotlightAnimStyle: 'inward_gravity',
+  doubleCtrlMode: 'spotlight',
+  zoomLevel: 2.0,
+  zoomFollowCursor: true,
+  zoomWheelAdjust: true,
 
   clickRippleEnabled: false,
   clickRippleStyle: 'sparkle_burst',
@@ -358,6 +366,135 @@ export const SpotlightPage: FC = () => {
               checked={settings.triggerDoubleCtrl}
               onChange={(v) => void saveSetting('triggerDoubleCtrl', v)}
             />
+            {settings.triggerDoubleCtrl && (
+              <SubSettingGroup>
+                <div className="spotlight-page__sub-stack">
+                  <div>
+                    <div className="spotlight-page__section-label">
+                      <span className="spotlight-page__section-title">
+                        <ZoomIn size={15} aria-hidden="true" />
+                        <span>{t('spotlight.doubleCtrlModeTitle', 'Double-Ctrl Presentation Mode')}</span>
+                      </span>
+                      <span className="spotlight-page__section-desc">
+                        {t(
+                          'spotlight.doubleCtrlModeDesc',
+                          'Choose classic spotlight vignette or cinema-smooth interactive screen zoom where clicking and typing keep working',
+                        )}
+                      </span>
+                    </div>
+                    <div className="spotlight-page__style-grid">
+                      {/* 1. 经典聚光灯 */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={settings.doubleCtrlMode === 'spotlight'}
+                        className={`spotlight-page__style-card ${settings.doubleCtrlMode === 'spotlight' ? 'spotlight-page__style-card--active' : ''}`}
+                        onClick={() => void saveSetting('doubleCtrlMode', 'spotlight')}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            void saveSetting('doubleCtrlMode', 'spotlight');
+                          }
+                        }}
+                      >
+                        <div className="spotlight-page__style-card-header">
+                          <Crosshair size={16} aria-hidden="true" />
+                          <span>{t('spotlight.modeSpotlight', 'Classic Spotlight')}</span>
+                        </div>
+                        <span className="spotlight-page__style-card-desc">
+                          {t('spotlight.modeSpotlightDesc', 'Dim the screen and illuminate the cursor area to locate your pointer quickly')}
+                        </span>
+                      </div>
+
+                      {/* 2. 电影级平滑放大 */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={settings.doubleCtrlMode === 'cinema_zoom'}
+                        className={`spotlight-page__style-card ${settings.doubleCtrlMode === 'cinema_zoom' ? 'spotlight-page__style-card--active' : ''}`}
+                        onClick={() => void saveSetting('doubleCtrlMode', 'cinema_zoom')}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            void saveSetting('doubleCtrlMode', 'cinema_zoom');
+                          }
+                        }}
+                      >
+                        <div className="spotlight-page__style-card-header">
+                          <ZoomIn size={16} aria-hidden="true" />
+                          <span>{t('spotlight.modeCinemaZoom', 'Cinema Smooth Zoom')}</span>
+                        </div>
+                        <span className="spotlight-page__style-card-desc">
+                          {t('spotlight.modeCinemaZoomDesc', 'Smooth spring zoom-in around cursor with live clicking and typing intact')}
+                        </span>
+                      </div>
+
+                      {/* 3. 电影放大 + 光标光环 */}
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={settings.doubleCtrlMode === 'cinema_zoom_ring'}
+                        className={`spotlight-page__style-card ${settings.doubleCtrlMode === 'cinema_zoom_ring' ? 'spotlight-page__style-card--active' : ''}`}
+                        onClick={() => void saveSetting('doubleCtrlMode', 'cinema_zoom_ring')}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            void saveSetting('doubleCtrlMode', 'cinema_zoom_ring');
+                          }
+                        }}
+                      >
+                        <div className="spotlight-page__style-card-header">
+                          <CircleDot size={16} aria-hidden="true" />
+                          <span>{t('spotlight.modeCinemaZoomRing', 'Cinema Zoom + Halo')}</span>
+                        </div>
+                        <span className="spotlight-page__style-card-desc">
+                          {t('spotlight.modeCinemaZoomRingDesc', 'Smooth interactive zoom paired with a crisp non-dimming cursor focus ring')}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {(settings.doubleCtrlMode === 'cinema_zoom' || settings.doubleCtrlMode === 'cinema_zoom_ring') && (
+                    <div className="spotlight-page__zoom-panel">
+                      <SettingRow
+                        label={t('spotlight.zoomLevelTitle', 'Default Zoom Magnification')}
+                        description={t('spotlight.zoomLevelDesc', 'Initial camera magnification factor on double-press Ctrl (1.25x to 4.0x)')}
+                      >
+                        <NumberInput
+                          min={1.25}
+                          max={4.0}
+                          step={0.25}
+                          unit="x"
+                          value={settings.zoomLevel}
+                          onChange={(v) => void saveSetting('zoomLevel', v)}
+                          ariaLabel={t('spotlight.zoomLevelTitle', 'Default Zoom Magnification')}
+                        />
+                      </SettingRow>
+                      <Toggle
+                        id="spotlight-zoom-follow"
+                        label={t('spotlight.zoomFollowCursor', 'Smooth Cursor Panning')}
+                        description={t('spotlight.zoomFollowCursorDesc', 'Uses a gentle center deadzone so tiny clicks stay steady while moving near edges pans smoothly')}
+                        checked={settings.zoomFollowCursor}
+                        onChange={(v) => void saveSetting('zoomFollowCursor', v)}
+                      />
+                      <Toggle
+                        id="spotlight-zoom-wheel"
+                        label={t('spotlight.zoomWheelAdjust', 'Ctrl + Wheel Live Zoom Adjust')}
+                        description={t('spotlight.zoomWheelAdjustDesc', 'Hold Ctrl and scroll the mouse wheel (or Ctrl + / -) while zoomed to adjust magnification smoothly')}
+                        checked={settings.zoomWheelAdjust}
+                        onChange={(v) => void saveSetting('zoomWheelAdjust', v)}
+                      />
+                      <div className="spotlight-page__zoom-hint">
+                        {t(
+                          'spotlight.zoomUsageHint',
+                          'Double-press Ctrl again or press Esc to glide back to 1.0x. Normal clicking, dragging, and typing remain active while zoomed.',
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </SubSettingGroup>
+            )}
             <Toggle
               id="spotlight-shake-mouse"
               label={t('spotlight.shakeMouse', 'Shake Mouse')}

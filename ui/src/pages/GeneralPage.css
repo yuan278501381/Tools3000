@@ -219,7 +219,52 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 8px;
   flex-shrink: 0;
+}
+
+.general-page__hotkey-exclude-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-muted);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color 150ms ease, background 150ms ease, color 150ms ease;
+}
+
+.general-page__hotkey-exclude-btn:hover {
+  border-color: color-mix(in srgb, var(--primary) 42%, var(--card-border));
+  color: var(--text-primary);
+  background: var(--card-hover);
+}
+
+.general-page__hotkey-exclude-btn.has-apps {
+  border-color: color-mix(in srgb, var(--primary) 38%, var(--card-border));
+  background: color-mix(in srgb, var(--primary) 8%, var(--card-bg));
+  color: var(--primary);
+}
+
+.general-page__hotkey-global-exclusions {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--card-border);
+}
+
+.general-page__exclusion-modal-desc {
+  margin: 0 0 14px 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
 .general-page__hotkey-control .hotkey-recorder-wrap {

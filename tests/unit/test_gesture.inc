@@ -5097,6 +5097,31 @@ TEST(GestureAuditRegressionTest, ProRightClickAppsBypassAndForegroundSingleButto
     engine.setAutoBypassProRightClickApps(prevAutoBypassPro);
 }
 
+TEST(GestureAuditRegressionTest, ActionAndBuiltinPreserveParentTraceId) {
+    using namespace tools3000::gesture;
+    using namespace tools3000::core;
+
+    const std::string parentTrace = "20261126-154500-BEEF";
+    TraceId::Scope parentScope(parentTrace);
+
+    std::string observedBuiltinTrace;
+    auto& dispatcher = BuiltinCommandDispatcher::instance();
+    dispatcher.registerHandler(BuiltinCommand::ShowDesktop, [&]() {
+        observedBuiltinTrace = TraceId::current();
+    });
+
+    GestureAction act;
+    act.type = ActionType::BuiltinCommand;
+    act.builtinCmd = BuiltinCommand::ShowDesktop;
+    act.name = "TraceIdPropagationCheck";
+    act.execute(nullptr);
+
+    dispatcher.clearHandlers();
+
+    EXPECT_EQ(observedBuiltinTrace, parentTrace);
+    EXPECT_EQ(TraceId::current(), parentTrace);
+}
+
 
 
 

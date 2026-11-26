@@ -22,7 +22,7 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
-import { resolveExtensionRoute } from './config/routes';
+import { isBuiltinPluginId, resolveExtensionRoute } from './config/routes';
 import { consumePendingDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import {
@@ -581,25 +581,11 @@ function App() {
   }, []);
 
   const installedExtensions = useMemo(() => {
-    const standardPluginIds = new Set([
-      'gesture',
-      'capture',
-      'search',
-      'clipboard',
-      'text_expander',
-      'textexpander',
-      'keycast',
-      'spotlight',
-      'dialogenhancer',
-      'dialog_enhancer',
-      'file_locksmith',
-      'filelocksmith',
-      'remote_boost',
-      'remote',
-      'picasa_viewer',
-      'picasaviewer',
-    ]);
-    return plugins.filter((p) => !standardPluginIds.has(p.id) && p.enabled && p.active);
+    // 单一事实源：仅真正标记为外部扩展且不在内置模块集合中的插件，才自动挂载动态扩展侧边栏入口，
+    // 彻底杜绝无独立页面的内置开关模块（如 quick_look）被误判为外部扩展并坠入 GeneralPage。
+    return plugins.filter(
+      (p) => p.isExtension !== false && !isBuiltinPluginId(p.id) && p.enabled && p.active,
+    );
   }, [plugins]);
 
   const installedExtensionIds = useMemo(
