@@ -10,8 +10,8 @@ Welcome to **Tools3000 v1.5.0** (compared against **v1.4.17**). This feature mil
 
 1. **New Module: Window Manager Suite (v1 Initial Release — Preview Quality)** (#33, @LiangDongXing-cn)
    - *Honest note from the author*: **Window Manager is currently v1 (first playable release)**. Even the author is not fully satisfied with all the rough edges yet — it is usable enough for everyday window tiling and helpers today, and will be steadily refined and improved in future updates. All 8 sub-features default to **OFF** with zero background processes, hooks, or memory footprint until enabled.
-   - Includes customizable **SnapZones** (with multi-monitor & per-Windows-virtual-desktop layout bindings, multi-zone spanning, and 1-click PowerToys FancyZones import), a **1:1 Fullscreen Native Visual Layout Editor** (`Win + Shift + ~`, supporting 1-click capture from real desktop windows and magnetic edge snapping to underlying apps), **Workspaces** launcher, **Quick Switch** window switcher, **Always on Top** & **Focus Border**, scroll-wheel **Opacity**, **Alt + Drag / Resize**, and **Multi-Monitor Rescue & Minimize to Tray**.
-2. **New Module: CapsLayer Key Remapper (Opt-In, Zero Idle Overhead)**
+   - Includes customizable **SnapZones** (with multi-monitor & per-Windows-virtual-desktop layout bindings, multi-zone spanning, and 1-click PowerToys FancyZones import), a **1:1 Fullscreen Native Visual Layout Editor** (`Win + Shift + ~`, supporting 1-click capture from real desktop windows and magnetic edge snapping to underlying apps), **Workspaces** launcher, **Quick Switch** AltTabio-style window switcher (thanks to Appinn @fcpeacock), **Always on Top** & **Focus Border**, scroll-wheel **Opacity**, **Alt + Drag / Resize**, and **Multi-Monitor Rescue & Minimize to Tray**.
+2. **New Module: CapsLayer Key Remapper (Opt-In, Zero Idle Overhead)** (thanks to Appinn @shihua010)
    - Hold `CapsLock` to turn home-row keys into an instant navigation/editing layer (arrows, Home/End, PageUp/PageDown, Delete, media) while keeping quick tap and `Shift + CapsLock` native escape. Supports built-in presets, global & per-app profiles, and process exclusions.
 3. **Clipboard History: Multi-Monitor Adaptive Placement & Fixed Position/Size** (#36, @HitomiXz)
    - Added 3 placement modes: **Follow Active Monitor** (default, centers cleanly on the monitor under your cursor), **Remember Last Position**, and **Fixed Position & Size** (supports negative coordinates for left/upper secondary monitors and an optional drag/resize lock).
@@ -41,9 +41,9 @@ Welcome to **Tools3000 v1.5.0** (compared against **v1.4.17**). This feature mil
 - **全项默认关闭，不用即零占用**：独立原生轻量引擎，8 项子能力出厂默认全部关闭（不开启即 0 进程、0 钩子、0 MB 占用），按需开启；
 - **自定义分屏吸附（SnapZones）**：内置多套经典网格/画布模板，支持多显示器与**按 Windows 虚拟桌面独立绑定不同布局**、按住 `Ctrl` 跨多区合并吸附、拖出分区自动还原原尺寸，并支持一键导入 PowerToys FancyZones 布局；
 - **1:1 全屏原生可视化布局编辑器**：按 **`Win + Shift + ~`** 或在设置页一键唤起，直接在真实桌面 1:1 拖拽编辑网格与自由画布，支持**一键从当前桌面真实窗口生成布局（快捷键 `C`）**、拖拽自动磁吸底层真实软件窗口边缘与辅助参考线、60 步撤销及退出后冷路径自动释放内存；
-- **全套窗口效率辅助**：同时提供工作区一键恢复（Workspaces）、窗口速切器（Quick Switch）、窗口置顶与聚焦边框、滚轮调节窗口透明度、`Alt` 任意位置拖动/缩放、多屏离屏救援与窗口收纳至系统托盘。
+- **全套窗口效率辅助**：同时提供工作区一键恢复（Workspaces）、AltTabio 风格窗口速切器（Quick Switch，感谢小众软件 @fcpeacock）、窗口置顶与聚焦边框、滚轮调节窗口透明度、`Alt` 任意位置拖动/缩放、多屏离屏救援与窗口收纳至系统托盘。
 
-### 2. 新增「Caps 引导改键（CapsLayer）」模块
+### 2. 新增「Caps 引导改键（CapsLayer）」模块（感谢小众软件 @shihua010）
 - **键盘双手不离主位**：按住 `CapsLock` 即可将常用键位映射为方向键、Home/End、翻页、删除或媒体控制；轻按可按偏好保持或切换大小写，随时按 `Shift + CapsLock` 原生切换大小写；
 - **灵活定制与默认零开销**：内置多套高效预设，支持全局与分应用独立改键方案、运行窗口快速拾取排除，默认关闭零钩子零负担。
 
