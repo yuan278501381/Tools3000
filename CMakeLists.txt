@@ -577,7 +577,7 @@ add_dependencies(Tools3000_Service tools3000_content_rs_target)
 set_target_properties(Tools3000_Service PROPERTIES OUTPUT_NAME "Tools3000_Service")
 tools3000_add_version_resource(Tools3000_Service "Tools3000 File Index Service" "Tools3000_Service.exe" VFT_APP)
 target_compile_definitions(Tools3000_Service PRIVATE UNICODE _UNICODE)
-target_link_libraries(Tools3000_Service PRIVATE "${RUST_CONTENT_LIB}" spdlog::spdlog fmt::fmt nlohmann_json::nlohmann_json ZLIB::ZLIB advapi32 user32 shell32 ole32 ntdll userenv ws2_32 dbghelp)
+target_link_libraries(Tools3000_Service PRIVATE "${RUST_CONTENT_LIB}" spdlog::spdlog fmt::fmt nlohmann_json::nlohmann_json ZLIB::ZLIB advapi32 user32 shell32 ole32 wtsapi32 ntdll userenv ws2_32 dbghelp)
 
 if(MSVC AND TOOLS3000_ENABLE_MSVC_ANALYSIS)
     foreach(ANALYSIS_TARGET Tools3000Core Plugin_Search Tools3000_Service service_objects)

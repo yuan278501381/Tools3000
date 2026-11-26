@@ -70,6 +70,7 @@
 #include "capture/RecordEncodeWorker.h"
 #include "common/AtomicFile.h"
 #include "service/PipeClientAuth.h"
+#include "service/ServiceLifecyclePolicy.h"
 #include "service/content/PdfExtractor.h"
 #include "ui/ToastStyle.h"
 #include "ui/CinemaZoomEngine.h"

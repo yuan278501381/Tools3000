@@ -5592,3 +5592,50 @@ TEST(FullSyntaxAccuracyAndCountConservationTest, AllSupportedSyntaxesAndBoundedH
     // 显式搜 recycle 时可找回回收站里的 5 条
     EXPECT_EQ(parser->Search(L"recycle project_batch_", 50).size(), 5u);
 }
+
+TEST(ServiceLifecyclePolicyTest, StopsOnLastUserLogoffAndShutdownWhilePreservingLockAndMultiUser) {
+    using namespace tools3000::service::lifecycle;
+
+    // 1. 必须接收 STOP、SHUTDOWN 与 SESSIONCHANGE，且严禁同时设置 SHUTDOWN 与 PRESHUTDOWN（MSDN 互斥铁律）
+    const DWORD accepted = acceptedServiceControls();
+    EXPECT_NE(accepted & SERVICE_ACCEPT_STOP, 0u);
+    EXPECT_NE(accepted & SERVICE_ACCEPT_SHUTDOWN, 0u);
+    EXPECT_NE(accepted & SERVICE_ACCEPT_SESSIONCHANGE, 0u);
+    EXPECT_EQ(accepted & SERVICE_ACCEPT_PRESHUTDOWN, 0u);
+
+    EXPECT_TRUE(shouldStopOnServiceControl(SERVICE_CONTROL_STOP));
+    EXPECT_TRUE(shouldStopOnServiceControl(SERVICE_CONTROL_SHUTDOWN));
+    EXPECT_TRUE(shouldStopOnServiceControl(SERVICE_CONTROL_PRESHUTDOWN));
+    EXPECT_FALSE(shouldStopOnServiceControl(SERVICE_CONTROL_INTERROGATE));
+    EXPECT_FALSE(shouldStopOnServiceControl(SERVICE_CONTROL_SESSIONCHANGE));
+
+    // 2. 单用户（含 Session 0 与 RDP-Tcp WTSListen 监听会话）：用户注销（或快速启动混合关机）时必须判定剩余 0 会话并停服
+    const std::array<SessionDescriptor, 3> singleUserWithRdpListener = {{
+        {0u, WTSDisconnected},   // Session 0 系统服务会话（忽略）
+        {1u, WTSActive},         // 正在注销的当前用户会话（排除 excludedSessionId=1）
+        {65536u, WTSListen},     // RDP-Tcp 监听占位会话（非用户会话，忽略）
+    }};
+    const uint32_t remainingAfterSingleLogoff =
+        countRemainingInteractiveSessions(singleUserWithRdpListener, /*excludedSessionId=*/1u);
+    EXPECT_EQ(remainingAfterSingleLogoff, 0u);
+    EXPECT_TRUE(shouldStopOnSessionChange(WTS_SESSION_LOGOFF, remainingAfterSingleLogoff));
+
+    // 3. 锁屏、解锁、远程断开不注销、登录事件绝不误停服务（保护会话内秒开与睡眠恢复常驻）
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_SESSION_LOCK, 0u));
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_SESSION_UNLOCK, 0u));
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_CONSOLE_DISCONNECT, 0u));
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_REMOTE_DISCONNECT, 0u));
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_SESSION_LOGON, 0u));
+
+    // 4. 多用户桌面（Windows Server / 快速用户切换）：注销 Session 1 但 Session 2 仍在线或断开挂起时，绝不误停服务
+    const std::array<SessionDescriptor, 4> multiUserSessions = {{
+        {0u, WTSDisconnected},
+        {1u, WTSActive},
+        {2u, WTSDisconnected},   // 另一位已登录但切换后台的用户
+        {65536u, WTSListen},
+    }};
+    const uint32_t remainingMultiUser =
+        countRemainingInteractiveSessions(multiUserSessions, /*excludedSessionId=*/1u);
+    EXPECT_EQ(remainingMultiUser, 1u);
+    EXPECT_FALSE(shouldStopOnSessionChange(WTS_SESSION_LOGOFF, remainingMultiUser));
+}
