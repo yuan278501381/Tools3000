@@ -285,6 +285,7 @@ struct MarkupElement {
     bool hitTest(cv::Point pt, int padding = 5) const { return hitTestEx(pt, padding) != HitArea::None; }
     void moveBy(int dx, int dy);
     void resize(int dx, int dy, HitArea handle);
+    void resizeFromSnapshot(const MarkupElement& origin, int totalDx, int totalDy, HitArea handle);
 };
 
 /// 多态标注工具策略接口 (Polymorphic Tool Handler Interface)
@@ -295,6 +296,9 @@ public:
     virtual cv::Rect getBoundingBox(const MarkupElement& element) const = 0;
     virtual HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const = 0;
     virtual void resize(MarkupElement& element, int dx, int dy, HitArea handle) const = 0;
+    /// 基于拖拽起点快照与累计位移执行无累积漂移/无圆整侵蚀的缩放操作
+    virtual void resizeFromSnapshot(const MarkupElement& origin, MarkupElement& element,
+                                    int totalDx, int totalDy, HitArea handle) const;
     virtual void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const = 0;
 };
 
@@ -308,6 +312,12 @@ public:
         cv::Point point;
         HitArea area;
     };
+
+    /// 按元素 DPI 缩放倍率计算 8 方向控制柄命中半宽（保障高分屏下易抓握不费眼）
+    static int scaledHandleHitHalfSize(float dpiScale, int padding = 0) noexcept;
+
+    /// 按元素 DPI 缩放倍率计算控制柄视觉半宽（平方根温和放大，兼顾精致感与高分屏可辨识度）
+    static int scaledHandleVisualHalfSize(float dpiScale, int baseHalfSize = 5) noexcept;
 
     /// 计算给定包围盒的 8 个手柄位置与对应 HitArea (LT, T, RT, R, RB, B, LB, L)
     static std::array<HandlePoint, 8> getBoxHandles(const cv::Rect& bbox);

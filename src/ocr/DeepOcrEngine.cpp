@@ -1388,7 +1388,8 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         try {
         // 0. 自适应视觉增强前处理（红章压字穿透 + 阴影纸面/手写光照归一化 / 拍屏摩尔纹抑制；清晰数字截图 0 拷贝直通）
         bool applyPreprocToRec = false;
-        cv::Mat detSourceBgr = preprocessImageForDetection(bgr, &applyPreprocToRec);
+        bool isScreenPhoto = false;
+        cv::Mat detSourceBgr = preprocessImageForDetection(bgr, &applyPreprocToRec, &isScreenPhoto);
         if (applyPreprocToRec) {
             bgr = detSourceBgr;
         }
@@ -1696,6 +1697,9 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         }
 
         coalesceSameLineTinyFragments(quads, bgr);
+        if (isScreenPhoto) {
+            rescueDarkBannerQuadsOnScreenPhoto(quads, bgr);
+        }
         detectedQuadCount = quads.size();
         if (quads.empty()) {
             return {};
@@ -1860,7 +1864,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         std::vector<RecPiece> pieces;
         pieces.reserve(quads.size() + 16);
 
-        auto buildCleanStrip = [&](const cv::Mat& subCrop, const cv::Vec3b& bgColor, int& outRw) -> cv::Mat {
+        auto buildCleanStrip = [&](const cv::Mat& subCrop, const cv::Vec3b& bgColor, int origCropH, int& outRw) -> cv::Mat {
             const float subScale = static_cast<float>(DeepOcrConstants::kRecImgHeight) /
                                    static_cast<float>((std::max)(1, subCrop.rows));
             outRw = std::clamp(
@@ -1869,10 +1873,14 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
             cv::Mat rc;
             cv::resize(subCrop, rc, cv::Size(outRw, DeepOcrConstants::kRecImgHeight), 0.0, 0.0,
                        subCrop.rows < DeepOcrConstants::kRecImgHeight ? cv::INTER_CUBIC : cv::INTER_AREA);
-            enhanceLowContrastStripCrop(rc);
+            cv::Vec3b effectiveBg = bgColor;
+            const bool invertedDarkStrip = isScreenPhoto && normalizeDarkScreenPhotoStrip(rc, origCropH, effectiveBg);
+            if (!invertedDarkStrip) {
+                enhanceLowContrastStripCrop(rc);
+            }
             const int contentW = outRw + kStripLeadPad * 2;
             cv::Mat stripBgr(DeepOcrConstants::kRecImgHeight, contentW, CV_8UC3,
-                             cv::Scalar(bgColor[0], bgColor[1], bgColor[2]));
+                             cv::Scalar(effectiveBg[0], effectiveBg[1], effectiveBg[2]));
             rc.copyTo(stripBgr(cv::Rect(kStripLeadPad, 0, outRw, DeepOcrConstants::kRecImgHeight)));
             return stripBgr;
         };
@@ -1999,7 +2007,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
 
             if (fullResizedW <= kMaxPieceW) {
                 int rw = 0;
-                cv::Mat stripBgr = buildCleanStrip(paddedCrop, bgColor, rw);
+                cv::Mat stripBgr = buildCleanStrip(paddedCrop, bgColor, crop.rows, rw);
                 pieces.push_back(RecPiece{
                     qi, 0,
                     0, paddedCrop.cols,
@@ -2068,7 +2076,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                     const int we = windows[wi].second;
                     cv::Mat subCrop = paddedCrop(cv::Rect(ws, 0, we - ws, paddedCrop.rows));
                     int rw = 0;
-                    cv::Mat stripBgr = buildCleanStrip(subCrop, bgColor, rw);
+                    cv::Mat stripBgr = buildCleanStrip(subCrop, bgColor, crop.rows, rw);
                     const float keepL = (wi == 0) ? -1e9f : splices[wi - 1];
                     const float keepR = (wi + 1 == windows.size()) ? 1e9f : splices[wi];
                     pieces.push_back(RecPiece{

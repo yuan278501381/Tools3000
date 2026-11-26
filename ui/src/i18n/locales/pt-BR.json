@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "Atalhos Principais",
     "hotkeyGroupPinOcr": "Fixação, OCR e Tradução",
     "hotkeyGroupRecording": "Gravação de Tela e Controle de Áudio",
-    "hotkeyGroupInput": "Controle de Entrada e Gestos"
+    "hotkeyGroupInput": "Controle de Entrada e Gestos",
+    "showChangelogOnUpdate": "Mostrar novidades após atualizações",
+    "showChangelogOnUpdateDesc": "Exibir automaticamente os destaques offline ao abrir as Configurações após atualizar (nunca exibido em instalações novas)"
   },
   "plugins": {
     "capabilities": "Recursos do módulo",
@@ -1530,7 +1532,7 @@
       "llHooks": "Atalhos globais de latência zero, gestos do mouse e proteção de entrada remota",
       "ntfsEngine": "Indexação de milhões de arquivos em disco e rastreamento de alterações em tempo real",
       "pinyin": "Correspondência aproximada por Pinyin completo e iniciais para nomes em chinês",
-      "opencv": "Visão computacional e costura contínua de capturas com rolagem",
+      "opencv": "Visão computacional, leitura offline de QR Code (quirc) e costura contínua de capturas longas",
       "ffmpeg": "Gravação de tela em alta taxa de quadros, mixagem dupla de áudio e exportação GIF em 2 passagens",
       "windowsOcr": "Reconhecimento de texto 100% offline e renderização nativa de PDF sem travar arquivos",
       "uiaShell": "Salto rápido em janelas de arquivo e integração com a seleção do Explorador de Arquivos",
@@ -1539,16 +1541,20 @@
       "vite": "Empacotador frontend ultrarrápido e motor de compilação com divisão sob demanda",
       "lucideIcons": "Iconografia vetorial nítida e unificada em toda a interface",
       "designTokens": "Temas claro/escuro adaptativos, cores de destaque e tokens de design para Alto DPI",
-      "sqliteZlib": "Armazenamento local de histórico/estatísticas e extração sem perdas de arquivos Office",
+      "sqliteZlib": "Leitura de favicons via WinSQLite3 nativo do sistema e extração sem perdas de arquivos Office via zlib",
       "luaSol2": "Motor local de scripts Lua para fluxos de automação personalizados",
       "spdlog": "Registro assíncrono de logs de diagnóstico com baixo consumo de recursos",
       "nlohmannJson": "Serialização rápida de configurações JSON e mensagens IPC",
       "gtest": "Suítes automatizadas de testes de regressão em C++ e frontend",
       "innoSetup": "Instalador Windows, pacote portátil e empacotamento assinado digitalmente",
-      "rustPicasaViewer": "Visualizador de fotos autônomo em Rust zero-CRT com aceleração GPU (41 formatos, física e sombra gaussiana)",
+      "rustPicasaViewer": "Visualizador de imagens autônomo em Rust com aceleração por hardware (41 formatos, física e sombra suave)",
       "ddcBrightness": "Controle de brilho por hardware por monitor (DDC/CI externo + WMI para notebooks)",
-      "ppocrDirectml": "OCR offline de aprendizado profundo em dois estágios (DirectML GPU + WinML) com QR/código de barras",
-      "ifilterShellProps": "Extração de texto Office/WPS/e-mail e leitura sob demanda de 30+ metadados estendidos"
+      "ppocrDirectml": "OCR offline de aprendizado profundo em dois estágios e restauração de textura MI-GAN 512 (DirectML GPU + WinML)",
+      "ifilterShellProps": "Extração de texto Office/WPS/e-mail e leitura sob demanda de 30+ metadados estendidos",
+      "rustClipboard": "Núcleo Rust sem dependências para persistência, deduplicação e busca em submilissegundos da área de transferência",
+      "rustCliMcp": "CLI e servidor MCP stdio em Rust sem dependências que expõe busca local a agentes de IA",
+      "winhttpTranslate": "Gateway nativo TLS para tradução no local (Bilibili Index-Translate sem chave por padrão, contingência e DPAPI)",
+      "i18next": "Internacionalização isomórfica em 8 idiomas com detecção do sistema e 7 verificações estáticas"
     },
     "exportLogsTip": "Exportar logs de diagnóstico do sistema e relatório de ambiente",
     "authorGithubTip": "Visitar perfil do autor original no GitHub",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "Ver notas da versão",
     "viewUpdate": "Ver atualização",
     "openPerformancePageBtn": "Política de Memória",
-    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits",
+    "viewChangelogBtn": "Histórico de versões"
   },
   "sidebar": {
     "groupSystem": "Sistema",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "Tradução no Local em Capturas",
     "providerTitle": "Provedor de Tradução",
-    "providerDesc": "Suporta canais gratuitos sem chave e APIs próprias (compatível com OpenAI / Ollama local / DeepL). Requisições de rede só ocorrem sob demanda.",
+    "providerDesc": "Usa por padrão a IA gratuita sem chave Bilibili Index-Translate (com contingência automática para canais gratuitos), além de APIs compatíveis com OpenAI, Ollama local e DeepL. Rede somente sob demanda.",
     "providerFreeAuto": "Gratuito sem Chave (Edge Principal + Google Reserva)",
-    "providerOpenAi": "API Compatível com OpenAI (OpenAI / DeepSeek / Proxy / Ollama Local)",
+    "providerOpenAi": "API Compatível com OpenAI (Padrão Bilibili sem chave / DeepSeek / Ollama)",
     "providerDeepL": "API Oficial DeepL (Free / Pro Automático)",
     "badgeZeroConfig": "Sem Configuração · Sob Demanda",
     "badgeLocalOffline": "Local · 100% Offline",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B (Rápido)",
     "indexModelBalanced": "Index-Translate-9B (Equilibrado)",
     "indexModelFlagship": "Index-Translate-35B-A3B (Avançado)",
-    "indexTranslateNotice": "Fornecido pela API pública gratuita da Bilibili sem necessidade de chave. Use 2B ou 9B para capturas rápidas com várias linhas, ou 35B-A3B para máxima qualidade. Volte ao modo gratuito padrão se houver limite.",
+    "indexTranslateNotice": "Fornecido pela API pública de código aberto da Bilibili sem exigir chave. Use 2B ou 9B para capturas rápidas e 35B-A3B para qualidade máxima. Em caso de limite, há contingência automática gratuita.",
     "openaiBaseUrlLabel": "URL Base",
     "openaiModelLabel": "Nome do Modelo",
     "apiKeyLabel": "Chave de API",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
     "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
     "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
+  },
+  "changelog": {
+    "upgradeTitle": "Novidades no Tools3000",
+    "upgradeSubtitle": "Resumo offline com os principais destaques desta atualização",
+    "archiveTitle": "Histórico de Versões",
+    "archiveSubtitle": "{{count}} versões recentes integradas offline com busca instantânea por versão ou palavra-chave",
+    "upgradeSpanBanner": "Atualizado de {{from}} para {{to}} · {{count}} versão(ões) incluída(s)",
+    "searchPlaceholder": "Buscar por versão ou palavra-chave (ex.: 1.4.0, OCR, tradução)...",
+    "searchMatchesCount": "{{count}} versão(ões) encontrada(s)",
+    "showingCount": "Exibindo {{shown}} de {{total}} versões",
+    "noSearchResults": "Nenhuma versão correspondente encontrada. Tente outro termo.",
+    "badgeNew": "NOVO",
+    "kindMajor": "Principal",
+    "kindMinor": "Recursos",
+    "kindPatch": "Correções",
+    "relativeToday": "Hoje",
+    "relativeYesterday": "Ontem",
+    "relativeDaysAgo": "há {{count}} d",
+    "relativeMonthsAgo": "há {{count}} mês(es)",
+    "relativeYearsAgo": "há {{count}} ano(s)",
+    "fallbackLocaleNote": "Esta versão anterior possui notas apenas em chinês simplificado.",
+    "loadMoreBtn": "Carregar versões anteriores (+{{step}}, restam {{remaining}})",
+    "autoShowAfterUpdate": "Mostrar histórico automaticamente após atualizações",
+    "viewAllOnGitHub": "Ver todas no GitHub",
+    "gotItBtn": "Entendi",
+    "clearSearch": "Limpar busca"
   }
 }

@@ -93,12 +93,12 @@ namespace {
             }
         }
     }
-    cv::Size measureSnipasteText(const std::wstring& text, int fontSize, bool /*isEditing*/ = false,
+    cv::Size measureSnipasteText(const std::wstring& text, float fontSize, bool /*isEditing*/ = false,
                                  float maxBoxWidth = 0.0f,
                                  bool fixedBoxWidth = false,
                                  float minBoxHeight = 0.0f) {
         ensureGdiplusStartup();
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const int padW = tools3000::capture::CaptureTextEditor::computeBoxHorizontalPadding(safeFontSize);
         const int padH = tools3000::capture::CaptureTextEditor::computeBoxVerticalPadding(safeFontSize);
         if (!isGdiplusStarted()) {
@@ -110,7 +110,7 @@ namespace {
             if (minBoxHeight > 0.0f) {
                 h = (std::max)(h, static_cast<int>(std::ceil(minBoxHeight)));
             }
-            return cv::Size((std::max)(w, 24 + padW), (std::max)(h, safeFontSize + padH));
+            return cv::Size((std::max)(w, 24 + padW), (std::max)(h, static_cast<int>(std::ceil(safeFontSize)) + padH));
         }
 
         const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
@@ -125,7 +125,7 @@ namespace {
     }
 
     void renderSnipasteStyleText(cv::Mat& canvas, const std::string& text, cv::Point pt, const cv::Scalar& color,
-                                 int fontSize, bool isEditing, bool isSelected, bool withBackdrop, cv::Size& outSize,
+                                 float fontSize, bool isEditing, bool isSelected, bool withBackdrop, cv::Size& outSize,
                                  bool textOutline = true,
                                  const tools3000::capture::MarkupColor& outlineColor = tools3000::capture::MarkupColor::Auto(),
                                  size_t caretIndex = 0, size_t selAnchor = 0, uint32_t lastCaretTick = 0,
@@ -140,7 +140,7 @@ namespace {
             return;
         }
 
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const float maxContentW = tools3000::capture::CaptureTextEditor::computeContentWidthFromBoxWidth(
             maxBoxWidth, safeFontSize);
         const auto textLayout = tools3000::capture::CaptureTextEditor::buildLayout(
@@ -320,7 +320,7 @@ namespace {
             } else if (isEditing || isSelected) {
                 // 空文本编辑态：绘制提示占位文字（严格遵循字重 >= 500 Bold 与字号 >= 12px 排版红线，窄选区同样自动换行不截断）
                 const std::wstring placeholder = tools3000::core::trWCstr(L"点击输入文字...", L"Click to enter text...");
-                const int phFontSize = static_cast<int>(std::lround((std::max)(12.0f, safeFontSize * 0.88f)));
+                const float phFontSize = (std::max)(12.0f, safeFontSize * 0.88f);
                 Gdiplus::Font placeholderFont(activeFamily, static_cast<Gdiplus::REAL>(phFontSize), Gdiplus::FontStyleBold, Gdiplus::UnitPixel);
                 Gdiplus::SolidBrush placeholderBrush(Gdiplus::Color(180, 148, 163, 184));
                 const float phMaxContentW = tools3000::capture::CaptureTextEditor::computeContentWidthFromBoxWidth(
@@ -573,16 +573,16 @@ public:
 class TextHandler : public DefaultBoxHandler {
 public:
     static int computeMinCustomBoxWidth(float fontSize) noexcept {
-        const int safeFontSize = (std::max)(12, static_cast<int>(fontSize));
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const int padW = tools3000::capture::CaptureTextEditor::computeBoxHorizontalPadding(safeFontSize);
-        return (std::max)(44, static_cast<int>(std::ceil(static_cast<float>(safeFontSize) * 1.4f)) + padW);
+        return (std::max)(44, static_cast<int>(std::ceil(safeFontSize * 1.4f)) + padW);
     }
 
     cv::Rect getBoundingBox(const MarkupElement& element) const override {
         if (element.textRenderSize.width <= 0 || element.textRenderSize.height <= 0) {
             std::wstring wtext = utf8ToWide(element.text);
             const_cast<MarkupElement&>(element).textRenderSize =
-                measureSnipasteText(wtext, static_cast<int>(element.fontSize),
+                measureSnipasteText(wtext, element.fontSize,
                                     element.isEditing || element.isActive,
                                     element.textMaxWidth,
                                     element.hasCustomTextWidth,
@@ -644,8 +644,8 @@ public:
             return;
         }
         const cv::Rect oldBox = getBoundingBox(element);
-        const int oldW = oldBox.width;
-        const int oldH = oldBox.height;
+        const int oldW = (std::max)(1, oldBox.width);
+        const int oldH = (std::max)(1, oldBox.height);
 
         // 1. 左右边中点手柄 (L / R)：独立调整文本框宽度并实时重排换行，严格保持字号不变且对侧边零漂移
         if (handle == HitArea::L || handle == HitArea::R) {
@@ -674,7 +674,7 @@ public:
         if (handle == HitArea::T || handle == HitArea::B) {
             const std::wstring wtext = utf8ToWide(element.text);
             const cv::Size natSz = measureSnipasteText(
-                wtext, static_cast<int>(element.fontSize),
+                wtext, element.fontSize,
                 element.isEditing || element.isActive,
                 element.textMaxWidth, element.hasCustomTextWidth, 0.0f);
             int natH = natSz.height;
@@ -702,32 +702,79 @@ public:
             return;
         }
 
-        // 3. 四角手柄 (LT / RT / LB / RB)：等比缩放字号，同步等比缩放自定义宽高以保持多行排版形态不变
-        const float oldFontSize = element.fontSize;
-        const int delta = HandleGeometry::computeScalarDelta(dx, dy, handle);
-        element.fontSize = std::clamp(element.fontSize + delta * 0.35f, 12.0f, 180.0f);
-        if (oldFontSize > 1.0f && std::abs(element.fontSize - oldFontSize) > 1e-4f) {
-            const float ratio = element.fontSize / oldFontSize;
-            if (element.hasCustomTextWidth && element.textMaxWidth > 0.0f) {
-                const float minScaledW = static_cast<float>(computeMinCustomBoxWidth(element.fontSize));
-                element.textMaxWidth = std::clamp(element.textMaxWidth * ratio, minScaledW, 8192.0f);
+        // 3. 四角手柄 (LT / RT / LB / RB)：
+        //    对角线正交最小二乘投影 + 一步正割闭环精修，确保在任意字号/宽高比下
+        //    被拖拽角手柄 1:1 紧贴鼠标指针（零超前、零滞后、零整数阶跃、对侧角 0px 漂移）
+        const float origFontSize = std::clamp(element.fontSize, 12.0f, 180.0f);
+        const bool origHasCustomW = element.hasCustomTextWidth;
+        const float origMaxW = element.textMaxWidth;
+        const float origCustomH = element.customTextBoxHeight;
+        const double w0 = static_cast<double>(oldW);
+        const double h0 = static_cast<double>(oldH);
+        const double signX = (handle == HitArea::RT || handle == HitArea::RB) ? 1.0 : -1.0;
+        const double signY = (handle == HitArea::LB || handle == HitArea::RB) ? 1.0 : -1.0;
+        const double desiredW = (std::max)(12.0, w0 + signX * static_cast<double>(dx));
+        const double desiredH = (std::max)(12.0, h0 + signY * static_cast<double>(dy));
+        const double diagSq = (std::max)(1.0, w0 * w0 + h0 * h0);
+        const double targetProj = (desiredW * w0 + desiredH * h0) / diagSq;
+
+        auto applyCandidateFontSize = [&](float candidateFont) -> cv::Rect {
+            const float clampedF = std::clamp(candidateFont, 12.0f, 180.0f);
+            element.fontSize = clampedF;
+            const float ratio = (origFontSize > 1.0f) ? (clampedF / origFontSize) : 1.0f;
+            if (origHasCustomW && origMaxW > 0.0f) {
+                const float minScaledW = static_cast<float>(computeMinCustomBoxWidth(clampedF));
+                element.textMaxWidth = std::clamp(origMaxW * ratio, minScaledW, 8192.0f);
+            } else {
+                element.textMaxWidth = origMaxW;
             }
-            if (element.customTextBoxHeight > 0.0f) {
+            if (origCustomH > 0.0f) {
                 element.customTextBoxHeight = std::clamp(
-                    element.customTextBoxHeight * ratio,
-                    (std::max)(24.0f, element.fontSize * 1.2f), 8192.0f);
+                    origCustomH * ratio,
+                    (std::max)(24.0f, clampedF * 1.2f), 8192.0f);
+            } else {
+                element.customTextBoxHeight = 0.0f;
+            }
+            element.textRenderSize = cv::Size(0, 0);
+            return getBoundingBox(element);
+        };
+
+        const float firstFont = std::clamp(
+            static_cast<float>(static_cast<double>(origFontSize) * targetProj), 12.0f, 180.0f);
+        cv::Rect newBox = applyCandidateFontSize(firstFont);
+
+        // 一步正割校准：吸收内边距与字形度量带来的微小非线性偏差，使角点误差收敛至 <= 1px
+        const double proj1 = (static_cast<double>(newBox.width) * w0 + static_cast<double>(newBox.height) * h0) / diagSq;
+        const double diagLen = std::sqrt(diagSq);
+        if (firstFont > 12.05f && firstFont < 179.95f &&
+            std::abs(proj1 - targetProj) * diagLen > 1.5 &&
+            std::abs(proj1 - 1.0) > 1e-4) {
+            const double correctedScale = 1.0 + (firstFont / origFontSize - 1.0) * ((targetProj - 1.0) / (proj1 - 1.0));
+            const float refinedFont = std::clamp(
+                static_cast<float>(static_cast<double>(origFontSize) * correctedScale), 12.0f, 180.0f);
+            if (std::abs(refinedFont - firstFont) >= 0.2f && std::abs(refinedFont - firstFont) <= origFontSize * 0.5f) {
+                const cv::Rect candidateBox = applyCandidateFontSize(refinedFont);
+                const double proj2 = (static_cast<double>(candidateBox.width) * w0 + static_cast<double>(candidateBox.height) * h0) / diagSq;
+                if (std::abs(proj2 - targetProj) < std::abs(proj1 - targetProj)) {
+                    newBox = candidateBox;
+                } else {
+                    newBox = applyCandidateFontSize(firstFont);
+                }
             }
         }
-        element.textRenderSize = cv::Size(0, 0);
 
-        const cv::Rect newBox = getBoundingBox(element);
-        const int newW = newBox.width;
-        const int newH = newBox.height;
-        const int dW = newW - oldW;
-        const int dH = newH - oldH;
-
-        element.startPt = HandleGeometry::computeAnchoredOrigin(element.startPt, dW, dH, handle);
-        element.endPt = cv::Point(element.startPt.x + newW, element.startPt.y + newH);
+        const int anchorRight = oldBox.x + oldBox.width;
+        const int anchorBottom = oldBox.y + oldBox.height;
+        int newX = oldBox.x;
+        int newY = oldBox.y;
+        if (handle == HitArea::LT || handle == HitArea::LB) {
+            newX = anchorRight - newBox.width;
+        }
+        if (handle == HitArea::LT || handle == HitArea::RT) {
+            newY = anchorBottom - newBox.height;
+        }
+        element.startPt = cv::Point(newX, newY);
+        element.endPt = cv::Point(newX + newBox.width, newY + newBox.height);
     }
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
@@ -742,25 +789,30 @@ public:
             cv::rectangle(canvas, bbox, activeColor, 1, cv::LINE_AA);
         }
 
-        // Figma / Keynote 级双语义视觉区分：
+        // Figma / Keynote 级双语义视觉区分 + DPI 自适应尺寸：
         // - 四角手柄绘为圆形锚点（传达等比缩放字号）
         // - 左右/上下中点绘为方向胶囊短条（直观传达独立拉宽重排与拉长高度）
+        const int cornerR = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, element.isEditing ? 4 : 5);
+        const int pillThickHalf = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 2);
+        const int pillLenCap = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 7);
+        const int pillLenMin = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 4);
         const auto handles = HandleGeometry::getBoxHandles(bbox);
         for (const auto& hp : handles) {
             if (hp.area == HitArea::L || hp.area == HitArea::R) {
-                const int pillHalfH = (std::min)(7, (std::max)(4, bbox.height / 4));
-                const cv::Rect pill(hp.point.x - 2, hp.point.y - pillHalfH, 5, pillHalfH * 2 + 1);
+                const int pillHalfH = (std::min)(pillLenCap, (std::max)(pillLenMin, bbox.height / 4));
+                const cv::Rect pill(hp.point.x - pillThickHalf, hp.point.y - pillHalfH,
+                                    pillThickHalf * 2 + 1, pillHalfH * 2 + 1);
                 cv::rectangle(canvas, pill, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
                 cv::rectangle(canvas, pill, activeColor, 1, cv::LINE_AA);
             } else if (hp.area == HitArea::T || hp.area == HitArea::B) {
-                const int pillHalfW = (std::min)(7, (std::max)(4, bbox.width / 4));
-                const cv::Rect pill(hp.point.x - pillHalfW, hp.point.y - 2, pillHalfW * 2 + 1, 5);
+                const int pillHalfW = (std::min)(pillLenCap, (std::max)(pillLenMin, bbox.width / 4));
+                const cv::Rect pill(hp.point.x - pillHalfW, hp.point.y - pillThickHalf,
+                                    pillHalfW * 2 + 1, pillThickHalf * 2 + 1);
                 cv::rectangle(canvas, pill, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
                 cv::rectangle(canvas, pill, activeColor, 1, cv::LINE_AA);
             } else {
-                const int r = element.isEditing ? 4 : 5;
-                cv::circle(canvas, hp.point, r + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
-                cv::circle(canvas, hp.point, r, activeColor, 1, cv::LINE_AA);
+                cv::circle(canvas, hp.point, cornerR + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
+                cv::circle(canvas, hp.point, cornerR, activeColor, 1, cv::LINE_AA);
             }
         }
     }
@@ -773,10 +825,10 @@ public:
         float effectiveMaxBoxWidth = element.textMaxWidth;
         if (!element.hasCustomTextWidth && effectiveMaxBoxWidth <= 0.0f && canvas.cols > 0) {
             effectiveMaxBoxWidth = tools3000::capture::CaptureTextEditor::computeAvailableBoxWidth(
-                canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+                canvas.cols, element.startPt.x, element.fontSize);
             const_cast<MarkupElement&>(element).textMaxWidth = effectiveMaxBoxWidth;
         }
-        renderSnipasteStyleText(canvas, element.text, element.startPt, color, static_cast<int>(element.fontSize),
+        renderSnipasteStyleText(canvas, element.text, element.startPt, color, element.fontSize,
                                 element.isEditing, element.isActive, element.fill, renderedSize,
                                 effOutline, element.textOutlineColor,
                                 element.textCaret, element.textSelAnchor, element.textLastCaretTick,
@@ -855,13 +907,13 @@ public:
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         const auto [halfW, halfH] = computeBadgeHalfExtents(element);
         if (element.isActive) {
+            const int handleHit = HandleGeometry::scaledHandleHitHalfSize(element.dpiScale, (std::max)(8, padding));
             if (element.hasLeaderArrow) {
-                const int hw = (std::max)(8, padding);
-                cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
+                cv::Rect h2(element.endPt.x - handleHit, element.endPt.y - handleHit, handleHit * 2, handleHit * 2);
                 if (h2.contains(pt)) return HitArea::RB; // 箭头尖端控制柄
             }
             const cv::Point scalePt = computeScaleHandlePt(element);
-            if (std::hypot(pt.x - scalePt.x, pt.y - scalePt.y) <= (std::max)(7.5, static_cast<double>(padding))) {
+            if (std::hypot(pt.x - scalePt.x, pt.y - scalePt.y) <= static_cast<double>(handleHit)) {
                 return HitArea::RT; // 外环缩放控制柄
             }
         }
@@ -901,17 +953,33 @@ public:
             element.endPt.x += dx;
             element.endPt.y += dy;
         } else if (handle == HitArea::RT) {
-            bool mirroredLeft = false;
-            if (element.hasLeaderArrow) {
-                const double adx = static_cast<double>(element.endPt.x - element.startPt.x);
-                const double ady = static_cast<double>(element.endPt.y - element.startPt.y);
-                if (adx > 0.0 && ady < 0.0) {
-                    mirroredLeft = true;
+            // 精确径向投影反解：使外环缩放控制柄在任意 DPI 与徽章形态下 1:1 紧贴鼠标指针
+            const float baseDpi = element.dpiScale > 0.0f ? element.dpiScale : 1.0f;
+            const auto [halfW, halfH] = computeBadgeHalfExtents(element);
+            const cv::Point origHandle = computeScaleHandlePt(element);
+            const double vx = static_cast<double>(origHandle.x - element.startPt.x);
+            const double vy = static_cast<double>(origHandle.y - element.startPt.y);
+            const double origDist = std::hypot(vx, vy);
+            if (origDist > 1e-3) {
+                const double tx = vx + static_cast<double>(dx);
+                const double ty = vy + static_cast<double>(dy);
+                const double projDist = (tx * vx + ty * vy) / origDist;
+                const int pad = static_cast<int>(std::round(3.0f * baseDpi));
+                double targetSizeFactor = 1.0;
+                if (element.numberShape == NumberBadgeShape::RoundedSquare && halfW > halfH) {
+                    const double origEffScale = static_cast<double>(computeEffectiveScale(element));
+                    const double origSizeFactor = origEffScale / static_cast<double>(baseDpi);
+                    const double constPadDiag = std::hypot(static_cast<double>(pad - 2), static_cast<double>(pad - 2));
+                    const double origScalable = (std::max)(1.0, origDist - constPadDiag);
+                    const double targetScalable = (std::max)(1.0, projDist - constPadDiag);
+                    targetSizeFactor = origSizeFactor * (targetScalable / origScalable);
+                } else {
+                    const double targetHalfH = (std::max)(1.0, projDist - static_cast<double>(pad - 1));
+                    targetSizeFactor = (targetHalfH / 16.0) / static_cast<double>(baseDpi);
                 }
+                const double targetThick = (targetSizeFactor - 0.76) / 0.08;
+                element.thickness = std::clamp(static_cast<float>(targetThick), 1.0f, 28.0f);
             }
-            const int signedDx = mirroredLeft ? -dx : dx;
-            const float delta = static_cast<float>(signedDx - dy) * 0.18f;
-            element.thickness = std::clamp(element.thickness + delta, 1.0f, 28.0f);
         } else {
             element.moveBy(dx, dy);
         }
@@ -937,7 +1005,7 @@ public:
 
         // 2. 在外环角部绘制无遮挡缩放控制柄，支持直接拖拽放大/缩小整个序号与字符
         const cv::Point scalePt = computeScaleHandlePt(element);
-        const int scaleHandleR = 5;
+        const int scaleHandleR = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 5);
         cv::circle(canvas, scalePt, scaleHandleR, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
         cv::circle(canvas, scalePt, scaleHandleR, activeColor, 1, cv::LINE_AA);
 
@@ -954,7 +1022,7 @@ public:
         }
 
         // 3. 在箭头尖端绘制可拖拽指向控制柄
-        const int handleR = 6;
+        const int handleR = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 6);
         cv::circle(canvas, element.endPt, handleR, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);
         cv::circle(canvas, element.endPt, handleR, activeColor, 1, cv::LINE_AA);
     }

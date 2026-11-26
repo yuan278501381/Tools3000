@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "Core Efficiency Entry",
     "hotkeyGroupPinOcr": "Pin, OCR & Translation",
     "hotkeyGroupRecording": "Screen Recording & Audio Control",
-    "hotkeyGroupInput": "Input & Gesture Control"
+    "hotkeyGroupInput": "Input & Gesture Control",
+    "showChangelogOnUpdate": "Show changelog after updates",
+    "showChangelogOnUpdateDesc": "Automatically display offline release highlights the first time Settings opens after upgrading (never shown on fresh installs)"
   },
   "plugins": {
     "capabilities": "Module capabilities",
@@ -1530,7 +1532,7 @@
       "llHooks": "Zero-latency global hotkeys, mouse gestures, and remote input guard",
       "ntfsEngine": "Million-file disk indexing and real-time file change tracking",
       "pinyin": "Full Pinyin and initials fuzzy matching for Chinese filenames",
-      "opencv": "Computer vision processing and seamless scrolling capture stitching",
+      "opencv": "Computer vision processing, offline quirc QR decoding, and seamless scrolling capture stitching",
       "ffmpeg": "High-framerate screen recording, dual audio mixing, and 2-pass GIF export",
       "windowsOcr": "100% offline image text recognition and zero-lock native PDF page rendering",
       "uiaShell": "File dialog folder jump and File Explorer selection integration",
@@ -1539,7 +1541,7 @@
       "vite": "Lightning-fast frontend bundler and code-splitting build engine",
       "lucideIcons": "Unified crisp vector iconography across all surfaces",
       "designTokens": "Adaptive dark/light theming, accent colors, and High-DPI design tokens",
-      "sqliteZlib": "Local analytics/history storage and lossless Office archive extraction",
+      "sqliteZlib": "Read-only system WinSQLite3 browser favicon reader and lossless zlib Office archive extraction",
       "luaSol2": "Local Lua scripting engine for custom automation workflows",
       "spdlog": "Low-overhead asynchronous diagnostic logging",
       "nlohmannJson": "Fast JSON configuration and IPC message serialization",
@@ -1547,8 +1549,12 @@
       "innoSetup": "Windows installer, portable archive, and code-signed release packaging",
       "rustPicasaViewer": "Standalone zero-CRT hardware-accelerated photo viewer (41 formats, physics & Gaussian shadow)",
       "ddcBrightness": "Per-monitor hardware brightness engine (DDC/CI external displays + WMI laptop panels)",
-      "ppocrDirectml": "Dual-stage offline deep-learning OCR (DirectML GPU + WinML) with QR/barcode & in-place edit",
-      "ifilterShellProps": "Office/WPS/email full-text extraction and on-demand 30+ extended column metadata properties"
+      "ppocrDirectml": "Dual-stage offline deep-learning OCR & MI-GAN 512 texture inpainting (DirectML GPU + WinML)",
+      "ifilterShellProps": "Office/WPS/email full-text extraction and on-demand 30+ extended column metadata properties",
+      "rustClipboard": "Zero-dependency Rust clipboard persistence, deduplication, and sub-millisecond search kernel",
+      "rustCliMcp": "Zero-dependency Rust CLI & MCP stdio server exposing local disk search to AI agents",
+      "winhttpTranslate": "Native TLS in-place screenshot translation gateway (default keyless Bilibili Index-Translate, fallback & DPAPI)",
+      "i18next": "8-language isomorphic internationalization framework with system locale detection and 7 static gates"
     },
     "exportLogsTip": "Export system diagnostic logs and environment report",
     "authorGithubTip": "Visit original author GitHub profile",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "View release notes",
     "viewUpdate": "View Update",
     "openPerformancePageBtn": "Memory Policy",
-    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits",
+    "viewChangelogBtn": "Changelog"
   },
   "sidebar": {
     "groupSystem": "System",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "In-Place Screenshot Translation",
     "providerTitle": "Translation Provider",
-    "providerDesc": "Supports zero-config free dual channels and BYOK endpoints (OpenAI-compatible / local Ollama / DeepL). Network requests are only sent on explicit translate or connection tests.",
+    "providerDesc": "Defaults to keyless Bilibili Index-Translate AI (with automatic free dual-channel failover), plus BYOK endpoints (OpenAI-compatible / local Ollama / DeepL). Requests are only sent on demand.",
     "providerFreeAuto": "Zero-Key Dual Free (Edge Primary + Google Fallback)",
-    "providerOpenAi": "OpenAI-Compatible API (OpenAI / DeepSeek / Proxy / Local Ollama)",
+    "providerOpenAi": "OpenAI-Compatible API (Default Bilibili Keyless / DeepSeek / Local Ollama)",
     "providerDeepL": "DeepL Official API (Auto Free / Pro)",
     "badgeZeroConfig": "Zero Config · On-Demand",
     "badgeLocalOffline": "Local Loopback · 100% Offline",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B (Fast)",
     "indexModelBalanced": "Index-Translate-9B (Balanced)",
     "indexModelFlagship": "Index-Translate-35B-A3B (Flagship)",
-    "indexTranslateNotice": "Hosted by Bilibili's open-source public API with zero API key needed. Use 2B or 9B for fast multi-line screenshots, or 35B-A3B for peak accuracy. Switch back to Zero-Key Dual Free anytime if rate-limited.",
+    "indexTranslateNotice": "Hosted by Bilibili's open-source public API with zero API key required. Use 2B or 9B for fast multi-line screenshots, or 35B-A3B for peak quality. Automatically falls back to free dual-channel if rate-limited.",
     "openaiBaseUrlLabel": "Base URL",
     "openaiModelLabel": "Model Name",
     "apiKeyLabel": "API Key",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
     "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
     "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
+  },
+  "changelog": {
+    "upgradeTitle": "What's New in Tools3000",
+    "upgradeSubtitle": "Offline curated highlights so you can catch up on every improvement from this upgrade",
+    "archiveTitle": "Release Changelog",
+    "archiveSubtitle": "{{count}} recent releases bundled offline with instant keyword and version search",
+    "upgradeSpanBanner": "Updated from {{from}} to {{to}} across {{count}} release(s)",
+    "searchPlaceholder": "Filter by version or keyword (e.g. 1.4.0, translate, OCR, search)...",
+    "searchMatchesCount": "{{count}} matching release(s)",
+    "showingCount": "Showing {{shown}} of {{total}} releases",
+    "noSearchResults": "No matching releases found. Try a different keyword.",
+    "badgeNew": "NEW",
+    "kindMajor": "Major",
+    "kindMinor": "Minor",
+    "kindPatch": "Patch",
+    "relativeToday": "Today",
+    "relativeYesterday": "Yesterday",
+    "relativeDaysAgo": "{{count}}d ago",
+    "relativeMonthsAgo": "{{count}}mo ago",
+    "relativeYearsAgo": "{{count}}y ago",
+    "fallbackLocaleNote": "This earlier release only includes Simplified Chinese notes.",
+    "loadMoreBtn": "Load older releases (+{{step}}, {{remaining}} remaining)",
+    "autoShowAfterUpdate": "Show changelog automatically after updates",
+    "viewAllOnGitHub": "View all on GitHub",
+    "gotItBtn": "Got it",
+    "clearSearch": "Clear search"
   }
 }

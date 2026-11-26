@@ -350,13 +350,13 @@ public:
     }
 
     /// 计算文本标注高反差外扩描边线宽（与 MarkupEngine 渲染 100% 单一事实源同构）
-    static float computeOutlineStrokeWidth(int fontSize) noexcept {
-        const int safeFontSize = (std::max)(12, fontSize);
-        return (std::max)(3.4f, static_cast<float>(safeFontSize) * 0.18f);
+    static float computeOutlineStrokeWidth(float fontSize) noexcept {
+        const float safeFontSize = (std::max)(12.0f, fontSize);
+        return (std::max)(3.4f, safeFontSize * 0.18f);
     }
 
     /// 根据字号与外扩描边半宽动态计算文本绘制起点安全边距，彻底杜绝大字号描边被位图边缘切平
-    static std::pair<float, float> computeTextOrigin(int fontSize) noexcept {
+    static std::pair<float, float> computeTextOrigin(float fontSize) noexcept {
         const float strokeHalf = computeOutlineStrokeWidth(fontSize) * 0.5f;
         const float strokePad = std::ceil(strokeHalf + 2.0f);
         const float originX = (std::max)(6.0f, strokePad + 2.0f);
@@ -365,14 +365,14 @@ public:
     }
 
     /// 文本框水平与垂直总内边距（SSOT：度量、换行可用宽度、渲染与命中测试完全共用）
-    static int computeBoxHorizontalPadding(int fontSize) noexcept {
-        const auto [originX, originY] = computeTextOrigin((std::max)(12, fontSize));
+    static int computeBoxHorizontalPadding(float fontSize) noexcept {
+        const auto [originX, originY] = computeTextOrigin((std::max)(12.0f, fontSize));
         (void)originY;
         return static_cast<int>(std::ceil(originX * 2.0f + 4.0f));
     }
 
-    static int computeBoxVerticalPadding(int fontSize) noexcept {
-        const auto [originX, originY] = computeTextOrigin((std::max)(12, fontSize));
+    static int computeBoxVerticalPadding(float fontSize) noexcept {
+        const auto [originX, originY] = computeTextOrigin((std::max)(12.0f, fontSize));
         (void)originX;
         return static_cast<int>(std::ceil(originY * 2.0f + 2.0f));
     }
@@ -381,12 +381,12 @@ public:
     static constexpr float kBottomBoundarySafetyMarginPx = 6.0f;
 
     /// 根据截图画布宽度与文本框左起点，计算不越出右边界的最大可用外框宽度（<= 0.0f 表示不限宽）
-    static float computeAvailableBoxWidth(int canvasWidth, int boxStartX, int fontSize,
+    static float computeAvailableBoxWidth(int canvasWidth, int boxStartX, float fontSize,
                                           float rightSafetyMargin = kRightBoundarySafetyMarginPx) noexcept {
         if (canvasWidth <= 0) return 0.0f;
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const float padW = static_cast<float>(computeBoxHorizontalPadding(safeFontSize));
-        const float minReadableBoxW = (std::max)(44.0f, static_cast<float>(safeFontSize) * 1.8f + padW);
+        const float minReadableBoxW = (std::max)(44.0f, safeFontSize * 1.8f + padW);
         const float canvasF = static_cast<float>(canvasWidth);
         const float clampedMinW = (std::min)(canvasF, minReadableBoxW);
         const float remaining = canvasF - static_cast<float>(boxStartX) - rightSafetyMargin;
@@ -397,26 +397,26 @@ public:
     }
 
     /// 将外框最大宽度换算为排版内容区最大宽度（扣除左右描边与聚焦框安全内边距）
-    static float computeContentWidthFromBoxWidth(float maxBoxWidth, int fontSize) noexcept {
+    static float computeContentWidthFromBoxWidth(float maxBoxWidth, float fontSize) noexcept {
         if (maxBoxWidth <= 0.0f) return 0.0f;
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const float padW = static_cast<float>(computeBoxHorizontalPadding(safeFontSize));
-        return (std::max)(static_cast<float>(safeFontSize) * 1.15f, maxBoxWidth - padW);
+        return (std::max)(safeFontSize * 1.15f, maxBoxWidth - padW);
     }
 
     /// 根据排版快照计算外框像素尺寸（SSOT：与渲染画布大小 100% 一致；支持用户自定义独立拉宽与拉长）
-    static std::pair<int, int> computeBoxSize(const MultilineTextLayout& layout, int fontSize,
+    static std::pair<int, int> computeBoxSize(const MultilineTextLayout& layout, float fontSize,
                                               float maxBoxWidth = 0.0f,
                                               bool fixedBoxWidth = false,
                                               float minBoxHeight = 0.0f) noexcept {
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const int padW = computeBoxHorizontalPadding(safeFontSize);
         const int padH = computeBoxVerticalPadding(safeFontSize);
         int w = static_cast<int>(std::ceil(layout.contentWidth)) + padW;
         if (maxBoxWidth > 0.0f) {
             const int maxWInt = static_cast<int>(std::ceil(maxBoxWidth));
             // 仅夹取行尾空白或小数舍入误差；若单字本身宽度超过极窄框，保留完整字形不裁切
-            const int minSingleGlyphBox = static_cast<int>(std::ceil(static_cast<float>(safeFontSize) * 1.15f)) + padW;
+            const int minSingleGlyphBox = static_cast<int>(std::ceil(safeFontSize * 1.15f)) + padW;
             const int clampedTargetW = (std::max)(maxWInt, minSingleGlyphBox);
             if (fixedBoxWidth) {
                 w = (std::max)(w, clampedTargetW);
@@ -428,24 +428,24 @@ public:
         if (minBoxHeight > 0.0f) {
             h = (std::max)(h, static_cast<int>(std::ceil(minBoxHeight)));
         }
-        return {(std::max)(w, 24), (std::max)(h, safeFontSize + padH)};
+        return {(std::max)(w, 24), (std::max)(h, static_cast<int>(std::ceil(safeFontSize)) + padH)};
     }
 
     /// 新建文本框时对紧贴截图右/底边缘的点击落点进行温和礼让，避免首行仅剩极窄列宽或掉出底边
     static std::pair<int, int> computeSmartTextStartPoint(int clickX, int clickY,
                                                           int canvasWidth, int canvasHeight,
-                                                          int fontSize) noexcept {
+                                                          float fontSize) noexcept {
         if (canvasWidth <= 0 || canvasHeight <= 0) {
             return {clickX, clickY};
         }
-        const int safeFontSize = (std::max)(12, fontSize);
+        const float safeFontSize = (std::max)(12.0f, fontSize);
         const int padW = computeBoxHorizontalPadding(safeFontSize);
         const int padH = computeBoxVerticalPadding(safeFontSize);
         const int margin = 4;
         const int preferredMinWidth = static_cast<int>(std::ceil(
-            (std::max)(140.0f, static_cast<float>(safeFontSize) * 4.5f + static_cast<float>(padW))));
+            (std::max)(140.0f, safeFontSize * 4.5f + static_cast<float>(padW))));
         const int minInitialHeight = static_cast<int>(std::ceil(
-            static_cast<float>(safeFontSize) * 1.45f + static_cast<float>(padH)));
+            safeFontSize * 1.45f + static_cast<float>(padH)));
 
         int outX = clickX;
         int outY = clickY;
@@ -494,9 +494,11 @@ public:
         }
     }
 
-    /// 构建与 GDI+ GraphicsPath::AddString 完全对齐的多行字符边界度量表（支持可选 maxContentWidth 边界自动软换行）
-    static MultilineTextLayout buildLayout(const std::wstring& wtext, int fontSize, float maxContentWidth = 0.0f) {
-        const int safeFontSize = (std::max)(12, fontSize);
+    /// 构建与 GDI+ GraphicsPath::AddString 完全对齐的多行字符边界度量表（支持可选 maxContentWidth 边界自动软换行与 0.25px 亚像素字号）
+    static MultilineTextLayout buildLayout(const std::wstring& wtext, float fontSize, float maxContentWidth = 0.0f) {
+        const float clampedFontSize = (std::max)(12.0f, fontSize);
+        const int fontQuarterPx = static_cast<int>(std::lround(clampedFontSize * 4.0f));
+        const float safeFontSize = static_cast<float>(fontQuarterPx) * 0.25f;
         const float safeMaxContentW = (maxContentWidth > 0.5f) ? maxContentWidth : 0.0f;
         const int maxWidthTenths = (safeMaxContentW > 0.0f)
             ? static_cast<int>(std::lround(safeMaxContentW * 10.0f))
@@ -504,7 +506,7 @@ public:
 
         struct CachedLayoutEntry {
             std::wstring text;
-            int fontPx = 0;
+            int fontQuarterPx = 0;
             int maxWidthTenths = 0;
             MultilineTextLayout layout;
         };
@@ -513,7 +515,7 @@ public:
         {
             std::lock_guard<std::mutex> lock(s_cacheMutex);
             for (auto it = s_layoutCache.begin(); it != s_layoutCache.end(); ++it) {
-                if (it->fontPx == safeFontSize &&
+                if (it->fontQuarterPx == fontQuarterPx &&
                     it->maxWidthTenths == maxWidthTenths &&
                     it->text == wtext) {
                     MultilineTextLayout hit = it->layout;
@@ -530,7 +532,7 @@ public:
         initializeMarkupTextRenderer();
 
         MultilineTextLayout layout;
-        const float fSize = static_cast<float>(safeFontSize);
+        const float fSize = safeFontSize;
         const auto [originX, originY] = computeTextOrigin(safeFontSize);
         layout.textOriginX = originX;
         layout.textOriginY = originY;
@@ -749,7 +751,7 @@ public:
 
         if (wtext.size() <= 8192) {
             std::lock_guard<std::mutex> lock(s_cacheMutex);
-            s_layoutCache.push_front(CachedLayoutEntry{wtext, safeFontSize, maxWidthTenths, layout});
+            s_layoutCache.push_front(CachedLayoutEntry{wtext, fontQuarterPx, maxWidthTenths, layout});
             while (s_layoutCache.size() > 16) {
                 s_layoutCache.pop_back();
             }

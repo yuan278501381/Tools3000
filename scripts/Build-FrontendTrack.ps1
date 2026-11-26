@@ -153,6 +153,11 @@ try {
         Write-Host "[UI] [OK] package-lock.json 依赖树指纹一致，0ms 复用 node_modules / .eslintcache / tsbuildinfo" -ForegroundColor Green
     }
 
+    # 先生成离线分页更新日志数据分块（<150ms，单线程执行避免并发门禁写竞争）
+    Write-Host "[UI] 执行 npm run gen:changelog (生成离线更新日志数据分块)..." -ForegroundColor Cyan
+    npm run gen:changelog
+    if ($LASTEXITCODE -ne 0) { throw "npm run gen:changelog 失败，退出码: $LASTEXITCODE" }
+
     # 三路并发执行 lint (ESLint 缓存 + 6 重并发静态门禁) || test (Vitest 全量单测) || typecheck (tsc -b 增量类型检查)
     $GateSw = [System.Diagnostics.Stopwatch]::StartNew()
     Write-Host "[UI] 三路并发执行 lint (ESLint + 6 重静态门禁) || test (Vitest 全量单测) || typecheck (tsc -b)..." -ForegroundColor Cyan

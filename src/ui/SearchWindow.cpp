@@ -363,14 +363,45 @@ void SearchWindow::markFirstPaintReady() {
     completeFirstPaintReady();
 }
 
+bool SearchWindow::setWindowCloaked(bool cloaked) {
+    if (!m_hwnd || !IsWindow(m_hwnd)) {
+        m_cloakedForFirstPaint = false;
+        return false;
+    }
+    if (!cloaked) {
+        KillTimer(m_hwnd, IDT_FIRST_PAINT_UNCLOAK);
+        if (!m_cloakedForFirstPaint) return true;
+        const BOOL val = FALSE;
+        DwmSetWindowAttribute(m_hwnd, DWMWA_CLOAK, &val, sizeof(val));
+        m_cloakedForFirstPaint = false;
+        return true;
+    }
+    const BOOL val = TRUE;
+    const HRESULT hr = DwmSetWindowAttribute(m_hwnd, DWMWA_CLOAK, &val, sizeof(val));
+    if (SUCCEEDED(hr)) {
+        m_cloakedForFirstPaint = true;
+        SetTimer(m_hwnd, IDT_FIRST_PAINT_UNCLOAK, FIRST_PAINT_UNCLOAK_TIMEOUT_MS, nullptr);
+        return true;
+    }
+    m_cloakedForFirstPaint = false;
+    return false;
+}
+
 void SearchWindow::completeFirstPaintReady() {
     if (!m_hwnd || !IsWindow(m_hwnd) || !m_controller) return;
     KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
+    const bool wasCloaked = m_cloakedForFirstPaint;
     m_uiFirstPaintReady.store(true, std::memory_order_release);
     setWebViewStatus(WebViewStatus::Ready, S_OK);
+    setWindowCloaked(false);
     if (m_visible.load(std::memory_order_acquire)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
-        focusSearchIfVisible();
+        if (wasCloaked) {
+            // 原子揭幕瞬间轻推一次焦点，确保从 Cloak 释放后输入框光标 100% 就位
+            m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
+        } else {
+            focusSearchIfVisible();
+        }
     } else if (m_everPresentedVisible) {
         // 仅在窗口至少完整向用户渲染过一次真实帧后才进入延迟挂起，
         // 杜绝后台 preload 在 0 帧隐藏态即被 TrySuspend 冻死导致首次 Alt+Space 呼出黑屏。
@@ -447,6 +478,15 @@ void SearchWindow::show(HINSTANCE hInstance) {
         }
         const bool wasHidden = !IsWindowVisible(m_hwnd);
         const bool wasMinimized = (IsIconic(m_hwnd) != FALSE);
+        const bool webReady = m_webViewReady.load(std::memory_order_acquire);
+        const bool firstPaintDone = m_uiFirstPaintReady.load(std::memory_order_acquire);
+        const bool wasSuspendedBeforeShow = m_wasSuspended;
+        const bool needCloak = shouldCloakOnShow(webReady, firstPaintDone, wasSuspendedBeforeShow, wasMinimized);
+        if (needCloak) {
+            // 原生 DWMWA_CLOAK 隐身热身：在 ShowWindow 之前屏蔽窗口合成输出，
+            // 让 Chromium 在真实可见窗口下零节流提交首帧/唤醒帧，杜绝 Win10 LTSC/核显首次呼出短暂黑帧闪烁。
+            setWindowCloaked(true);
+        }
 
         if (wasMinimized) {
             // 从任务栏最小化还原：自动保持最小化前的最大化或浮窗几何，不破坏用户分屏与尺寸
@@ -471,11 +511,17 @@ void SearchWindow::show(HINSTANCE hInstance) {
         m_minimized = false;
         hookWebViewChildWindows(m_hwnd);
         if (m_webView) m_suspendController.resume(m_webView.Get(), "search");
-        if (!m_webViewReady.load(std::memory_order_acquire)) {
+        if (!webReady) {
+            setWindowCloaked(false);
             if (m_controller) m_controller->put_IsVisible(FALSE);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else {
-            presentWebViewSurface(wasHidden || wasMinimized || m_wasSuspended);
+            presentWebViewSurface(wasHidden || wasMinimized || wasSuspendedBeforeShow);
+            if (needCloak && firstPaintDone && m_webView) {
+                // 已完成首帧但经历过挂起/最小化：请求前端在重绘 1 帧 rAF 后触发原子揭幕
+                m_webView->ExecuteScript(
+                    L"window.dispatchEvent(new CustomEvent('tools3000:searchResumeFrame'));", nullptr);
+            }
         }
         focusSearchIfVisible();
         recordShown();
@@ -515,6 +561,7 @@ void SearchWindow::minimize() {
         return;
     }
     if (!IsWindowVisible(m_hwnd)) return;
+    setWindowCloaked(false);
     ShowWindow(m_hwnd, SW_MINIMIZE);
 }
 
@@ -522,6 +569,7 @@ void SearchWindow::hide() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
     KillTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
+    setWindowCloaked(false);
     if (!m_visible.load() && !IsWindowVisible(m_hwnd)) return;
     persistNormalGeometry();
     ShowWindow(m_hwnd, SW_HIDE);
@@ -557,6 +605,7 @@ void SearchWindow::destroy() {
     m_wasSuspended = false;
     m_everPresentedVisible = false;
     if (m_hwnd && IsWindow(m_hwnd)) {
+        setWindowCloaked(false);
         KillTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
         KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
         KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
@@ -719,6 +768,12 @@ void SearchWindow::setWebViewStatus(WebViewStatus status, HRESULT hr) {
         m_lastWebViewErrorHr.store(static_cast<uint32_t>(hr), std::memory_order_release);
     } else if (status == WebViewStatus::Ready || status == WebViewStatus::Loading) {
         m_lastWebViewErrorHr.store(0u, std::memory_order_release);
+    }
+    if (status == WebViewStatus::MissingRuntime ||
+        status == WebViewStatus::InitFailed ||
+        status == WebViewStatus::RenderCrashed) {
+        // 异常/降级提示面必须立即可见，绝不允许停留在 DWM Cloak 隐身态
+        setWindowCloaked(false);
     }
     if (m_hwnd && IsWindow(m_hwnd) && IsWindowVisible(m_hwnd)) {
         InvalidateRect(m_hwnd, nullptr, FALSE);
@@ -1381,6 +1436,14 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
                             L"requestAnimationFrame(() => { void document.documentElement.offsetHeight; });",
                             nullptr);
                     }
+                }
+                return 0;
+            }
+            if (wParam == IDT_FIRST_PAINT_UNCLOAK) {
+                KillTimer(hwnd, IDT_FIRST_PAINT_UNCLOAK);
+                inst.setWindowCloaked(false);
+                if (inst.isVisible() && inst.m_controller) {
+                    inst.m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
                 }
                 return 0;
             }

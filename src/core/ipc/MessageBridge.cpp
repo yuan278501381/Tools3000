@@ -2822,6 +2822,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"minimizeToTray", config.get<bool>("/general/minimizeToTray", true)},
             {"checkUpdates", config.get<bool>("/general/checkUpdates", true)},
             {"autoDownloadUpdates", config.get<bool>("/general/autoDownloadUpdates", true)},
+            {"showChangelogOnUpdate", config.get<bool>("/general/showChangelogOnUpdate", true)},
             {"autoReleaseSettingsMemory", config.get<bool>("/general/autoReleaseSettingsMemory", true)},
             {"fullscreenMode", WinUtils::fullscreenPolicyModeToString(parsedFullscreenMode)},
             {"keycastEnabled", config.get<bool>("/general/keycastEnabled", true)},
@@ -2852,7 +2853,7 @@ void MessageBridge::registerBuiltinHandlers() {
     });
     registerHandler("general.updateSettings", [](const json& params) -> json {
         static const std::unordered_set<std::string> boolKeys = {
-            "autoStart", "runAsAdmin", "minimizeToTray", "checkUpdates", "autoDownloadUpdates", "autoReleaseSettingsMemory", "keycastEnabled", "showOnboarding"
+            "autoStart", "runAsAdmin", "minimizeToTray", "checkUpdates", "autoDownloadUpdates", "showChangelogOnUpdate", "autoReleaseSettingsMemory", "keycastEnabled", "showOnboarding"
         };
         static const std::unordered_set<std::string> themes = {"system", "light", "dark"};
         static const std::unordered_set<std::string> trayIconThemes = {"system", "auto", "light", "dark", "color"};
@@ -3077,6 +3078,19 @@ void MessageBridge::registerBuiltinHandlers() {
         if (!state.is_object()) state = json::object();
         state["success"] = true;
         state["dismissedAction"] = dismissed;
+        return state;
+    });
+    registerHostHandler("app.getChangelogState", [](const json&) -> json {
+        auto state = json::parse(UpdateChecker::instance().getChangelogStateJsonString(), nullptr, false);
+        if (!state.is_object()) state = json::object();
+        state["success"] = true;
+        return state;
+    });
+    registerHostHandler("app.markChangelogSeen", [](const json&) -> json {
+        const bool saved = UpdateChecker::instance().markChangelogSeen();
+        auto state = json::parse(UpdateChecker::instance().getChangelogStateJsonString(), nullptr, false);
+        if (!state.is_object()) state = json::object();
+        state["success"] = saved;
         return state;
     });
 

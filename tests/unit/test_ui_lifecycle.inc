@@ -1915,3 +1915,23 @@ TEST(SearchWindowNativeAppContractTest, OfflineDefaultCategorySkipsServiceWarmup
     EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow("code"));
     EXPECT_TRUE(SearchWindow::shouldWarmUpSearchServiceOnShow(""));
 }
+
+TEST(SearchWindowNativeAppContractTest, ZeroFlashCloakPolicyOnShow) {
+    using tools3000::ui::SearchWindow;
+
+    // 1. WebView2 尚未就绪（冷启动首创阶段）：不可提前 cloak，保持 Win32 主题背景色直接呈现避免误伤冷启
+    EXPECT_FALSE(SearchWindow::shouldCloakOnShow(false, false, false, false));
+    EXPECT_FALSE(SearchWindow::shouldCloakOnShow(false, true, true, true));
+
+    // 2. 预热完成但前端尚未产出首帧：必须 DWMWA_CLOAK 隐身热身，待双 rAF 握手后再原子揭幕（根治 #29 首次短暂黑屏）
+    EXPECT_TRUE(SearchWindow::shouldCloakOnShow(true, false, false, false));
+
+    // 3. 常态二次秒开（首帧已就绪且未经历挂起或最小化）：0 额外等待直接展示
+    EXPECT_FALSE(SearchWindow::shouldCloakOnShow(true, true, false, false));
+
+    // 4. TrySuspend 挂起后唤醒：必须 cloak 等待渲染器恢复并完成新帧合成，彻底消除恢复瞬间黑屏闪烁
+    EXPECT_TRUE(SearchWindow::shouldCloakOnShow(true, true, true, false));
+
+    // 5. 最小化还原唤醒：同样 cloak 等待一帧合成后再原子揭幕
+    EXPECT_TRUE(SearchWindow::shouldCloakOnShow(true, true, false, true));
+}

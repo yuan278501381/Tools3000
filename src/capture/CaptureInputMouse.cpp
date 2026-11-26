@@ -525,7 +525,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     m_state->isAdjustingSelection = true;
                     m_state->selAdjustHandle = selHit;
                     m_state->selAdjustLast = point;
-                    m_state->longCanvas.lastSelAdjustDocPt = m_state->screenToDoc(px, py);
+                    m_state->selAdjustStartRect = {
+                        std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                        std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                    };
+                    m_state->selAdjustStartDocPt = m_state->screenToDoc(px, py);
+                    m_state->hasSelAdjustStart = true;
+                    m_state->longCanvas.lastSelAdjustDocPt = m_state->selAdjustStartDocPt;
                     updateHoverCursor(point);
                     return 0;
                 }
@@ -535,6 +543,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     m_state->isAdjustingSelection = true;
                     m_state->selAdjustHandle = HitArea::Body;
                     m_state->selAdjustLast = point;
+                    m_state->selAdjustStartRect = {
+                        std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                        std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                    };
+                    m_state->selAdjustStartDocPt = m_state->screenToDoc(px, py);
+                    m_state->hasSelAdjustStart = true;
+                    m_state->longCanvas.lastSelAdjustDocPt = m_state->selAdjustStartDocPt;
                     updateHoverCursor(point);
                     return 0;
                 }
@@ -546,6 +563,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     m_state->isAdjustingSelection = true;
                     m_state->selAdjustHandle = HitArea::Body;
                     m_state->selAdjustLast = point;
+                    m_state->selAdjustStartRect = {
+                        std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                        std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                        std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                    };
+                    m_state->selAdjustStartDocPt = m_state->screenToDoc(px, py);
+                    m_state->hasSelAdjustStart = true;
+                    m_state->longCanvas.lastSelAdjustDocPt = m_state->selAdjustStartDocPt;
                     updateHoverCursor(point);
                     return 0;
                 }
@@ -580,7 +606,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                                 const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                                 const auto layout = CaptureTextEditor::buildLayout(
-                                    wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
+                                    wstr, m_state->activeElement->fontSize, maxContentW);
                                 const float relX = static_cast<float>(local.x - m_state->activeElement->startPt.x);
                                 const float relY = static_cast<float>(local.y - m_state->activeElement->startPt.y);
                                 const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
@@ -593,6 +619,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 m_state->textPreferredCaretX = -1.0f;
                                 m_state->isSelectingText = true;
                                 m_state->isManipulating = false;
+                                m_state->hasManipulateStartElement = false;
                                 m_state->lastMousePos = point;
                                 SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                                 syncImeCompositionWindow(hwnd);
@@ -607,11 +634,14 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 m_state->isSelectingText = false;
                                 m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
                                 m_state->hasManipulateSnapshot = true;
+                                m_state->manipulateStartElement = *m_state->activeElement;
+                                m_state->manipulateStartDocPt = m_state->screenToDoc(px, py);
+                                m_state->hasManipulateStartElement = true;
                                 resetCoalescedUndo(*m_state);
                                 m_state->dragHandle = HitArea::TextMoveBorder;
                                 m_state->isManipulating = true;
                                 m_state->lastMousePos = point;
-                                m_state->longCanvas.lastManipulateDocPt = m_state->screenToDoc(px, py);
+                                m_state->longCanvas.lastManipulateDocPt = m_state->manipulateStartDocPt;
                                 m_renderer->invalidate();
                                 updateHoverCursor(point);
                                 return 0;
@@ -620,12 +650,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                 m_state->isSelectingText = false;
                                 m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
                                 m_state->hasManipulateSnapshot = true;
+                                m_state->manipulateStartElement = *m_state->activeElement;
+                                m_state->manipulateStartDocPt = m_state->screenToDoc(px, py);
+                                m_state->hasManipulateStartElement = true;
                                 resetCoalescedUndo(*m_state);
                                 m_state->textManipulateStart = point;
                                 m_state->dragHandle = HitArea::None;
                                 m_state->isManipulating = true;
                                 m_state->lastMousePos = point;
-                                m_state->longCanvas.lastManipulateDocPt = m_state->screenToDoc(px, py);
+                                m_state->longCanvas.lastManipulateDocPt = m_state->manipulateStartDocPt;
                                 m_renderer->invalidate();
                                 updateHoverCursor(point);
                                 return 0;
@@ -656,11 +689,14 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                                   static_cast<int>(activeElemHit), static_cast<int>(m_state->activeElement->tool));
                         m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
                         m_state->hasManipulateSnapshot = true;
+                        m_state->manipulateStartElement = *m_state->activeElement;
+                        m_state->manipulateStartDocPt = m_state->screenToDoc(px, py);
+                        m_state->hasManipulateStartElement = true;
                         resetCoalescedUndo(*m_state);
                         m_state->dragHandle = (activeElemHit == HitArea::Body) ? HitArea::None : activeElemHit;
                         m_state->isManipulating = true;
                         m_state->lastMousePos = point;
-                        m_state->longCanvas.lastManipulateDocPt = m_state->screenToDoc(px, py);
+                        m_state->longCanvas.lastManipulateDocPt = m_state->manipulateStartDocPt;
                         m_renderer->invalidate();
                         updateHoverCursor(point);
                         return 0;
@@ -786,13 +822,16 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
                         m_state->manipulateStartSnapshot = m_state->markup.captureSnapshot();
                         m_state->hasManipulateSnapshot = true;
+                        m_state->manipulateStartElement = *m_state->activeElement;
+                        m_state->manipulateStartDocPt = m_state->screenToDoc(px, py);
+                        m_state->hasManipulateStartElement = true;
                         resetCoalescedUndo(*m_state);
                         m_state->dragHandle = (hit.area == HitArea::Body || hit.area == HitArea::TextMoveBorder)
                             ? HitArea::None
                             : hit.area;
                         m_state->isManipulating = true;
                         m_state->lastMousePos = point;
-                        m_state->longCanvas.lastManipulateDocPt = m_state->screenToDoc(px, py);
+                        m_state->longCanvas.lastManipulateDocPt = m_state->manipulateStartDocPt;
                         m_renderer->markMarkupDirty();
                         m_renderer->invalidate();
                         updateHoverCursor(point);
@@ -838,6 +877,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             m_state->isAdjustingSelection = true;
                             m_state->selAdjustHandle = HitArea::Body;
                             m_state->selAdjustLast = point;
+                            m_state->selAdjustStartRect = {
+                                std::min(m_state->dragStart.x, m_state->dragEnd.x),
+                                std::min(m_state->dragStart.y, m_state->dragEnd.y),
+                                std::max(m_state->dragStart.x, m_state->dragEnd.x),
+                                std::max(m_state->dragStart.y, m_state->dragEnd.y)
+                            };
+                            m_state->selAdjustStartDocPt = m_state->screenToDoc(px, py);
+                            m_state->hasSelAdjustStart = true;
+                            m_state->longCanvas.lastSelAdjustDocPt = m_state->selAdjustStartDocPt;
                         }
                         updateHoverCursor(point);
                         return 0;
@@ -1184,7 +1232,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                     const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                     const auto layout = CaptureTextEditor::buildLayout(
-                        wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
+                        wstr, m_state->activeElement->fontSize, maxContentW);
                     const size_t newCaret = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
                     if (newCaret != m_state->activeElement->textCaret) {
                         m_state->activeElement->textCaret = newCaret;
@@ -1231,10 +1279,15 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                 m_renderer->invalidate();
                 return 0;
             } else if (m_state->isAdjustingSelection) {
-                if (m_state->isLongImageMode()) {
-                    const auto curDoc = m_state->screenToDoc(
-                        static_cast<float>(m_state->currentCursor.x),
-                        static_cast<float>(m_state->currentCursor.y));
+                const auto curDoc = m_state->screenToDoc(
+                    static_cast<float>(m_state->currentCursor.x),
+                    static_cast<float>(m_state->currentCursor.y));
+                if (m_state->hasSelAdjustStart) {
+                    const int totalDx = static_cast<int>(std::lround(curDoc.x - m_state->selAdjustStartDocPt.x));
+                    const int totalDy = static_cast<int>(std::lround(curDoc.y - m_state->selAdjustStartDocPt.y));
+                    adjustSelectionFromSnapshot(m_state->selAdjustStartRect, m_state->selAdjustHandle, totalDx, totalDy);
+                    m_state->longCanvas.lastSelAdjustDocPt = curDoc;
+                } else if (m_state->isLongImageMode()) {
                     const int dx = static_cast<int>(std::trunc(curDoc.x - m_state->longCanvas.lastSelAdjustDocPt.x));
                     const int dy = static_cast<int>(std::trunc(curDoc.y - m_state->longCanvas.lastSelAdjustDocPt.y));
                     if (dx != 0 || dy != 0) {
@@ -1242,6 +1295,12 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         m_state->longCanvas.lastSelAdjustDocPt.x += static_cast<float>(dx);
                         m_state->longCanvas.lastSelAdjustDocPt.y += static_cast<float>(dy);
                     }
+                } else {
+                    int dx = m_state->currentCursor.x - m_state->selAdjustLast.x;
+                    int dy = m_state->currentCursor.y - m_state->selAdjustLast.y;
+                    adjustSelection(m_state->selAdjustHandle, dx, dy);
+                }
+                if (m_state->isLongImageMode()) {
                     // 当推拉顶/底裁切横梁靠近舞台视口上下边缘时，启动 60fps 平滑自动滚屏推进
                     const float curScale = std::clamp(m_state->dpiScale > 0.0f ? m_state->dpiScale : 1.0f, 1.0f, 5.0f);
                     const float edgeZone = 44.0f * curScale;
@@ -1250,10 +1309,6 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         m_state->currentCursor.y > stg.bottom - edgeZone) {
                         SetTimer(hwnd, RENDER_TIMER_ID, 16, nullptr);
                     }
-                } else {
-                    int dx = m_state->currentCursor.x - m_state->selAdjustLast.x;
-                    int dy = m_state->currentCursor.y - m_state->selAdjustLast.y;
-                    adjustSelection(m_state->selAdjustHandle, dx, dy);
                 }
                 m_state->selAdjustLast = m_state->currentCursor;
                 m_renderer->invalidate();
@@ -1293,51 +1348,83 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     m_renderer->markMarkupDirty();
                     m_renderer->invalidate();
                 } else {
-                    int dx = m_state->currentCursor.x - m_state->lastMousePos.x;
-                    int dy = m_state->currentCursor.y - m_state->lastMousePos.y;
-                    if (m_state->isLongImageMode()) {
-                        const auto curDoc = m_state->screenToDoc(
-                            static_cast<float>(m_state->currentCursor.x),
-                            static_cast<float>(m_state->currentCursor.y));
-                        dx = static_cast<int>(std::trunc(curDoc.x - m_state->longCanvas.lastManipulateDocPt.x));
-                        dy = static_cast<int>(std::trunc(curDoc.y - m_state->longCanvas.lastManipulateDocPt.y));
-                        m_state->longCanvas.lastManipulateDocPt.x += static_cast<float>(dx);
-                        m_state->longCanvas.lastManipulateDocPt.y += static_cast<float>(dy);
-                    }
-                    LOG_TRACE("CaptureInput: manipulating element dragHandle={}, dx={}, dy={}",
-                              static_cast<int>(m_state->dragHandle), dx, dy);
-                    if (m_state->dragHandle == HitArea::None) {
-                        m_state->activeElement->moveBy(dx, dy);
-                        if (m_state->activeElement->tool == MarkupTool::Text) {
-                            syncTextElementWrapWidth(*m_state->activeElement);
+                    const auto curDoc = m_state->screenToDoc(
+                        static_cast<float>(m_state->currentCursor.x),
+                        static_cast<float>(m_state->currentCursor.y));
+                    if (m_state->hasManipulateStartElement) {
+                        // 快照原点驱动：每次从拖拽起点快照计算总位移，彻底消灭夹紧死区、圆整侵蚀与累积漂移
+                        const int totalDx = static_cast<int>(std::lround(curDoc.x - m_state->manipulateStartDocPt.x));
+                        const int totalDy = static_cast<int>(std::lround(curDoc.y - m_state->manipulateStartDocPt.y));
+                        m_state->longCanvas.lastManipulateDocPt = curDoc;
+                        LOG_TRACE("CaptureInput: manipulating element from snapshot dragHandle={}, totalDx={}, totalDy={}",
+                                  static_cast<int>(m_state->dragHandle), totalDx, totalDy);
+                        if (m_state->dragHandle == HitArea::None) {
+                            const uint32_t savedId = m_state->activeElement->id;
+                            const bool savedActive = m_state->activeElement->isActive;
+                            const bool savedEditing = m_state->activeElement->isEditing;
+                            const size_t savedCaret = m_state->activeElement->textCaret;
+                            const size_t savedSelAnchor = m_state->activeElement->textSelAnchor;
+                            const uint32_t savedLastTick = m_state->activeElement->textLastCaretTick;
+                            *m_state->activeElement = m_state->manipulateStartElement;
+                            m_state->activeElement->id = savedId;
+                            m_state->activeElement->isActive = savedActive;
+                            m_state->activeElement->isEditing = savedEditing;
+                            m_state->activeElement->textCaret = savedCaret;
+                            m_state->activeElement->textSelAnchor = savedSelAnchor;
+                            m_state->activeElement->textLastCaretTick = savedLastTick;
+                            m_state->activeElement->moveBy(totalDx, totalDy);
+                            if (m_state->activeElement->tool == MarkupTool::Text) {
+                                syncTextElementWrapWidth(*m_state->activeElement);
+                            }
+                        } else {
+                            m_state->activeElement->resizeFromSnapshot(
+                                m_state->manipulateStartElement, totalDx, totalDy, m_state->dragHandle);
+                            if (m_state->activeElement->tool == MarkupTool::Text) {
+                                syncTextElementWrapWidth(*m_state->activeElement);
+                            }
+                            if (m_state->activeElement->tool == MarkupTool::Number && m_state->dragHandle == HitArea::RT) {
+                                m_state->currentStrokeWidth = static_cast<int>(std::round(m_state->activeElement->thickness));
+                                m_state->toolbarLayoutValid = false;
+                            } else if (m_state->activeElement->tool == MarkupTool::Magnifier &&
+                                       (m_state->dragHandle == HitArea::LensOffset || m_state->dragHandle == HitArea::FocusSource)) {
+                                const auto sel = currentSelectionRect();
+                                const int selW = std::max(1, static_cast<int>(std::round(sel.right - sel.left)));
+                                const int selH = std::max(1, static_cast<int>(std::round(sel.bottom - sel.top)));
+                                if (m_state->dragHandle == HitArea::LensOffset) {
+                                    const int rx = m_state->activeElement->effectiveMagnifierRx();
+                                    const int ry = m_state->activeElement->effectiveMagnifierRy();
+                                    const int loX = std::min(rx, selW / 2);
+                                    const int hiX = std::max(loX, selW - rx);
+                                    const int loY = std::min(ry, selH / 2);
+                                    const int hiY = std::max(loY, selH - ry);
+                                    m_state->activeElement->endPt.x = std::clamp(m_state->activeElement->endPt.x, loX, hiX);
+                                    m_state->activeElement->endPt.y = std::clamp(m_state->activeElement->endPt.y, loY, hiY);
+                                } else {
+                                    m_state->activeElement->startPt.x = std::clamp(m_state->activeElement->startPt.x, 1, std::max(1, selW - 1));
+                                    m_state->activeElement->startPt.y = std::clamp(m_state->activeElement->startPt.y, 1, std::max(1, selH - 1));
+                                }
+                                m_state->toolbarLayoutValid = false;
+                            }
                         }
                     } else {
-                        m_state->activeElement->resize(dx, dy, m_state->dragHandle);
-                        if (m_state->activeElement->tool == MarkupTool::Text) {
-                            syncTextElementWrapWidth(*m_state->activeElement);
+                        int dx = m_state->currentCursor.x - m_state->lastMousePos.x;
+                        int dy = m_state->currentCursor.y - m_state->lastMousePos.y;
+                        if (m_state->isLongImageMode()) {
+                            dx = static_cast<int>(std::trunc(curDoc.x - m_state->longCanvas.lastManipulateDocPt.x));
+                            dy = static_cast<int>(std::trunc(curDoc.y - m_state->longCanvas.lastManipulateDocPt.y));
+                            m_state->longCanvas.lastManipulateDocPt.x += static_cast<float>(dx);
+                            m_state->longCanvas.lastManipulateDocPt.y += static_cast<float>(dy);
                         }
-                        if (m_state->activeElement->tool == MarkupTool::Number && m_state->dragHandle == HitArea::RT) {
-                            m_state->currentStrokeWidth = static_cast<int>(std::round(m_state->activeElement->thickness));
-                            m_state->toolbarLayoutValid = false;
-                        } else if (m_state->activeElement->tool == MarkupTool::Magnifier &&
-                                   (m_state->dragHandle == HitArea::LensOffset || m_state->dragHandle == HitArea::FocusSource)) {
-                            const auto sel = currentSelectionRect();
-                            const int selW = std::max(1, static_cast<int>(std::round(sel.right - sel.left)));
-                            const int selH = std::max(1, static_cast<int>(std::round(sel.bottom - sel.top)));
-                            if (m_state->dragHandle == HitArea::LensOffset) {
-                                const int rx = m_state->activeElement->effectiveMagnifierRx();
-                                const int ry = m_state->activeElement->effectiveMagnifierRy();
-                                const int loX = std::min(rx, selW / 2);
-                                const int hiX = std::max(loX, selW - rx);
-                                const int loY = std::min(ry, selH / 2);
-                                const int hiY = std::max(loY, selH - ry);
-                                m_state->activeElement->endPt.x = std::clamp(m_state->activeElement->endPt.x, loX, hiX);
-                                m_state->activeElement->endPt.y = std::clamp(m_state->activeElement->endPt.y, loY, hiY);
-                            } else {
-                                m_state->activeElement->startPt.x = std::clamp(m_state->activeElement->startPt.x, 1, std::max(1, selW - 1));
-                                m_state->activeElement->startPt.y = std::clamp(m_state->activeElement->startPt.y, 1, std::max(1, selH - 1));
+                        if (m_state->dragHandle == HitArea::None) {
+                            m_state->activeElement->moveBy(dx, dy);
+                            if (m_state->activeElement->tool == MarkupTool::Text) {
+                                syncTextElementWrapWidth(*m_state->activeElement);
                             }
-                            m_state->toolbarLayoutValid = false;
+                        } else {
+                            m_state->activeElement->resize(dx, dy, m_state->dragHandle);
+                            if (m_state->activeElement->tool == MarkupTool::Text) {
+                                syncTextElementWrapWidth(*m_state->activeElement);
+                            }
                         }
                     }
                     m_state->lastMousePos = m_state->currentCursor;
@@ -1499,6 +1586,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
 
             if (m_state->isAdjustingSelection) {
                 m_state->isAdjustingSelection = false;
+                m_state->hasSelAdjustStart = false;
                 m_state->selAdjustHandle = HitArea::None;
                 prepareMarkupBase();
                 m_state->toolbarLayoutValid = false;
@@ -1533,7 +1621,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                         const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(m_state->activeElement->text);
                         const float maxContentW = syncTextElementWrapWidth(*m_state->activeElement);
                         const auto layout = CaptureTextEditor::buildLayout(
-                            wstr, static_cast<int>(m_state->activeElement->fontSize), maxContentW);
+                            wstr, m_state->activeElement->fontSize, maxContentW);
                         const float relX = static_cast<float>(local.x - m_state->activeElement->startPt.x);
                         const float relY = static_cast<float>(local.y - m_state->activeElement->startPt.y);
                         const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);
@@ -1556,6 +1644,7 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                     }
                 }
                 m_state->isManipulating = false;
+                m_state->hasManipulateStartElement = false;
                 m_state->dragHandle = HitArea::None;
                 m_renderer->invalidate();
                 updateHoverCursor(m_state->currentCursor);
@@ -1734,10 +1823,11 @@ LRESULT CaptureInput::handleMouseMessage(HWND hwnd, UINT msg, WPARAM wParam, LPA
                             m_state->textEditEnteredTick = 0;
                             m_state->isSelectingText = false;
                             m_state->isManipulating = false;
+                            m_state->hasManipulateStartElement = false;
                             const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
                             const float maxContentW = syncTextElementWrapWidth(elem);
                             const auto layout = CaptureTextEditor::buildLayout(
-                                wstr, static_cast<int>(elem.fontSize), maxContentW);
+                                wstr, elem.fontSize, maxContentW);
                             const float relX = static_cast<float>(local.x - elem.startPt.x);
                             const float relY = static_cast<float>(local.y - elem.startPt.y);
                             const size_t hitIdx = CaptureTextEditor::hitTestCaretIndex(layout, wstr, relX, relY);

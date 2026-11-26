@@ -1797,7 +1797,8 @@ public:
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (!element.textSpans.empty()) {
             if (element.isActive) {
-                const HitArea h = HandleGeometry::hitTestHandles(getBoundingBox(element), pt);
+                const int hw = HandleGeometry::scaledHandleHitHalfSize(element.dpiScale, padding);
+                const HitArea h = HandleGeometry::hitTestHandles(getBoundingBox(element), pt, hw);
                 if (h != HitArea::None) return h;
             }
             const int pad = (std::max)(4, padding);
@@ -1810,7 +1811,7 @@ public:
             return HitArea::None;
         }
         if (element.isActive) {
-            const int hw = (std::max)(8, padding);
+            const int hw = HandleGeometry::scaledHandleHitHalfSize(element.dpiScale, (std::max)(8, padding));
             if (element.isMultiPoint && element.penPoints.size() >= 2) {
                 for (size_t i = element.penPoints.size(); i-- > 0;) {
                     const auto& v = element.penPoints[i];
@@ -1897,8 +1898,8 @@ public:
                 element.startPt.y += dy;
                 if (element.penPoints.size() == 3) {
                     element.penPoints[0] = element.startPt;
-                    element.penPoints[1].x += dx / 2;
-                    element.penPoints[1].y += dy / 2;
+                    element.penPoints[1].x += static_cast<int>(std::lround(static_cast<double>(dx) * 0.5));
+                    element.penPoints[1].y += static_cast<int>(std::lround(static_cast<double>(dy) * 0.5));
                 }
                 break;
             case HitArea::RB:
@@ -1909,8 +1910,8 @@ public:
                 element.endPt.y += dy;
                 if (element.penPoints.size() == 3) {
                     element.penPoints[2] = element.endPt;
-                    element.penPoints[1].x += dx / 2;
-                    element.penPoints[1].y += dy / 2;
+                    element.penPoints[1].x += static_cast<int>(std::lround(static_cast<double>(dx) * 0.5));
+                    element.penPoints[1].y += static_cast<int>(std::lround(static_cast<double>(dy) * 0.5));
                 }
                 break;
             default: break;
@@ -1936,7 +1937,8 @@ public:
 
     void renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const override {
         if (!element.textSpans.empty()) {
-            HandleGeometry::renderBoxHandles(canvas, getBoundingBox(element));
+            const int hw = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 5);
+            HandleGeometry::renderBoxHandles(canvas, getBoundingBox(element), cv::Scalar(255, 140, 0), hw);
             return;
         }
         cv::Scalar activeColor(255, 140, 0); // Azure/Blue
@@ -1945,7 +1947,7 @@ public:
         } else {
             drawPatternedLine(canvas, element.startPt, element.endPt, activeColor, 1, LineStyle::Dashed);
         }
-        int r = 5;
+        const int r = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 5);
         if (element.isMultiPoint && element.penPoints.size() >= 2) {
             for (size_t i = 0; i < element.penPoints.size(); ++i) {
                 const auto& pt = element.penPoints[i];
@@ -1995,7 +1997,7 @@ public:
 
     HitArea hitTest(const MarkupElement& element, cv::Point pt, int padding) const override {
         if (element.isActive) {
-            const int hw = (std::max)(8, padding);
+            const int hw = HandleGeometry::scaledHandleHitHalfSize(element.dpiScale, (std::max)(8, padding));
             cv::Rect h1(element.startPt.x - hw, element.startPt.y - hw, hw * 2, hw * 2);
             if (h1.contains(pt)) return HitArea::LT; // Tail handle
             cv::Rect h2(element.endPt.x - hw, element.endPt.y - hw, hw * 2, hw * 2);
@@ -2065,8 +2067,8 @@ public:
                 element.startPt.y += dy;
                 if (element.penPoints.size() == 3) {
                     element.penPoints[0] = element.startPt;
-                    element.penPoints[1].x += dx / 2;
-                    element.penPoints[1].y += dy / 2;
+                    element.penPoints[1].x += static_cast<int>(std::lround(static_cast<double>(dx) * 0.5));
+                    element.penPoints[1].y += static_cast<int>(std::lround(static_cast<double>(dy) * 0.5));
                 }
                 break;
             case HitArea::RB:
@@ -2077,8 +2079,8 @@ public:
                 element.endPt.y += dy;
                 if (element.penPoints.size() == 3) {
                     element.penPoints[2] = element.endPt;
-                    element.penPoints[1].x += dx / 2;
-                    element.penPoints[1].y += dy / 2;
+                    element.penPoints[1].x += static_cast<int>(std::lround(static_cast<double>(dx) * 0.5));
+                    element.penPoints[1].y += static_cast<int>(std::lround(static_cast<double>(dy) * 0.5));
                 }
                 break;
             default: break;
@@ -2092,7 +2094,7 @@ public:
         } else {
             drawPatternedLine(canvas, element.startPt, element.endPt, activeColor, 1, LineStyle::Dashed);
         }
-        int r = 5;
+        const int r = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 5);
         cv::Point handles[2] = { element.startPt, element.endPt };
         for (const auto& pt : handles) {
             cv::circle(canvas, pt, r + 1, cv::Scalar(255, 255, 255), cv::FILLED, cv::LINE_AA);

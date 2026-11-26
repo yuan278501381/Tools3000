@@ -251,12 +251,17 @@ export default function SearchApp() {
     };
   }, []);
 
-  // 双 rAF 确认首帧实际渲染完成后再通知原生宿主切换 WebView2 可见，彻底杜绝机械盘冷启纯色黑屏
+  // 双 rAF 确认首帧（及挂起/最小化唤醒帧）实际栅格化提交后再通知原生宿主原子揭幕，杜绝 Win10/核显短暂黑屏闪烁
   useEffect(() => {
-    if (firstPaintNotifiedRef.current) return;
     let raf1 = 0;
     let raf2 = 0;
+    let resumeRaf1 = 0;
+    let resumeRaf2 = 0;
     let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+    let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+    const sendFirstPaintReady = () => {
+      void bridgeRequest('search.firstPaintReady', undefined, { silent: true }).catch(() => undefined);
+    };
     const notifyReady = () => {
       if (firstPaintNotifiedRef.current) return;
       firstPaintNotifiedRef.current = true;
@@ -264,7 +269,7 @@ export default function SearchApp() {
         clearTimeout(fallbackTimer);
         fallbackTimer = null;
       }
-      void bridgeRequest('search.firstPaintReady', undefined, { silent: true }).catch(() => undefined);
+      sendFirstPaintReady();
     };
     const scheduleVisiblePaintNotify = () => {
       if (firstPaintNotifiedRef.current || document.hidden) return;
@@ -282,13 +287,38 @@ export default function SearchApp() {
         scheduleVisiblePaintNotify();
       }
     };
+    const onResumeFrame = () => {
+      if (resumeRaf1) cancelAnimationFrame(resumeRaf1);
+      if (resumeRaf2) cancelAnimationFrame(resumeRaf2);
+      if (resumeTimer !== null) clearTimeout(resumeTimer);
+      let acked = false;
+      const ackResume = () => {
+        if (acked) return;
+        acked = true;
+        if (resumeTimer !== null) {
+          clearTimeout(resumeTimer);
+          resumeTimer = null;
+        }
+        sendFirstPaintReady();
+      };
+      resumeTimer = setTimeout(ackResume, 120);
+      resumeRaf1 = requestAnimationFrame(() => {
+        void document.documentElement.offsetHeight;
+        resumeRaf2 = requestAnimationFrame(ackResume);
+      });
+    };
     scheduleVisiblePaintNotify();
     document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('tools3000:searchResumeFrame', onResumeFrame);
     return () => {
       document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('tools3000:searchResumeFrame', onResumeFrame);
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
+      if (resumeRaf1) cancelAnimationFrame(resumeRaf1);
+      if (resumeRaf2) cancelAnimationFrame(resumeRaf2);
       if (fallbackTimer !== null) clearTimeout(fallbackTimer);
+      if (resumeTimer !== null) clearTimeout(resumeTimer);
     };
   }, []);
 

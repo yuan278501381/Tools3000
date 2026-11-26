@@ -16,6 +16,7 @@ namespace TranslationConstants {
     inline constexpr const char* kProviderAutoFree = "auto_free";
     inline constexpr const char* kProviderOpenAiCompatible = "openai_compatible";
     inline constexpr const char* kProviderDeepL = "deepl";
+    inline constexpr const char* kDefaultProvider = kProviderOpenAiCompatible;
 
     inline constexpr const char* kFreePrimaryEdge = "edge";
     inline constexpr const char* kFreePrimaryGoogle = "google";
@@ -48,15 +49,15 @@ enum class TranslationProviderKind : int {
 
 /// 持久化翻译设置快照（与 ConfigManager /translate/* 单一事实源对应）
 struct TranslationSettings {
-    std::string provider = TranslationConstants::kProviderAutoFree;
+    std::string provider = TranslationConstants::kDefaultProvider;
     std::string freePrimary = TranslationConstants::kFreePrimaryEdge;
     std::string targetLang = TranslationConstants::kTargetLangAuto;
     std::string secondaryTargetLang = TranslationConstants::kDefaultSecondaryTargetLang;
 
-    // BYOK: OpenAI Compatible / Ollama
-    std::string openaiBaseUrl = TranslationConstants::kDefaultOpenAiBaseUrl;
+    // 默认开箱即用：Bilibili Index-Translate 免费免 Key 公网端点（同时完整兼容 OpenAI / DeepSeek / 本地 Ollama）
+    std::string openaiBaseUrl = TranslationConstants::kIndexTranslateBaseUrl;
     std::string openaiApiKey; // 内存态明文；持久化自动经 Windows DPAPI 加密
-    std::string openaiModel = TranslationConstants::kDefaultOpenAiModel;
+    std::string openaiModel = TranslationConstants::kIndexTranslateDefaultModel;
 
     // BYOK: DeepL
     std::string deeplBaseUrl;

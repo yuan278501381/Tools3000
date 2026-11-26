@@ -81,6 +81,58 @@ describe('InPlaceTranslateCard', () => {
     });
   });
 
+  it('defaults to Bilibili Index-Translate keyless AI provider when backend returns default snapshot', async () => {
+    bridgeRequestMock.mockImplementation(async (method: string) => {
+      if (method === 'translate.getSettings') {
+        return {
+          provider: 'openai',
+          targetLang: 'zh-Hans',
+          secondaryTargetLang: 'en',
+          freePrimary: 'edge',
+          openaiBaseUrl: 'https://index-translate.bilibili.com/v1',
+          openaiModel: 'Index-Translate-9B',
+          hasOpenaiApiKey: false,
+          openaiApiKeyMasked: '',
+          deeplEndpoint: '',
+          hasDeeplApiKey: false,
+          deeplApiKeyMasked: '',
+          timeoutSec: 15,
+        };
+      }
+      if (method === 'translate.testConnection') {
+        return {
+          success: true,
+          providerUsed: 'index_translate',
+          resolvedTargetLang: 'zh-Hans',
+          elapsedMs: 218,
+          sampleOutput: '你好，Tools3000！',
+        };
+      }
+      return { success: true };
+    });
+
+    render(<InPlaceTranslateCard />);
+
+    expect(await screen.findByText('translate.badgePublicFreeAi')).toBeTruthy();
+    expect(await screen.findByText('translate.indexTranslateKeylessPlaceholder')).toBeTruthy();
+
+    const testBtn = await screen.findByRole('button', { name: /translate\.testConnectionBtn/i });
+    fireEvent.click(testBtn);
+
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith(
+        'translate.testConnection',
+        expect.objectContaining({
+          provider: 'openai',
+          openaiBaseUrl: 'https://index-translate.bilibili.com/v1',
+          openaiModel: 'Index-Translate-9B',
+        }),
+      );
+    });
+
+    expect(await screen.findByText(/218 ms/)).toBeTruthy();
+  });
+
   it('loads zero-config free settings and runs on-demand connection test', async () => {
     render(<InPlaceTranslateCard />);
 

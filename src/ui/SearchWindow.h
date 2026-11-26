@@ -106,6 +106,15 @@ public:
         return defaultCategory != "app" && defaultCategory != "bookmark";
     }
 
+    /// 首次显露或挂起/最小化唤醒时启用原生 DWMWA_CLOAK 隐身热身，等待 WebView2 提交新帧后原子揭幕（杜绝 Win10/核显短暂黑屏闪烁）
+    static constexpr bool shouldCloakOnShow(
+        bool webViewReady,
+        bool uiFirstPaintReady,
+        bool wasSuspended,
+        bool wasMinimized) noexcept {
+        return webViewReady && (!uiFirstPaintReady || wasSuspended || wasMinimized);
+    }
+
     /// 计算窗口非客户区命中测试结果（支持按 DPI 比例校准，全高放行边缘拉伸）
     static LRESULT calculateHitTest(const RECT& rc, POINT pt, float scale) {
         const int corner = tools3000::core::dpi::scaleMetric(8, scale);
@@ -146,6 +155,8 @@ private:
     static constexpr UINT DEFERRED_BLUR_HIDE_DELAY_MS = 60;
     static constexpr UINT_PTR IDT_POST_SHOW_REPAINT_VERIFY = 2114;
     static constexpr UINT POST_SHOW_REPAINT_VERIFY_MS = 160;
+    static constexpr UINT_PTR IDT_FIRST_PAINT_UNCLOAK = 2115;
+    static constexpr UINT FIRST_PAINT_UNCLOAK_TIMEOUT_MS = 450;
 
     enum class WebViewStatus : uint8_t {
         Loading = 0,
@@ -156,6 +167,7 @@ private:
     };
 
     void setWebViewStatus(WebViewStatus status, HRESULT hr = S_OK);
+    bool setWindowCloaked(bool cloaked);
     void completeFirstPaintReady();
     void presentWebViewSurface(bool forceCompositorKick);
     void paintStatusBackdrop(HDC hdc, const RECT& clientRect) const;
@@ -184,6 +196,7 @@ private:
     bool m_updatingPlacement = false;
     bool m_wasSuspended = false;
     bool m_everPresentedVisible = false;
+    bool m_cloakedForFirstPaint = false;
     uint64_t m_showTimeTick{0};
     std::atomic<uint64_t> m_generation{0};
 };

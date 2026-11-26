@@ -500,8 +500,11 @@ cv::Mat DeepOcrEngine::enhanceDocumentPhoto(const cv::Mat& bgr) {
     return normalized;
 }
 
-cv::Mat DeepOcrEngine::preprocessImageForDetection(const cv::Mat& bgr, bool* outApplyToRecognition) {
+cv::Mat DeepOcrEngine::preprocessImageForDetection(const cv::Mat& bgr,
+                                                   bool* outApplyToRecognition,
+                                                   bool* outIsScreenPhoto) {
     if (outApplyToRecognition) *outApplyToRecognition = false;
+    if (outIsScreenPhoto) *outIsScreenPhoto = false;
     if (bgr.empty() || bgr.type() != CV_8UC3) return bgr;
 
     bool stampSuppressed = false;
@@ -510,6 +513,7 @@ cv::Mat DeepOcrEngine::preprocessImageForDetection(const cv::Mat& bgr, bool* out
     if (isShadowedDocumentPhoto(cur)) {
         cur = enhanceDocumentPhoto(cur);
     } else if (isLowContrastScreenPhoto(cur)) {
+        if (outIsScreenPhoto) *outIsScreenPhoto = true;
         cur = enhanceLowContrastForDetection(cur);
     }
 
@@ -1364,6 +1368,464 @@ void DeepOcrEngine::coalesceSameLineTinyFragments(
         }
         return cyA < cyB;
     });
+}
+
+void DeepOcrEngine::rescueDarkBannerQuadsOnScreenPhoto(
+    std::vector<DbDetectedQuad>& quads,
+    const cv::Mat& bgr) {
+    if (quads.empty() || bgr.empty() || bgr.type() != CV_8UC3 || bgr.cols < 96 || bgr.rows < 64) {
+        return;
+    }
+
+    struct SliceStats {
+        int p20 = 255;
+        int p50 = 255;
+        int p92 = 0;
+        int hfJumps = 0;
+        bool valid = false;
+    };
+
+    auto maxChannelVal = [](const cv::Vec3b& px) noexcept -> int {
+        return (std::max)({static_cast<int>(px[0]), static_cast<int>(px[1]), static_cast<int>(px[2])});
+    };
+
+    auto sampleDarkSlice = [&](int x1, int y1, int x2, int y2) -> SliceStats {
+        SliceStats st{};
+        const int cx1 = std::clamp(x1, 0, bgr.cols - 1);
+        const int cy1 = std::clamp(y1, 0, bgr.rows - 1);
+        const int cx2 = std::clamp(x2, cx1 + 1, bgr.cols);
+        const int cy2 = std::clamp(y2, cy1 + 1, bgr.rows);
+        const int w = cx2 - cx1;
+        const int h = cy2 - cy1;
+        if (w < 4 || h < 4) return st;
+
+        std::array<uint32_t, 256> hist{};
+        uint32_t total = 0;
+        int hf = 0;
+        for (int y = cy1; y < cy2; ++y) {
+            const auto* row = bgr.ptr<cv::Vec3b>(y);
+            int prevV = maxChannelVal(row[cx1]);
+            ++hist[static_cast<size_t>(prevV)];
+            ++total;
+            for (int x = cx1 + 1; x < cx2; ++x) {
+                const int v = maxChannelVal(row[x]);
+                ++hist[static_cast<size_t>(v)];
+                ++total;
+                if (std::abs(v - prevV) >= 26) {
+                    ++hf;
+                }
+                prevV = v;
+            }
+        }
+        if (total < 16) return st;
+
+        auto pctAt = [&](uint32_t target) -> int {
+            uint32_t acc = 0;
+            for (int i = 0; i < 256; ++i) {
+                acc += hist[static_cast<size_t>(i)];
+                if (acc >= target) return i;
+            }
+            return 255;
+        };
+        st.p20 = pctAt((total * 20u) / 100u);
+        st.p50 = pctAt((total * 50u) / 100u);
+        st.p92 = pctAt((total * 92u) / 100u);
+        st.hfJumps = hf;
+        st.valid = true;
+        return st;
+    };
+
+    auto isLightOnDarkBannerSlice = [](const SliceStats& st, int minHf) noexcept -> bool {
+        return st.valid &&
+               st.p20 <= 104 &&
+               st.p50 <= 148 &&
+               (st.p92 - st.p50) >= 38 &&
+               (st.p92 - st.p20) >= 70 &&
+               st.hfJumps >= minHf;
+    };
+
+    struct QuadGeom {
+        float xL = 0.0f;
+        float xR = 0.0f;
+        float yTop = 0.0f;
+        float yBot = 0.0f;
+        float cx = 0.0f;
+        float cy = 0.0f;
+        float w = 0.0f;
+        float h = 0.0f;
+        float slope = 0.0f;
+        bool isDarkSeed = false;
+        int seedP20 = 255;
+    };
+
+    std::vector<QuadGeom> geoms(quads.size());
+    std::vector<float> pageSlopes;
+    pageSlopes.reserve(quads.size());
+
+    for (size_t i = 0; i < quads.size(); ++i) {
+        const auto& c = quads[i].corners;
+        auto& g = geoms[i];
+        g.xL = 0.5f * (c[0].x + c[3].x);
+        g.xR = 0.5f * (c[1].x + c[2].x);
+        g.yTop = 0.5f * (c[0].y + c[1].y);
+        g.yBot = 0.5f * (c[3].y + c[2].y);
+        g.cx = 0.5f * (g.xL + g.xR);
+        g.cy = 0.5f * (g.yTop + g.yBot);
+        g.w = (std::max)(1.0f, g.xR - g.xL);
+        g.h = (std::max)(1.0f, 0.5f * (std::hypot(c[3].x - c[0].x, c[3].y - c[0].y) +
+                                        std::hypot(c[2].x - c[1].x, c[2].y - c[1].y)));
+        const float dxTop = c[1].x - c[0].x;
+        const float dyTop = c[1].y - c[0].y;
+        g.slope = (std::abs(dxTop) > 4.0f) ? (dyTop / dxTop) : 0.0f;
+
+        if (g.w >= 50.0f && g.h <= 42.0f && std::abs(g.slope) <= 0.18f) {
+            pageSlopes.push_back(g.slope);
+        }
+
+        if (g.h >= 6.0f && g.h <= 28.0f && g.w >= 12.0f && g.w < static_cast<float>(bgr.cols) * 0.72f) {
+            const int sx1 = static_cast<int>(std::floor(g.xL));
+            const int sx2 = static_cast<int>(std::ceil(g.xR));
+            const int sy1 = static_cast<int>(std::floor(g.cy - g.h * 0.5f));
+            const int sy2 = static_cast<int>(std::ceil(g.cy + g.h * 0.5f));
+            const SliceStats st = sampleDarkSlice(sx1, sy1, sx2, sy2);
+            if (isLightOnDarkBannerSlice(st, 10)) {
+                g.isDarkSeed = true;
+                g.seedP20 = st.p20;
+            }
+        }
+    }
+
+    bool hasPageSlope = false;
+    float pageSlope = 0.0f;
+    if (pageSlopes.size() >= 4) {
+        const size_t mid = pageSlopes.size() / 2;
+        std::nth_element(pageSlopes.begin(), pageSlopes.begin() + static_cast<std::ptrdiff_t>(mid), pageSlopes.end());
+        pageSlope = pageSlopes[mid];
+        hasPageSlope = true;
+    }
+
+    std::vector<size_t> darkSeeds;
+    for (size_t i = 0; i < geoms.size(); ++i) {
+        if (geoms[i].isDarkSeed) darkSeeds.push_back(i);
+    }
+    if (darkSeeds.empty()) return;
+
+    std::sort(darkSeeds.begin(), darkSeeds.end(), [&](size_t a, size_t b) {
+        return geoms[a].xL < geoms[b].xL;
+    });
+
+    std::vector<bool> consumed(quads.size(), false);
+    std::vector<DbDetectedQuad> rescuedQuads;
+
+    // 校验沿倾斜基线走廊是否被其他非暗底文字框阻挡
+    auto corridorBlockedByBrightBox = [&](float xStart, float xEnd, float yStart, float slope, float halfH,
+                                          size_t skipA, size_t skipB) -> bool {
+        for (size_t k = 0; k < geoms.size(); ++k) {
+            if (k == skipA || k == skipB || consumed[k]) continue;
+            const auto& g = geoms[k];
+            if (g.xR <= xStart + 2.0f || g.xL >= xEnd - 2.0f) continue;
+            const float expectedY = yStart + (g.cx - xStart) * slope;
+            if (std::abs(g.cy - expectedY) <= halfH + g.h * 0.45f) {
+                if (!g.isDarkSeed || g.h > halfH * 3.4f) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    };
+
+    // 沿倾斜基线检查局部微延伸，精准纳入端点附近未被检出的字符或尾部括号（如 `]`）
+    auto extendBannerEndpoint = [&](float startX, float startY, float slope, float halfH, int dir, int maxSteps) -> float {
+        float bestX = startX;
+        int emptyStreak = 0;
+        const int stepPx = 6;
+        const int sliceHalfW = 5;
+        const int ih = (std::max)(4, static_cast<int>(std::lround(halfH)));
+        for (int step = 1; step <= maxSteps; ++step) {
+            const float curX = startX + static_cast<float>(dir * step * stepPx);
+            if (curX < 4.0f || curX > static_cast<float>(bgr.cols - 5)) break;
+            const float curY = startY + (curX - startX) * slope;
+            const int cx = static_cast<int>(std::lround(curX));
+            const int cy = static_cast<int>(std::lround(curY));
+            const SliceStats st = sampleDarkSlice(cx - sliceHalfW, cy - ih, cx + sliceHalfW + 1, cy + ih + 1);
+            if (!st.valid || st.p20 > 106 || st.p50 > 152) {
+                break; // 离开暗色横幅区域
+            }
+            if ((st.p92 - st.p50) >= 36 && (st.p92 - st.p20) >= 68 && st.hfJumps >= 10) {
+                bestX = curX + static_cast<float>(dir * 3);
+                emptyStreak = 0;
+            } else {
+                if (++emptyStreak > 2) break;
+            }
+        }
+        return std::clamp(bestX, 0.0f, static_cast<float>(bgr.cols - 1));
+    };
+
+    // Pass 1: 共线暗底残片对精准桥接（如左端 `仅当可用` 与右端 `[消息 131-218]` 之间连续暗底白字走廊）
+    for (size_t idxA = 0; idxA < darkSeeds.size(); ++idxA) {
+        const size_t i = darkSeeds[idxA];
+        if (consumed[i]) continue;
+        const auto& gA = geoms[i];
+
+        int bestSeedB = -1;
+        float bestSpan = 0.0f;
+        float bestSlope = 0.0f;
+
+        for (size_t idxB = darkSeeds.size(); idxB-- > idxA + 1;) {
+            const size_t j = darkSeeds[idxB];
+            if (consumed[j]) continue;
+            const auto& gB = geoms[j];
+
+            const float hRatio = gA.h / gB.h;
+            if (hRatio < 0.55f || hRatio > 1.80f) continue;
+
+            const float avgH = 0.5f * (gA.h + gB.h);
+            const float gap = gB.xL - gA.xR;
+            const float totalSpan = gB.xR - gA.xL;
+            if (gap <= avgH * 0.8f || totalSpan > static_cast<float>(bgr.cols) * 0.96f) continue;
+
+            const float dxCenters = gB.cx - gA.cx;
+            if (dxCenters < 24.0f) continue;
+            const float pairSlope = (gB.cy - gA.cy) / dxCenters;
+            if (std::abs(pairSlope) > 0.16f) continue;
+            // 手机拍屏存在透视梯形畸变（屏幕顶部与底部的水平行倾角差可达 0.08~0.10），
+            // 仅拦截明显违背整体横排方向的斜对角误配，真正的共线正确性由下方沿走廊逐片暗底亮字校验严格把关。
+            if (hasPageSlope && std::abs(pairSlope - pageSlope) > 0.12f) continue;
+
+            const float halfH = (std::max)(5.0f, (std::max)(gA.h, gB.h) * 0.5f);
+            if (corridorBlockedByBrightBox(gA.xR, gB.xL, gA.cy + (gA.xR - gA.cx) * pairSlope,
+                                           pairSlope, halfH, i, j)) {
+                continue;
+            }
+
+            // 沿倾斜走廊均匀采样验证：要求暗底连续且绝大多数列存在密集高频亮字笔画
+            const int sampleStep = 8;
+            int totalSlices = 0;
+            int darkSlices = 0;
+            int textSlices = 0;
+            const int ih = (std::max)(5, static_cast<int>(std::lround(halfH)));
+            const float xBegin = gA.xR + 4.0f;
+            const float xEnd = gB.xL - 4.0f;
+            for (float sx = xBegin; sx <= xEnd; sx += static_cast<float>(sampleStep)) {
+                const float sy = gA.cy + (sx - gA.cx) * pairSlope;
+                const int cx = static_cast<int>(std::lround(sx));
+                const int cy = static_cast<int>(std::lround(sy));
+                const SliceStats st = sampleDarkSlice(cx - 7, cy - ih, cx + 8, cy + ih + 1);
+                if (!st.valid) continue;
+                ++totalSlices;
+                if (st.p20 <= 98 && st.p50 <= 148) {
+                    ++darkSlices;
+                }
+                if (isLightOnDarkBannerSlice(st, 16)) {
+                    ++textSlices;
+                }
+            }
+            if (totalSlices < 3) continue;
+            const float darkRatio = static_cast<float>(darkSlices) / static_cast<float>(totalSlices);
+            const float textRatio = static_cast<float>(textSlices) / static_cast<float>(totalSlices);
+            if (darkRatio >= 0.85f && textRatio >= 0.72f && totalSpan > bestSpan) {
+                bestSpan = totalSpan;
+                bestSeedB = static_cast<int>(j);
+                bestSlope = pairSlope;
+            }
+        }
+
+        if (bestSeedB >= 0) {
+            const size_t j = static_cast<size_t>(bestSeedB);
+            const auto& gB = geoms[j];
+            // 种子框本身已含 DBNet unclip 边距，直接取均高半值并限制上限，避免额外外扩吞入暗条上方高亮边框线
+            const float barHalfH = std::clamp(0.25f * (gA.h + gB.h), 5.5f, 7.0f);
+
+            // 两端各允许最多 3 步（~18px）的微延伸，完整收拢贴边字符与尾部括号，绝不吞入左侧图标
+            const float extLeftX = extendBannerEndpoint(gA.xL, gA.cy + (gA.xL - gA.cx) * bestSlope,
+                                                        bestSlope, barHalfH, -1, 2);
+            const float extRightX = extendBannerEndpoint(gB.xR, gA.cy + (gB.xR - gA.cx) * bestSlope,
+                                                         bestSlope, barHalfH, +1, 4);
+            const float yLeft = gA.cy + (extLeftX - gA.cx) * bestSlope;
+            const float yRight = gA.cy + (extRightX - gA.cx) * bestSlope;
+
+            DbDetectedQuad bridged{};
+            bridged.corners = {
+                cv::Point2f(extLeftX, std::clamp(yLeft - barHalfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(extRightX, std::clamp(yRight - barHalfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(extRightX, std::clamp(yRight + barHalfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(extLeftX, std::clamp(yLeft + barHalfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+            };
+            bridged.score = (std::max)(quads[i].score, quads[j].score);
+
+            consumed[i] = true;
+            consumed[j] = true;
+            // 同步吸收落在同一暗色走廊内的其余细碎暗底残片，杜绝重复输出
+            for (size_t k = 0; k < geoms.size(); ++k) {
+                if (consumed[k] || !geoms[k].isDarkSeed) continue;
+                const auto& gk = geoms[k];
+                if (gk.cx >= extLeftX - 4.0f && gk.cx <= extRightX + 4.0f) {
+                    const float expY = gA.cy + (gk.cx - gA.cx) * bestSlope;
+                    if (std::abs(gk.cy - expY) <= barHalfH * 1.4f) {
+                        consumed[k] = true;
+                        bridged.score = (std::max)(bridged.score, quads[k].score);
+                    }
+                }
+            }
+            rescuedQuads.push_back(std::move(bridged));
+        }
+    }
+
+    // Pass 2: 单端残片兜底延伸（仅检出暗色状态条一端时，沿页面倾角单向扫出整条暗底连续亮字）
+    for (size_t idx = 0; idx < darkSeeds.size(); ++idx) {
+        const size_t i = darkSeeds[idx];
+        if (consumed[i]) continue;
+        const auto& gA = geoms[i];
+        const float slope = hasPageSlope ? pageSlope : (std::abs(gA.slope) <= 0.12f ? gA.slope : 0.0f);
+        const float halfH = (std::max)(5.5f, gA.h * 0.5f + 1.0f);
+        const int ih = (std::max)(5, static_cast<int>(std::lround(halfH)));
+
+        auto walkDirection = [&](int dir) -> std::pair<float, int> {
+            const float startEdge = (dir > 0) ? gA.xR : gA.xL;
+            float furthestActiveX = startEdge;
+            int activeSteps = 0;
+            int emptyStreak = 0;
+            const int maxEmptySteps = (std::max)(3, static_cast<int>(std::ceil(gA.h * 2.2f / 8.0f)));
+            for (int step = 1; step <= 64; ++step) {
+                const float curX = startEdge + static_cast<float>(dir * step * 8);
+                if (curX < 6.0f || curX > static_cast<float>(bgr.cols - 7)) break;
+                const float curY = gA.cy + (curX - gA.cx) * slope;
+                if (corridorBlockedByBrightBox(
+                        (std::min)(startEdge, curX), (std::max)(startEdge, curX),
+                        gA.cy + ((std::min)(startEdge, curX) - gA.cx) * slope,
+                        slope, halfH, i, i)) {
+                    break;
+                }
+                const int cx = static_cast<int>(std::lround(curX));
+                const int cy = static_cast<int>(std::lround(curY));
+                const SliceStats st = sampleDarkSlice(cx - 7, cy - ih, cx + 8, cy + ih + 1);
+                if (!st.valid || st.p20 > 96 || st.p50 > 145) {
+                    break;
+                }
+                if (isLightOnDarkBannerSlice(st, 18)) {
+                    furthestActiveX = curX + static_cast<float>(dir * 4);
+                    ++activeSteps;
+                    emptyStreak = 0;
+                } else {
+                    if (++emptyStreak > maxEmptySteps) break;
+                }
+            }
+            return {std::clamp(furthestActiveX, 0.0f, static_cast<float>(bgr.cols - 1)), activeSteps};
+        };
+
+        const auto [newR, rightSteps] = walkDirection(+1);
+        const auto [newL, leftSteps] = walkDirection(-1);
+        const float addedW = (newR - gA.xR) + (gA.xL - newL);
+        if (addedW >= gA.h * 3.5f && (rightSteps + leftSteps) >= 6) {
+            const float yLeft = gA.cy + (newL - gA.cx) * slope;
+            const float yRight = gA.cy + (newR - gA.cx) * slope;
+            DbDetectedQuad ext{};
+            ext.corners = {
+                cv::Point2f(newL, std::clamp(yLeft - halfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(newR, std::clamp(yRight - halfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(newR, std::clamp(yRight + halfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+                cv::Point2f(newL, std::clamp(yLeft + halfH, 0.0f, static_cast<float>(bgr.rows - 1))),
+            };
+            ext.score = quads[i].score;
+            consumed[i] = true;
+            rescuedQuads.push_back(std::move(ext));
+        }
+    }
+
+    if (rescuedQuads.empty()) return;
+
+    std::vector<DbDetectedQuad> merged;
+    merged.reserve(quads.size() - rescuedQuads.size() + rescuedQuads.size());
+    for (size_t i = 0; i < quads.size(); ++i) {
+        if (!consumed[i]) merged.push_back(std::move(quads[i]));
+    }
+    for (auto& rq : rescuedQuads) {
+        merged.push_back(std::move(rq));
+    }
+    quads = std::move(merged);
+    std::sort(quads.begin(), quads.end(), [](const DbDetectedQuad& a, const DbDetectedQuad& b) {
+        const float cyA = (a.corners[0].y + a.corners[2].y) * 0.5f;
+        const float cyB = (b.corners[0].y + b.corners[2].y) * 0.5f;
+        const float hA = (std::max)(4.0f, std::abs(a.corners[3].y - a.corners[0].y));
+        const float hB = (std::max)(4.0f, std::abs(b.corners[3].y - b.corners[0].y));
+        if (std::abs(cyA - cyB) <= (std::min)(hA, hB) * 0.5f) {
+            return a.corners[0].x < b.corners[0].x;
+        }
+        return cyA < cyB;
+    });
+}
+
+bool DeepOcrEngine::normalizeDarkScreenPhotoStrip(
+    cv::Mat& bgr48,
+    int origCropH,
+    cv::Vec3b& inOutBgColor) {
+    if (bgr48.empty() || bgr48.type() != CV_8UC3 || origCropH <= 0 || origCropH > 28) {
+        return false;
+    }
+
+    const int rows = bgr48.rows;
+    const int cols = bgr48.cols;
+    const uint32_t total = static_cast<uint32_t>(rows) * static_cast<uint32_t>(cols);
+    if (total < 64) return false;
+
+    cv::Mat valMat(rows, cols, CV_8UC1);
+    std::array<uint32_t, 256> hist{};
+    for (int r = 0; r < rows; ++r) {
+        const auto* srcRow = bgr48.ptr<cv::Vec3b>(r);
+        auto* dstRow = valMat.ptr<uint8_t>(r);
+        for (int c = 0; c < cols; ++c) {
+            const uint8_t v = (std::max)({srcRow[c][0], srcRow[c][1], srcRow[c][2]});
+            dstRow[c] = v;
+            ++hist[v];
+        }
+    }
+
+    auto pctBin = [&](uint32_t targetCount) -> int {
+        uint32_t acc = 0;
+        for (int i = 0; i < 256; ++i) {
+            acc += hist[static_cast<size_t>(i)];
+            if (acc >= targetCount) return i;
+        }
+        return 255;
+    };
+
+    const int p05 = pctBin((total * 5u) / 100u);
+    const int p20 = pctBin((total * 20u) / 100u);
+    const int p50 = pctBin((total * 50u) / 100u);
+    const int p92 = pctBin((total * 92u) / 100u);
+    const int p98 = pctBin((total * 98u) / 100u);
+
+    // 严格门控：仅对真正的「暗底亮字」屏摄细条带执行抗偏色白底黑字极性标准化，绝不碰正常白底/浅色行
+    if (p20 > 96 || p50 > 145 || (p92 - p50) < 40 || (p92 - p20) < 72) {
+        return false;
+    }
+
+    const float lo = static_cast<float>(p05);
+    const float span = (std::max)(16.0f, static_cast<float>(p98 - p05));
+    std::array<uint8_t, 256> lut{};
+    for (int i = 0; i < 256; ++i) {
+        const float norm = (static_cast<float>(i) - lo) * (255.0f / span);
+        lut[static_cast<size_t>(i)] = static_cast<uint8_t>(std::clamp(static_cast<int>(std::lround(norm)), 0, 255));
+    }
+
+    cv::Mat stretched(rows, cols, CV_8UC1);
+    for (int r = 0; r < rows; ++r) {
+        const auto* srcRow = valMat.ptr<uint8_t>(r);
+        auto* dstRow = stretched.ptr<uint8_t>(r);
+        for (int c = 0; c < cols; ++c) {
+            dstRow[c] = lut[srcRow[c]];
+        }
+    }
+
+    cv::Mat blurred;
+    cv::GaussianBlur(stretched, blurred, cv::Size(0, 0), 1.0);
+    cv::Mat sharpened;
+    cv::addWeighted(stretched, 1.45, blurred, -0.45, 0.0, sharpened);
+
+    cv::Mat inverted = cv::Scalar(255) - sharpened;
+    cv::cvtColor(inverted, bgr48, cv::COLOR_GRAY2BGR);
+    inOutBgColor = cv::Vec3b(248, 248, 248);
+    return true;
 }
 
 cv::Rect DeepOcrEngine::refineAxisAlignedLineBox(

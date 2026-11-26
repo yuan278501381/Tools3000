@@ -42,6 +42,7 @@ public:
 private:
     HitArea hitTestSelectionBox(POINT point, int* outCornerIndex = nullptr) const;
     void adjustSelection(HitArea handle, int dx, int dy);
+    void adjustSelectionFromSnapshot(const RECT& startRect, HitArea handle, int totalDx, int totalDy);
     void enforceAspectRatioOnCurrentSelection();
     
     ToolbarButton* hitTestToolbar(POINT point);

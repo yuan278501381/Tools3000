@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "コア効率ランチャー",
     "hotkeyGroupPinOcr": "ピン留め・OCR・翻訳",
     "hotkeyGroupRecording": "画面録画・音声コントロール",
-    "hotkeyGroupInput": "入力・ジェスチャー制御"
+    "hotkeyGroupInput": "入力・ジェスチャー制御",
+    "showChangelogOnUpdate": "アップデート後に更新履歴を自動表示",
+    "showChangelogOnUpdateDesc": "新バージョンへ更新後、初めて設定を開いた際に変更点のハイライトを表示します（新規インストール時は非表示）"
   },
   "plugins": {
     "capabilities": "モジュール機能",
@@ -1530,7 +1532,7 @@
       "llHooks": "ゼロ遅延グローバルホットキー、マウスジェスチャー、リモート入力保護フック",
       "ntfsEngine": "数百万ファイルの高速ディスクインデックスとリアルタイム変更追跡",
       "pinyin": "中国語ファイル名向けの全拼・頭文字あいまい検索テーブル",
-      "opencv": "コンピュータービジョン画像処理とスクロールキャプチャのシームレス自動結合",
+      "opencv": "コンピュータビジョン処理、オフライン quirc QR 検出、スクロール長截图の自動結合",
       "ffmpeg": "高フレームレート画面録画、デュアル音声ミックス、2 パス高画質 GIF 書き出し",
       "windowsOcr": "完全オフライン画像文字認識とファイルロックなしのネイティブ PDF ページ描画",
       "uiaShell": "ファイルダイアログのフォルダー瞬間移動とエクスプローラー選択状態連携",
@@ -1539,16 +1541,20 @@
       "vite": "超高速フロントエンドビルドとコード分割バンドラー",
       "lucideIcons": "全画面で統一された高精細ベクターアイコン体系",
       "designTokens": "ダーク / ライト自動適応、動的アクセントカラー、高 DPI デザイントークン",
-      "sqliteZlib": "ローカル統計・履歴ストレージおよび Office 圧縮ストリーム無劣化展開",
+      "sqliteZlib": "システム WinSQLite3 読み取り専用ブックマークアイコン抽出と zlib Office 圧縮展開",
       "luaSol2": "カスタム自動化ワークフロー向けローカル Lua スクリプトエンジン",
       "spdlog": "低オーバーヘッド非同期診断ロギング基盤",
       "nlohmannJson": "高速な JSON 設定および IPC メッセージシリアライズ",
       "gtest": "C++ およびフロントエンドの自動回帰テストスイート",
       "innoSetup": "Windows インストーラー、ポータブル配布パッケージ、コード署名ビルド",
-      "rustPicasaViewer": "純 Rust・ゼロ CRT の独立 GPU フォトビューアー（41 形式・物理ダンピング・ガウス影）",
+      "rustPicasaViewer": "独立型ゼロ CRT ハードウェア加速画像ビューア（41 形式・物理慣性・ガウス影）",
       "ddcBrightness": "カーソル画面ごとのハードウェア輝度制御（外部 DDC/CI ＋ ノート内蔵 WMI）",
-      "ppocrDirectml": "2 段階完全オフライン深層学習 OCR（DirectML GPU / WinML）、QR・バーコード対応",
-      "ifilterShellProps": "Office/WPS/メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得"
+      "ppocrDirectml": "2 段階オフライン深層学習 OCR と MI-GAN 512 テクスチャ修復（DirectML GPU + WinML）",
+      "ifilterShellProps": "Office/WPS/メールの全文抽出と 30 種以上の拡張列プロパティのオンデマンド取得",
+      "rustClipboard": "依存ゼロの純粋 Rust クリップボード永続化・重複排除・サブミリ秒検索カーネル",
+      "rustCliMcp": "依存ゼロの Rust CLI および MCP stdio サーバー（AI エージェント向けローカル全文検索）",
+      "winhttpTranslate": "ネイティブ TLS インプレース翻訳ゲートウェイ（既定 Bilibili キー不要・自動フェイルオーバー・DPAPI 暗号化）",
+      "i18next": "8 言語同型国際化フレームワーク（システム言語自動検出・7 重静的ゲート）"
     },
     "exportLogsTip": "診断ログとシステム環境レポートをエクスポート",
     "authorGithubTip": "原作者の GitHub プロフィールを開く",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "更新内容を表示",
     "viewUpdate": "更新を表示",
     "openPerformancePageBtn": "メモリポリシー",
-    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits",
+    "viewChangelogBtn": "更新履歴"
   },
   "sidebar": {
     "groupSystem": "システム",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "スクリーンショット原位置翻訳",
     "providerTitle": "翻訳エンジン",
-    "providerDesc": "キー不要の無料デュアル経路と BYOK（OpenAI 互換 / ローカル Ollama / DeepL）に対応。翻訳実行または接続テスト時のみ通信します。",
+    "providerDesc": "既定でキー不要の Bilibili Index-Translate AI を使用し（障害時は無料デュアルチャネルへ自動切替）、OpenAI 互換・ローカル Ollama・DeepL にも対応します。翻訳操作時のみ通信します。",
     "providerFreeAuto": "キー不要デュアル無料 (Edge 優先 + Google 予備)",
-    "providerOpenAi": "OpenAI 互換 API (OpenAI / DeepSeek / プロキシ / ローカル Ollama)",
+    "providerOpenAi": "OpenAI 互換 API（既定 Bilibili キー不要 / DeepSeek / ローカル Ollama）",
     "providerDeepL": "DeepL 公式 API (Free / Pro 自動判別)",
     "badgeZeroConfig": "設定不要・オンデマンド通信",
     "badgeLocalOffline": "ローカル・完全オフライン",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B（高速）",
     "indexModelBalanced": "Index-Translate-9B（バランス推奨）",
     "indexModelFlagship": "Index-Translate-35B-A3B（フラッグシップ）",
-    "indexTranslateNotice": "Bilibili のオープンソース無料公開 API をキー不要で利用できます。複数行のスクリーンショットには 2B または 9B、最高品質には 35B-A3B を推奨します。混雑時は無料デュアルソースへ戻せます。",
+    "indexTranslateNotice": "Bilibili のオープンソース公開 API によりキー不要ですぐに使えます。画面全体には 2B または 9B、最高精度には 35B-A3B を推奨します。制限時は自動で無料デュアルチャネルへ切替可能です。",
     "openaiBaseUrlLabel": "ベース URL",
     "openaiModelLabel": "モデル名",
     "apiKeyLabel": "API キー",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
     "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
     "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
+  },
+  "changelog": {
+    "upgradeTitle": "新バージョンへ更新されました",
+    "upgradeSubtitle": "今回のアップデートによる主な改善点をオフラインで素早く確認できます",
+    "archiveTitle": "バージョン更新履歴",
+    "archiveSubtitle": "直近 {{count}} 件のリリースをオフライン収録し、バージョンやキーワードで即座に検索できます",
+    "upgradeSpanBanner": "{{from}} から {{to}} へ更新（{{count}} 件のリリース分）",
+    "searchPlaceholder": "バージョンやキーワードで検索（例: 1.4.0、翻訳、OCR、検索）...",
+    "searchMatchesCount": "{{count}} 件のリリースが一致",
+    "showingCount": "{{shown}} / {{total}} 件を表示中",
+    "noSearchResults": "一致する更新履歴が見つかりませんでした。別のキーワードをお試しください。",
+    "badgeNew": "新着",
+    "kindMajor": "メジャー",
+    "kindMinor": "機能追加",
+    "kindPatch": "改善・修正",
+    "relativeToday": "今日",
+    "relativeYesterday": "昨日",
+    "relativeDaysAgo": "{{count}} 日前",
+    "relativeMonthsAgo": "{{count}} か月前",
+    "relativeYearsAgo": "{{count}} 年前",
+    "fallbackLocaleNote": "この初期リリースには簡体字中国語のノートのみ含まれています。",
+    "loadMoreBtn": "過去のリリースをさらに表示 (+{{step}}、残り {{remaining}} 件)",
+    "autoShowAfterUpdate": "アップデート後に更新履歴を自動表示",
+    "viewAllOnGitHub": "GitHub ですべて表示",
+    "gotItBtn": "了解しました",
+    "clearSearch": "検索をクリア"
   }
 }

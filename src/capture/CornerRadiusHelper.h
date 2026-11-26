@@ -108,8 +108,15 @@ public:
     /// 获取统一世界级微晶 Toast 像素反馈文本
     static std::wstring getToastMessage(CornerRadiusTarget target, float radius, bool isZh);
 
-    /// 获取或生成高分屏感知、黄金比例 (22px 视觉跨度) 的圆角调节专用硬件光标
+    /// 统一解析当前屏幕 DPI 与 Windows 辅助功能鼠标指针大小（CursorBaseSize / CursorSize）的综合缩放倍率
+    static float resolveEffectiveCursorScale(float dpiScale = 1.0f) noexcept;
+
+    /// 获取或生成高分屏感知、黄金比例 (22 DIP 统一视觉跨度) 的圆角调节专用硬件光标
     static HCURSOR getLiveCursor(int cornerIndex, float dpiScale = 1.0f, bool isDragging = false);
+
+    /// 获取或生成高分屏与辅助功能指针大小自适应的 4 轴矢量双向缩放硬件光标
+    /// @param axisMode 0=NWSE (↖↘), 1=NESW (↗↙), 2=WE (↔), 3=NS (↕)
+    static HCURSOR getResizeCursor(int axisMode, float dpiScale = 1.0f);
 };
 
 } // namespace tools3000::capture

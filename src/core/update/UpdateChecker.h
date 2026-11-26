@@ -14,6 +14,14 @@
 
 namespace tools3000::core {
 
+/// 启动期升级更新日志（What's New）展示决策快照
+struct ChangelogLaunchDecision {
+    bool shouldShow = false;
+    bool shouldPersistCurrentVersion = false;
+    std::string previousVersion;
+    std::string currentVersion;
+};
+
 /// Bounded, non-blocking GitHub release checker with verified background auto-download & install.
 class TOOLS3000CORE_API UpdateChecker final {
 public:
@@ -40,6 +48,24 @@ public:
 
     /// Returns a JSON snapshot string of the latest update & download state.
     std::string getStateJsonString() const;
+
+    /// Evaluates whether the offline What's New changelog modal should open on startup.
+    static ChangelogLaunchDecision evaluateChangelogOnStartup(
+        std::string_view currentVersion,
+        std::string_view lastSeenVersion,
+        bool showChangelogOnUpdate);
+
+    /// Initializes in-memory upgrade changelog state once during startup (silent baseline on fresh install).
+    void initializeStartupChangelogState();
+
+    /// Returns JSON payload describing current/previous versions and whether What's New should auto-open.
+    std::string getChangelogStateJsonString() const;
+
+    /// Persists current version as seen in /app/lastSeenVersion and clears pending upgrade prompt state.
+    bool markChangelogSeen();
+
+    /// Returns true if an upgrade was detected on startup and the user has not dismissed What's New yet.
+    bool hasPendingUpgradeChangelog() const;
 
     void shutdown();
 
@@ -101,6 +127,8 @@ private:
     void* m_activeRequest = nullptr;
     void* m_activeDownloadRequest = nullptr;
     UpdateStateSnapshot m_state;
+    bool m_pendingUpgradeChangelog = false;
+    std::string m_changelogPreviousVersion;
     std::function<void()> m_exitForUpdateCallback;
     std::atomic<bool> m_busy{false};
     std::atomic<bool> m_downloading{false};

@@ -323,7 +323,20 @@ public:
     static cv::Mat enhanceDocumentPhoto(const cv::Mat& bgr);
 
     /// 统一 OCR 检测前自适应视觉增强管线（红章穿透 + 手写纸面去阴影 / 拍屏摩尔纹抑制）
-    static cv::Mat preprocessImageForDetection(const cv::Mat& bgr, bool* outApplyToRecognition = nullptr);
+    static cv::Mat preprocessImageForDetection(const cv::Mat& bgr,
+                                               bool* outApplyToRecognition = nullptr,
+                                               bool* outIsScreenPhoto = nullptr);
+
+    /// 屏摄/低对比度场景下暗色状态条/报错横幅共线断片桥接与边缘延伸（仅在 isLowContrastScreenPhoto 为真时启用，清晰截图零开销）
+    static void rescueDarkBannerQuadsOnScreenPhoto(
+        std::vector<DbDetectedQuad>& quads,
+        const cv::Mat& bgr);
+
+    /// 屏摄暗底浅字细条带极性提纯（提取抗偏色最大通道动态拉伸 + 轻锐化 + 反色为高清白底黑字，清晰截图与浅底行零改动）
+    static bool normalizeDarkScreenPhotoStrip(
+        cv::Mat& bgr48,
+        int origCropH,
+        cv::Vec3b& inOutBgColor);
 
     /// DBNet 概率图后处理：二值化、轮廓过滤、多边形均分校验、Unclip 外扩与四点正交排序
     static std::vector<DbDetectedQuad> postprocessDbMap(

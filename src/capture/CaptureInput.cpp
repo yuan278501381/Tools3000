@@ -132,16 +132,16 @@ HCURSOR cursorForArea(HitArea area, int cornerIndex, float dpiScale, bool isDrag
     switch (area) {
         case HitArea::LT:
         case HitArea::RB:
-            return LoadCursor(nullptr, IDC_SIZENWSE);
+            return CornerRadiusHelper::getResizeCursor(0, dpiScale);
         case HitArea::RT:
         case HitArea::LB:
-            return LoadCursor(nullptr, IDC_SIZENESW);
-        case HitArea::T:
-        case HitArea::B:
-            return LoadCursor(nullptr, IDC_SIZENS);
+            return CornerRadiusHelper::getResizeCursor(1, dpiScale);
         case HitArea::L:
         case HitArea::R:
-            return LoadCursor(nullptr, IDC_SIZEWE);
+            return CornerRadiusHelper::getResizeCursor(2, dpiScale);
+        case HitArea::T:
+        case HitArea::B:
+            return CornerRadiusHelper::getResizeCursor(3, dpiScale);
         case HitArea::Body:
         case HitArea::LensOffset:
             return LoadCursor(nullptr, IDC_SIZEALL);
@@ -212,13 +212,14 @@ void resetCoalescedUndo(CaptureState& state) noexcept {
 } // namespace input_detail
 
 HCURSOR CaptureInput::getBeautifulCrosshairCursor(float dpiScale) {
-    int scaleBucket = std::clamp(static_cast<int>(std::round(dpiScale * 100.0f)), 100, 400);
+    const float resolvedScale = CornerRadiusHelper::resolveEffectiveCursorScale(dpiScale);
+    int scaleBucket = std::clamp(static_cast<int>(std::round(resolvedScale * 100.0f)), 100, 600);
     static std::unordered_map<int, HCURSOR> s_cursors;
     auto it = s_cursors.find(scaleBucket);
     if (it != s_cursors.end() && it->second) return it->second;
 
     const float effScale = scaleBucket / 100.0f;
-    const int rawSz = std::clamp(static_cast<int>(std::round(48.0f * effScale)), 48, 128);
+    const int rawSz = std::clamp(static_cast<int>(std::round(48.0f * effScale)), 48, 160);
     const int sz = (rawSz / 2) * 2;
     const int mid = sz / 2;
 
@@ -379,7 +380,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
                     m_state->longCanvas.dragMode != CaptureState::LongCanvasDragMode::None)) {
             if (m_state->longCanvas.dragMode == CaptureState::LongCanvasDragMode::MinimapCropTop ||
                 m_state->longCanvas.dragMode == CaptureState::LongCanvasDragMode::MinimapCropBottom) {
-                cur = LoadCursor(nullptr, IDC_SIZENS);
+                cur = CornerRadiusHelper::getResizeCursor(3, curDpi);
             } else {
                 cur = LoadCursor(nullptr, IDC_SIZEALL);
             }
@@ -412,7 +413,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
                 const float hitBand = 9.0f * curDpi;
                 if (fpx >= mmImg.left - 8.0f * curDpi && fpx <= mmImg.right + 8.0f * curDpi &&
                     (std::abs(fpy - mmTopY) <= hitBand || std::abs(fpy - mmBotY) <= hitBand)) {
-                    cur = LoadCursor(nullptr, IDC_SIZENS);
+                    cur = CornerRadiusHelper::getResizeCursor(3, curDpi);
                 } else if (inRect(mmImg)) {
                     cur = LoadCursor(nullptr, IDC_HAND);
                 } else {
@@ -485,7 +486,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
                 if (m_state->mode == OverlayMode::RecordRegion) {
                     cur = LoadCursor(nullptr, IDC_SIZEALL);
                 } else if (!isPointInSelection(point)) {
-                    cur = cursorForArea(HitArea::Body);
+                    cur = cursorForArea(HitArea::Body, 0, curDpi, false);
                 }
             }
         }
@@ -525,10 +526,10 @@ void CaptureInput::updateHoverCursor(POINT point) {
                                     ? LoadCursor(nullptr, IDC_IBEAM)
                                     : LoadCursor(nullptr, IDC_SIZEALL);
                             } else {
-                                cur = cursorForArea(HitArea::Body);
+                                cur = cursorForArea(HitArea::Body, 0, curDpi, false);
                             }
                         } else {
-                            cur = cursorForArea(elemHit, cornerIdx);
+                            cur = cursorForArea(elemHit, cornerIdx, curDpi, false);
                         }
                     }
                 }
@@ -539,7 +540,7 @@ void CaptureInput::updateHoverCursor(POINT point) {
                         if (hit.element->tool == MarkupTool::Text && hit.area == HitArea::Body) {
                             cur = LoadCursor(nullptr, IDC_IBEAM);
                         } else {
-                            cur = cursorForArea(hit.area);
+                            cur = cursorForArea(hit.area, 0, curDpi, false);
                         }
                     }
                 }
@@ -726,27 +727,33 @@ HitArea CaptureInput::hitTestSelectionBox(POINT point, int* outCornerIndex) cons
 }
 
 void CaptureInput::adjustSelection(HitArea handle, int dx, int dy) {
-    // 记录调整前的选区左上角，用于已有标注的坐标重映射
+    const RECT startRect{
+        std::min(m_state->dragStart.x, m_state->dragEnd.x),
+        std::min(m_state->dragStart.y, m_state->dragEnd.y),
+        std::max(m_state->dragStart.x, m_state->dragEnd.x),
+        std::max(m_state->dragStart.y, m_state->dragEnd.y)
+    };
+    adjustSelectionFromSnapshot(startRect, handle, dx, dy);
+}
 
-
-
-    float l = static_cast<float>(std::min(m_state->dragStart.x, m_state->dragEnd.x));
-    float t = static_cast<float>(std::min(m_state->dragStart.y, m_state->dragEnd.y));
-    float r = static_cast<float>(std::max(m_state->dragStart.x, m_state->dragEnd.x));
-    float b = static_cast<float>(std::max(m_state->dragStart.y, m_state->dragEnd.y));
+void CaptureInput::adjustSelectionFromSnapshot(const RECT& startRect, HitArea handle, int totalDx, int totalDy) {
+    float l = static_cast<float>(std::min(startRect.left, startRect.right));
+    float t = static_cast<float>(std::min(startRect.top, startRect.bottom));
+    float r = static_cast<float>(std::max(startRect.left, startRect.right));
+    float b = static_cast<float>(std::max(startRect.top, startRect.bottom));
 
     if (handle == HitArea::Body) {
-        l += dx; r += dx; t += dy; b += dy;
+        l += totalDx; r += totalDx; t += totalDy; b += totalDy;
     } else {
         switch (handle) {
-            case HitArea::LT: l += dx; t += dy; break;
-            case HitArea::T:  t += dy; break;
-            case HitArea::RT: r += dx; t += dy; break;
-            case HitArea::R:  r += dx; break;
-            case HitArea::RB: r += dx; b += dy; break;
-            case HitArea::B:  b += dy; break;
-            case HitArea::LB: l += dx; b += dy; break;
-            case HitArea::L:  l += dx; break;
+            case HitArea::LT: l += totalDx; t += totalDy; break;
+            case HitArea::T:  t += totalDy; break;
+            case HitArea::RT: r += totalDx; t += totalDy; break;
+            case HitArea::R:  r += totalDx; break;
+            case HitArea::RB: r += totalDx; b += totalDy; break;
+            case HitArea::B:  b += totalDy; break;
+            case HitArea::LB: l += totalDx; b += totalDy; break;
+            case HitArea::L:  l += totalDx; break;
             default: break;
         }
     }
@@ -1130,10 +1137,10 @@ cv::Point CaptureInput::toMarkupPoint(POINT point) const {
 
 float CaptureInput::syncTextElementWrapWidth(MarkupElement& elem) const {
     if (elem.tool != MarkupTool::Text || !m_state) return 0.0f;
-    const int fontSizePx = static_cast<int>(elem.fontSize);
+    const float fontSizePx = (std::max)(12.0f, elem.fontSize);
     if (elem.hasCustomTextWidth && elem.textMaxWidth > 0.0f) {
-        const int padW = CaptureTextEditor::computeBoxHorizontalPadding((std::max)(12, fontSizePx));
-        const float minW = (std::max)(44.0f, static_cast<float>((std::max)(12, fontSizePx)) * 1.4f + static_cast<float>(padW));
+        const int padW = CaptureTextEditor::computeBoxHorizontalPadding(fontSizePx);
+        const float minW = (std::max)(44.0f, fontSizePx * 1.4f + static_cast<float>(padW));
         if (elem.textMaxWidth < minW) {
             elem.textMaxWidth = minW;
             elem.textRenderSize = cv::Size(0, 0);
@@ -1163,7 +1170,7 @@ void CaptureInput::ensureActiveTextBoundsAfterEdit(MarkupElement& elem) {
     }
     if (canvasH > 0) {
         const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
-        const int fontSizePx = static_cast<int>(elem.fontSize);
+        const float fontSizePx = (std::max)(12.0f, elem.fontSize);
         const auto layout = CaptureTextEditor::buildLayout(wstr, fontSizePx, maxContentW);
         const auto [bw, bh] = CaptureTextEditor::computeBoxSize(
             layout, fontSizePx, elem.textMaxWidth, elem.hasCustomTextWidth, elem.customTextBoxHeight);
@@ -1206,7 +1213,7 @@ void CaptureInput::syncImeCompositionWindow(HWND hwnd) const {
     const float maxContentW = syncTextElementWrapWidth(elem);
     const std::wstring wstr = tools3000::core::WinUtils::utf8ToWstring(elem.text);
     const auto layout = CaptureTextEditor::buildLayout(
-        wstr, static_cast<int>(elem.fontSize), maxContentW);
+        wstr, elem.fontSize, maxContentW);
     const auto vis = CaptureTextEditor::computeCaretVisual(layout, wstr, elem.textCaret);
     COMPOSITIONFORM cf{};
     cf.dwStyle = CFS_POINT;
@@ -1244,11 +1251,12 @@ void CaptureInput::beginMarkup(POINT point) {
             local.x, local.y,
             m_state->markup.baseWidth(),
             m_state->markup.baseHeight(),
-            static_cast<int>(physFontSize));
+            physFontSize);
         auto* elem = m_state->markup.addText(cv::Point(smartX, smartY), "", m_state->currentColor, physFontSize,
                                              m_state->currentTextOutline, m_state->currentTextOutlineColor);
         m_state->activeElement = elem;
         if (m_state->activeElement) {
+            m_state->activeElement->dpiScale = currentDpiScale;
             m_state->activeElement->fill = m_state->currentFillMode;
             m_state->activeElement->outlineThickness = static_cast<float>(m_state->currentOutlineWidth);
             m_state->activeElement->hasCustomOutline = (m_state->currentOutlineWidth != 2 || !m_state->currentTextOutlineColor.isAuto());

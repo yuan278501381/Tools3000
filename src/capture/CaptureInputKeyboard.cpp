@@ -124,7 +124,9 @@ bool CaptureInput::applyExplicitRegionSelection(
     m_state->dragging = false;
     m_state->isMarking = false;
     m_state->isManipulating = false;
+    m_state->hasManipulateStartElement = false;
     m_state->isAdjustingSelection = false;
+    m_state->hasSelAdjustStart = false;
     m_state->isAdjustingCornerRadius = false;
     m_state->isDraggingToolbar = false;
     m_state->isSelectingText = false;
@@ -1397,6 +1399,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
+                    m_state->hasManipulateStartElement = false;
                     m_state->dragHandle = HitArea::None;
                     m_state->markup.undo();
                     for (const auto& el : m_state->markup.elements()) {
@@ -1414,6 +1417,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
+                    m_state->hasManipulateStartElement = false;
                     m_state->dragHandle = HitArea::None;
                     m_state->markup.redo();
                     for (const auto& el : m_state->markup.elements()) {
@@ -1431,6 +1435,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     resetCoalescedUndo(*m_state);
                     m_state->activeElement = nullptr;
                     m_state->isManipulating = false;
+                    m_state->hasManipulateStartElement = false;
                     m_state->dragHandle = HitArea::None;
                     m_state->markup.clearElementsUndoable();
                     m_renderer->markMarkupDirty();
@@ -1706,7 +1711,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     if (wParam == VK_HOME) {
                         const float maxContentW = syncTextElementWrapWidth(elem);
                         const auto layout = CaptureTextEditor::buildLayout(
-                            wstr, static_cast<int>(elem.fontSize), maxContentW);
+                            wstr, elem.fontSize, maxContentW);
                         CaptureTextEditor::moveHomeInLayout(layout, wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
@@ -1719,7 +1724,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     if (wParam == VK_END) {
                         const float maxContentW = syncTextElementWrapWidth(elem);
                         const auto layout = CaptureTextEditor::buildLayout(
-                            wstr, static_cast<int>(elem.fontSize), maxContentW);
+                            wstr, elem.fontSize, maxContentW);
                         CaptureTextEditor::moveEndInLayout(layout, wstr, elem.textCaret, elem.textSelAnchor, shift, ctrl);
                         elem.textLastCaretTick = GetTickCount();
                         m_state->textPreferredCaretX = -1.0f;
@@ -1732,7 +1737,7 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     if (wParam == VK_UP || wParam == VK_DOWN) {
                         const float maxContentW = syncTextElementWrapWidth(elem);
                         const auto layout = CaptureTextEditor::buildLayout(
-                            wstr, static_cast<int>(elem.fontSize), maxContentW);
+                            wstr, elem.fontSize, maxContentW);
                         CaptureTextEditor::moveVertical(
                             layout, wstr, elem.textCaret, elem.textSelAnchor,
                             (wParam == VK_UP) ? -1 : 1, shift, m_state->textPreferredCaretX);
@@ -1831,12 +1836,19 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                         if (std::abs(m_state->longCanvas.scrollY - prevScrollY) > 0.1f) {
                             const auto curDoc = m_state->screenToDoc(
                                 static_cast<float>(m_state->currentCursor.x), cy);
-                            const int dx = static_cast<int>(std::trunc(curDoc.x - m_state->longCanvas.lastSelAdjustDocPt.x));
-                            const int dy = static_cast<int>(std::trunc(curDoc.y - m_state->longCanvas.lastSelAdjustDocPt.y));
-                            if (dx != 0 || dy != 0) {
-                                adjustSelection(m_state->selAdjustHandle, dx, dy);
-                                m_state->longCanvas.lastSelAdjustDocPt.x += static_cast<float>(dx);
-                                m_state->longCanvas.lastSelAdjustDocPt.y += static_cast<float>(dy);
+                            if (m_state->hasSelAdjustStart) {
+                                const int totalDx = static_cast<int>(std::lround(curDoc.x - m_state->selAdjustStartDocPt.x));
+                                const int totalDy = static_cast<int>(std::lround(curDoc.y - m_state->selAdjustStartDocPt.y));
+                                adjustSelectionFromSnapshot(m_state->selAdjustStartRect, m_state->selAdjustHandle, totalDx, totalDy);
+                                m_state->longCanvas.lastSelAdjustDocPt = curDoc;
+                            } else {
+                                const int dx = static_cast<int>(std::trunc(curDoc.x - m_state->longCanvas.lastSelAdjustDocPt.x));
+                                const int dy = static_cast<int>(std::trunc(curDoc.y - m_state->longCanvas.lastSelAdjustDocPt.y));
+                                if (dx != 0 || dy != 0) {
+                                    adjustSelection(m_state->selAdjustHandle, dx, dy);
+                                    m_state->longCanvas.lastSelAdjustDocPt.x += static_cast<float>(dx);
+                                    m_state->longCanvas.lastSelAdjustDocPt.y += static_cast<float>(dy);
+                                }
                             }
                             m_renderer->invalidate();
                         }

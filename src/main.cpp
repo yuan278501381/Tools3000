@@ -2655,7 +2655,9 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         tools3000::ui::SearchWindow::instance().show(GetModuleHandleW(nullptr));
     }
 
-    // 9. 更新检查严格在后台执行，并由内部频率限制保护启动性能。
+    // 9. 更新检查与升级后离线更新日志（What's New）状态初始化：
+    //    全新安装静默锚定当前版本绝不弹窗，仅真实跨版升级后按偏好准备展示。
+    tools3000::core::UpdateChecker::instance().initializeStartupChangelogState();
     tools3000::core::UpdateChecker::instance().setExitForUpdateCallback([hwnd]() {
         tools3000::core::MainThreadDispatcher::instance().post([hwnd]() {
             if (hwnd && IsWindow(hwnd)) {
