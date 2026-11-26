@@ -14999,6 +14999,97 @@ TEST(DeepOcrLowContrastScreenPhotoEnhancementTest, CleanScreenshotPassthroughAnd
     EXPECT_LT(eSa[0], rSa[0]);
 }
 
+TEST(DeepOcrLowContrastScreenPhotoEnhancementTest, DarkBannerRescueAndPolarityNormalizationOnScreenPhoto) {
+    using tools3000::ocr::DeepOcrEngine;
+    using tools3000::ocr::DbDetectedQuad;
+
+    // 1. 构造强青偏倾斜暗底状态条合成图（模拟手机拍摄 SAP 底部暗底报错条，字高 ~10px，斜率 +0.068）
+    cv::Mat photo(420, 560, CV_8UC3, cv::Scalar(205, 195, 45)); // 浅青屏摄底色 (B=205, G=195, R=45)
+    // 顶部正常亮底表格文字（不得被暗条救援误触）
+    cv::putText(photo, "ITEM 10128 BATCH SERIAL TABLE", cv::Point(40, 80),
+                cv::FONT_HERSHEY_SIMPLEX, 0.55, cv::Scalar(35, 38, 22), 1);
+
+    // 倾斜暗色状态条 (x=30..450, y 从 280 倾斜至 308, 半高 7px)
+    const float slope = 0.068f;
+    for (int x = 28; x <= 452; ++x) {
+        const int cy = static_cast<int>(std::lround(280.0f + (x - 30.0f) * slope));
+        for (int y = cy - 7; y <= cy + 7; ++y) {
+            if (y >= 0 && y < photo.rows) {
+                photo.at<cv::Vec3b>(y, x) = cv::Vec3b(42, 36, 18); // 强青偏暗底 (max=42)
+            }
+        }
+    }
+    // 在倾斜暗条全长绘制连续模拟高亮细笔画（每隔 3px 竖/斜亮像素，模拟密集汉字）
+    for (int x = 36; x <= 442; x += 4) {
+        const int cy = static_cast<int>(std::lround(280.0f + (x - 30.0f) * slope));
+        for (int dy = -3; dy <= 3; ++dy) {
+            const int yy = cy + dy;
+            if (yy >= 0 && yy < photo.rows && ((x + dy) % 2 == 0)) {
+                photo.at<cv::Vec3b>(yy, x) = cv::Vec3b(206, 194, 76); // 亮青白字 (max=206)
+                if (x + 1 < photo.cols) {
+                    photo.at<cv::Vec3b>(yy, x + 1) = cv::Vec3b(188, 178, 68);
+                }
+            }
+        }
+    }
+    // 下方一条纯空白暗色任务栏（无亮字高频跳变，严禁误桥接）
+    cv::rectangle(photo, cv::Rect(28, 350, 424, 16), cv::Scalar(38, 32, 16), cv::FILLED);
+
+    auto makeBoxQuad = [](float x1, float y1, float x2, float y2, float score) {
+        DbDetectedQuad q{};
+        q.corners = {
+            cv::Point2f(x1, y1), cv::Point2f(x2, y1),
+            cv::Point2f(x2, y2), cv::Point2f(x1, y2)
+        };
+        q.score = score;
+        return q;
+    };
+
+    // 模拟 DBNet 仅检出上方表格行 + 暗色报错条左右两端残片（中间 300px 完全漏检）
+    std::vector<DbDetectedQuad> quads;
+    quads.push_back(makeBoxQuad(38.0f, 64.0f, 360.0f, 84.0f, 0.92f)); // 正常亮底行
+    quads.push_back(makeBoxQuad(34.0f, 274.0f, 70.0f, 287.0f, 0.76f)); // 暗底左端残片
+    quads.push_back(makeBoxQuad(386.0f, 298.0f, 444.0f, 311.0f, 0.78f)); // 暗底右端残片
+
+    DeepOcrEngine::rescueDarkBannerQuadsOnScreenPhoto(quads, photo);
+
+    // 验证：两颗暗底残片被桥接为 1 条覆盖完整横幅的新倾斜框，且上方亮底行完好保留
+    ASSERT_EQ(quads.size(), 2u);
+    const auto& tableQuad = quads[0];
+    EXPECT_NEAR(tableQuad.corners[0].y, 64.0f, 1.0f);
+
+    const auto& bannerQuad = quads[1];
+    const float bridgedW = bannerQuad.corners[1].x - bannerQuad.corners[0].x;
+    EXPECT_GT(bridgedW, 380.0f);
+    EXPECT_GT(bannerQuad.corners[1].y, bannerQuad.corners[0].y + 15.0f); // 精准沿正倾角下斜
+
+    // 2. 验证纯空白暗条上的孤立端点不会被误扩充
+    std::vector<DbDetectedQuad> blankDarkQuads;
+    blankDarkQuads.push_back(makeBoxQuad(34.0f, 352.0f, 68.0f, 364.0f, 0.70f));
+    blankDarkQuads.push_back(makeBoxQuad(386.0f, 352.0f, 440.0f, 364.0f, 0.70f));
+    DeepOcrEngine::rescueDarkBannerQuadsOnScreenPhoto(blankDarkQuads, photo);
+    EXPECT_EQ(blankDarkQuads.size(), 2u);
+
+    // 3. 验证暗底青偏细条带经 normalizeDarkScreenPhotoStrip 标准化为高清白底黑字，正常白底行 100% 跳过
+    cv::Mat darkStrip(48, 220, CV_8UC3, cv::Scalar(46, 38, 16));
+    cv::putText(darkStrip, "MSG 131-218", cv::Point(18, 34),
+                cv::FONT_HERSHEY_SIMPLEX, 0.85, cv::Scalar(202, 190, 70), 2);
+    cv::Vec3b darkBg(46, 38, 16);
+    EXPECT_TRUE(DeepOcrEngine::normalizeDarkScreenPhotoStrip(darkStrip, 14, darkBg));
+    EXPECT_EQ(darkBg, cv::Vec3b(248, 248, 248));
+    // 标准化后背景(角点)应反转为高亮度白底 (>=220)，而文字区存在高对比暗像素
+    EXPECT_GE(darkStrip.at<cv::Vec3b>(2, 2)[0], 220);
+
+    cv::Mat brightStrip(48, 220, CV_8UC3, cv::Scalar(245, 248, 250));
+    cv::putText(brightStrip, "NORMAL TEXT", cv::Point(18, 34),
+                cv::FONT_HERSHEY_SIMPLEX, 0.85, cv::Scalar(20, 24, 30), 2);
+    cv::Mat brightBackup = brightStrip.clone();
+    cv::Vec3b brightBg(245, 248, 250);
+    EXPECT_FALSE(DeepOcrEngine::normalizeDarkScreenPhotoStrip(brightStrip, 14, brightBg));
+    EXPECT_DOUBLE_EQ(cv::norm(brightStrip, brightBackup, cv::NORM_INF), 0.0);
+    EXPECT_EQ(brightBg, cv::Vec3b(245, 248, 250));
+}
+
 TEST(PinWindowCrossRegionVerticalFlowSelectionTest, VerticalStackedRegionsKeepRightSideTextOnStreamDrag) {
     // 真实 PinWindow 行为回归测试：当上方大表 (region 0) 与下方装箱卡 (region 1) 上下堆叠时，
     // 从左上文字块流式拖选至下方卡片中间，必须完整保留位于终点 X 右侧的 "502011884AA"，绝不隐形腰斩。
@@ -17058,6 +17149,155 @@ TEST(PinWindowActionPreferenceTest, ParsesAndProtectsDoubleClickAndMiddleClickAc
     EXPECT_EQ(
         PinWindow::resolveEffectiveMiddleClickAction(PinWindow::MiddleClickAction::Close, false),
         PinWindow::MiddleClickAction::Close);
+}
+
+TEST(CaptureMarkupResizeAndCursorTest, TextCornerResizeTracksCursorOneToOneWithoutDeadZone) {
+    using namespace tools3000::capture;
+
+    MarkupEngine engine;
+    cv::Mat base(1200, 1600, CV_8UC3, cv::Scalar(240, 240, 240));
+    engine.setBaseImage(base);
+
+    auto* elem = engine.addText(cv::Point(120, 140), "Hello Tools3000 Text Box", MarkupColor::Red(), 24.0f);
+    ASSERT_NE(elem, nullptr);
+    elem->dpiScale = 1.5f;
+    elem->isActive = true;
+
+    const cv::Rect origBox = elem->getBoundingBox();
+    ASSERT_GT(origBox.width, 100);
+    ASSERT_GT(origBox.height, 20);
+    const MarkupElement snap = *elem;
+
+    // 1. 右下角 RB 拖宽 +80px / 拖高 +20px：对角投影等比缩放应贴合鼠标，绝不再出现旧版 2~3 倍失控超前，且左上锚点 0px 漂移
+    elem->resizeFromSnapshot(snap, 80, 20, HitArea::RB);
+    const cv::Rect grownRb = elem->getBoundingBox();
+    EXPECT_EQ(grownRb.x, origBox.x);
+    EXPECT_EQ(grownRb.y, origBox.y);
+    EXPECT_GT(grownRb.width, origBox.width + 55);
+    EXPECT_LT(grownRb.width, origBox.width + 105);
+
+    // 2. 左上角 LT 放大/缩小：右下角锚点绝对不漂移
+    elem->resizeFromSnapshot(snap, -60, -15, HitArea::LT);
+    const cv::Rect grownLt = elem->getBoundingBox();
+    EXPECT_EQ(grownLt.x + grownLt.width, origBox.x + origBox.width);
+    EXPECT_EQ(grownLt.y + grownLt.height, origBox.y + origBox.height);
+
+    // 3. 撞击最小字号边界后反向拖回至 totalDx=0：零死区，100% 精确还原原始尺寸
+    elem->resizeFromSnapshot(snap, -900, -400, HitArea::RB);
+    EXPECT_GE(elem->fontSize, 12.0f);
+    elem->resizeFromSnapshot(snap, 0, 0, HitArea::RB);
+    const cv::Rect restored = elem->getBoundingBox();
+    EXPECT_NEAR(elem->fontSize, snap.fontSize, 0.01f);
+    EXPECT_EQ(restored.x, origBox.x);
+    EXPECT_EQ(restored.y, origBox.y);
+    EXPECT_EQ(restored.width, origBox.width);
+    EXPECT_EQ(restored.height, origBox.height);
+
+    // 4. 拖左边 L 撞击最小宽后再拉回：右边锚点零漂移且无死区
+    elem->resizeFromSnapshot(snap, 600, 0, HitArea::L);
+    const cv::Rect minLeft = elem->getBoundingBox();
+    EXPECT_EQ(minLeft.x + minLeft.width, origBox.x + origBox.width);
+    elem->resizeFromSnapshot(snap, -40, 0, HitArea::L);
+    const cv::Rect wideLeft = elem->getBoundingBox();
+    EXPECT_EQ(wideLeft.x + wideLeft.width, origBox.x + origBox.width);
+    EXPECT_EQ(wideLeft.width, origBox.width + 40);
+}
+
+TEST(CaptureMarkupResizeAndCursorTest, SiblingToolsSnapshotResizePrecisionAndVectorCursors) {
+    using namespace tools3000::capture;
+
+    // 1. NumberHandler：径向投影 1:1 缩放跟手（1.0x 与 1.5x DPI 下外环控制柄紧随光标）
+    {
+        MarkupElement num;
+        num.tool = MarkupTool::Number;
+        num.startPt = cv::Point(200, 200);
+        num.endPt = cv::Point(200, 200);
+        num.thickness = 4.0f;
+        num.dpiScale = 1.5f;
+        num.numberValue = 1;
+        num.isActive = true;
+
+        const MarkupElement orig = num;
+        const cv::Rect box0 = orig.getBoundingBox();
+        const int r0 = box0.width / 2;
+        // 沿右上 45° 拖出 +21px（dx=+15, dy=-15），半径增量应接近 21px 而非旧版的 ~7px 滞后
+        num.resizeFromSnapshot(orig, 15, -15, HitArea::RT);
+        const cv::Rect box1 = num.getBoundingBox();
+        const int dr = (box1.width / 2) - r0;
+        EXPECT_GE(dr, 17);
+        EXPECT_LE(dr, 25);
+
+        // 拖回原点 0,0 零死区精确复原
+        num.resizeFromSnapshot(orig, 0, 0, HitArea::RT);
+        EXPECT_NEAR(num.thickness, orig.thickness, 0.2f);
+    }
+
+    // 2. PenHandler：先缩到极小再拉回原尺寸，原始轨迹点 100% 无圆整侵蚀复原
+    {
+        MarkupElement pen;
+        pen.tool = MarkupTool::Pen;
+        pen.penPoints = { cv::Point(100, 100), cv::Point(145, 118), cv::Point(188, 173), cv::Point(240, 220) };
+        pen.isActive = true;
+        const MarkupElement orig = pen;
+
+        pen.resizeFromSnapshot(orig, -135, -115, HitArea::RB);
+        pen.resizeFromSnapshot(orig, 0, 0, HitArea::RB);
+        ASSERT_EQ(pen.penPoints.size(), orig.penPoints.size());
+        for (size_t i = 0; i < orig.penPoints.size(); ++i) {
+            EXPECT_EQ(pen.penPoints[i], orig.penPoints[i]);
+        }
+    }
+
+    // 3. ArrowHandler / LineHandler：弯曲控制点快照缩放杜绝 dx/2 截断漂移
+    {
+        MarkupElement arrow;
+        arrow.tool = MarkupTool::Arrow;
+        arrow.startPt = cv::Point(100, 100);
+        arrow.endPt = cv::Point(300, 100);
+        arrow.smoothCurve = true;
+        arrow.penPoints = { cv::Point(100, 100), cv::Point(200, 40), cv::Point(300, 100) };
+        arrow.isActive = true;
+        const MarkupElement orig = arrow;
+
+        // 模拟逐 1px 慢拖 100 帧：总位移 +100px，控制点 X 必须精确移动 +50px（旧版增量 1/2==0 会完全不动）
+        for (int step = 1; step <= 100; ++step) {
+            arrow.resizeFromSnapshot(orig, step, 0, HitArea::RB);
+        }
+        EXPECT_EQ(arrow.endPt, cv::Point(400, 100));
+        EXPECT_EQ(arrow.penPoints[1], cv::Point(250, 40));
+    }
+
+    // 4. RectangleHandler：单次拖拽内先压扁再拉宽，无损恢复原始圆角
+    {
+        MarkupElement rect;
+        rect.tool = MarkupTool::Rectangle;
+        rect.startPt = cv::Point(100, 100);
+        rect.endPt = cv::Point(300, 260);
+        rect.cornerRadius = 30.0f;
+        rect.isActive = true;
+        const MarkupElement orig = rect;
+
+        rect.resizeFromSnapshot(orig, -180, 0, HitArea::R);
+        EXPECT_LE(rect.cornerRadius, 12.0f);
+        rect.resizeFromSnapshot(orig, 0, 0, HitArea::R);
+        EXPECT_FLOAT_EQ(rect.cornerRadius, 30.0f);
+    }
+
+    // 5. 高分屏矢量缩放光标与系统缩放倍率解析
+    {
+        EXPECT_GE(CornerRadiusHelper::resolveEffectiveCursorScale(1.0f), 1.0f);
+        EXPECT_GE(CornerRadiusHelper::resolveEffectiveCursorScale(1.5f), 1.5f);
+        EXPECT_GE(CornerRadiusHelper::resolveEffectiveCursorScale(2.0f), 2.0f);
+        for (int axis = 0; axis < 4; ++axis) {
+            EXPECT_NE(CornerRadiusHelper::getResizeCursor(axis, 1.0f), nullptr);
+            EXPECT_NE(CornerRadiusHelper::getResizeCursor(axis, 1.5f), nullptr);
+            EXPECT_NE(CornerRadiusHelper::getResizeCursor(axis, 2.0f), nullptr);
+        }
+        EXPECT_GT(HandleGeometry::scaledHandleHitHalfSize(1.5f, 5),
+                  HandleGeometry::scaledHandleHitHalfSize(1.0f, 5));
+        EXPECT_GE(HandleGeometry::scaledHandleVisualHalfSize(2.0f, 5),
+                  HandleGeometry::scaledHandleVisualHalfSize(1.0f, 5));
+    }
 }
 
 

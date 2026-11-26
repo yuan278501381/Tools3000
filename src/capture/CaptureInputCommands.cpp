@@ -1085,6 +1085,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
             m_state->hasManipulateSnapshot = false;
+            m_state->hasManipulateStartElement = false;
             m_state->dragHandle = HitArea::None;
             resetCoalescedUndo(*m_state);
             m_state->markup.undo();
@@ -1103,6 +1104,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
             m_state->hasManipulateSnapshot = false;
+            m_state->hasManipulateStartElement = false;
             m_state->dragHandle = HitArea::None;
             resetCoalescedUndo(*m_state);
             m_state->markup.redo();
@@ -1121,6 +1123,7 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             m_state->activeElement = nullptr;
             m_state->isManipulating = false;
             m_state->hasManipulateSnapshot = false;
+            m_state->hasManipulateStartElement = false;
             m_state->dragHandle = HitArea::None;
             resetCoalescedUndo(*m_state);
             m_state->markup.clearElementsUndoable();

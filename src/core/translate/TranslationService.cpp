@@ -1430,11 +1430,11 @@ TranslationService& TranslationService::instance() {
 TranslationSettings TranslationService::loadSettings() const {
     auto& cfg = ConfigManager::instance();
     TranslationSettings s{};
-    s.provider = cfg.get<std::string>("/translate/provider", TranslationConstants::kProviderAutoFree);
+    s.provider = cfg.get<std::string>("/translate/provider", TranslationConstants::kDefaultProvider);
     if (s.provider != TranslationConstants::kProviderAutoFree &&
         s.provider != TranslationConstants::kProviderOpenAiCompatible &&
         s.provider != TranslationConstants::kProviderDeepL) {
-        s.provider = TranslationConstants::kProviderAutoFree;
+        s.provider = TranslationConstants::kDefaultProvider;
     }
     s.freePrimary = cfg.get<std::string>("/translate/freePrimary", TranslationConstants::kFreePrimaryEdge);
     if (s.freePrimary != TranslationConstants::kFreePrimaryEdge &&
@@ -1447,11 +1447,14 @@ TranslationSettings TranslationService::loadSettings() const {
         "/translate/secondaryTargetLang", TranslationConstants::kDefaultSecondaryTargetLang);
     if (s.secondaryTargetLang.empty()) s.secondaryTargetLang = TranslationConstants::kDefaultSecondaryTargetLang;
 
-    s.openaiBaseUrl = cfg.get<std::string>("/translate/openaiBaseUrl", TranslationConstants::kDefaultOpenAiBaseUrl);
-    if (trimAscii(s.openaiBaseUrl).empty()) s.openaiBaseUrl = TranslationConstants::kDefaultOpenAiBaseUrl;
+    s.openaiBaseUrl = cfg.get<std::string>("/translate/openaiBaseUrl", TranslationConstants::kIndexTranslateBaseUrl);
+    if (trimAscii(s.openaiBaseUrl).empty()) s.openaiBaseUrl = TranslationConstants::kIndexTranslateBaseUrl;
     s.openaiApiKey = unprotectSecretFromStorage(cfg.get<std::string>("/translate/openaiApiKey", ""));
-    s.openaiModel = cfg.get<std::string>("/translate/openaiModel", TranslationConstants::kDefaultOpenAiModel);
-    if (trimAscii(s.openaiModel).empty()) s.openaiModel = TranslationConstants::kDefaultOpenAiModel;
+    const char* fallbackModel = isKeylessPublicOpenAiUrl(s.openaiBaseUrl)
+        ? TranslationConstants::kIndexTranslateDefaultModel
+        : TranslationConstants::kDefaultOpenAiModel;
+    s.openaiModel = cfg.get<std::string>("/translate/openaiModel", fallbackModel);
+    if (trimAscii(s.openaiModel).empty()) s.openaiModel = fallbackModel;
 
     s.deeplBaseUrl = cfg.get<std::string>("/translate/deeplBaseUrl", "");
     s.deeplApiKey = unprotectSecretFromStorage(cfg.get<std::string>("/translate/deeplApiKey", ""));
@@ -1466,9 +1469,10 @@ TranslationSettings TranslationService::loadSettings() const {
 bool TranslationService::saveSettings(const TranslationSettings& settings) {
     auto& cfg = ConfigManager::instance();
     const std::string provider = (settings.provider == TranslationConstants::kProviderOpenAiCompatible ||
+                                  settings.provider == TranslationConstants::kProviderAutoFree ||
                                   settings.provider == TranslationConstants::kProviderDeepL)
         ? settings.provider
-        : std::string(TranslationConstants::kProviderAutoFree);
+        : std::string(TranslationConstants::kDefaultProvider);
     const std::string freePrimary = (settings.freePrimary == TranslationConstants::kFreePrimaryGoogle)
         ? std::string(TranslationConstants::kFreePrimaryGoogle)
         : std::string(TranslationConstants::kFreePrimaryEdge);
@@ -1479,10 +1483,12 @@ bool TranslationService::saveSettings(const TranslationSettings& settings) {
         ? std::string(TranslationConstants::kDefaultSecondaryTargetLang)
         : canonicalizeLanguageCode(settings.secondaryTargetLang);
     const std::string openaiBase = trimAscii(settings.openaiBaseUrl).empty()
-        ? std::string(TranslationConstants::kDefaultOpenAiBaseUrl)
+        ? std::string(TranslationConstants::kIndexTranslateBaseUrl)
         : trimAscii(settings.openaiBaseUrl);
     const std::string openaiModel = trimAscii(settings.openaiModel).empty()
-        ? std::string(TranslationConstants::kDefaultOpenAiModel)
+        ? std::string(isKeylessPublicOpenAiUrl(openaiBase)
+            ? TranslationConstants::kIndexTranslateDefaultModel
+            : TranslationConstants::kDefaultOpenAiModel)
         : trimAscii(settings.openaiModel);
     const int timeoutMs = std::clamp(
         settings.timeoutMs, TranslationConstants::kMinTimeoutMs, TranslationConstants::kMaxTimeoutMs);
@@ -1737,7 +1743,18 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
 
     if (kind == TranslationProviderKind::OpenAiCompatible) {
         OpenAiCompatibleProvider provider;
-        return finalizeWithMerge(provider.translate(uniqueToTranslate, effectiveTarget, settings, cancelFlag));
+        TranslationBatchResult aiRes = provider.translate(uniqueToTranslate, effectiveTarget, settings, cancelFlag);
+        if (aiRes.success || aiRes.errorCode == "cancelled") {
+            return finalizeWithMerge(std::move(aiRes));
+        }
+        // 默认免 Key 公益端点（Bilibili Index-Translate）若在日常翻译时遇到上游限流或网络波动，
+        // 自动无缝容灾回退至 Edge/Google 免费双源，保障开箱零中断；连通性实测探针（bypassCache=true）保持直报真实状态。
+        if (!request.bypassCache && isKeylessPublicOpenAiUrl(settings.openaiBaseUrl)) {
+            LOG_WARN("TranslationService: keyless public AI endpoint failed ({}:{}), falling back to free dual-channel",
+                     aiRes.errorCode, aiRes.errorDetail);
+        } else {
+            return finalizeWithMerge(std::move(aiRes));
+        }
     }
     if (kind == TranslationProviderKind::DeepL) {
         DeepLProvider provider;

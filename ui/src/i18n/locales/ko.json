@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "핵심 생산성 진입점",
     "hotkeyGroupPinOcr": "스티커 이미지 · OCR · 번역",
     "hotkeyGroupRecording": "고화질 화면 녹화 및 오디오 제어",
-    "hotkeyGroupInput": "입력 및 제스처 제어"
+    "hotkeyGroupInput": "입력 및 제스처 제어",
+    "showChangelogOnUpdate": "업데이트 후 변경 기록 자동 표시",
+    "showChangelogOnUpdateDesc": "새 버전으로 업그레이드한 후 설정을 처음 열 때 주요 변경 사항을 자동으로 표시합니다(신규 설치 시 미표시)"
   },
   "plugins": {
     "capabilities": "모듈 기능",
@@ -1530,7 +1532,7 @@
       "llHooks": "전역 단축키, 마우스 제스처 및 원격 제어 입력 보호를 위한 저지연 입력 후킹",
       "ntfsEngine": "수백만 파일 밀리초 단위 디스크 색인 및 실시간 파일 변경 추적",
       "pinyin": "병음 및 초성 기반 퍼지 파일명 매칭 지원",
-      "opencv": "컴퓨터 비전 이미지 처리 및 자동 스크롤 캡처 무결점 이어붙이기",
+      "opencv": "컴퓨터 비전 처리, 오프라인 quirc QR 디코딩 및 스크롤 캡처 자동 정합",
       "ffmpeg": "고프레임 화면 녹화, 듀얼 오디오 믹싱 및 고화질 2-Pass GIF 내보내기",
       "windowsOcr": "100% 로컬 오프라인 텍스트 인식(OCR) 및 잠금 없는 네이티브 PDF 페이지 렌더링",
       "uiaShell": "열기/저장 대화상자 빠른 폴더 점프 및 파일 탐색기 선택 항목 연동",
@@ -1539,16 +1541,20 @@
       "vite": "초고속 프런트엔드 번들러 및 코드 분할 빌드 엔진",
       "lucideIcons": "모든 화면에 일관된 고해상도 벡터 아이콘 체계 제공",
       "designTokens": "다크/라이트 테마 적응, 동적 강조 색상 및 High-DPI 타이포그래피 디자인 토큰",
-      "sqliteZlib": "로컬 사용 통계/기록 저장 및 Office 문서 압축 스트림 무손실 추출",
+      "sqliteZlib": "시스템 읽기 전용 WinSQLite3 북마크 파비콘 추출 및 zlib Office 무손실 압축 해제",
       "luaSol2": "사용자 정의 자동화 워크플로를 위한 로컬 Lua 스크립트 엔진",
       "spdlog": "저부하 비동기 진단 로깅 및 문제 추적 기록",
       "nlohmannJson": "고속 JSON 설정 파싱 및 프로세스 간 IPC 메시지 직렬화",
       "gtest": "C++ 및 프런트엔드 핵심 로직 자동화 회귀 테스트 스위트",
       "innoSetup": "Windows 표준 설치 마법사, 포터블 패키지 및 코드 서명 릴리스 패키징",
-      "rustPicasaViewer": "순수 Rust·제로 CRT 독립 하드웨어 가속 이미지 뷰어(41개 포맷, 물리 감쇠 및 가우시안 그림자)",
+      "rustPicasaViewer": "독립형 제로 CRT 하드웨어 가속 이미지 뷰어(41개 형식·물리 감쇠·가우시안 그림자)",
       "ddcBrightness": "커서 위치 모니터별 독립 하드웨어 밝기 엔진(외장 DDC/CI + 노트북 내장 WMI)",
-      "ppocrDirectml": "2단계 완전 오프라인 딥러닝 OCR(DirectML GPU + WinML), QR/바코드 및 제자리 텍스트 편집",
-      "ifilterShellProps": "Office/WPS/이메일 본문 전문 추출 및 30개 이상 확장 열 메타데이터 온디맨드 조회"
+      "ppocrDirectml": "2단계 오프라인 딥러닝 OCR 및 MI-GAN 512 텍스처 복원(DirectML GPU + WinML)",
+      "ifilterShellProps": "Office/WPS/이메일 본문 전문 추출 및 30개 이상 확장 열 메타데이터 온디맨드 조회",
+      "rustClipboard": "의존성 없는 순수 Rust 클립보드 영구 저장·중복 제거·서브밀리초 검색 커널",
+      "rustCliMcp": "의존성 없는 Rust CLI 및 MCP stdio 서버(AI 에이전트용 로컬 디스크 검색)",
+      "winhttpTranslate": "네이티브 TLS 화면 즉석 번역 게이트웨이(기본 키 불필요 Bilibili Index-Translate·자동 장애 조치·DPAPI 암호화)",
+      "i18next": "8개 언어 동형 다국어 프레임워크, 시스템 언어 자동 감지 및 7중 정적 게이트"
     },
     "exportLogsTip": "시스템 진단 로그 및 환경 보고서 내보내기",
     "authorGithubTip": "원작자 GitHub 프로필 방문",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "변경 내역 보기",
     "viewUpdate": "업데이트 보기",
     "openPerformancePageBtn": "메모리 정책",
-    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits",
+    "viewChangelogBtn": "변경 기록"
   },
   "sidebar": {
     "groupSystem": "시스템",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "스크린샷 원위치 번역",
     "providerTitle": "번역 엔진 채널",
-    "providerDesc": "무료 무키 이중 채널과 BYOK(OpenAI 호환 / 로컬 Ollama / DeepL)를 지원합니다. 번역 또는 연결 테스트 시에만 네트워크를 사용합니다.",
+    "providerDesc": "기본값으로 키가 필요 없는 Bilibili Index-Translate AI를 사용하며(장애 시 무료 이중 채널로 자동 전환), OpenAI 호환/로컬 Ollama/DeepL도 지원합니다. 요청 시에만 통신합니다.",
     "providerFreeAuto": "무료 무키 이중 채널 (Edge 우선 + Google 백업)",
-    "providerOpenAi": "OpenAI 호환 API (OpenAI / DeepSeek / 프록시 / 로컬 Ollama)",
+    "providerOpenAi": "OpenAI 호환 API (기본 Bilibili 무키 / DeepSeek / 로컬 Ollama)",
     "providerDeepL": "DeepL 공식 API (Free / Pro 자동 감지)",
     "badgeZeroConfig": "즉시 사용 · 요청 시 연결",
     "badgeLocalOffline": "로컬 루프백 · 100% 오프라인",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B (고속)",
     "indexModelBalanced": "Index-Translate-9B (균형 추천)",
     "indexModelFlagship": "Index-Translate-35B-A3B (플래그십)",
-    "indexTranslateNotice": "Bilibili 오픈소스 공개 API로 키 없이 바로 사용할 수 있습니다. 여러 줄 스크린샷은 2B 또는 9B, 최고 품질은 35B-A3B를 권장합니다. 혼잡 시 기본 무료 이중 소스로 전환할 수 있습니다.",
+    "indexTranslateNotice": "Bilibili 오픈소스 공용 API로 별도 키 없이 바로 사용할 수 있습니다. 다중 행 캡처에는 2B 또는 9B를, 최고 품질에는 35B-A3B를 권장합니다. 제한 시 무료 이중 채널로 자동 대체됩니다.",
     "openaiBaseUrlLabel": "기본 URL",
     "openaiModelLabel": "모델 이름",
     "apiKeyLabel": "API 키",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
     "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
     "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
+  },
+  "changelog": {
+    "upgradeTitle": "새 버전으로 업데이트되었습니다",
+    "upgradeSubtitle": "오프라인 핵심 요약을 통해 이번 업그레이드의 주요 개선 사항을 빠르게 확인하세요",
+    "archiveTitle": "버전 변경 기록",
+    "archiveSubtitle": "최근 {{count}}개 공식 릴리스가 오프라인 내장되어 버전 및 키워드 즉시 검색을 지원합니다",
+    "upgradeSpanBanner": "{{from}}에서 {{to}}로 업그레이드 · 총 {{count}}개 릴리스 변경 포함",
+    "searchPlaceholder": "버전 또는 기능 키워드 검색 (예: 1.4.0, 번역, OCR, 검색)...",
+    "searchMatchesCount": "{{count}}개 릴리스 일치",
+    "showingCount": "{{shown}} / {{total}}개 릴리스 표시 중",
+    "noSearchResults": "일치하는 변경 기록이 없습니다. 다른 키워드를 입력해 보세요.",
+    "badgeNew": "신규",
+    "kindMajor": "메이저",
+    "kindMinor": "기능 업데이트",
+    "kindPatch": "개선·수정",
+    "relativeToday": "오늘",
+    "relativeYesterday": "어제",
+    "relativeDaysAgo": "{{count}}일 전",
+    "relativeMonthsAgo": "{{count}}개월 전",
+    "relativeYearsAgo": "{{count}}년 전",
+    "fallbackLocaleNote": "이 초기 릴리스는 중국어 간체 릴리스 노트만 제공합니다.",
+    "loadMoreBtn": "이전 버전 더 보기 (+{{step}}, {{remaining}}개 남음)",
+    "autoShowAfterUpdate": "업데이트 후 변경 기록 자동 표시",
+    "viewAllOnGitHub": "GitHub에서 전체 보기",
+    "gotItBtn": "확인",
+    "clearSearch": "검색 지우기"
   }
 }

@@ -255,22 +255,38 @@ std::wstring CornerRadiusHelper::getToastMessage(CornerRadiusTarget target, floa
     }
 }
 
-HCURSOR CornerRadiusHelper::getLiveCursor(int cornerIndex, float dpiScale, bool isDragging) {
-    const int normCorner = (cornerIndex >= 0 && cornerIndex <= 3) ? cornerIndex : 0;
-    const bool isNesw = (normCorner == 1 || normCorner == 3);
+float CornerRadiusHelper::resolveEffectiveCursorScale(float dpiScale) noexcept {
     const float monScale = std::clamp(dpiScale > 0.0f ? dpiScale : 1.0f, 1.0f, 4.0f);
 
-    // 同步感知 Windows 辅助功能“鼠标指针大小”倍率 (HKCU\Software\Microsoft\Accessibility\CursorSize, 1..15)
+    // 同步感知 Windows 11/10 两套鼠标指针大小注册表：
+    // 1) HKCU\Control Panel\Cursors\CursorBaseSize（Win11「鼠标指针大小」主滑块，默认 32，档位 1..15 -> 32..256）
+    // 2) HKCU\Software\Microsoft\Accessibility\CursorSize（辅助功能旧/同步键，1..15）
     float userCursorMult = 1.0f;
+    DWORD baseSize = 32;
+    DWORD baseCb = sizeof(baseSize);
+    if (RegGetValueW(HKEY_CURRENT_USER, L"Control Panel\\Cursors", L"CursorBaseSize",
+                     RRF_RT_REG_DWORD, nullptr, &baseSize, &baseCb) == ERROR_SUCCESS &&
+        baseSize > 32) {
+        userCursorMult = (std::max)(userCursorMult, std::clamp(static_cast<float>(baseSize) / 32.0f, 1.0f, 3.0f));
+    }
+
     DWORD regCursorSize = 1;
     DWORD regCb = sizeof(regCursorSize);
     if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Accessibility", L"CursorSize",
                      RRF_RT_REG_DWORD, nullptr, &regCursorSize, &regCb) == ERROR_SUCCESS &&
         regCursorSize > 1) {
-        userCursorMult = std::clamp(1.0f + static_cast<float>(regCursorSize - 1) * 0.25f, 1.0f, 2.5f);
+        userCursorMult = (std::max)(
+            userCursorMult,
+            std::clamp(1.0f + static_cast<float>(regCursorSize - 1) * 0.25f, 1.0f, 3.0f));
     }
 
-    const float effScale = std::clamp(monScale * userCursorMult, 1.0f, 4.0f);
+    return std::clamp(monScale * userCursorMult, 1.0f, 4.5f);
+}
+
+HCURSOR CornerRadiusHelper::getLiveCursor(int cornerIndex, float dpiScale, bool isDragging) {
+    const int normCorner = (cornerIndex >= 0 && cornerIndex <= 3) ? cornerIndex : 0;
+    const bool isNesw = (normCorner == 1 || normCorner == 3);
+    const float effScale = resolveEffectiveCursorScale(dpiScale);
     const int scaleBucket = static_cast<int>(std::round(effScale * 100.0f));
     const int cacheKey = scaleBucket * 8 + normCorner * 2 + (isDragging ? 1 : 0);
 
@@ -478,6 +494,183 @@ HCURSOR CornerRadiusHelper::getLiveCursor(int cornerIndex, float dpiScale, bool 
 
     if (!cur) cur = LoadCursor(nullptr, isNesw ? IDC_SIZENESW : IDC_SIZENWSE);
     s_liveCornerCursors[cacheKey] = cur;
+    return cur;
+}
+
+HCURSOR CornerRadiusHelper::getResizeCursor(int axisMode, float dpiScale) {
+    const int normAxis = std::clamp(axisMode, 0, 3); // 0=NWSE, 1=NESW, 2=WE, 3=NS
+    auto fallbackSystemCursor = [normAxis]() -> HCURSOR {
+        switch (normAxis) {
+            case 0: return LoadCursor(nullptr, IDC_SIZENWSE);
+            case 1: return LoadCursor(nullptr, IDC_SIZENESW);
+            case 2: return LoadCursor(nullptr, IDC_SIZEWE);
+            case 3:
+            default: return LoadCursor(nullptr, IDC_SIZENS);
+        }
+    };
+
+    const float effScale = resolveEffectiveCursorScale(dpiScale);
+    const int scaleBucket = static_cast<int>(std::round(effScale * 100.0f));
+    const int cacheKey = scaleBucket * 4 + normAxis;
+
+    static std::unordered_map<int, HCURSOR> s_resizeCursors;
+    if (auto it = s_resizeCursors.find(cacheKey); it != s_resizeCursors.end() && it->second) {
+        return it->second;
+    }
+
+    int sz = std::clamp(static_cast<int>(std::round(48.0f * effScale)), 48, 160);
+    if (sz % 2 != 0) ++sz;
+    const int mid = sz / 2;
+
+    BITMAPINFO bi = {};
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = sz;
+    bi.bmiHeader.biHeight = -sz;
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+
+    uint32_t* pixels = nullptr;
+    HDC hdcScreen = GetDC(nullptr);
+    HDC memDC = CreateCompatibleDC(hdcScreen);
+    HBITMAP hbmColor = CreateDIBSection(hdcScreen, &bi, DIB_RGB_COLORS, reinterpret_cast<void**>(&pixels), nullptr, 0);
+    ReleaseDC(nullptr, hdcScreen);
+
+    if (!memDC || !hbmColor || !pixels) {
+        if (hbmColor) DeleteObject(hbmColor);
+        if (memDC) DeleteDC(memDC);
+        HCURSOR fb = fallbackSystemCursor();
+        s_resizeCursors[cacheKey] = fb;
+        return fb;
+    }
+
+    std::memset(pixels, 0, static_cast<size_t>(sz) * sz * sizeof(uint32_t));
+    HGDIOBJ oldBmp = SelectObject(memDC, hbmColor);
+
+    bool renderedByD2D = false;
+    Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory;
+    if (SUCCEEDED(D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, d2dFactory.GetAddressOf())) && d2dFactory) {
+        D2D1_RENDER_TARGET_PROPERTIES rtProps = D2D1::RenderTargetProperties(
+            D2D1_RENDER_TARGET_TYPE_DEFAULT,
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+        Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> rt;
+        RECT bindRect{ 0, 0, sz, sz };
+        if (SUCCEEDED(d2dFactory->CreateDCRenderTarget(&rtProps, rt.GetAddressOf())) &&
+            rt && SUCCEEDED(rt->BindDC(memDC, &bindRect))) {
+            rt->SetDpi(96.0f, 96.0f);
+            rt->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+            Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke;
+            D2D1_STROKE_STYLE_PROPERTIES sp = D2D1::StrokeStyleProperties(
+                D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND,
+                D2D1_LINE_JOIN_ROUND);
+            d2dFactory->CreateStrokeStyle(sp, nullptr, 0, roundStroke.GetAddressOf());
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> shadowBrush, whiteBrush, darkBrush;
+            rt->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.28f), shadowBrush.GetAddressOf());
+            rt->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.99f), whiteBrush.GetAddressOf());
+            rt->CreateSolidColorBrush(D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.98f), darkBrush.GetAddressOf());
+
+            const float cx = static_cast<float>(mid);
+            const float cy = static_cast<float>(mid);
+            const float s = effScale;
+
+            float ux = 1.0f;
+            float uy = 0.0f;
+            switch (normAxis) {
+                case 0: ux = 0.70710678f;  uy = 0.70710678f; break; // NWSE
+                case 1: ux = -0.70710678f; uy = 0.70710678f; break; // NESW
+                case 2: ux = 1.0f;         uy = 0.0f;        break; // WE
+                case 3:
+                default: ux = 0.0f;        uy = 1.0f;        break; // NS
+            }
+            const float px = -uy;
+            const float py =  ux;
+
+            // 四轴统一 ~23 DIP 舒展黄金视觉体量（与 IDC_SIZEALL / 圆角指针体量 1:1 齐平，彻底消除对角箭头偏小一号）
+            const float halfSpan = 9.4f * s;
+            const float wingLen = 4.6f * s;
+            const float wingSpread = 3.9f * s;
+            const D2D1_POINT_2F pA = D2D1::Point2F(cx - ux * halfSpan, cy - uy * halfSpan);
+            const D2D1_POINT_2F pB = D2D1::Point2F(cx + ux * halfSpan, cy + uy * halfSpan);
+
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> arrowGeo;
+            if (SUCCEEDED(d2dFactory->CreatePathGeometry(arrowGeo.GetAddressOf())) && arrowGeo) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(arrowGeo->Open(sink.GetAddressOf())) && sink) {
+                    sink->BeginFigure(pA, D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddLine(pB);
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                    sink->BeginFigure(
+                        D2D1::Point2F(pA.x + ux * wingLen + px * wingSpread,
+                                      pA.y + uy * wingLen + py * wingSpread),
+                        D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddLine(pA);
+                    sink->AddLine(
+                        D2D1::Point2F(pA.x + ux * wingLen - px * wingSpread,
+                                      pA.y + uy * wingLen - py * wingSpread));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+
+                    sink->BeginFigure(
+                        D2D1::Point2F(pB.x - ux * wingLen + px * wingSpread,
+                                      pB.y - uy * wingLen + py * wingSpread),
+                        D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddLine(pB);
+                    sink->AddLine(
+                        D2D1::Point2F(pB.x - ux * wingLen - px * wingSpread,
+                                      pB.y - uy * wingLen - py * wingSpread));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    sink->Close();
+                }
+            }
+
+            rt->BeginDraw();
+            rt->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
+            if (arrowGeo) {
+                if (shadowBrush) {
+                    rt->SetTransform(D2D1::Matrix3x2F::Translation(0.0f, 1.0f * s));
+                    rt->DrawGeometry(arrowGeo.Get(), shadowBrush.Get(), 4.8f * s, roundStroke.Get());
+                    rt->SetTransform(D2D1::Matrix3x2F::Identity());
+                }
+                if (whiteBrush) {
+                    rt->DrawGeometry(arrowGeo.Get(), whiteBrush.Get(), 4.1f * s, roundStroke.Get());
+                }
+                if (darkBrush) {
+                    rt->DrawGeometry(arrowGeo.Get(), darkBrush.Get(), 1.95f * s, roundStroke.Get());
+                }
+            }
+            renderedByD2D = SUCCEEDED(rt->EndDraw());
+        }
+    }
+
+    SelectObject(memDC, oldBmp);
+    DeleteDC(memDC);
+
+    if (!renderedByD2D) {
+        DeleteObject(hbmColor);
+        HCURSOR fb = fallbackSystemCursor();
+        s_resizeCursors[cacheKey] = fb;
+        return fb;
+    }
+
+    const int maskStride = ((sz + 15) / 16) * 2;
+    std::vector<uint8_t> maskBits(static_cast<size_t>(maskStride) * sz, 0x00);
+    HBITMAP hbmMask = CreateBitmap(sz, sz, 1, 1, maskBits.data());
+
+    ICONINFO ii = {};
+    ii.fIcon = FALSE;
+    ii.xHotspot = static_cast<DWORD>(mid);
+    ii.yHotspot = static_cast<DWORD>(mid);
+    ii.hbmMask = hbmMask;
+    ii.hbmColor = hbmColor;
+
+    HCURSOR cur = CreateIconIndirect(&ii);
+    if (hbmMask) DeleteObject(hbmMask);
+    DeleteObject(hbmColor);
+
+    if (!cur) cur = fallbackSystemCursor();
+    s_resizeCursors[cacheKey] = cur;
     return cur;
 }
 

@@ -70,6 +70,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'gen-hotkeys', navId: 'general', labelKey: 'general.keyboardShortcuts', descKey: 'general.keyboardShortcutsDesc', keywords: 'shortcut keybind conflict kuaijiejian rejian' },
   { id: 'gen-portable', navId: 'general', labelKey: 'general.portableMode', descKey: 'general.portableModeDesc', keywords: 'portable appdata folder bianxie' },
   { id: 'gen-logs', navId: 'general', labelKey: 'general.exportLogs', descKey: 'general.exportLogsDesc', keywords: 'log diagnostic debug export rizhi' },
+  { id: 'gen-changelog', navId: 'general', labelKey: 'general.showChangelogOnUpdate', descKey: 'general.showChangelogOnUpdateDesc', keywords: 'changelog whats new release notes update history gengxin rizhi banben' },
   { id: 'gen-backup', navId: 'general', labelKey: 'general.exportConfig', descKey: 'general.exportConfigDesc', keywords: 'backup export import reset config beifen daochu' },
 
   // Search & Sub-tabs

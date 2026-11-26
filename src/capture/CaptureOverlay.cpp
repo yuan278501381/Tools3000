@@ -211,7 +211,9 @@ void CaptureOverlay::resetTransientOverlayState() {
     m_state.activeElement = nullptr;
     m_state.dragHandle = HitArea::None;
     m_state.isManipulating = false;
+    m_state.hasManipulateStartElement = false;
     m_state.isAdjustingSelection = false;
+    m_state.hasSelAdjustStart = false;
     m_state.isAdjustingCornerRadius = false;
     m_state.detectedWindow = {0, 0, 0, 0};
     m_state.detectedWindowCornerRadius = 0.0f;
@@ -1054,7 +1056,9 @@ void CaptureOverlay::cleanupAfterDelivery(bool trimMemory) {
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.isManipulating = false;
+    m_state.hasManipulateStartElement = false;
     m_state.isAdjustingSelection = false;
+    m_state.hasSelAdjustStart = false;
     m_state.isAdjustingCornerRadius = false;
     m_state.isHierarchyAnimating = false;
     m_state.shiftTapCandidate = false;
@@ -1105,7 +1109,9 @@ void CaptureOverlay::realCancel() {
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.isManipulating = false;
+    m_state.hasManipulateStartElement = false;
     m_state.isAdjustingSelection = false;
+    m_state.hasSelAdjustStart = false;
     m_state.isAdjustingCornerRadius = false;
     m_state.isFadingOut = false;
     ReleaseCapture();
@@ -1247,7 +1253,9 @@ void CaptureOverlay::confirmSelection(CaptureCompletion completion) {
     m_state.dragging = false;
     m_state.isMarking = false;
     m_state.isManipulating = false;
+    m_state.hasManipulateStartElement = false;
     m_state.isAdjustingSelection = false;
+    m_state.hasSelAdjustStart = false;
     m_state.isAdjustingCornerRadius = false;
     m_state.isFadingOut = false;
     ReleaseCapture();

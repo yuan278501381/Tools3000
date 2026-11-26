@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "Основные инструменты",
     "hotkeyGroupPinOcr": "Закрепление, OCR и перевод",
     "hotkeyGroupRecording": "Запись экрана и управление звуком",
-    "hotkeyGroupInput": "Управление вводом и жестами"
+    "hotkeyGroupInput": "Управление вводом и жестами",
+    "showChangelogOnUpdate": "Показывать список изменений после обновления",
+    "showChangelogOnUpdateDesc": "Автоматически открывать офлайн-сводку новшеств при первом запуске настроек после обновления (не показывается при чистой установке)"
   },
   "plugins": {
     "capabilities": "Возможности модуля",
@@ -1530,7 +1532,7 @@
       "llHooks": "Перехват глобальных клавиш, жестов и защита ввода в RDP с нулевой задержкой",
       "ntfsEngine": "Мгновенная индексация миллионов файлов и отслеживание изменений диска",
       "pinyin": "Нечёткий поиск по пиньиню и инициалам для китайских имён файлов",
-      "opencv": "Алгоритмы компьютерного зрения и бесшовная склейка длинных снимков",
+      "opencv": "Компьютерное зрение, офлайн-декодирование QR (quirc) и бесшовная склейка длинных скриншотов",
       "ffmpeg": "Запись экрана с высоким FPS, микширование звука и 2-проходный экспорт GIF",
       "windowsOcr": "100% офлайн-OCR и чтение страниц PDF без блокировки файлов",
       "uiaShell": "Быстрый переход к папкам в диалогах и интеграция с выделением в Проводнике",
@@ -1539,16 +1541,20 @@
       "vite": "Молниеносная сборка фронтенда и разделение кода на чанки",
       "lucideIcons": "Единая чёткая векторная система иконок по всему приложению",
       "designTokens": "Адаптивные светлая/тёмная темы, акцентные цвета и токены High-DPI",
-      "sqliteZlib": "Локальное хранение статистики/истории и распаковка Office-архивов без потерь",
+      "sqliteZlib": "Системный WinSQLite3 (только чтение) для иконок закладок и распаковка архивов Office через zlib",
       "luaSol2": "Локальный движок Lua для пользовательских сценариев автоматизации",
       "spdlog": "Асинхронное диагностическое логирование с минимальными накладными расходами",
       "nlohmannJson": "Быстрая сериализация JSON-конфигураций и сообщений IPC",
       "gtest": "Автоматизированные наборы регрессионных тестов C++ и фронтенда",
       "innoSetup": "Установщик Windows, портативный архив и выпуск с цифровой подписью",
-      "rustPicasaViewer": "Автономный Rust-просмотрщик без CRT с GPU-ускорением (41 формат, физика и гауссова тень)",
+      "rustPicasaViewer": "Автономный аппаратный просмотрщик изображений на Rust (41 формат, физика и мягкая тень)",
       "ddcBrightness": "Аппаратное управление яркостью по каждому монитору (DDC/CI для внешних + WMI для ноутбуков)",
-      "ppocrDirectml": "Двухэтапный офлайн-OCR глубокого обучения (DirectML GPU + WinML) с QR/штрихкодами",
-      "ifilterShellProps": "Извлечение текста Office/WPS/почты и загрузка 30+ расширенных свойств столбцов по требованию"
+      "ppocrDirectml": "Двухэтапный офлайн OCR и нейросетевое восстановление текстур MI-GAN 512 (DirectML GPU + WinML)",
+      "ifilterShellProps": "Извлечение текста Office/WPS/почты и загрузка 30+ расширенных свойств столбцов по требованию",
+      "rustClipboard": "Ядро хранения, дедупликации и субмиллисекундного поиска буфера обмена на чистом Rust без зависимостей",
+      "rustCliMcp": "CLI и MCP stdio-сервер на чистом Rust без зависимостей для локального поиска ИИ-агентами",
+      "winhttpTranslate": "Нативный TLS-шлюз перевода поверх снимков (по умолчанию бесплатный Bilibili Index-Translate, резервирование и DPAPI)",
+      "i18next": "Изоморфная локализация на 8 языков с автоопределением системного языка и 7 статическими проверками"
     },
     "exportLogsTip": "Экспортировать диагностические логи и отчёт о среде",
     "authorGithubTip": "Открыть профиль автора на GitHub",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "Список изменений",
     "viewUpdate": "Подробнее",
     "openPerformancePageBtn": "Политика памяти",
-    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits"
+    "techStackSummary": "Native C++20 & Rust dual-engine microkernel · Click to view all {{count}} dependencies & credits",
+    "viewChangelogBtn": "История изменений"
   },
   "sidebar": {
     "groupSystem": "Система",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "Перевод на месте по скриншоту",
     "providerTitle": "Служба перевода",
-    "providerDesc": "Поддержка бесплатных каналов без ключа и собственных API (совместимых с OpenAI / локальный Ollama / DeepL). Сетевые запросы отправляются только по вашему действию.",
+    "providerDesc": "По умолчанию используется бесплатный Bilibili Index-Translate без ключа (с автопереключением на резервные бесплатные каналы), а также OpenAI-совместимые API, локальный Ollama и DeepL. Сеть используется только по запросу.",
     "providerFreeAuto": "Бесплатно без ключа (Edge + резерв Google)",
-    "providerOpenAi": "OpenAI-совместимый API (OpenAI / DeepSeek / прокси / Ollama)",
+    "providerOpenAi": "OpenAI-совместимый API (по умолчанию Bilibili без ключа / DeepSeek / Ollama)",
     "providerDeepL": "Официальный DeepL API (авто Free / Pro)",
     "badgeZeroConfig": "Без настройки · По запросу",
     "badgeLocalOffline": "Локально · 100% офлайн",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B (Быстрая)",
     "indexModelBalanced": "Index-Translate-9B (Баланс)",
     "indexModelFlagship": "Index-Translate-35B-A3B (Флагман)",
-    "indexTranslateNotice": "Предоставляется открытым публичным API Bilibili без ключа. Для быстрых многострочных снимков рекомендуются 2B или 9B, для максимального качества — 35B-A3B. При ограничениях можно вернуться к бесплатному двойному каналу.",
+    "indexTranslateNotice": "Открытый публичный API Bilibili работает без ключа сразу после установки. Для больших снимков рекомендуются 2B или 9B, для максимального качества — 35B-A3B. При ограничениях сработает авторезерв.",
     "openaiBaseUrlLabel": "Базовый URL",
     "openaiModelLabel": "Имя модели",
     "apiKeyLabel": "Ключ API",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "Host Heap Compaction & Quiet Trim Debounce",
     "itemHeapGuardDesc": "Compacts CRT/Win32 heaps on cold paths while strictly protecting 1000Hz hooks and 60FPS animations",
     "itemHeapGuardVal": "2.5-5.5s quiet debounce · 2.0s throttle lock"
+  },
+  "changelog": {
+    "upgradeTitle": "Что нового в Tools3000",
+    "upgradeSubtitle": "Офлайн-сводка главных улучшений, вошедших в это обновление",
+    "archiveTitle": "История версий",
+    "archiveSubtitle": "Последние {{count}} релизов встроены офлайн с мгновенным поиском по версиям и ключевым словам",
+    "upgradeSpanBanner": "Обновлено с {{from}} до {{to}} · охвачено релизов: {{count}}",
+    "searchPlaceholder": "Поиск по версии или слову (например: 1.4.0, OCR, перевод)...",
+    "searchMatchesCount": "Найдено релизов: {{count}}",
+    "showingCount": "Показано {{shown}} из {{total}} релизов",
+    "noSearchResults": "Совпадающих записей не найдено. Попробуйте другой запрос.",
+    "badgeNew": "НОВОЕ",
+    "kindMajor": "Крупный",
+    "kindMinor": "Функции",
+    "kindPatch": "Исправления",
+    "relativeToday": "Сегодня",
+    "relativeYesterday": "Вчера",
+    "relativeDaysAgo": "{{count}} дн. назад",
+    "relativeMonthsAgo": "{{count}} мес. назад",
+    "relativeYearsAgo": "{{count}} г. назад",
+    "fallbackLocaleNote": "Для этого раннего релиза доступны примечания только на упрощённом китайском языке.",
+    "loadMoreBtn": "Показать более ранние (+{{step}}, осталось {{remaining}})",
+    "autoShowAfterUpdate": "Автоматически показывать историю изменений после обновления",
+    "viewAllOnGitHub": "Все релизы на GitHub",
+    "gotItBtn": "Понятно",
+    "clearSearch": "Очистить поиск"
   }
 }

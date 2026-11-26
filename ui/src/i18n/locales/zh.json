@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "核心效率入口",
     "hotkeyGroupPinOcr": "贴图与识别翻译",
     "hotkeyGroupRecording": "高清录屏与场控",
-    "hotkeyGroupInput": "输入与手势控制"
+    "hotkeyGroupInput": "输入与手势控制",
+    "showChangelogOnUpdate": "更新后自动显示更新日志",
+    "showChangelogOnUpdateDesc": "升级到新版本后首次打开设置时，自动展示跨版亮点摘要（全新安装绝不弹出）"
   },
   "plugins": {
     "capabilities": "模块能力",
@@ -1530,7 +1532,7 @@
       "llHooks": "全局快捷键、鼠标手势与远程桌面防卡键的零延迟输入监听",
       "ntfsEngine": "全盘百万文件秒级索引与文件增删改实时同步",
       "pinyin": "支持中文全拼与拼音首字母缩写快速查找文件",
-      "opencv": "智能图像算法与滚动长截图自动无缝拼接",
+      "opencv": "智能图像算法、quirc 离线二维码检测与滚动长截图自动无缝拼接",
       "ffmpeg": "高帧率桌面高清录屏、双路混音与高画质 GIF 导出",
       "windowsOcr": "纯本地离线图片文字识别与无文件锁 PDF 高清页面渲染",
       "uiaShell": "打开/保存文件弹窗目录跳转与资源管理器选中项感知",
@@ -1539,7 +1541,7 @@
       "vite": "前端资源极速编译与按需分包构建引擎",
       "lucideIcons": "全界面统一高清矢量图标体系",
       "designTokens": "深浅色主题自适应、动态主题色与高分屏排版设计令牌",
-      "sqliteZlib": "本地按键统计、打开历史存储与 Office 文档压缩流无损提取",
+      "sqliteZlib": "系统原生只读 WinSQLite3 浏览器书签图标提取与 zlib Office 压缩流无损解析",
       "luaSol2": "支持用户编写本地自动化脚本定制专属快捷动作",
       "spdlog": "低开销异步诊断日志与问题排查记录",
       "nlohmannJson": "前后端跨线程配置与通信数据高速解析",
@@ -1547,8 +1549,12 @@
       "innoSetup": "标准安装向导、便携免安装打包与数字签名发布",
       "rustPicasaViewer": "纯 Rust 零 CRT 独立硬件加速看图器（41 种图片/动图/SVG/RAW、物理阻尼与高斯阴影）",
       "ddcBrightness": "光标所在多屏独立硬件亮度双引擎（外接屏 DDC/CI + 笔记本内屏 WMI）",
-      "ppocrDirectml": "双阶纯离线深度学习 OCR（DirectML GPU + WinML），集成二维码/条码与原位改字",
-      "ifilterShellProps": "Office/WPS/邮件正文全文解析与 30+ 媒体/哈希/EXIF 扩展列属性按需提取"
+      "ppocrDirectml": "双阶纯离线深度学习 OCR 与 MI-GAN 512 纹理修复（DirectML GPU + WinML）",
+      "ifilterShellProps": "Office/WPS/邮件正文全文解析与 30+ 媒体/哈希/EXIF 扩展列属性按需提取",
+      "rustClipboard": "纯 Rust 零依赖剪贴板持久化存储、去重与亚毫秒检索内核（完全取代旧库方案）",
+      "rustCliMcp": "零依赖纯 Rust 命令行与 MCP stdio 服务器，面向 AI 智能体开放本地全盘检索",
+      "winhttpTranslate": "原生 TLS 截图原位翻译网关（默认免密钥 Bilibili Index-Translate、双源容灾与 DPAPI 加密）",
+      "i18next": "全界面 8 国语言同构国际化体系、系统语种自适应与 7 重静态门禁"
     },
     "exportLogsTip": "导出系统诊断日志与环境报告",
     "authorGithubTip": "访问原作者 GitHub 主页",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "查看更新内容",
     "viewUpdate": "查看更新",
     "openPerformancePageBtn": "内存策略",
-    "techStackSummary": "微内核原生双引擎架构 · 点击展开完整依赖与开源致谢（共 {{count}} 项）"
+    "techStackSummary": "微内核原生双引擎架构 · 点击展开完整依赖与开源致谢（共 {{count}} 项）",
+    "viewChangelogBtn": "更新日志"
   },
   "sidebar": {
     "groupSystem": "系统总控",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "截图识别原位翻译",
     "providerTitle": "翻译引擎通道",
-    "providerDesc": "支持免密钥免费双源与自备接口（OpenAI 兼容 / 本地 Ollama / DeepL）。仅在主动点击翻译或测试连通性时发起请求，平时绝对 0 后台联网。",
+    "providerDesc": "默认采用免密钥 Bilibili Index-Translate 大模型翻译（遇到波动自动回退免费双源），同时支持自备接口（OpenAI 兼容 / 本地 Ollama / DeepL）。仅在主动点击翻译或测试连通性时联网。",
     "providerFreeAuto": "免密钥双源 (Edge 主通道 + Google 备援)",
-    "providerOpenAi": "OpenAI 兼容接口 (OpenAI / DeepSeek / 中转站 / 本地 Ollama)",
+    "providerOpenAi": "OpenAI 兼容接口（默认 Bilibili 免密钥 / DeepSeek / 本地 Ollama）",
     "providerDeepL": "DeepL 官方 API (自动识别 Free / Pro)",
     "badgeZeroConfig": "开箱即用 · 按需联网",
     "badgeLocalOffline": "本地环回 · 100% 离线",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B（极速）",
     "indexModelBalanced": "Index-Translate-9B（均衡推荐）",
     "indexModelFlagship": "Index-Translate-35B-A3B（旗舰）",
-    "indexTranslateNotice": "由 Bilibili 开源公益公网提供，免密钥直连。整屏多行截图推荐 2B 或 9B 模型；35B-A3B 质量最强但耗时较长。若遇公网高峰限流，可随时切回默认免密钥双源。",
+    "indexTranslateNotice": "由 Bilibili 开源公益公网提供，免密钥开箱即用。整屏多行截图推荐 2B 或 9B 模型；35B-A3B 质量最强但耗时较长。若遇公网高峰限流，日常翻译会自动容灾回退或可随时切至免费双源。",
     "openaiBaseUrlLabel": "接口基地址 (Base URL)",
     "openaiModelLabel": "模型名称",
     "apiKeyLabel": "API 密钥",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "主进程堆紧缩与工作集冷态防抖锁",
     "itemHeapGuardDesc": "在大图入库或截图完成后合并归还空闲堆块，严格避开鼠标钩子与动画热路径防止缺页卡顿",
     "itemHeapGuardVal": "2.5~5.5秒 静默防抖 · 2.0秒 节流保护锁"
+  },
+  "changelog": {
+    "upgradeTitle": "已更新至新版本",
+    "upgradeSubtitle": "离线精选亮点摘要，助你快速掌握本次升级的全部核心改进",
+    "archiveTitle": "版本更新日志",
+    "archiveSubtitle": "离线内置最近 {{count}} 个正式版本记录，支持按版本号或关键词即时检索",
+    "upgradeSpanBanner": "已从 {{from}} 升级至 {{to}} · 共跨越 {{count}} 个版本更新",
+    "searchPlaceholder": "搜索版本号或功能关键词（如 1.4.0、翻译、OCR、搜索）...",
+    "searchMatchesCount": "匹配 {{count}} 个版本",
+    "showingCount": "已展示 {{shown}} / {{total}} 个版本",
+    "noSearchResults": "未找到匹配的更新记录，请尝试更换关键词",
+    "badgeNew": "本次新增",
+    "kindMajor": "重大升级",
+    "kindMinor": "功能升级",
+    "kindPatch": "优化修复",
+    "relativeToday": "今天",
+    "relativeYesterday": "昨天",
+    "relativeDaysAgo": "{{count}} 天前",
+    "relativeMonthsAgo": "{{count}} 个月前",
+    "relativeYearsAgo": "{{count}} 年前",
+    "fallbackLocaleNote": "该早期版本仅提供简体中文说明。",
+    "loadMoreBtn": "加载更早版本 (+{{step}}，剩余 {{remaining}} 版)",
+    "autoShowAfterUpdate": "更新后自动显示更新日志",
+    "viewAllOnGitHub": "在 GitHub 查看全部发布",
+    "gotItBtn": "我知道了",
+    "clearSearch": "清空搜索"
   }
 }

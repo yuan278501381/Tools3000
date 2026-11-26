@@ -298,7 +298,9 @@
     "hotkeyGroupCore": "核心效率入口",
     "hotkeyGroupPinOcr": "貼圖與辨識翻譯",
     "hotkeyGroupRecording": "高畫質錄影與場控",
-    "hotkeyGroupInput": "輸入與手勢控制"
+    "hotkeyGroupInput": "輸入與手勢控制",
+    "showChangelogOnUpdate": "更新後自動顯示更新日誌",
+    "showChangelogOnUpdateDesc": "升級至新版本後首次開啟設定時，自動展示跨版亮點摘要（全新安裝絕不彈出）"
   },
   "plugins": {
     "capabilities": "模組能力",
@@ -1530,7 +1532,7 @@
       "llHooks": "全域快速鍵、滑鼠手勢與遠端桌面防卡鍵的零延遲輸入監聽",
       "ntfsEngine": "全磁碟百萬檔案秒級索引與檔案增刪改即時同步",
       "pinyin": "支援中文全拼與拼音首字母縮寫快速尋找檔案",
-      "opencv": "智慧影像演算法與捲動長擷圖自動無縫拼接",
+      "opencv": "智慧影像演算法、quirc 離線 QR 碼偵測與捲動長截圖自動無縫拼接",
       "ffmpeg": "高影格率桌面高畫質錄影、雙路混音與高畫質 GIF 匯出",
       "windowsOcr": "純本機離線圖片文字辨識與無檔案鎖定 PDF 高畫質頁面渲染",
       "uiaShell": "開啟/儲存檔案對話方塊目錄跳轉與檔案總管選取項目感知",
@@ -1539,7 +1541,7 @@
       "vite": "前端資源極速編譯與按需分包建置引擎",
       "lucideIcons": "全介面統一高畫質向量圖示體系",
       "designTokens": "深淺色佈景主題自適應、動態強調色與高解析度螢幕排版設計令牌",
-      "sqliteZlib": "本機按鍵統計、開啟歷史儲存與 Office 文件壓縮串流無損擷取",
+      "sqliteZlib": "系統原生唯讀 WinSQLite3 瀏覽器書籤圖示擷取與 zlib Office 壓縮串流無損解析",
       "luaSol2": "支援使用者撰寫本機自動化腳本自訂專屬快捷動作",
       "spdlog": "低開銷非同步診斷紀錄與問題排查紀錄",
       "nlohmannJson": "前後端跨執行緒設定與通訊資料高速解析",
@@ -1547,8 +1549,12 @@
       "innoSetup": "標準安裝精靈、可攜免安裝封裝與數位簽章發布",
       "rustPicasaViewer": "純 Rust 零 CRT 獨立硬體加速看圖器（41 種圖片/動圖/SVG/RAW、物理阻尼與高斯陰影）",
       "ddcBrightness": "游標所在多螢幕獨立硬體亮度雙引擎（外接螢幕 DDC/CI + 筆電內建螢幕 WMI）",
-      "ppocrDirectml": "雙階純離線深度學習 OCR（DirectML GPU + WinML），整合條碼辨識與原位改字",
-      "ifilterShellProps": "Office/WPS/郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取"
+      "ppocrDirectml": "雙階純離線深度學習 OCR 與 MI-GAN 512 紋理修復（DirectML GPU + WinML）",
+      "ifilterShellProps": "Office/WPS/郵件內文全文解析與 30+ 媒體/雜湊/EXIF 擴充欄屬性按需擷取",
+      "rustClipboard": "純 Rust 零依賴剪貼簿持久化儲存、去重與亞毫秒檢索核心（完全取代舊庫方案）",
+      "rustCliMcp": "零依賴純 Rust 命令列與 MCP stdio 伺服器，面向 AI 代理開放本機全碟檢索",
+      "winhttpTranslate": "原生 TLS 截圖原位翻譯閘道（預設免金鑰 Bilibili Index-Translate、雙源容災與 DPAPI 加密）",
+      "i18next": "全介面 8 國語言同構國際化體系、系統語種自適應與 7 重靜態門禁"
     },
     "exportLogsTip": "匯出系統診斷紀錄與環境報告",
     "authorGithubTip": "造訪原作者 GitHub 主頁",
@@ -1578,7 +1584,8 @@
     "viewChangelogShort": "檢視更新內容",
     "viewUpdate": "檢視更新",
     "openPerformancePageBtn": "記憶體策略",
-    "techStackSummary": "微核心原生雙引擎架構 · 點擊展開完整依賴與開源致謝（共 {{count}} 項）"
+    "techStackSummary": "微核心原生雙引擎架構 · 點擊展開完整依賴與開源致謝（共 {{count}} 項）",
+    "viewChangelogBtn": "更新日誌"
   },
   "sidebar": {
     "groupSystem": "系統總控",
@@ -3119,9 +3126,9 @@
   "translate": {
     "groupTitle": "截圖辨識原位翻譯",
     "providerTitle": "翻譯引擎通道",
-    "providerDesc": "支援免金鑰免費雙源與自備介面（OpenAI 相容 / 本機 Ollama / DeepL）。僅於主動點擊翻譯或測試連線時發起請求，平時絕無背景連線。",
+    "providerDesc": "預設採用免金鑰 Bilibili Index-Translate 大模型翻譯（遇波動自動回退免費雙源），同時支援自備介面（OpenAI 相容 / 本機 Ollama / DeepL）。僅於主動點擊翻譯或測試連線時發起請求。",
     "providerFreeAuto": "免金鑰雙源 (Edge 主通道 + Google 備援)",
-    "providerOpenAi": "OpenAI 相容介面 (OpenAI / DeepSeek / 中轉站 / 本機 Ollama)",
+    "providerOpenAi": "OpenAI 相容介面（預設 Bilibili 免金鑰 / DeepSeek / 本機 Ollama）",
     "providerDeepL": "DeepL 官方 API (自動識別 Free / Pro)",
     "badgeZeroConfig": "開箱即用 · 按需連線",
     "badgeLocalOffline": "本機迴路 · 100% 離線",
@@ -3156,7 +3163,7 @@
     "indexModelFast": "Index-Translate-2B（極速）",
     "indexModelBalanced": "Index-Translate-9B（均衡推薦）",
     "indexModelFlagship": "Index-Translate-35B-A3B（旗艦）",
-    "indexTranslateNotice": "由 Bilibili 開源公益公網提供，免金鑰直連。整屏多行擷圖推薦 2B 或 9B 模型；35B-A3B 品質最強但耗時較長。若遇公網高峰限流，可隨時切回預設免金鑰雙源。",
+    "indexTranslateNotice": "由 Bilibili 開源公益公網提供，免金鑰開箱即用。整屏多行截圖推薦 2B 或 9B 模型；35B-A3B 品質最強但耗時較長。若遇公網高峰限流，日常翻譯會自動容災回退或可隨時切換至免費雙源。",
     "openaiBaseUrlLabel": "介面基址 (Base URL)",
     "openaiModelLabel": "模型名稱",
     "apiKeyLabel": "API 金鑰",
@@ -3612,5 +3619,31 @@
     "itemHeapGuardTitle": "主程序堆積緊縮與工作集冷態防抖鎖",
     "itemHeapGuardDesc": "在大圖入庫或截圖完成後合併歸還空閒堆積區塊，嚴格避開滑鼠鉤子與動畫熱路徑防止分頁錯誤卡頓",
     "itemHeapGuardVal": "2.5~5.5秒 靜默防抖 · 2.0秒 節流保護鎖"
+  },
+  "changelog": {
+    "upgradeTitle": "已更新至新版本",
+    "upgradeSubtitle": "離線精選亮點摘要，助您快速掌握本次升級的核心改進",
+    "archiveTitle": "版本更新日誌",
+    "archiveSubtitle": "離線內建最近 {{count}} 個正式版本紀錄，支援依版本號或關鍵字即時搜尋",
+    "upgradeSpanBanner": "已從 {{from}} 升級至 {{to}} · 共跨越 {{count}} 個版本更新",
+    "searchPlaceholder": "搜尋版本號或功能關鍵字（如 1.4.0、翻譯、OCR、搜尋）...",
+    "searchMatchesCount": "符合 {{count}} 個版本",
+    "showingCount": "已顯示 {{shown}} / {{total}} 個版本",
+    "noSearchResults": "找不到符合的更新紀錄，請嘗試更換關鍵字",
+    "badgeNew": "本次新增",
+    "kindMajor": "重大升級",
+    "kindMinor": "功能升級",
+    "kindPatch": "最佳化修復",
+    "relativeToday": "今天",
+    "relativeYesterday": "昨天",
+    "relativeDaysAgo": "{{count}} 天前",
+    "relativeMonthsAgo": "{{count}} 個月前",
+    "relativeYearsAgo": "{{count}} 年前",
+    "fallbackLocaleNote": "此早期版本僅提供簡體中文發佈說明。",
+    "loadMoreBtn": "載入較早版本 (+{{step}}，剩餘 {{remaining}} 版)",
+    "autoShowAfterUpdate": "更新後自動顯示更新日誌",
+    "viewAllOnGitHub": "於 GitHub 檢視全部發佈",
+    "gotItBtn": "我知道了",
+    "clearSearch": "清除搜尋"
   }
 }

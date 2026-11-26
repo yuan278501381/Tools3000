@@ -41,6 +41,8 @@ constexpr size_t MaxResponseBytes = 1024 * 1024;
 constexpr uint64_t MaxInstallerBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr int64_t AutomaticRetrySeconds = 6 * 60 * 60;
 constexpr const char* DismissedVersionConfigKey = "/update/dismissedVersion";
+constexpr const char* LastSeenVersionConfigKey = "/app/lastSeenVersion";
+constexpr const char* ShowChangelogOnUpdateConfigKey = "/general/showChangelogOnUpdate";
 
 using json = nlohmann::json;
 
@@ -1541,6 +1543,98 @@ void UpdateChecker::downloadWorkerMain(std::stop_token stopToken) {
         }
     }
     m_downloading = false;
+}
+
+ChangelogLaunchDecision UpdateChecker::evaluateChangelogOnStartup(
+    std::string_view currentVersion,
+    std::string_view lastSeenVersion,
+    bool showChangelogOnUpdate) {
+    ChangelogLaunchDecision decision{};
+    const std::string cur = extractVersionString(std::string(currentVersion));
+    const std::string seen = extractVersionString(std::string(lastSeenVersion));
+    decision.currentVersion = cur.empty() ? trimAscii(currentVersion) : cur;
+
+    // 1. 全新安装或首次记录基线：静默锚定当前版本，绝不打扰首次使用体验
+    if (seen.empty()) {
+        decision.shouldPersistCurrentVersion = !decision.currentVersion.empty();
+        decision.shouldShow = false;
+        return decision;
+    }
+
+    // 2. 检测到真实版本升级（支持跨多版迁移，如 1.4.11 -> 1.4.15）
+    if (isNewerVersion(decision.currentVersion, seen)) {
+        decision.previousVersion = seen;
+        if (showChangelogOnUpdate) {
+            decision.shouldShow = true;
+        } else {
+            // 用户主动关闭了更新后自动展示：同步静默推进已读基线，避免日后重新打开开关时弹出陈旧迁移提示
+            decision.shouldShow = false;
+            decision.shouldPersistCurrentVersion = !decision.currentVersion.empty();
+        }
+        return decision;
+    }
+
+    // 3. 同版本重启或降级回滚：静默不弹
+    decision.shouldShow = false;
+    return decision;
+}
+
+void UpdateChecker::initializeStartupChangelogState() {
+    auto& cfg = ConfigManager::instance();
+    const std::string lastSeen = cfg.get<std::string>(LastSeenVersionConfigKey, "");
+    const bool showOnUpdate = cfg.get<bool>(ShowChangelogOnUpdateConfigKey, true);
+    const ChangelogLaunchDecision decision =
+        evaluateChangelogOnStartup(CurrentVersion, lastSeen, showOnUpdate);
+
+    if (decision.shouldPersistCurrentVersion && !decision.currentVersion.empty()) {
+        cfg.set<std::string>(LastSeenVersionConfigKey, decision.currentVersion);
+    }
+
+    std::lock_guard stLock(m_stateMutex);
+    m_pendingUpgradeChangelog = decision.shouldShow;
+    m_changelogPreviousVersion = decision.shouldShow ? decision.previousVersion : std::string{};
+    if (decision.shouldShow) {
+        LOG_INFO("UpdateChecker: detected upgrade from {} to {}, What's New ready",
+                 decision.previousVersion, decision.currentVersion);
+    }
+}
+
+std::string UpdateChecker::getChangelogStateJsonString() const {
+    auto& cfg = ConfigManager::instance();
+    const bool showOnUpdate = cfg.get<bool>(ShowChangelogOnUpdateConfigKey, true);
+    const std::string lastSeen = cfg.get<std::string>(LastSeenVersionConfigKey, "");
+    bool pending = false;
+    std::string previousVersion;
+    {
+        std::lock_guard stLock(m_stateMutex);
+        pending = m_pendingUpgradeChangelog;
+        previousVersion = m_changelogPreviousVersion;
+    }
+    const std::string cur = extractVersionString(std::string(CurrentVersion));
+    json payload = {
+        {"currentVersion", cur.empty() ? std::string(CurrentVersion) : cur},
+        {"previousVersion", previousVersion},
+        {"lastSeenVersion", lastSeen},
+        {"shouldShow", pending && showOnUpdate},
+        {"showChangelogOnUpdate", showOnUpdate},
+    };
+    return payload.dump();
+}
+
+bool UpdateChecker::markChangelogSeen() {
+    const std::string cur = extractVersionString(std::string(CurrentVersion));
+    const std::string targetVer = cur.empty() ? std::string(CurrentVersion) : cur;
+    {
+        std::lock_guard stLock(m_stateMutex);
+        m_pendingUpgradeChangelog = false;
+        m_changelogPreviousVersion.clear();
+    }
+    return ConfigManager::instance().set<std::string>(LastSeenVersionConfigKey, targetVer);
+}
+
+bool UpdateChecker::hasPendingUpgradeChangelog() const {
+    std::lock_guard stLock(m_stateMutex);
+    return m_pendingUpgradeChangelog;
 }
 
 void UpdateChecker::shutdown() {

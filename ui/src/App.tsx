@@ -62,6 +62,14 @@ const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((modul
 const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
 const FileLocksmithPage = lazy(() => import('./pages/FileLocksmithPage').then((module) => ({ default: module.FileLocksmithPage })));
 const FeedbackModal = lazy(() => import('./components/FeedbackModal').then((module) => ({ default: module.FeedbackModal })));
+const WhatsNewModal = lazy(() => import('./components/WhatsNewModal').then((module) => ({ default: module.WhatsNewModal })));
+
+interface AppChangelogState {
+  currentVersion: string;
+  previousVersion: string;
+  shouldShow: boolean;
+  showChangelogOnUpdate: boolean;
+}
 
 interface AppUpdateState {
   hasUpdate: boolean;
@@ -182,6 +190,14 @@ function App() {
   const theme: Theme = themePreference === 'system' ? systemTheme : themePreference;
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [changelogOpen, setChangelogOpen] = useState(false);
+  const [changelogMode, setChangelogMode] = useState<'upgrade' | 'manual'>('manual');
+  const [changelogState, setChangelogState] = useState<AppChangelogState>({
+    currentVersion: __TOOLS3000_VERSION__,
+    previousVersion: '',
+    shouldShow: false,
+    showChangelogOnUpdate: true,
+  });
   const [plugins, setPlugins] = useState<PluginStatus[]>([]);
   const [retainedDisabledNav, setRetainedDisabledNav] = useState<NavId | null>(null);
   const activeNavRef = useRef<NavId>(activeNav);
@@ -406,24 +422,53 @@ function App() {
     }
   });
 
-  // 检查是否需要显示首次引导（综合判定首次运行或用户在通用设置中显式手动开启）
+  // 检查是否需要显示首次引导或升级后离线更新日志（两者严格互斥，绝不重叠弹窗）
   useEffect(() => {
     let cancelled = false;
     Promise.allSettled([
       bridgeRequest<boolean | null>('config.get', { key: '/app/onboardingCompleted' }),
       bridgeRequest<boolean | null>('config.get', { key: '/general/showOnboarding' }),
-    ]).then(([completedRes, showRes]) => {
+      bridgeRequest<Partial<AppChangelogState>>('app.getChangelogState', undefined, { silent: true }),
+    ]).then(([completedRes, showRes, changelogRes]) => {
       if (cancelled) return;
       const completed = completedRes.status === 'fulfilled' ? completedRes.value : false;
       const explicitShow = showRes.status === 'fulfilled' ? showRes.value : false;
-      if (shouldShowOnboarding({ completed, explicitShow })) {
+      const openOnboarding = shouldShowOnboarding({ completed, explicitShow });
+      if (openOnboarding) {
         setShowOnboarding(true);
+      }
+      if (changelogRes.status === 'fulfilled' && changelogRes.value && typeof changelogRes.value === 'object') {
+        const st = changelogRes.value;
+        const normalized: AppChangelogState = {
+          currentVersion: typeof st.currentVersion === 'string' && st.currentVersion ? st.currentVersion : __TOOLS3000_VERSION__,
+          previousVersion: typeof st.previousVersion === 'string' ? st.previousVersion : '',
+          shouldShow: Boolean(st.shouldShow),
+          showChangelogOnUpdate: typeof st.showChangelogOnUpdate === 'boolean' ? st.showChangelogOnUpdate : true,
+        };
+        setChangelogState(normalized);
+        if (!openOnboarding && normalized.shouldShow) {
+          setChangelogMode('upgrade');
+          setChangelogOpen(true);
+        }
       }
     }).catch(() => {
       // 容错异常时不强行阻断主界面
     });
     return () => { cancelled = true; };
   }, []);
+
+  const handleOpenManualChangelog = useCallback(() => {
+    setChangelogMode('manual');
+    setChangelogOpen(true);
+  }, []);
+
+  const handleCloseChangelog = useCallback(() => {
+    setChangelogOpen(false);
+    if (changelogMode === 'upgrade') {
+      setChangelogState((prev) => ({ ...prev, shouldShow: false }));
+      void bridgeRequest('app.markChangelogSeen', undefined, { silent: true }).catch(() => undefined);
+    }
+  }, [changelogMode]);
 
   const handleOnboardingComplete = useCallback(() => {
     setShowOnboarding(false);
@@ -483,15 +528,26 @@ function App() {
       }
     };
     const onOpenFeedback = () => setShowFeedbackModal(true);
+    const onOpenChangelog = () => handleOpenManualChangelog();
+    const onChangelogPrefChanged = (e: Event) => {
+      const enabled = (e as CustomEvent<boolean>).detail;
+      if (typeof enabled === 'boolean') {
+        setChangelogState((prev) => ({ ...prev, showChangelogOnUpdate: enabled }));
+      }
+    };
     window.addEventListener('tools3000:navigate-deep', onDeepNav);
     window.addEventListener('tools3000:open-feedback', onOpenFeedback);
+    window.addEventListener('tools3000:open-changelog', onOpenChangelog);
+    window.addEventListener('tools3000:changelog-pref-changed', onChangelogPrefChanged);
     return () => {
       window.removeEventListener('tools3000:navigate-deep', onDeepNav);
       window.removeEventListener('tools3000:open-feedback', onOpenFeedback);
+      window.removeEventListener('tools3000:open-changelog', onOpenChangelog);
+      window.removeEventListener('tools3000:changelog-pref-changed', onChangelogPrefChanged);
       if (highlightTimer) clearTimeout(highlightTimer);
       if (pollTimer) clearTimeout(pollTimer);
     };
-  }, [activeNav]);
+  }, [activeNav, handleOpenManualChangelog]);
 
   useEffect(() => {
     const handlePreference = (event: Event) => {
@@ -610,7 +666,7 @@ function App() {
       case 'picasa_viewer':   return <PicasaViewerPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
       case 'general':         return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
-      case 'about':           return <AboutPage onNavigate={handleNavSelect} />;
+      case 'about':           return <AboutPage onNavigate={handleNavSelect} onOpenChangelog={handleOpenManualChangelog} />;
       default:
         return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
     }
@@ -755,6 +811,21 @@ function App() {
       {showFeedbackModal && (
         <Suspense fallback={null}>
           <FeedbackModal open={showFeedbackModal} onClose={() => setShowFeedbackModal(false)} />
+        </Suspense>
+      )}
+      {changelogOpen && (
+        <Suspense fallback={null}>
+          <WhatsNewModal
+            open={changelogOpen}
+            mode={changelogMode}
+            currentVersion={changelogState.currentVersion}
+            previousVersion={changelogState.previousVersion}
+            showChangelogOnUpdate={changelogState.showChangelogOnUpdate}
+            onToggleShowOnUpdate={(enabled) => {
+              setChangelogState((prev) => ({ ...prev, showChangelogOnUpdate: enabled }));
+            }}
+            onClose={handleCloseChangelog}
+          />
         </Suspense>
       )}
       <WindowResizeHandles />

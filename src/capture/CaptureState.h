@@ -396,6 +396,9 @@ public:
     bool isManipulating = false;
     MarkupEngine::MarkupSnapshot manipulateStartSnapshot{};
     bool hasManipulateSnapshot = false;
+    MarkupElement manipulateStartElement{};
+    D2D1_POINT_2F manipulateStartDocPt{0.0f, 0.0f};
+    bool hasManipulateStartElement = false;
     MarkupEngine::MarkupSnapshot sliderStartSnapshot{};
     bool hasSliderSnapshot = false;
     uint32_t lastCoalescedUndoElemId = 0;
@@ -408,6 +411,9 @@ public:
     bool isAdjustingSelection = false;
     HitArea selAdjustHandle = HitArea::None;
     POINT selAdjustLast{};
+    RECT selAdjustStartRect{0, 0, 0, 0};
+    D2D1_POINT_2F selAdjustStartDocPt{0.0f, 0.0f};
+    bool hasSelAdjustStart = false;
 
     bool isAdjustingCornerRadius = false;
     float cornerDragStartRadius = 0.0f;

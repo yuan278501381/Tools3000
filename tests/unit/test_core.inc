@@ -843,6 +843,48 @@ TEST(UpdateCheckerTest, SemVerComparison) {
     EXPECT_FALSE(UpdateChecker::isNewerVersion("发行", "1.0.0"));
 }
 
+TEST(UpdateCheckerTest, EvaluateChangelogOnStartupContracts) {
+    using tools3000::core::UpdateChecker;
+
+    // 1. 全新安装（lastSeen 为空）：静默锚定当前版本，绝不打扰用户弹窗
+    {
+        const auto d = UpdateChecker::evaluateChangelogOnStartup("1.4.15", "", true);
+        EXPECT_FALSE(d.shouldShow);
+        EXPECT_TRUE(d.shouldPersistCurrentVersion);
+        EXPECT_EQ(d.currentVersion, "1.4.15");
+        EXPECT_TRUE(d.previousVersion.empty());
+    }
+
+    // 2. 跨多版本升级（1.4.11 -> 1.4.15）且允许自动弹出：必须触发 What's New 并携带起点版本
+    {
+        const auto d = UpdateChecker::evaluateChangelogOnStartup("v1.4.15", "1.4.11", true);
+        EXPECT_TRUE(d.shouldShow);
+        EXPECT_FALSE(d.shouldPersistCurrentVersion);
+        EXPECT_EQ(d.currentVersion, "1.4.15");
+        EXPECT_EQ(d.previousVersion, "1.4.11");
+    }
+
+    // 3. 升级但用户主动关闭了“更新后自动显示更新日志”：绝不弹窗且同步静默推进已读基线
+    {
+        const auto d = UpdateChecker::evaluateChangelogOnStartup("1.4.15", "1.4.11", false);
+        EXPECT_FALSE(d.shouldShow);
+        EXPECT_TRUE(d.shouldPersistCurrentVersion);
+        EXPECT_EQ(d.currentVersion, "1.4.15");
+        EXPECT_EQ(d.previousVersion, "1.4.11");
+    }
+
+    // 4. 同版本重复启动或版本回退：静默不弹
+    {
+        const auto same = UpdateChecker::evaluateChangelogOnStartup("1.4.15", "1.4.15", true);
+        EXPECT_FALSE(same.shouldShow);
+        EXPECT_FALSE(same.shouldPersistCurrentVersion);
+
+        const auto downgrade = UpdateChecker::evaluateChangelogOnStartup("1.4.14", "1.4.15", true);
+        EXPECT_FALSE(downgrade.shouldShow);
+        EXPECT_FALSE(downgrade.shouldPersistCurrentVersion);
+    }
+}
+
 TEST(UpdateCheckerTest, InstallerSilentAutoRestartParametersAndNoSelfKillContract) {
     using tools3000::core::UpdateChecker;
     const std::wstring params = UpdateChecker::buildInstallerParameters();
@@ -5088,6 +5130,15 @@ TEST(UiI18nTest, EightLanguageResolutionCatalogLoadingAndInstallerContract) {
 
 TEST(TranslationServiceTest, ProtocolParsersLanguageRoutingAndDpapiRoundTrip) {
     using namespace tools3000::core::translate;
+
+    // 0. 默认开箱即用契约：默认翻译引擎指向 Bilibili Index-Translate (免 Key · Index-Translate-9B)
+    {
+        const TranslationSettings defaults{};
+        EXPECT_EQ(defaults.provider, TranslationConstants::kProviderOpenAiCompatible);
+        EXPECT_EQ(defaults.openaiBaseUrl, TranslationConstants::kIndexTranslateBaseUrl);
+        EXPECT_EQ(defaults.openaiModel, TranslationConstants::kIndexTranslateDefaultModel);
+        EXPECT_TRUE(TranslationService::isKeylessPublicOpenAiUrl(defaults.openaiBaseUrl));
+    }
 
     // 1. 智能双向目标语决策：英文转中文，中文自动切副语言英文，日文含假名不误判为中文
     EXPECT_EQ(TranslationService::resolveEffectiveTargetLanguage({"Hello world", "Settings"}, "zh-Hans", "en", "zh-CN"), "zh-CN");

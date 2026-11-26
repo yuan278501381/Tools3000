@@ -88,12 +88,12 @@ const OPENAI_PRESETS: readonly OpenAiPreset[] = [
 ];
 
 const DEFAULT_TRANSLATE_SETTINGS: TranslateSettingsPayload = {
-  provider: 'free_auto',
+  provider: 'openai',
   targetLang: 'zh-Hans',
   secondaryTargetLang: 'en',
   freePrimary: 'edge',
-  openaiBaseUrl: 'https://api.openai.com/v1',
-  openaiModel: 'gpt-4o-mini',
+  openaiBaseUrl: INDEX_TRANSLATE_BASE_URL,
+  openaiModel: 'Index-Translate-9B',
   hasOpenaiApiKey: false,
   openaiApiKeyMasked: '',
   deeplEndpoint: '',
@@ -122,7 +122,7 @@ export const InPlaceTranslateCard: FC = () => {
     const merged: TranslateSettingsPayload = {
       ...DEFAULT_TRANSLATE_SETTINGS,
       ...data,
-      provider: (data.provider === 'openai' || data.provider === 'deepl') ? data.provider : 'free_auto',
+      provider: (data.provider === 'free_auto' || data.provider === 'deepl') ? data.provider : 'openai',
       freePrimary: data.freePrimary === 'google' ? 'google' : 'edge',
       timeoutSec: typeof data.timeoutSec === 'number' ? data.timeoutSec : 15,
     };
@@ -330,8 +330,8 @@ export const InPlaceTranslateCard: FC = () => {
                 void patchSettings({ provider: val });
               }}
               options={[
-                { value: 'free_auto', label: t('translate.providerFreeAuto') },
                 { value: 'openai', label: t('translate.providerOpenAi') },
+                { value: 'free_auto', label: t('translate.providerFreeAuto') },
                 { value: 'deepl', label: t('translate.providerDeepL') },
               ]}
             />
@@ -410,7 +410,7 @@ export const InPlaceTranslateCard: FC = () => {
                       id="translate-openai-base-url"
                       value={openaiBaseUrlDraft}
                       onChange={setOpenaiBaseUrlDraft}
-                      placeholder="https://api.openai.com/v1"
+                      placeholder={INDEX_TRANSLATE_BASE_URL}
                     />
                   </div>
 
@@ -604,7 +604,7 @@ export const InPlaceTranslateCard: FC = () => {
                 )}
 
                 <Button
-                  variant={settings.provider === 'free_auto' ? 'primary' : 'secondary'}
+                  variant={settings.provider === 'free_auto' || isIndexTranslate ? 'primary' : 'secondary'}
                   size="sm"
                   disabled={testing}
                   onClick={() => void handleTestConnection()}

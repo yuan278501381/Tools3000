@@ -78,6 +78,7 @@ interface GeneralSettings {
   minimizeToTray: boolean;
   checkUpdates: boolean;
   autoDownloadUpdates?: boolean;
+  showChangelogOnUpdate?: boolean;
   autoReleaseSettingsMemory?: boolean;
   fullscreenMode?: string;
   showOnboarding?: boolean;
@@ -119,6 +120,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
     minimizeToTray: true,
     checkUpdates: true,
     autoDownloadUpdates: true,
+    showChangelogOnUpdate: true,
     autoReleaseSettingsMemory: true,
     fullscreenMode: 'smart',
     language: 'auto',
@@ -248,13 +250,21 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         setSettings(prev => ({ ...prev, accentColor: newAccent }));
       }
     };
+    const handleChangelogPrefEvent = (e: Event) => {
+      const enabled = (e as CustomEvent<boolean>).detail;
+      if (typeof enabled === 'boolean') {
+        setSettings(prev => ({ ...prev, showChangelogOnUpdate: enabled }));
+      }
+    };
     window.addEventListener('tools3000:theme-changed', handleThemeEvent);
     window.addEventListener('tools3000:language-changed', handleLangEvent);
     window.addEventListener('tools3000:accent-changed', handleAccentEvent);
+    window.addEventListener('tools3000:changelog-pref-changed', handleChangelogPrefEvent);
     return () => {
       window.removeEventListener('tools3000:theme-changed', handleThemeEvent);
       window.removeEventListener('tools3000:language-changed', handleLangEvent);
       window.removeEventListener('tools3000:accent-changed', handleAccentEvent);
+      window.removeEventListener('tools3000:changelog-pref-changed', handleChangelogPrefEvent);
     };
   }, []);
 
@@ -761,6 +771,16 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
               disabled={!settings.checkUpdates}
             />
           </SubSettingGroup>
+          <Toggle
+            id="showChangelogOnUpdate"
+            label={t('general.showChangelogOnUpdate')}
+            description={t('general.showChangelogOnUpdateDesc')}
+            checked={settings.showChangelogOnUpdate ?? true}
+            onChange={(v) => {
+              void updateSetting('showChangelogOnUpdate', v);
+              window.dispatchEvent(new CustomEvent<boolean>('tools3000:changelog-pref-changed', { detail: v }));
+            }}
+          />
           <SettingRow label={t('general.reopenOnboardingLabel')} description={t('general.reopenOnboardingDesc')}>
             <Button variant="secondary" onClick={handleReopenOnboarding}>
               <Sparkles size={15} style={{ marginRight: 6 }} />

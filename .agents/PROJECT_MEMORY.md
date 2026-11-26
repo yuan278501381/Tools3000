@@ -6,6 +6,42 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-26] 六维体验与架构跃升：标注快照原点无损缩放与矢量光标、屏摄暗底报错条 OCR 救援、SearchWindow `DWMWA_CLOAK` 零闪揭幕、Bilibili 默认翻译、关于页技术栈对齐与方案 A 离线分页更新日志 (`feat/whats-new-search-cloak-ocr-errorbar`)
+- **1. 标注截图与全家族图元缩放跟手根治 + 4 轴高清矢量缩放光标 (`CaptureTextEditor.h`, `CornerRadiusHelper.{h,cpp}`, `MarkupEngine.{h,cpp}`, `MarkupEngineEffects.cpp`, `MarkupEngineShapes.cpp`, `CaptureState.h`, `CaptureInput*.cpp`, `CaptureOverlay.cpp`)**：
+  - *根因*：① 文本字号在编辑与缩放链中被频繁 `static_cast<int>` 截断，且旧 `TextHandler::resize` 直接用 `dragEdge/prevEdge` 反复逐帧增量乘算并带 `±2px` 死区夹紧，导致高分屏拖拽时超前漂移、跳阶与对侧角滑动；② `NumberHandler` / `Brush` / `Arrow` / `Selection` 均受增量圆整侵蚀与 `dx / 2` 截断影响；③ 系统原生 `IDC_SIZE*` 光标在 `150%+` DPI 下与 Tools3000 高清矢量十字光标尺寸失衡显小一号；
+  - *根治*：全链路升格 `float fontSize`；引入 `IMarkupToolHandler::resizeFromSnapshot` 与 `adjustSelectionFromSnapshot` 快照原点模型（按下瞬间冻结 `manipulateStartElement` / `selAdjustStartRect`，拖动全程基于原始快照重算，0 漂移 0 侵蚀）；`TextHandler` 采用对角线正交投影 + 一步正割闭环反解精确 `fontSize`（误差 `<= 1px`、对侧角 `0px` 锚定）；句柄命中与视觉半径接入 DPI 自适应；统一以 4 轴 Direct2D 32-bit ARGB 矢量双向箭头光标（~23 DIP，同步合并系统辅助功能光标倍率 `resolveEffectiveCursorScale`）替换 `IDC_SIZE*`。
+- **2. 手机拍屏强青偏倾斜暗底报错条 OCR 救援（148 图全量零回退提速） (`DeepOcrEngine.{h,cpp}`, `DeepOcrEnginePostprocess.cpp`)**：
+  - *物理实证与暗坑*：对整图施加强灰度/CLAHE 会导致正常表格行漏检 30%~50%；同时手机拍屏广角透视畸变可令顶部与底部水平行倾角差达 `0.07~0.10`，若用全图表格中位倾角 `0.055` 硬卡 Pass 1 会误杀真实的倾斜暗底走廊；
+  - *根治*：`preprocessImageForDetection` 输出 `outIsScreenPhoto`，正常数字截图 **0ms 额外开销、0 像素改动**；仅 `isScreenPhoto` 路径在 `quads` 后处理执行 `rescueDarkBannerQuadsOnScreenPhoto`（抗偏色最大通道 `max(B,G,R)` + 暗底亮字高频跳变三重门控 + `±0.12` 透视容差走廊桥接 + 种子均高紧致 `barHalfH` 防吞上方亮线），并在 `origCropH <= 28` 识别裁剪阶段通过 `normalizeDarkScreenPhotoStrip` 执行 `[p05,p98]` 拉伸 + `1.45/-0.45` USM + 白底黑字反色标准化。148 图全量 `--script auto` 实测：总字数 `109,798 -> 110,307 (+509)`、均置信度 `0.8993 -> 0.9017 (+0.24%)`、总耗时 `125.1s -> 122.5s (-2.1%)`，SAP 手机拍屏底部 8px 暗色报错条从残片跃升至整句完整识别。
+- **3. `SearchWindow` 首显及唤醒瞬间黑屏闪烁根治（Issue `#29`） (`SearchWindow.{h,cpp}`, `SearchApp.tsx`)**：
+  - 严禁对 WebView2 宿主窗使用 `WS_EX_LAYERED`；改用原生 `DWMWA_CLOAK` 原子隐身热身，经 `SearchWindow::shouldCloakOnShow(webViewReady, uiFirstPaintReady, wasSuspended, wasMinimized)` 精准门控（仅首帧未完/挂起唤醒/最小化恢复时 cloak，常态二次秒开 0 延迟），前端双 `rAF` 握手回告 `search.firstPaintReady`（配 `450ms` 超时兜底与全退场/异常路径无条件解 cloak）后再原子揭幕。
+- **4. 默认翻译引擎切换至免密钥 Bilibili Index-Translate 并内置双源容灾 (`TranslationTypes.h`, `TranslationService.cpp`, `InPlaceTranslateCard.{tsx,test.tsx}`)**：
+  - 将开箱默认 `provider` 统一切换为 `openai_compatible` + `https://index-translate.bilibili.com/v1` + `Index-Translate-9B`（免 Key 开箱即用）；日常翻译（`!bypassCache`）下若免 Key 公益端点遇网络波动或限流，自动无缝故障转移至 `AutoFree`（Edge/Google 双源），而连通性测试探针（`bypassCache=true`）继续直报真实状态。
+- **5. 关于页技术栈矩阵实证对齐 (`AboutPage.tsx`, 8 套 `locales/*.json`)**：
+  - 修正过时版本 `Vite 8.0 -> 8.3` 与废弃 `SQLite & zlib` 描述（明确收窄为系统只读 `WinSQLite3 & zlib`），补齐已落地的 `Rust Clipboard Kernel`、`Rust CLI & MCP Server`、`MI-GAN 512`、`WinHTTP & DPAPI Translate`、`quirc` 与 `i18next 26.7 / 17.0`（共 29 项，8 语种 100% 同步）。
+- **6. 方案 A — 世界级离线分页更新日志弹窗（Issue `#31`） (`ui/scripts/generate-changelog-bundle.mjs`, `UpdateChecker.{h,cpp}`, `MessageBridge.cpp`, `main.cpp`, `WhatsNewModal.{tsx,css,test.tsx}`, `whatsNewUtils.ts`, `App.tsx`, `AboutPage.tsx`, `GeneralPage.tsx`, `Build-FrontendTrack.ps1`)**：
+  - 构建期单线程扫描 `docs/RELEASE_NOTES_v*.md`（最新 50 版）+ Git Tag 精确 ISO 时间戳，输出 `ui/src/generated/changelogData.json` 由 `WhatsNewModal` 动态懒加载（0 首屏主包开销、0 网络依赖）；
+  - 后端 `UpdateChecker::evaluateChangelogOnStartup` 严守零打扰契约：全新安装静默锚定 `/app/lastSeenVersion` 绝不弹窗，真实跨版升级展示迁移横幅 + `NEW` 徽章（跨 `<=3` 版全展 / `>3` 版展最新 3 版防过载），用户关闭 `/general/showChangelogOnUpdate` 时静默推进基线防止日后误弹陈旧迁移；关于页常驻「更新日志」按钮支持首屏 10 版 + `+10` 分页 + 关键词实时检索与精确本地化 `YYYY-MM-DD HH:mm` 时间展示。
+
+### [2026-11-26] 六维旗舰体验与稳定性演进：标注全家族缩放跟手与高 DPI 矢量光标、屏摄暗底报错条 OCR 救援、SearchWindow 零闪揭幕 (#29)、默认 Bilibili 翻译、技术栈实证刷新、方案 A 离线分页更新日志 (#31)
+- **1. 标注截图缩放跟手、高 DPI 矢量光标与全家族漂移根治 (`CaptureTextEditor.h`, `CornerRadiusHelper.{h,cpp}`, `MarkupEngine*`, `CaptureState.h`, `CaptureInput*`, `CaptureOverlay.cpp`, `test_capture.inc`)**：
+  - *根因*：① `TextHandler::resize` 存在 `fontSize` `int` 截断阶跃、对角线缩放公式无正交投影（反方向发散/夹紧死区）；② 自由画笔/矩形圆角/弯曲箭头/选区调整沿用每帧增量累加，产生多次浮点圆整侵蚀与 `dx/2` 整数截断漂移；③ 150%+ DPI 下复用 `IDC_SIZENWSE` 系统默认 32px 光标显得比自定义高分屏十字光标小一号，且 4px 句柄未按 DPI 缩放；
+  - *根治*：全链路升级 `float fontSize`（布局缓存键量化 0.25px），文本框改用对角线最小二乘正交投影 + 一步正割闭环校准（角点误差 <= 1px、对侧角 0px 锚定），序号工具采用径向投影精确反解 `thickness`；全家族图元与选区改用鼠标按下瞬时快照原点 (`manipulateStartElement` / `selAdjustStartRect`) 驱动无损缩放；句柄视觉与命中区接入 `scaledHandleHitHalfSize` / `scaledHandleVisualHalfSize`；以统一 4 轴 Direct2D 高清 ARGB 矢量双向箭头光标 (`CornerRadiusHelper::getResizeCursor` + `resolveEffectiveCursorScale`) 匹配混合高分屏与辅助功能光标倍率。
+- **2. 手机拍屏倾斜暗底报错条 OCR 零回退救援 (`DeepOcrEngine.{h,cpp}`, `DeepOcrEnginePostprocess.cpp`, `test_capture.inc`)**：
+  - *物理实证*：对 `576x1024` 强青偏手机拍屏图（底部 8-10px 高暗底亮字报错条，透视倾角 `+0.069`），全局灰度/CLAHE 会破坏正常表格文字导致召回暴跌 30%-50%，严禁全局激进增强；
+  - *精准局部救援*：`preprocessImageForDetection` 输出 `isScreenPhoto` 标志（清晰数字截图 0ms 零额外开销、0 像素改动）；仅 `isScreenPhoto == true` 时启用两级局部通道：① `rescueDarkBannerQuadsOnScreenPhoto` 以抗偏色 `max(B,G,R)` 统计五维门控沿倾斜暗底走廊桥接共线碎片并按均高紧致截框（防吞入上方高亮窗框线，允许 `0.12` 透视梯形倾角差）；② `normalizeDarkScreenPhotoStrip` 仅对 `origCropH <= 28` 的暗底条带执行最大通道线性拉伸 + 轻 USM + 极性反色为白底黑字并同步 `bgColor=(248,248,248)`；
+  - *全量 148 图实测零回退*：SAP 整图底部报错条从只认出 `仅当可用` + `消空 131-218` 完整跃升至整句，148 图 `--script auto` 总字符 `109,798 -> 110,307 (+509)`、均置信度 `0.8993 -> 0.9017`、总耗时 `125.1s -> 122.5s (-2.1%)`。
+- **3. `SearchWindow` 首次显示与挂起/最小化唤醒零黑屏闪烁（GitHub Issue `#29 @xwshan`）（`SearchWindow.{h,cpp}`, `SearchApp.tsx`, `test_ui_lifecycle.inc`）**：
+  - 采用原生 `DWMWA_CLOAK`（严禁对 WebView2 宿主使用 `WS_EX_LAYERED`）原子隐身热身：`shouldCloakOnShow(webViewReady, uiFirstPaintReady, wasSuspended, wasMinimized)` 在首帧未就绪/挂起恢复/最小化恢复时先 cloak 再 `ShowWindow` 并派发 `tools3000:searchResumeFrame`，等前端双 `rAF` 回执 `search.firstPaintReady`（附 `450ms` `IDT_FIRST_PAINT_UNCLOAK` 硬超时兜底）后原子解 cloak；常态二次秒开 0 额外等待，全退场/异常分支无条件解 cloak。
+- **4. 默认原位翻译切换为免密钥 Bilibili Index-Translate + 免费双源自动容灾 (`TranslationTypes.h`, `TranslationService.cpp`, `InPlaceTranslateCard.{tsx,test.tsx}`, `test_core.inc`)**：
+  - 将前后端单一事实源默认配置统一切换为 `openai_compatible` + `https://index-translate.bilibili.com/v1` + `Index-Translate-9B`（免 Key 开箱即用）；日常翻译（`!bypassCache`）遇到公益公网限流/故障时自动容灾回退至 Edge/Google 免费双源，连通性探针（`bypassCache=true`）直报真实状态不掩盖异常。
+- **5. 关于页技术栈实证刷新 (`AboutPage.tsx`, 8 套 `locales/*.json`)**：
+  - 对照全仓构建依赖与 4 个 Rust crate 实证更新：`Vite 8.0 -> 8.3`；新增 `Rust Clipboard Kernel`、`Rust CLI & MCP Server`、`WinHTTP & DPAPI Translate`、`i18next & react-i18next (26.7 / 17.0)`；`PP-OCRv6` 增补 `MI-GAN 512`、`OpenCV` 增补 `quirc`；将过时的 `SQLite & zlib` 精确修正为 `WinSQLite3 & zlib (System API / 1.3)`。
+- **6. 离线分页更新日志弹窗 — 方案 A（GitHub Issue `#31 @HitomiXz`）（`ui/scripts/generate-changelog-bundle.mjs`, `UpdateChecker.{h,cpp}`, `MessageBridge.cpp`, `main.cpp`, `WhatsNewModal.{tsx,css,test.tsx}`, `whatsNewUtils.ts`, `App.tsx`, `AboutPage.tsx`, `GeneralPage.tsx`, `Build-FrontendTrack.ps1`）**：
+  - 构建期扫描 `docs/RELEASE_NOTES_v*.md`（最多最新 50 版）+ Git Annotated Tag ISO 8601 时间戳生成独立动态懒加载分块 `ui/src/generated/changelogData.json`（0 首屏主包开销、0 网络依赖）；
+  - 双模式自适应：`upgrade` 升级态展示跨版迁移横幅 + `NEW` 徽章（跨 `<=3` 版全展开、`>3` 版展最新 3 版防过载）；`manual` 归档态首屏 10 版 + 关键词实时检索 + `+10` 分页 + GitHub Releases 外链；每版附精确本地日期时间 `YYYY-MM-DD HH:mm`、相对时间胶囊与 Major/Minor/Patch 语义徽章；
+  - 零打扰闭环：全新安装静默锚定 `/app/lastSeenVersion` 绝不弹窗，关闭「更新后自动显示更新日志」同步推进已读基线防止日后翻旧账，弹窗左下角与通用设置页实时双向同步。
+
 ### [2026-11-26] Bilibili Index-Translate `HTTP 412` WAF 根因修复与全链路翻译引擎 MECE 8 维鲁棒性加固 (`fix/index-translate-robustness`)
 - **1. 实机根因定位（`TranslationService.cpp`）**：
   - `executeHttpRequest` 此前对所有翻译通道硬编码 Edge 浏览器 `User-Agent`，导致无 Cookie 向 `https://index-translate.bilibili.com/v1/chat/completions` 发送含 SQL / 长文载荷的 POST 时被 B 站 CDN WAF 在 `205ms` 拦截返回空体 `HTTP 412 Precondition Failed`；

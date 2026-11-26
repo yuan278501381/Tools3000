@@ -294,6 +294,32 @@ void MarkupElement::resize(int dx, int dy, HitArea handle) {
     }
 }
 
+void MarkupElement::resizeFromSnapshot(const MarkupElement& origin, int totalDx, int totalDy, HitArea handle) {
+    if (const auto* handler = MarkupToolRegistry::instance().getHandler(tool)) {
+        handler->resizeFromSnapshot(origin, *this, totalDx, totalDy, handle);
+    }
+}
+
+void IMarkupToolHandler::resizeFromSnapshot(const MarkupElement& origin, MarkupElement& element,
+                                            int totalDx, int totalDy, HitArea handle) const {
+    const uint32_t savedId = element.id;
+    const bool savedActive = element.isActive;
+    const bool savedEditing = element.isEditing;
+    const size_t savedCaret = element.textCaret;
+    const size_t savedSelAnchor = element.textSelAnchor;
+    const uint32_t savedLastCaretTick = element.textLastCaretTick;
+
+    element = origin;
+    element.id = savedId;
+    element.isActive = savedActive;
+    element.isEditing = savedEditing;
+    element.textCaret = savedCaret;
+    element.textSelAnchor = savedSelAnchor;
+    element.textLastCaretTick = savedLastCaretTick;
+
+    resize(element, totalDx, totalDy, handle);
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 底图管理
 // ─────────────────────────────────────────────────────────────────────────────
@@ -503,7 +529,7 @@ void MarkupEngine::updateBaseImage(const cv::Mat& image) {
         for (auto& e : m_elements) {
             if (e && e->tool == MarkupTool::Text && !e->hasCustomTextWidth) {
                 e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
-                    m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
+                    m_baseImage.cols, e->startPt.x, e->fontSize);
                 e->textRenderSize = cv::Size(0, 0);
             }
         }
@@ -521,7 +547,7 @@ void MarkupEngine::translateAll(int dx, int dy) {
             e->moveBy(dx, dy);
             if (e->tool == MarkupTool::Text && !e->hasCustomTextWidth && m_baseImage.cols > 0) {
                 e->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
-                    m_baseImage.cols, e->startPt.x, static_cast<int>(e->fontSize));
+                    m_baseImage.cols, e->startPt.x, e->fontSize);
                 e->textRenderSize = cv::Size(0, 0);
             }
         }
@@ -889,7 +915,7 @@ MarkupElement* MarkupEngine::addText(cv::Point position, const std::string& text
     elem->fontSize = fontSize;
     if (m_baseImage.cols > 0) {
         elem->textMaxWidth = CaptureTextEditor::computeAvailableBoxWidth(
-            m_baseImage.cols, position.x, static_cast<int>(fontSize));
+            m_baseImage.cols, position.x, fontSize);
     }
     elem->textOutline = textOutline;
     elem->textOutlineColor = outlineColor;
@@ -976,6 +1002,17 @@ MarkupElement* MarkupEngine::applyInpaint(cv::Point p1, cv::Point p2, int radius
 // ─────────────────────────────────────────────────────────────────────────────
 // 统一 8 方向控制手柄几何与通用包围盒处理引擎 (HandleGeometry & DefaultBoxHandler)
 // ─────────────────────────────────────────────────────────────────────────────
+
+int HandleGeometry::scaledHandleHitHalfSize(float dpiScale, int padding) noexcept {
+    const float dpi = std::clamp(dpiScale > 0.0f ? dpiScale : 1.0f, 1.0f, 5.0f);
+    const int dpiHit = static_cast<int>(std::lround(static_cast<float>(kDefaultHandleHalfSize) * dpi));
+    return (std::max)({kDefaultHandleHalfSize, dpiHit, padding});
+}
+
+int HandleGeometry::scaledHandleVisualHalfSize(float dpiScale, int baseHalfSize) noexcept {
+    const float dpi = std::clamp(dpiScale > 0.0f ? dpiScale : 1.0f, 1.0f, 5.0f);
+    return (std::max)(baseHalfSize, static_cast<int>(std::lround(static_cast<float>(baseHalfSize) * std::sqrt(dpi))));
+}
 
 std::array<HandleGeometry::HandlePoint, 8> HandleGeometry::getBoxHandles(const cv::Rect& bbox) {
     const int x = bbox.x;
@@ -1140,7 +1177,7 @@ cv::Rect DefaultBoxHandler::getBoundingBox(const MarkupElement& element) const {
 HitArea DefaultBoxHandler::hitTestHandles(const MarkupElement& element, cv::Point pt, int padding) const {
     if (!element.isActive) return HitArea::None;
     cv::Rect bbox = getBoundingBox(element);
-    int hw = (std::max)(padding, HandleGeometry::kDefaultHandleHalfSize);
+    int hw = HandleGeometry::scaledHandleHitHalfSize(element.dpiScale, padding);
     return HandleGeometry::hitTestHandles(bbox, pt, hw);
 }
 
@@ -1170,7 +1207,8 @@ void DefaultBoxHandler::resize(MarkupElement& element, int dx, int dy, HitArea h
 
 void DefaultBoxHandler::renderActiveHandles(cv::Mat& canvas, const MarkupElement& element) const {
     cv::Rect bbox = getBoundingBox(element);
-    HandleGeometry::renderBoxHandles(canvas, bbox);
+    const int hw = HandleGeometry::scaledHandleVisualHalfSize(element.dpiScale, 5);
+    HandleGeometry::renderBoxHandles(canvas, bbox, cv::Scalar(255, 140, 0), hw);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1306,7 +1344,7 @@ void MarkupEngine::renderSubset(cv::Mat& canvas, size_t count, bool includeActiv
     auto syncTextWrapWidthForCanvas = [](const cv::Mat& targetCanvas, const MarkupElement& element) {
         if (element.tool != MarkupTool::Text || element.hasCustomTextWidth || targetCanvas.cols <= 0) return;
         const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
-            targetCanvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+            targetCanvas.cols, element.startPt.x, element.fontSize);
         if (std::abs(element.textMaxWidth - maxW) > 0.5f) {
             auto& mut = const_cast<MarkupElement&>(element);
             mut.textMaxWidth = maxW;
@@ -1379,7 +1417,7 @@ void MarkupEngine::renderElement(cv::Mat& canvas, const MarkupElement& element, 
     if (const auto* handler = MarkupToolRegistry::instance().getHandler(element.tool)) {
         if (element.tool == MarkupTool::Text && !element.hasCustomTextWidth && canvas.cols > 0) {
             const float maxW = CaptureTextEditor::computeAvailableBoxWidth(
-                canvas.cols, element.startPt.x, static_cast<int>(element.fontSize));
+                canvas.cols, element.startPt.x, element.fontSize);
             if (std::abs(element.textMaxWidth - maxW) > 0.5f) {
                 auto& mut = const_cast<MarkupElement&>(element);
                 mut.textMaxWidth = maxW;
