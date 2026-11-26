@@ -373,7 +373,7 @@ export const DialogEnhancerPage: FC = () => {
                 label={t('dialog.inlineSearchEnabled', 'Enable inline quick search & jump')}
                 description={t(
                   'dialog.inlineSearchEnabledDesc',
-                  'Click the ribbon search icon or press your shortcut inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode'
+                  'Click the ribbon search icon or press your shortcut inside file dialogs for instant inline directory search; shows local paths in 0ms and stays folder-only in Save As mode'
                 )}
                 checked={config.inlineSearchEnabled}
                 disabled={!config.enabled}

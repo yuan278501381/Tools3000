@@ -72,6 +72,7 @@
 #include "service/PipeClientAuth.h"
 #include "service/content/PdfExtractor.h"
 #include "ui/ToastStyle.h"
+#include "ui/CinemaZoomEngine.h"
 #include "ui/SpotlightOverlay.h"
 #include "ui/SearchWindow.h"
 #include "ui/WebViewOriginPolicy.h"

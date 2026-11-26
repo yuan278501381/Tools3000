@@ -29,7 +29,8 @@
     "enable": "Ativar",
     "disable": "Desativar",
     "all": "Tudo",
-    "copy": "Copiar"
+    "copy": "Copiar",
+    "done": "Concluído"
   },
   "nav": {
     "capture": "Captura de Tela",
@@ -59,15 +60,15 @@
   "navSubtitle": {
     "stats": "Estatísticas de uso do teclado e do mouse",
     "plugins": "Ative apenas os recursos de que precisa para manter tudo leve",
-    "spotlight": "Holofote no cursor, ondas de clique e trilhas luminosas",
-    "gesture": "Configure mapeamentos de gestos e regras por aplicativo",
+    "spotlight": "Zoom interativo com duplo Ctrl, holofote, ondas de clique e rastros",
+    "gesture": "Gestos globais, roda nas bordas e cessão automática do botão direito em apps pro",
     "hotcorner": "Dispare ações rápidas ao mover o mouse para os cantos da tela",
-    "capture": "Configurações de captura de tela, fixações, rolagem e gravação",
+    "capture": "Captura inteligente, pins, rolagem longa e estúdio com zoom cinematográfico",
     "history": "Navegue e reabra capturas de tela recentes",
-    "ocr": "Mecanismo de OCR offline, idiomas e tradução no local em capturas",
-    "search": "Configurações do índice NTFS instantâneo e guia de sintaxe de busca",
+    "ocr": "OCR offline multilíngue, tradução no local de capturas e tradução rápida global",
+    "search": "Busca unificada em milissegundos de arquivos, texto, favoritos, apps e comandos",
     "keycast": "Exibe teclas e combinações de atalho na tela em tempo real",
-    "dialog_enhancer": "Salte instantaneamente para pastas abertas no Explorador e memorize caminhos recentes em janelas Abrir/Salvar",
+    "dialog_enhancer": "Salto Ctrl+G para pastas, busca integrada e memória de caminhos em diálogos",
     "general": "Configurações de inicialização, idioma, aparência e diagnóstico",
     "about": "Informações de versão e arquitetura tecnológica",
     "ai_assistant": "Tradução de seleção, explicação de código e janela flutuante com IA",
@@ -301,7 +302,9 @@
     "hotkeyGroupRecording": "Gravação de Tela e Controle de Áudio",
     "hotkeyGroupInput": "Controle de Entrada e Gestos",
     "showChangelogOnUpdate": "Mostrar novidades após atualizações",
-    "showChangelogOnUpdateDesc": "Exibir automaticamente os destaques offline ao abrir as Configurações após atualizar (nunca exibido em instalações novas)"
+    "showChangelogOnUpdateDesc": "Exibir automaticamente os destaques offline ao abrir as Configurações após atualizar (nunca exibido em instalações novas)",
+    "globalHotkeyExclusionsTitle": "Apps com cessão global de atalhos",
+    "globalHotkeyExclusionsDesc": "Cede automaticamente todos os atalhos globais do Tools3000 quando qualquer app listado estiver em foco e restaura imediatamente ao alternar"
   },
   "plugins": {
     "capabilities": "Recursos do módulo",
@@ -356,15 +359,15 @@
     "items": {
       "gesture": {
         "name": "Gestos do Mouse",
-        "description": "Gestos globais do mouse, regras por aplicativo, cantos ativos, trilhas e roda na borda."
+        "description": "Gestos globais, regras por app, cantos ativos e roda nas bordas com cessão automática sem atraso em apps CAD/3D."
       },
       "capture": {
         "name": "Captura e Gravação",
-        "description": "Anotação de capturas, fixações, captura com rolagem, gravação de tela, histórico e OCR offline."
+        "description": "Capturas com anotações, pins na tela, captura longa, estúdio com zoom cinematográfico, OCR offline multilíngue e tradução no local."
       },
       "search": {
         "name": "Pesquisa Rápida de Arquivos",
-        "description": "Busca ultrarrápida com metadados NTFS MFT e diário USN, suportando nomes de arquivos, pinyin e pesquisa no conteúdo."
+        "description": "Busca unificada em milissegundos de arquivos, conteúdo de documentos/código, apps, favoritos e comandos com hibernação opcional de 0 MB."
       },
       "keycast": {
         "name": "Teclas na Tela",
@@ -372,15 +375,15 @@
       },
       "dialogenhancer": {
         "name": "Assistente de Diálogos",
-        "description": "Salte instantaneamente para pastas abertas no Explorador e diretórios favoritos em janelas Abrir/Salvar, com memória automática por aplicativo."
+        "description": "Pressione Ctrl+G em Abrir/Salvar para ir direto às pastas ativas, Ctrl+Shift+G para busca integrada e memória de caminhos por app."
       },
       "dialog_enhancer": {
         "name": "Assistente de Diálogos",
-        "description": "Salte instantaneamente para pastas abertas no Explorador e diretórios favoritos em janelas Abrir/Salvar, com memória automática por aplicativo."
+        "description": "Pressione Ctrl+G em Abrir/Salvar para ir direto às pastas ativas, Ctrl+Shift+G para busca integrada e memória de caminhos por app."
       },
       "spotlight": {
         "name": "Apresentação e Efeitos do Mouse",
-        "description": "Foco com holofote no cursor, efeitos de onda de clique e trilhas luminosas para demonstrações e gravações."
+        "description": "Zoom interativo fluido com duplo Ctrl (cliques e digitação ativos), holofote no cursor, ondas de clique e rastros suaves."
       },
       "remote_boost": {
         "name": "Assistência Remota",
@@ -579,7 +582,7 @@
     "repeatLastCaptureShortcutDesc": "Abrir a captura já enquadrada na região usada mais recentemente",
     "regionCycleKeyLabel": "Tecla de Alternância na Captura",
     "regionCycleKeyDesc": "Ao selecionar área de captura ou gravação, pressione para voltar no histórico ou Shift + tecla para avançar",
-    "regionKeyR": "R / Shift+R (estilo PixPin, recomendado)",
+    "regionKeyR": "R / Shift+R (recomendado)",
     "regionKeyBackquote": "` / Shift+` (sem conflito com Retângulo R)",
     "regionKeyF2": "F2 / Shift+F2 (tecla de função)",
     "regionKeyF4": "F4 / Shift+F4 (tecla de função)",
@@ -624,7 +627,7 @@
     "pinMiddleClickActionDesc": "Escolha o que acontece ao clicar com o botão do meio no pin (protegido contra fechamento acidental durante edição de texto no local).",
     "pinActionEdit": "Abrir editor de anotações (Padrão)",
     "pinActionFold": "Recolher / Expandir pin",
-    "pinActionClose": "Fechar pin (Estilo Snipaste)",
+    "pinActionClose": "Fechar pin",
     "pinActionResetScale": "Redefinir para tamanho 1:1 (Padrão)"
   },
   "history": {
@@ -918,7 +921,9 @@
     "langDeDe": "OCR em alemão",
     "langViVn": "OCR em vietnamita",
     "langArSa": "OCR em árabe",
-    "langThTh": "OCR em tailandês"
+    "langThTh": "OCR em tailandês",
+    "translateExcludedAppsTitle": "Ceder automaticamente em apps profissionais",
+    "translateExcludedAppsDesc": "Libera temporariamente este atalho quando estes apps estiverem em foco (ex.: ssms.exe para executar SQL, emacs.exe para M-x) mantendo os demais atalhos do Tools3000 ativos"
   },
   "gesture": {
     "title": "Configurações de Gestos do Mouse",
@@ -1519,7 +1524,7 @@
   "about": {
     "title": "Sobre o Tools3000",
     "version": "Versão",
-    "description": "Uma suíte leve de produtividade diária criada para trabalho e criação no Windows. Reúne pesquisa instantânea de arquivos e conteúdo, prévia rápida com a barra de espaço sem abrir programas pesados, captura de tela inteligente, fixações na tela e captura com rolagem, gravação de tela em HD, OCR offline, gestos globais do mouse e cantos ativos, exibição de teclas na tela, efeitos de holofote no cursor, salto rápido para pastas em janelas Abrir/Salvar e proteção de atalhos em acesso remoto. Discreto em segundo plano, instantâneo quando você precisa e expansível via plugins e scripts.",
+    "description": "Suíte nativa e ultraleve de produtividade para Windows feita em C++20 e Rust. Reúne busca instantânea de arquivos, texto completo, apps, favoritos e comandos, pré-visualização com Espaço, área de transferência persistente, captura/pins/rolagem inteligente, OCR offline multilíngue com tradução no local e instantânea, estúdio de gravação com zoom cinematográfico, salto Ctrl+G e busca integrada em caixas de arquivo, gestos globais com cessão automática em apps profissionais, zoom interativo com duplo Ctrl, expansor de texto, desbloqueador de arquivos, visor Rust Picasa <2 MB, proteção remota e backup criptografado E2E na nuvem.",
     "author": "Autor",
     "license": "Licença",
     "components": "Componentes Open Source",
@@ -1562,7 +1567,7 @@
       "rustPicasaViewer": "Visualizador de imagens autônomo em Rust com aceleração por hardware (41 formatos, física e sombra suave)",
       "ddcBrightness": "Controle de brilho por hardware por monitor (DDC/CI externo + WMI para notebooks)",
       "ppocrDirectml": "OCR offline de aprendizado profundo em dois estágios e restauração de textura MI-GAN 512 (DirectML GPU + WinML)",
-      "ifilterShellProps": "Extração de texto Office/WPS/e-mail e leitura sob demanda de 30+ metadados estendidos",
+      "ifilterShellProps": "Extração de texto de Office, documentos comuns e e-mail mais 30+ colunas de metadados sob demanda",
       "rustClipboard": "Núcleo Rust sem dependências para persistência, deduplicação e busca em submilissegundos da área de transferência",
       "rustCliMcp": "CLI e servidor MCP stdio em Rust sem dependências que expõe busca local a agentes de IA",
       "winhttpTranslate": "Gateway nativo TLS para tradução no local (Bilibili Index-Translate sem chave por padrão, contingência e DPAPI)",
@@ -1643,18 +1648,18 @@
   "onboarding": {
     "welcomeTitle": "Bem-vindo ao Tools3000",
     "welcomeSubtitle": "A Suíte de Produtividade de Nova Geração para Windows",
-    "featureSearch": "Pesquisa de Arquivos e Conteúdo",
-    "featureSearchDesc": "Busca em milissegundos em todo o disco e pesquisa profunda em documentos e código",
-    "featureGesture": "Gestos do Mouse e Bordas",
-    "featureGestureDesc": "Mapeamentos personalizados de gestos e gatilhos de borda para controle ágil de janelas",
-    "featureCapture": "Captura e Gravação",
-    "featureCaptureDesc": "Gravação de tela sem perdas, fixações inteligentes e OCR offline de alta precisão",
+    "featureSearch": "Busca Total Instantânea",
+    "featureSearchDesc": "Pesquise arquivos, conteúdo, favoritos, apps e comandos em milissegundos",
+    "featureGesture": "Gestos e Controle nas Bordas",
+    "featureGestureDesc": "Gestos e roda de volume/brilho com cessão automática em apps profissionais",
+    "featureCapture": "Captura, Pins e Tradução",
+    "featureCaptureDesc": "Anotações, pins com texto vivo, OCR offline, tradução no local e rápida",
     "featureSpotlight": "Efeitos de Apresentação",
     "featureSpotlightDesc": "Foco com holofote, ondas de clique e trilha luminosa no cursor",
     "featureQuickLook": "Prévia Rápida QuickLook",
     "featureQuickLookDesc": "Prévia instantânea com a barra de espaço para documentos, código, mídia e compactados",
-    "featureDialogEnhancer": "Assistente de Diálogos",
-    "featureDialogEnhancerDesc": "Memoriza pastas ao abrir/salvar e salta em um clique para diretórios frequentes",
+    "featureDialogEnhancer": "Salto em Caixas de Arquivo",
+    "featureDialogEnhancerDesc": "Use Ctrl+G em Abrir/Salvar para saltar pastas, buscar e lembrar caminhos",
     "featureKeycast": "Teclas na Tela e Estatísticas",
     "featureKeycastDesc": "Projeção de teclas em tempo real para tutoriais e estatísticas diárias de digitação",
     "featureRemoteBoost": "Assistência Remota",
@@ -1665,7 +1670,7 @@
     "shortcutCapture": "Captura de Tela",
     "shortcutRecord": "Gravação de Tela em HD",
     "shortcutOcr": "OCR de Texto Offline",
-    "shortcutSpotlight": "Holofote na Tela",
+    "shortcutSpotlight": "Holofote / Zoom Fluido de Cinema",
     "shortcutQuickLook": "Prévia Rápida (Espaço)",
     "shortcutGesturePause": "Pausar Gestos",
     "shortcutRemoteFlush": "Liberar Teclas (Remoto)",
@@ -1679,7 +1684,7 @@
     "gestureReopenTab": "→ ↓ Reabrir aba",
     "tabSpotlight": "Efeitos de Apresentação",
     "tabRemote": "Assistência Remota",
-    "spotlightItem1": "Duplo Ctrl / Agitar mouse para ativar o Holofote",
+    "spotlightItem1": "Pressione Ctrl duas vezes para holofote ou zoom fluido interativo",
     "spotlightItem2": "Ondas de clique (retorno visual colorido por botão do mouse)",
     "spotlightItem3": "Trilha luminosa (rastro suave acompanhando o cursor)",
     "spotlightItem4": "Teclas na Tela (projeção de teclas pressionadas em tempo real)",
@@ -1699,17 +1704,20 @@
     "completeTipTextExpander": "Experimente digitar ;date ou ;now em qualquer app com o \"Expansor de Texto\" já ativo (personalize ou desative quando quiser)",
     "edgeWheelTip": "Rolagem nas bordas esquerda/direita da tela: ajuste o volume ou o brilho por hardware do monitor externo",
     "featureClipboard": "Área de Transferência Persistente",
-    "featureClipboardDesc": "Histórico Alt+V mantido após reiniciar, colagem mesclada, fixados separados e arrastar nativo",
-    "featurePicasa": "Visualizador Rust Picasa (< 2 MB)",
-    "featurePicasaDesc": "41 formatos, 4K High-DPI e abertura instantânea em binário independente",
-    "featurePresentRemote": "Apresentação e Proteção Remota",
-    "featurePresentRemoteDesc": "Exibição de teclas, holofote no cursor e destravamento de teclas em RDP/RustDesk",
-    "featureStudio": "Estúdio de Gravação com Auto-Zoom",
-    "featureStudioDesc": "Edição por forma de onda, zoom automático no clique e exportação GIF/MP4 em 1 clique",
+    "featureClipboardDesc": "Sobrevive reinícios com colagem múltipla, grupos, arrastar e OCR em imagens",
+    "featurePicasa": "Visor Rust Picasa Leve",
+    "featurePicasaDesc": "Binário nativo <2 MB com 41 formatos e zoom fluido em telas 4K",
+    "featurePresentRemote": "Zoom de Apresentação e Remoto",
+    "featurePresentRemoteDesc": "Zoom interativo com duplo Ctrl, holofote, teclas na tela e resgate remoto",
+    "featureStudio": "Estúdio com Zoom Fluido",
+    "featureStudioDesc": "Zoom suave ao clique, corte por forma de onda e exportação MP4/GIF",
     "searchSyntaxLabel": "Prefixos de Busca Avançada",
     "searchSyntaxQuickLook": "Prévia QuickLook",
     "shortcutClipboard": "Histórico da Área de Transf.",
-    "shortcutPin": "Fixar imagem na tela"
+    "shortcutPin": "Fixar imagem na tela",
+    "shortcutTranslate": "Tradução Rápida Global",
+    "shortcutDialogJump": "Salto Rápido em Diálogos",
+    "completeTipCloudSync": "Ative o backup criptografado E2E na nuvem (OneDrive / WebDAV / S3) em Configurações Gerais para sincronizar ajustes entre PCs"
   },
   "hotkey": {
     "pressKeys": "Pressione uma tecla ou combinação...",
@@ -1890,7 +1898,7 @@
     "searchTimeTitle": "Tempo de resposta do índice MFT em memória",
     "openFileTitle": "Abrir arquivo selecionado (Enter)",
     "openFolderTitle": "Localizar e selecionar arquivo no Explorador (Ctrl+Enter)",
-    "copyPathTitle": "Copiar caminho completo do arquivo (Ctrl+C)",
+    "copyPathTitle": "Copiar caminho completo do arquivo (Ctrl+Shift+C)",
     "exportReportTitle": "Exportar resultados da pesquisa para relatório CSV (Ctrl+E)",
     "rescanIndexTitle": "Reescanear índice de disco e salvar snapshot (F5 / Ctrl+R)",
     "syntaxHelpBtnTitle": "Ver sintaxe avançada e exemplos de pesquisa (F1)",
@@ -1994,7 +2002,7 @@
     "syntaxExLogic2": "Pesquisa combinada com operador lógico OU (OR)",
     "syntaxExLogic3": "Pesquisa por expressão regular (começa com app_ e dígitos)",
     "syntaxExLogic4": "Correspondência exata diferenciando maiúsculas e minúsculas",
-    "syntaxExLogic5": "Pesquisa explícita por iniciais ou pinyin completo (ex.: wx para WeChat)",
+    "syntaxExLogic5": "Pesquisa explícita por iniciais ou Pinyin completo (ex.: wd para wendang)",
     "disableExtTip": "Clique para desativar .{{ext}}",
     "enableExtTip": "Clique para ativar .{{ext}}",
     "folderType": "Pasta",
@@ -2004,8 +2012,8 @@
     "visibleColumns": "Colunas visíveis e layout",
     "resetViewPrefTooltip": "Redefine densidade, colunas, filtro de unidades e extensões para os padrões de fábrica",
     "toastResetAllPref": "Todas as preferências de visualização e pesquisa foram redefinidas",
-    "menuCopyFile": "Copiar arquivo (colar em chats/pastas)",
-    "copiedFile": "Arquivo copiado para a área de transferência (pronto para colar)",
+    "menuCopyFile": "Copiar arquivo",
+    "copiedFile": "Arquivo copiado para a área de transferência",
     "menuQuickLook": "Visualização Rápida (QuickLook)",
     "syntaxExSize": "Filtrar por tamanho (aceita >10mb, faixa 1mb..50mb e empty/tiny/huge)",
     "syntaxExDate": "Filtrar por data de modificação (today / yesterday / thisweek / 2026-09)",
@@ -2233,7 +2241,9 @@
     "menuExcludeParentFolder": "Excluir pasta pai da busca",
     "menuExcludeParentFolderTip": "Ocultar a pasta que contém este arquivo e todo o seu conteúdo dos próximos resultados",
     "excludedFolderToast": "Pasta excluída: {{path}}",
-    "undoAction": "Desfazer"
+    "undoAction": "Desfazer",
+    "copyFileShortcut": "Copiar arquivo",
+    "copyFileTitle": "Copiar arquivo selecionado para a área de transferência (Ctrl+C)"
   },
   "searchPage": {
     "tabSettings": "Básico e Atalho",
@@ -2248,7 +2258,7 @@
     "openNow": "Abrir busca",
     "searchBehavior": "Preferências e Comportamento",
     "pinyinTitle": "Pesquisa inteligente por Pinyin",
-    "pinyinDesc": "Suporta iniciais de Pinyin chinês (ex.: wx para WeChat) e Pinyin completo",
+    "pinyinDesc": "Suporta iniciais de Pinyin chinês (ex.: wd para wendang) e Pinyin completo",
     "matchPathTitle": "Corresponder ao caminho completo por padrão",
     "matchPathDesc": "Pesquisa também dentro dos caminhos de pastas além do nome do arquivo",
     "caseTitle": "Diferenciar maiúsculas e minúsculas",
@@ -2391,7 +2401,7 @@
     "syntaxSectionRegex": "Regular Expression Quick Reference",
     "groupExclusions": "Pastas excluídas e privacidade",
     "hideOnBlurTitle": "Ocultar automaticamente ao clicar fora",
-    "hideOnBlurDesc": "Oculta a janela de busca quando o foco vai para outro aplicativo (estilo Listary / uTools). Permanece aberta quando fixada, durante o QuickLook ou com menus abertos.",
+    "hideOnBlurDesc": "Oculta a janela de busca quando o foco vai para outro aplicativo. Permanece aberta quando fixada, durante o QuickLook ou com menus abertos.",
     "hideOnOpenTitle": "Ocultar automaticamente após abrir resultado",
     "hideOnOpenDesc": "Oculta a janela de busca logo após abrir um arquivo, pasta, aplicativo, comando ou favorito por clique duplo ou Enter (permanece aberta quando fixada).",
     "clearQueryOnShowTitle": "Limpar consulta anterior ao reabrir",
@@ -2419,13 +2429,13 @@
     "pillKeycast": "Teclas",
     "pillKeycastFullDesc": "Teclas na Tela (exibição de teclas em tempo real)",
     "pillCapture": "Captura",
-    "pillCaptureFullDesc": "Captura (captura de tela, rolagem, fixações e gravação)",
+    "pillCaptureFullDesc": "Captura e estúdio (pins, OCR offline, tradução no local e zoom fluido)",
     "pillSearch": "Busca",
-    "pillSearchFullDesc": "Pesquisa de Arquivos (busca instantânea NTFS)",
+    "pillSearchFullDesc": "Busca total (arquivos, conteúdo, favoritos, apps e comandos)",
     "pillSpotlight": "Efeitos",
-    "pillSpotlightFullDesc": "Efeitos do Mouse (holofote, ondas de clique e trilhas)",
+    "pillSpotlightFullDesc": "Apresentação e efeitos (zoom interativo duplo Ctrl, holofote e ondas)",
     "pillDialog": "Diálogos",
-    "pillDialogFullDesc": "Assistente de Diálogos (atalhos e pastas recentes em janelas de arquivo)",
+    "pillDialogFullDesc": "Salto em diálogos (Ctrl+G instantâneo, busca integrada e memória)",
     "quickControls": "Controles de Módulos",
     "enabled": "Ativado",
     "disabled": "Desativado",
@@ -2622,7 +2632,22 @@
     "clickColorsSectionDesc": "Defina cores distintas para os cliques esquerdo, direito e do meio",
     "spotlightGroupTitle": "Cursor Spotlight Focus",
     "clickRippleGroupTitle": "Mouse Click Ripple Effects",
-    "mouseTrailGroupTitle": "Mouse Movement Trail Effects"
+    "mouseTrailGroupTitle": "Mouse Movement Trail Effects",
+    "doubleCtrlModeTitle": "Modo de apresentação com duplo Ctrl",
+    "doubleCtrlModeDesc": "Escolha o holofote clássico escurecido ou zoom interativo cinematográfico com cliques e digitação ativos",
+    "modeSpotlight": "Holofote clássico",
+    "modeSpotlightDesc": "Escurece a tela e destaca a área do cursor para localizar o ponteiro rapidamente",
+    "modeCinemaZoom": "Zoom fluido de cinema",
+    "modeCinemaZoomDesc": "Aproximação suave com mola ao redor do cursor mantendo cliques e digitação nativos",
+    "modeCinemaZoomRing": "Zoom de cinema + anel",
+    "modeCinemaZoomRingDesc": "Zoom interativo fluido combinado com um anel guia nítido sem escurecer a tela",
+    "zoomLevelTitle": "Ampliação padrão",
+    "zoomLevelDesc": "Fator de ampliação inicial ao pressionar Ctrl duas vezes (1.25x a 4.0x)",
+    "zoomFollowCursor": "Acompanhamento suave do cursor",
+    "zoomFollowCursorDesc": "Usa zona morta central para cliques firmes e move a câmera suavemente ao aproximar das bordas",
+    "zoomWheelAdjust": "Ajuste ao vivo com Ctrl + roda",
+    "zoomWheelAdjustDesc": "Segure Ctrl e role o mouse (ou Ctrl + / -) durante o zoom para ajustar a ampliação continuamente",
+    "zoomUsageHint": "Pressione Ctrl duas vezes novamente ou Esc para voltar suavemente a 1.0x. Cliques, arrastos e digitação continuam funcionando."
   },
   "window": {
     "minimize": "Minimizar",
@@ -3148,7 +3173,7 @@
     "badgeByokEncrypted": "Chave Própria · Criptografia DPAPI",
     "freePrimaryTitle": "Canal Gratuito Principal",
     "freePrimaryDesc": "Alterna automaticamente para o canal reserva em caso de falha ou limite.",
-    "freePrimaryEdge": "Microsoft Edge Primeiro",
+    "freePrimaryEdge": "Priorizar Microsoft Edge Translate (recomendado)",
     "freePrimaryGoogle": "Google Tradutor Primeiro",
     "targetLangTitle": "Idioma de Destino Padrão",
     "targetLangDesc": "Idioma renderizado diretamente sobre o texto original da captura preservando fundo e cor.",
@@ -3657,5 +3682,23 @@
     "viewAllOnGitHub": "Ver todas no GitHub",
     "gotItBtn": "Entendi",
     "clearSearch": "Limpar busca"
+  },
+  "hotkeyExclusion": {
+    "emptyHint": "Nenhum app excluído ainda",
+    "emptyPerHotkey": "Ativo em todos os apps; adicione processos para ceder automaticamente",
+    "emptyGlobal": "Nenhum app global de não perturbe configurado",
+    "removeAppAria": "Remover {{app}}",
+    "inputPlaceholder": "ex.: ssms.exe, emacs.exe",
+    "addBtn": "Adicionar",
+    "pickWindowBtn": "Escolher app aberto",
+    "pickerTitle": "Escolher app para ceder o atalho",
+    "pickerPerHotkeyTitle": "Escolher app para ceder este atalho",
+    "pickerGlobalTitle": "Escolher app para ceder todos os atalhos globais",
+    "saveFailed": "Falha ao salvar apps excluídos",
+    "badgeTooltip": "Cede automaticamente em: {{apps}}",
+    "configurePerHotkeyTip": "Configurar regras de cessão por aplicativo",
+    "excludedCountBadge": "Cede {{count}}",
+    "modalTitle": "Cessão por aplicativo — {{name}}",
+    "modalDesc": "Quando um dos processos listados estiver em primeiro plano, apenas este atalho é liberado enquanto os demais atalhos do Tools3000 continuam ativos."
   }
 }

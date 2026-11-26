@@ -18,7 +18,7 @@ KeyboardHook& KeyboardHook::instance() {
 
 bool KeyboardHook::install() {
     if (m_hookHandle) {
-        LOG_WARN("Hook already installed");
+        LOG_DEBUG("Hook already installed");
         return true;
     }
 

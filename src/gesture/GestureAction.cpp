@@ -223,7 +223,7 @@ void postCloseWindow(HWND hwnd) noexcept {
     if (!closeTarget) return;
     PostMessageW(closeTarget, WM_SYSCOMMAND, SC_CLOSE, 0);
     PostMessageW(closeTarget, WM_CLOSE, 0, 0);
-    LOG_INFO("关闭窗口已投递: {}", describeWindow(closeTarget));
+    LOG_DEBUG("关闭窗口已投递: {}", describeWindow(closeTarget));
 }
 
 /// 冷路径：投递后观察窗口是否已经消失。同线程窗靠 PeekMessage 收 WM_CLOSE，
@@ -614,8 +614,8 @@ void sendKeyStrokeWorkerImpl(const KeyStroke& ks, void* targetWindowPtr) {
             fgBefore, windowFromPointSkippingGestureOverlay(pt.x, pt.y), nullptr));
     }
 
-    LOG_INFO("手势按键注入: keys={}, target={}, fg={}",
-             ks.toString(), describeWindow(targetHwnd), describeWindow(fgBefore));
+    LOG_DEBUG("手势按键注入: keys={}, target={}, fg={}",
+              ks.toString(), describeWindow(targetHwnd), describeWindow(fgBefore));
 
     if (!isGlobalAction(ks.modifiers, ks.virtualKey) && !targetHwnd) {
         LOG_WARN("无外部目标窗口，放弃按键注入: keys={}, fg={}",
@@ -664,7 +664,7 @@ void sendKeyStrokeWorkerImpl(const KeyStroke& ks, void* targetWindowPtr) {
             postCloseWindow(targetHwnd);
             const bool stillPending = postedCloseStillPending(targetHwnd, kCloseObserveTimeoutMs);
             if (!closeShouldSendKeyFallback(true, stillPending)) {
-                LOG_INFO("关闭已生效，不再补发 Alt+F4: {}", describeWindow(targetHwnd));
+                LOG_DEBUG("关闭已生效，不再补发 Alt+F4: {}", describeWindow(targetHwnd));
                 return;
             }
             sendMods = MOD_ALT;
@@ -804,7 +804,8 @@ std::string normalizeRunProgramMode(std::string_view mode) {
 // ── GestureAction::execute ───────────────────────────────────────────────────
 
 void GestureAction::execute(void* targetWindowPtr) const {
-    tools3000::core::TraceId::Scope scope;
+    // 继承调用方（如 GestureEngine）已透传的父 TraceId，避免同一次手势链路在执行阶段被撕裂成两条 TraceId
+    tools3000::core::TraceId::Scope scope(tools3000::core::TraceId::current());
 
     switch (type) {
         case ActionType::SendKeys: {

@@ -29,7 +29,8 @@
     "enable": "Enable",
     "disable": "Disable",
     "all": "All",
-    "copy": "Copy"
+    "copy": "Copy",
+    "done": "Done"
   },
   "nav": {
     "capture": "Screen Capture",
@@ -59,15 +60,15 @@
   "navSubtitle": {
     "stats": "Keystrokes and mouse usage activity",
     "plugins": "Enable only the features you need",
-    "spotlight": "Spotlight cursor focus, click ripples, and motion trails",
-    "gesture": "Configure gesture mappings and scopes",
+    "spotlight": "Double-Ctrl cinema smooth zoom, cursor spotlight, click ripples & motion trails",
+    "gesture": "Global mouse gestures, edge scroll controls & automatic pro-app right-click bypass",
     "hotcorner": "Trigger actions by moving mouse to screen corners",
-    "capture": "Settings for screen capture and recording",
+    "capture": "Smart capture, desktop pins, scrolling capture & cinema auto-zoom screen studio",
     "history": "Browse and reopen recent captures",
-    "ocr": "Offline text recognition engine, languages, and in-place screenshot translation",
-    "search": "NTFS index engine settings and search expression guide",
+    "ocr": "Multi-language offline OCR, in-place screenshot translation & instant quick translate",
+    "search": "Millisecond unified search across files, full text, bookmarks, apps & commands",
     "keycast": "Display real-time keystrokes and shortcut combos on screen",
-    "dialog_enhancer": "Instantly jump to active Explorer folders and auto-remember recent paths in Open/Save dialogs",
+    "dialog_enhancer": "Ctrl+G folder quick jump, inline search & per-app path memory in file dialogs",
     "general": "Startup, language, and diagnostic settings",
     "about": "Version information and tech stack",
     "ai_assistant": "AI translation, explain, and floating dialog window",
@@ -301,7 +302,9 @@
     "hotkeyGroupRecording": "Screen Recording & Audio Control",
     "hotkeyGroupInput": "Input & Gesture Control",
     "showChangelogOnUpdate": "Show changelog after updates",
-    "showChangelogOnUpdateDesc": "Automatically display offline release highlights the first time Settings opens after upgrading (never shown on fresh installs)"
+    "showChangelogOnUpdateDesc": "Automatically display offline release highlights the first time Settings opens after upgrading (never shown on fresh installs)",
+    "globalHotkeyExclusionsTitle": "Global Hotkey Auto-Yield Apps",
+    "globalHotkeyExclusionsDesc": "Automatically yields all Tools3000 global shortcuts when any listed app is focused, and restores them immediately on focus switch"
   },
   "plugins": {
     "capabilities": "Module capabilities",
@@ -356,15 +359,15 @@
     "items": {
       "gesture": {
         "name": "Mouse Gestures",
-        "description": "Global mouse gestures, app scopes, hot corners, trails, and edge wheel."
+        "description": "Global mouse gestures, app scope rules, hot corners & edge wheel controls with zero-latency auto-bypass in CAD/3D apps."
       },
       "capture": {
         "name": "Capture & Recording",
-        "description": "Capture markup, pins, scrolling capture, screen recording, history, and offline OCR."
+        "description": "Annotated screenshots, desktop pins, scrolling capture, cinema auto-zoom screen studio, offline multi-language OCR & in-place translation."
       },
       "search": {
         "name": "Quick File Search",
-        "description": "Blazing-fast lookup powered by NTFS MFT metadata and USN journal, supporting filenames, pinyin, and in-file content search."
+        "description": "Millisecond unified search across files, document/code full text, installed apps, browser bookmarks & system commands with optional 0 MB idle sleep."
       },
       "keycast": {
         "name": "Keycast Overlay",
@@ -372,15 +375,15 @@
       },
       "dialogenhancer": {
         "name": "Dialog Enhancer",
-        "description": "Instantly jump to active Explorer folders and favorite directories in Open/Save dialogs, with automatic per-app folder memory."
+        "description": "Press Ctrl+G inside Open/Save dialogs to jump straight to active Explorer folders, Ctrl+Shift+G for inline search, plus per-app path memory."
       },
       "dialog_enhancer": {
         "name": "Dialog Enhancer",
-        "description": "Instantly jump to active Explorer folders and favorite directories in Open/Save dialogs, with automatic per-app folder memory."
+        "description": "Press Ctrl+G inside Open/Save dialogs to jump straight to active Explorer folders, Ctrl+Shift+G for inline search, plus per-app path memory."
       },
       "spotlight": {
         "name": "Mouse Presentation & FX",
-        "description": "Spotlight cursor focus, click ripple effects, and motion trails for demos and screencasts."
+        "description": "Double-Ctrl cinema smooth interactive zoom (clicking and typing keep working), cursor spotlight focus, click ripples & motion trails."
       },
       "remote_boost": {
         "name": "Remote Boost",
@@ -579,7 +582,7 @@
     "repeatLastCaptureShortcutDesc": "Open screenshot overlay with your most recent capture region already framed",
     "regionCycleKeyLabel": "In-Overlay Region Cycle Key",
     "regionCycleKeyDesc": "While selecting a capture or recording area, press to step older or Shift + key to step newer",
-    "regionKeyR": "R / Shift+R (PixPin style, recommended)",
+    "regionKeyR": "R / Shift+R (Recommended)",
     "regionKeyBackquote": "` / Shift+` (Backquote, zero conflict with Rectangle R)",
     "regionKeyF2": "F2 / Shift+F2 (Function key)",
     "regionKeyF4": "F4 / Shift+F4 (Function key)",
@@ -624,7 +627,7 @@
     "pinMiddleClickActionDesc": "Choose what happens when middle-clicking a desktop pin (protected against accidental close while editing in-place text)",
     "pinActionEdit": "Enter Markup Editor (Default)",
     "pinActionFold": "Fold / Unfold Pin",
-    "pinActionClose": "Close Pin (Snipaste Style)",
+    "pinActionClose": "Close Pin",
     "pinActionResetScale": "Reset to 1:1 Size (Default)"
   },
   "history": {
@@ -752,7 +755,7 @@
     "studioExportMp4H264": "MP4 (H.264 Universal Video)",
     "studioExportMp4Hevc": "MP4 (H.265 Compact Ultra HD)",
     "studioExportGifHd": "GIF HD Document (1080P Global Palette)",
-    "studioExportGifWeChat": "GIF Chat Sticker (Auto-Sized Inline)",
+    "studioExportGifWeChat": "GIF Chat Sticker (Auto-Sized)",
     "studioExportWebp": "WebP True-Color Animated",
     "studioExportWebm": "WebM (VP9 Web Video)",
     "studioExportAutoClose": "Auto-Close Studio After Export",
@@ -918,7 +921,9 @@
     "langDeDe": "German OCR",
     "langViVn": "Vietnamese OCR",
     "langArSa": "Arabic OCR",
-    "langThTh": "Thai OCR"
+    "langThTh": "Thai OCR",
+    "translateExcludedAppsTitle": "Auto-Yield in Professional Apps",
+    "translateExcludedAppsDesc": "Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active"
   },
   "gesture": {
     "title": "Mouse Gesture Settings",
@@ -1519,7 +1524,7 @@
   "about": {
     "title": "About Tools3000",
     "version": "Version",
-    "description": "A lightweight everyday productivity toolkit built for Windows work and creation. Combines instant file and document text search, Spacebar quick preview without opening heavy apps, smart screenshot, desktop pin and scrolling capture, HD screen recording, offline image-to-text, global mouse gestures and screen hot corners, on-screen keystroke display, cursor spotlight effects, one-click folder jump in Open/Save dialogs, and remote desktop hotkey protection. Quiet in the background, instant when needed, and extensible via plugins and scripts.",
+    "description": "A cohesive, ultra-lightweight native Windows productivity suite built in C++20 & Rust. Combines instant file, full-text, app, bookmark & command search, Spacebar QuickLook, persistent clipboard, smart screenshot/pin/long capture, multi-language offline OCR with in-place & instant translation, cinema auto-zoom screen studio, Ctrl+G file dialog jump & inline search, global mouse gestures with pro-app bypass, double-Ctrl smooth interactive zoom, Text Expander, File Locksmith, <2 MB Rust Picasa Viewer, Remote Boost, and E2E-encrypted cloud config backup.",
     "author": "Author",
     "license": "License",
     "components": "Open Source Components",
@@ -1562,7 +1567,7 @@
       "rustPicasaViewer": "Standalone zero-CRT hardware-accelerated photo viewer (41 formats, physics & Gaussian shadow)",
       "ddcBrightness": "Per-monitor hardware brightness engine (DDC/CI external displays + WMI laptop panels)",
       "ppocrDirectml": "Dual-stage offline deep-learning OCR & MI-GAN 512 texture inpainting (DirectML GPU + WinML)",
-      "ifilterShellProps": "Office/WPS/email full-text extraction and on-demand 30+ extended column metadata properties",
+      "ifilterShellProps": "Office, common documents & email full-text extraction plus on-demand 30+ extended column metadata properties",
       "rustClipboard": "Zero-dependency Rust clipboard persistence, deduplication, and sub-millisecond search kernel",
       "rustCliMcp": "Zero-dependency Rust CLI & MCP stdio server exposing local disk search to AI agents",
       "winhttpTranslate": "Native TLS in-place screenshot translation gateway (default keyless Bilibili Index-Translate, fallback & DPAPI)",
@@ -1643,18 +1648,18 @@
   "onboarding": {
     "welcomeTitle": "Welcome to Tools3000",
     "welcomeSubtitle": "The Next-Gen World-Class Windows Productivity Suite",
-    "featureSearch": "File & Content Search",
-    "featureSearchDesc": "Millisecond full-disk search & deep document code inspection",
-    "featureGesture": "Mouse & Edge Gestures",
-    "featureGestureDesc": "Custom gesture mappings & screen edge triggers for fluid app control",
-    "featureCapture": "Capture & Recording",
-    "featureCaptureDesc": "Lossless screen recording, smart pin & offline OCR text recognition",
+    "featureSearch": "Omni Instant Search",
+    "featureSearchDesc": "Search files, full text, bookmarks, apps & commands in milliseconds",
+    "featureGesture": "Gestures & Edge Controls",
+    "featureGestureDesc": "Custom gestures & edge wheel controls with automatic pro-app bypass",
+    "featureCapture": "Capture, Pins & Translate",
+    "featureCaptureDesc": "Smart markup, live-text pins, offline OCR, in-place & quick translate",
     "featureSpotlight": "Presentation Effects",
     "featureSpotlightDesc": "Spotlight focus, click ripples & cursor glow trail",
     "featureQuickLook": "QuickLook Preview",
     "featureQuickLookDesc": "Instant spacebar preview for documents, code, media & archives",
-    "featureDialogEnhancer": "Dialog Enhancer",
-    "featureDialogEnhancerDesc": "Auto-remember save paths & instant folder jumping",
+    "featureDialogEnhancer": "File Dialog Quick Jump",
+    "featureDialogEnhancerDesc": "Press Ctrl+G in Open/Save dialogs to jump folders, search inline & recall paths",
     "featureKeycast": "Keycast & Statistics",
     "featureKeycastDesc": "Real-time keystroke projection, tutorial tool & all-day typing stats",
     "featureRemoteBoost": "Remote Boost",
@@ -1665,7 +1670,7 @@
     "shortcutCapture": "Screen Capture",
     "shortcutRecord": "HD Screen Record",
     "shortcutOcr": "Offline Text OCR",
-    "shortcutSpotlight": "Screen Spotlight",
+    "shortcutSpotlight": "Spotlight / Cinema Smooth Zoom",
     "shortcutQuickLook": "QuickLook Preview",
     "shortcutGesturePause": "Pause Gestures",
     "shortcutRemoteFlush": "Remote Modifier Flush",
@@ -1679,7 +1684,7 @@
     "gestureReopenTab": "→ ↓ Reopen Tab",
     "tabSpotlight": "Presentation FX",
     "tabRemote": "Remote Boost",
-    "spotlightItem1": "Double-tap Ctrl / Shake mouse for Spotlight",
+    "spotlightItem1": "Double-press Ctrl for cursor spotlight or cinema smooth zoom (click & type live)",
     "spotlightItem2": "Click Ripples (Color-coded mouse click feedback)",
     "spotlightItem3": "Cursor Glow Trail (Smooth glowing cursor path)",
     "spotlightItem4": "Keycast Overlay (Real-time keystroke projection)",
@@ -1699,17 +1704,20 @@
     "completeTipTextExpander": "Try typing ;date or ;now anywhere with built-in \"Text Expander\" (customize or toggle off anytime)",
     "edgeWheelTip": "Screen Left/Right Edge Scroll: adjust volume or external monitor hardware brightness directly",
     "featureClipboard": "Persistent Clipboard",
-    "featureClipboardDesc": "Alt+V history surviving reboots, merge paste, pinned tabs & native drag-out",
-    "featurePicasa": "< 2 MB Rust Picasa Viewer",
-    "featurePicasaDesc": "41 formats, 4K High-DPI & instant standalone binary",
-    "featurePresentRemote": "Spotlight & Remote Guard",
-    "featurePresentRemoteDesc": "Keycast overlay, spotlight highlight & RDP/RustDesk stuck-key flush",
-    "featureStudio": "Auto-Zoom Recording Studio",
-    "featureStudioDesc": "Waveform editing, click auto-zoom & 1-click GIF/MP4 export",
+    "featureClipboardDesc": "Survives reboots with merge paste, groups, drag-out & image OCR",
+    "featurePicasa": "Light Rust Picasa Viewer",
+    "featurePicasaDesc": "Under 2 MB native binary with 41 formats & instant 4K High-DPI zoom",
+    "featurePresentRemote": "Zoom Presenter & Remote",
+    "featurePresentRemoteDesc": "Double-Ctrl smooth interactive zoom, spotlight, keycast & key flush",
+    "featureStudio": "Cinema Auto-Zoom Studio",
+    "featureStudioDesc": "Smooth spring click-zoom, waveform trim & 1-click MP4/GIF export",
     "searchSyntaxLabel": "Omni Search Prefixes",
     "searchSyntaxQuickLook": "QuickLook Preview",
     "shortcutClipboard": "Clipboard History",
-    "shortcutPin": "Pin from Clipboard"
+    "shortcutPin": "Pin from Clipboard",
+    "shortcutTranslate": "Quick Selection Translate",
+    "shortcutDialogJump": "Dialog Folder Quick Jump",
+    "completeTipCloudSync": "Enable E2E-encrypted cloud backup (OneDrive / WebDAV / S3) in General Settings to sync configs & shortcuts across PCs"
   },
   "hotkey": {
     "pressKeys": "Press a key or combination...",
@@ -1890,7 +1898,7 @@
     "searchTimeTitle": "MFT memory index match elapsed time",
     "openFileTitle": "Open selected file (Enter)",
     "openFolderTitle": "Locate and select file in Explorer (Ctrl+Enter)",
-    "copyPathTitle": "Copy full file path (Ctrl+C)",
+    "copyPathTitle": "Copy full file path (Ctrl+Shift+C)",
     "exportReportTitle": "Export search results to CSV report (Ctrl+E)",
     "rescanIndexTitle": "Rescan full disk index and save snapshot (F5 / Ctrl+R)",
     "syntaxHelpBtnTitle": "View advanced search syntax and expressions (F1)",
@@ -1994,7 +2002,7 @@
     "syntaxExLogic2": "Logical OR condition combined search",
     "syntaxExLogic3": "Regex search (starts with app_digits)",
     "syntaxExLogic4": "Case-sensitive exact match",
-    "syntaxExLogic5": "Explicit Pinyin initials / full Pinyin search (e.g. wx for WeChat)",
+    "syntaxExLogic5": "Explicit Pinyin initials / full Pinyin search (e.g. wd for wendang)",
     "disableExtTip": "Click to disable .{{ext}}",
     "enableExtTip": "Click to enable .{{ext}}",
     "folderType": "Folder",
@@ -2004,8 +2012,8 @@
     "visibleColumns": "Visible Columns & Layout",
     "resetViewPrefTooltip": "Reset density, column layout, drive filters, format extensions to factory defaults",
     "toastResetAllPref": "All view and search preferences reset to defaults",
-    "menuCopyFile": "Copy File Object (Paste to Chat/Folder)",
-    "copiedFile": "File copied to clipboard (ready to paste)",
+    "menuCopyFile": "Copy File",
+    "copiedFile": "File copied to clipboard",
     "menuQuickLook": "QuickLook Preview",
     "syntaxExSize": "Filter by file size (supports >10mb, 1mb..50mb range & empty/tiny/huge)",
     "syntaxExDate": "Filter by modified date (today / yesterday / thisweek / 2026-09)",
@@ -2233,7 +2241,9 @@
     "menuExcludeParentFolder": "Exclude Containing Folder from Search",
     "menuExcludeParentFolderTip": "Hide the containing folder and all nested files from future search results",
     "excludedFolderToast": "Excluded folder: {{path}}",
-    "undoAction": "Undo"
+    "undoAction": "Undo",
+    "copyFileShortcut": "Copy File",
+    "copyFileTitle": "Copy selected file to clipboard (Ctrl+C)"
   },
   "searchPage": {
     "tabSettings": "Settings & Hotkey",
@@ -2248,7 +2258,7 @@
     "openNow": "Summon Search Bar",
     "searchBehavior": "Preferences & Behavior",
     "pinyinTitle": "Smart Pinyin Search",
-    "pinyinDesc": "Supports Chinese Pinyin initials (e.g. wx for WeChat) and full pinyin",
+    "pinyinDesc": "Supports Chinese Pinyin initials (e.g. wd for wendang) and full Pinyin",
     "matchPathTitle": "Match Full Path by Default",
     "matchPathDesc": "Search within file paths in addition to file names",
     "caseTitle": "Case Sensitive",
@@ -2391,7 +2401,7 @@
     "syntaxSectionRegex": "Regular Expression Quick Reference",
     "groupExclusions": "Excluded Folders & Privacy Shield",
     "hideOnBlurTitle": "Auto-Hide When Clicking Outside",
-    "hideOnBlurDesc": "Automatically hide the search window when focus moves elsewhere (Listary / uTools style). Stays open while pinned, previewing via QuickLook, or using menus.",
+    "hideOnBlurDesc": "Automatically hide the search window when focus moves elsewhere. Stays open while pinned, previewing via QuickLook, or using menus.",
     "hideOnOpenTitle": "Auto-Hide After Opening Result",
     "hideOnOpenDesc": "Automatically hide the search window right after opening a file, folder, app, command, or bookmark via double-click or Enter. Stays open when pinned.",
     "clearQueryOnShowTitle": "Clear Previous Query on Re-Open",
@@ -2419,13 +2429,13 @@
     "pillKeycast": "Keycast",
     "pillKeycastFullDesc": "Keycast (Real-time keystrokes on screen)",
     "pillCapture": "Capture",
-    "pillCaptureFullDesc": "Capture (Screenshots, stitching & screen recording)",
+    "pillCaptureFullDesc": "Capture & Studio (markup pins, offline OCR, in-place translate & cinema auto-zoom)",
     "pillSearch": "Search",
-    "pillSearchFullDesc": "File Search (Instant NTFS file search)",
+    "pillSearchFullDesc": "Omni Search (instant files, full text, bookmarks, apps & commands)",
     "pillSpotlight": "Effects",
-    "pillSpotlightFullDesc": "Mouse Effects (Spotlight, ripples & motion trails)",
+    "pillSpotlightFullDesc": "Presenter & FX (double-Ctrl smooth zoom, spotlight & click ripples)",
     "pillDialog": "Dialog",
-    "pillDialogFullDesc": "Dialog Enhancer (Instant jump & recent paths in dialogs)",
+    "pillDialogFullDesc": "File Dialog Jump (Ctrl+G instant jump, inline search & path memory)",
     "quickControls": "Module Controls",
     "enabled": "Enabled",
     "disabled": "Disabled",
@@ -2507,7 +2517,7 @@
     "confirmClearMemories": "Clear all remembered recent folder records across applications?",
     "browseFailed": "Failed to select folder",
     "inlineSearchEnabled": "Enable Inline Quick Search in Dialogs",
-    "inlineSearchEnabledDesc": "Click the ribbon search icon or press your shortcut inside file dialogs for instant Listary-style search; shows local paths in 0ms and stays folder-only in Save As mode",
+    "inlineSearchEnabledDesc": "Click the ribbon search icon or press your shortcut inside file dialogs for instant inline directory search; shows local paths in 0ms and stays folder-only in Save As mode",
     "ribbonPositionBottomCenter": "Bottom Center",
     "ribbonPositionBottomRight": "Bottom Right",
     "hotkeyGroup": "Dialog Keyboard Shortcuts & Quick Jump",
@@ -2622,7 +2632,22 @@
     "clickColorsSectionDesc": "Set custom distinct colors for Left, Right, and Middle clicks",
     "spotlightGroupTitle": "Cursor Spotlight Focus",
     "clickRippleGroupTitle": "Mouse Click Ripple Effects",
-    "mouseTrailGroupTitle": "Mouse Movement Trail Effects"
+    "mouseTrailGroupTitle": "Mouse Movement Trail Effects",
+    "doubleCtrlModeTitle": "Double-Ctrl Presentation Mode",
+    "doubleCtrlModeDesc": "Choose classic spotlight vignette or cinema-smooth interactive screen zoom where clicking and typing keep working",
+    "modeSpotlight": "Classic Spotlight",
+    "modeSpotlightDesc": "Dim the screen and illuminate the cursor area to locate your pointer quickly",
+    "modeCinemaZoom": "Cinema Smooth Zoom",
+    "modeCinemaZoomDesc": "Smooth spring zoom-in around cursor with live clicking and typing intact",
+    "modeCinemaZoomRing": "Cinema Zoom + Halo",
+    "modeCinemaZoomRingDesc": "Smooth interactive zoom paired with a crisp non-dimming cursor focus ring",
+    "zoomLevelTitle": "Default Zoom Magnification",
+    "zoomLevelDesc": "Initial camera magnification factor on double-press Ctrl (1.25x to 4.0x)",
+    "zoomFollowCursor": "Smooth Cursor Panning",
+    "zoomFollowCursorDesc": "Uses a gentle center deadzone so tiny clicks stay steady while moving near edges pans smoothly",
+    "zoomWheelAdjust": "Ctrl + Wheel Live Zoom Adjust",
+    "zoomWheelAdjustDesc": "Hold Ctrl and scroll the mouse wheel (or Ctrl + / -) while zoomed to adjust magnification smoothly",
+    "zoomUsageHint": "Double-press Ctrl again or press Esc to glide back to 1.0x. Normal clicking, dragging, and typing remain active while zoomed."
   },
   "window": {
     "minimize": "Minimize",
@@ -3148,7 +3173,7 @@
     "badgeByokEncrypted": "BYOK · DPAPI Encrypted",
     "freePrimaryTitle": "Free Primary Channel",
     "freePrimaryDesc": "Automatically falls back to the secondary channel on error or rate limit.",
-    "freePrimaryEdge": "Microsoft Edge Translate First",
+    "freePrimaryEdge": "Microsoft Edge Translate First (Recommended)",
     "freePrimaryGoogle": "Google Translate First",
     "targetLangTitle": "Default Target Language",
     "targetLangDesc": "Target language rendered directly in place on the screenshot while preserving background and text colors.",
@@ -3657,5 +3682,23 @@
     "viewAllOnGitHub": "View all on GitHub",
     "gotItBtn": "Got it",
     "clearSearch": "Clear search"
+  },
+  "hotkeyExclusion": {
+    "emptyHint": "No excluded apps yet",
+    "emptyPerHotkey": "Active in all apps; add process names to auto-yield",
+    "emptyGlobal": "No global do-not-disturb apps configured",
+    "removeAppAria": "Remove {{app}}",
+    "inputPlaceholder": "e.g. ssms.exe, emacs.exe",
+    "addBtn": "Add",
+    "pickWindowBtn": "Pick Running App",
+    "pickerTitle": "Pick Application to Auto-Yield Hotkey",
+    "pickerPerHotkeyTitle": "Pick App to Auto-Yield This Shortcut",
+    "pickerGlobalTitle": "Pick App to Auto-Yield All Global Shortcuts",
+    "saveFailed": "Failed to save excluded apps",
+    "badgeTooltip": "Auto-yields in: {{apps}}",
+    "configurePerHotkeyTip": "Configure per-app auto-yield rules",
+    "excludedCountBadge": "Yields {{count}}",
+    "modalTitle": "Auto-Yield Apps — {{name}}",
+    "modalDesc": "When any listed process is in the foreground, only this shortcut is released to the active app while all other Tools3000 shortcuts stay active."
   }
 }

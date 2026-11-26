@@ -238,7 +238,7 @@ struct SearchPipeClient::Impl {
 
         auto sid = queryCurrentUserSidW();
         if (!sid || sid->empty()) {
-            LOG_ERROR("SearchPipeClient: failed to resolve current user SID");
+            LOG_ERROR("SearchPipeClient: failed to resolve current user SID (err={})", GetLastError());
             return false;
         }
         forcePortableService = hasCommandLineFlagW(L"--force-portable-search-service");
@@ -247,7 +247,7 @@ struct SearchPipeClient::Impl {
 
         auto sidPipeUtf8 = tools3000::service::pipe_endpoint::makeUserSidPipeName(*sid);
         if (!sidPipeUtf8) {
-            LOG_ERROR("SearchPipeClient: failed to build per-SID pipe endpoint");
+            LOG_ERROR("SearchPipeClient: failed to build per-SID pipe endpoint (sidLen={})", sid->size());
             return false;
         }
 
@@ -256,7 +256,7 @@ struct SearchPipeClient::Impl {
         if (!tools3000::service::pipe_endpoint::isValidToken(token)) {
             auto generated = generatePipeTokenHex();
             if (!generated) {
-                LOG_ERROR("SearchPipeClient: failed to generate secure pipe token");
+                LOG_ERROR("SearchPipeClient: failed to generate secure pipe token (err={})", GetLastError());
                 return false;
             }
             (void)cfg.set("/search/pipeToken", *generated);

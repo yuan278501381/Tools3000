@@ -36,6 +36,7 @@ export interface SearchFooterProps {
   onRebuildIndex: () => void;
   onOpenResult: (result: SearchResult) => void;
   onOpenFolderResult: (result: SearchResult) => void;
+  onCopyFileResult?: (result: SearchResult) => void;
   onCopyPathResult: (result: SearchResult) => void;
   onExportResultsToCsv: () => void;
   onToggleSyntaxHelp: () => void;
@@ -70,6 +71,7 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
   onRebuildIndex,
   onOpenResult,
   onOpenFolderResult,
+  onCopyFileResult,
   onCopyPathResult,
   onExportResultsToCsv,
   onToggleSyntaxHelp,
@@ -396,11 +398,11 @@ export const SearchFooter: React.FC<SearchFooterProps> = ({
             <button
               type="button"
               className="search-hint-btn search-hint-btn--primary"
-              onClick={() => onCopyPathResult(sortedResults[selectedIndex])}
-              title={t('search.copyPathTitle', 'Copy full file path (Ctrl+C)')}
+              onClick={() => (onCopyFileResult ? onCopyFileResult(sortedResults[selectedIndex]) : onCopyPathResult(sortedResults[selectedIndex]))}
+              title={t('search.copyFileTitle', 'Copy selected file to clipboard (Ctrl+C)')}
             >
               <kbd>Ctrl+C</kbd>
-              <span className="search-hint-label">{t('search.copyPathShortcut', 'Copy Path')}</span>
+              <span className="search-hint-label">{t('search.copyFileShortcut', 'Copy File')}</span>
             </button>
             <button
               type="button"

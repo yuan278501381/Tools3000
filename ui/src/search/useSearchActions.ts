@@ -179,9 +179,14 @@ export function useSearchActions({
   const copyFileResult = useCallback(async (result: SearchResult | undefined) => {
     if (!result) return;
     setActionError('');
+    // 书签 / 系统命令等非磁盘实体项自动降级为复制链接或命令文本
+    if (result.resultType === 'bookmark' || result.resultType === 'command') {
+      copyPathResult(result);
+      return;
+    }
     try {
       await requestNativeActionWithFallback('search.copyFile', 'system.copyFile', result.path);
-      toast.success(t('search.copiedFile', 'File copied to clipboard (ready to paste)'));
+      toast.success(t('search.copiedFile', 'File copied to clipboard'));
     } catch {
       copyPathResult(result);
     }

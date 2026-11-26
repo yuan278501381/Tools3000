@@ -16,6 +16,7 @@
 #include <future>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace tools3000::core {
 
@@ -425,6 +426,9 @@ void HotkeyManager::setPaused(bool paused) {
                 continue;
             }
             entry.suspendedByPause = false;
+            if (entry.suspendedByApp) {
+                continue;
+            }
             bool ok = false;
             bool useHook = false;
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -514,6 +518,9 @@ void HotkeyManager::setFullscreenSuspended(bool suspended) {
                 continue;
             }
             entry.suspendedByFullscreen = false;
+            if (entry.suspendedByApp) {
+                continue;
+            }
             bool ok = false;
             bool useHook = false;
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -603,6 +610,9 @@ void HotkeyManager::setRemoteSuspended(bool suspended) {
                 continue;
             }
             entry.suspendedByRemote = false;
+            if (entry.suspendedByApp) {
+                continue;
+            }
             bool ok = false;
             bool useHook = false;
             if (m_hwnd && IsWindow(m_hwnd)) {
@@ -627,6 +637,189 @@ void HotkeyManager::setRemoteSuspended(bool suspended) {
 
 bool HotkeyManager::isRemoteSuspended() const {
     return m_remoteSuspended.load(std::memory_order_acquire);
+}
+
+std::string HotkeyManager::normalizeProcessName(std::string_view raw) {
+    size_t start = 0;
+    size_t end = raw.size();
+    while (start < end && std::isspace(static_cast<unsigned char>(raw[start]))) ++start;
+    while (end > start && std::isspace(static_cast<unsigned char>(raw[end - 1]))) --end;
+    std::string s(raw.substr(start, end - start));
+    if (s.empty()) return {};
+
+    const size_t slashPos = s.find_last_of("\\/");
+    if (slashPos != std::string::npos) {
+        s = s.substr(slashPos + 1);
+    }
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (s.empty()) return {};
+    if (s.find('.') == std::string::npos) {
+        s += ".exe";
+    }
+    return s;
+}
+
+bool HotkeyManager::isProcessExcluded(
+    std::string_view activeProcessLower,
+    const std::vector<std::string>& globalExclusions,
+    const std::vector<std::string>& perHotkeyExclusions) {
+    if (activeProcessLower.empty()) return false;
+    const std::string normalizedActive = normalizeProcessName(activeProcessLower);
+    if (normalizedActive.empty()) return false;
+
+    for (const auto& item : globalExclusions) {
+        if (item == normalizedActive) return true;
+    }
+    for (const auto& item : perHotkeyExclusions) {
+        if (item == normalizedActive) return true;
+    }
+    return false;
+}
+
+namespace {
+std::vector<std::string> normalizeAppList(const std::vector<std::string>& rawApps) {
+    std::vector<std::string> normalized;
+    std::unordered_set<std::string> seen;
+    normalized.reserve(rawApps.size());
+    for (const auto& app : rawApps) {
+        std::string norm = HotkeyManager::normalizeProcessName(app);
+        if (!norm.empty() && seen.insert(norm).second) {
+            normalized.push_back(std::move(norm));
+        }
+    }
+    return normalized;
+}
+}  // namespace
+
+bool HotkeyManager::shouldSuspendForAppLocked(const std::string& name) const {
+    if (m_activeForegroundProcessLower.empty()) return false;
+    const auto it = m_perHotkeyExcludedApps.find(name);
+    if (it != m_perHotkeyExcludedApps.end()) {
+        return isProcessExcluded(m_activeForegroundProcessLower, m_globalExcludedApps, it->second);
+    }
+    static const std::vector<std::string> kEmpty;
+    return isProcessExcluded(m_activeForegroundProcessLower, m_globalExcludedApps, kEmpty);
+}
+
+void HotkeyManager::syncAppExclusionsLocked() {
+    const bool isPausedNow = m_paused.load(std::memory_order_relaxed);
+    const bool fullscreenNow = m_fullscreenSuspended.load(std::memory_order_relaxed);
+    const bool remoteNow = m_remoteSuspended.load(std::memory_order_relaxed);
+
+    for (auto& [name, entry] : m_hotkeys) {
+        if (!entry.armed || entry.def.virtualKey == 0) {
+            entry.suspendedByApp = false;
+            continue;
+        }
+        const bool shouldSuspend = shouldSuspendForAppLocked(name);
+        if (shouldSuspend == entry.suspendedByApp) {
+            continue;
+        }
+        entry.suspendedByApp = shouldSuspend;
+
+        if (shouldSuspend) {
+            if (entry.registered) {
+                if (entry.useHook) {
+                    KeyboardHook::instance().unregisterHookHotkey(entry.id);
+                } else if (m_hwnd) {
+                    UnregisterHotKey(m_hwnd, entry.id);
+                }
+                m_idToName.erase(entry.id);
+                entry.registered = false;
+                entry.useHook = false;
+                LOG_INFO("[HotkeyExclusion] Yielded hotkey to foreground app: name={}, def={}, app={}",
+                         name, entry.def.toString(), m_activeForegroundProcessLower);
+            }
+        } else {
+            if (isPausedNow || fullscreenNow || remoteNow || entry.registered) {
+                continue;
+            }
+            bool ok = false;
+            bool useHook = false;
+            if (m_hwnd && IsWindow(m_hwnd)) {
+                UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
+                ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
+            }
+            if (!ok && canFallbackToHook(entry.def)) {
+                KeyboardHook::instance().registerHookHotkey(entry.id, entry.def, name, entry.callback);
+                KeyboardHook::instance().install();
+                ok = true;
+                useHook = true;
+            }
+            entry.registered = ok;
+            entry.useHook = useHook;
+            if (ok) {
+                m_idToName[entry.id] = name;
+                LOG_INFO("[HotkeyExclusion] Restored hotkey after leaving excluded app: name={}, def={}",
+                         name, entry.def.toString());
+            }
+        }
+    }
+}
+
+void HotkeyManager::setGlobalExcludedApps(const std::vector<std::string>& apps) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        dispatchToHotkeyThread(ownerThreadId, "setGlobalExcludedApps",
+                               [this, apps]() { setGlobalExcludedApps(apps); });
+        return;
+    }
+    std::lock_guard lock(m_mutex);
+    m_globalExcludedApps = normalizeAppList(apps);
+    syncAppExclusionsLocked();
+}
+
+std::vector<std::string> HotkeyManager::getGlobalExcludedApps() const {
+    std::lock_guard lock(m_mutex);
+    return m_globalExcludedApps;
+}
+
+void HotkeyManager::setHotkeyExcludedApps(const std::string& name, const std::vector<std::string>& apps) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        dispatchToHotkeyThread(ownerThreadId, "setHotkeyExcludedApps",
+                               [this, name, apps]() { setHotkeyExcludedApps(name, apps); });
+        return;
+    }
+    std::lock_guard lock(m_mutex);
+    auto normalized = normalizeAppList(apps);
+    if (normalized.empty()) {
+        m_perHotkeyExcludedApps.erase(name);
+    } else {
+        m_perHotkeyExcludedApps[name] = std::move(normalized);
+    }
+    syncAppExclusionsLocked();
+}
+
+std::vector<std::string> HotkeyManager::getHotkeyExcludedApps(const std::string& name) const {
+    std::lock_guard lock(m_mutex);
+    const auto it = m_perHotkeyExcludedApps.find(name);
+    if (it != m_perHotkeyExcludedApps.end()) {
+        return it->second;
+    }
+    return {};
+}
+
+std::unordered_map<std::string, std::vector<std::string>> HotkeyManager::getAllPerHotkeyExcludedApps() const {
+    std::lock_guard lock(m_mutex);
+    return m_perHotkeyExcludedApps;
+}
+
+void HotkeyManager::updateForegroundProcess(const std::string& processName) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        dispatchToHotkeyThread(ownerThreadId, "updateForegroundProcess",
+                               [this, processName]() { updateForegroundProcess(processName); });
+        return;
+    }
+    std::lock_guard lock(m_mutex);
+    const std::string norm = normalizeProcessName(processName);
+    if (norm == m_activeForegroundProcessLower) {
+        return;
+    }
+    m_activeForegroundProcessLower = norm;
+    syncAppExclusionsLocked();
 }
 
 void HotkeyManager::initialize(HWND messageWindow) {
@@ -663,6 +856,7 @@ void HotkeyManager::shutdown() {
     }
     m_hotkeys.clear();
     m_idToName.clear();
+    m_activeForegroundProcessLower.clear();
     m_hwnd = nullptr;
     m_ownerThreadId.store(0, std::memory_order_release);
     LOG_INFO("快捷键管理器已关闭, 所有快捷键已注销");
@@ -708,13 +902,19 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
     }
 
     if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
-        m_remoteSuspended.load(std::memory_order_relaxed)) {
-        m_hotkeys.emplace(name, HotkeyEntry{
-            id, def, name, std::move(callback), false, true, false, "none", "", false,
-            m_fullscreenSuspended.load(std::memory_order_relaxed),
-            m_remoteSuspended.load(std::memory_order_relaxed),
-            false
-        });
+        m_remoteSuspended.load(std::memory_order_relaxed) ||
+        shouldSuspendForAppLocked(name)) {
+        HotkeyEntry suspendedEntry{};
+        suspendedEntry.id = id;
+        suspendedEntry.def = def;
+        suspendedEntry.name = name;
+        suspendedEntry.callback = std::move(callback);
+        suspendedEntry.registered = false;
+        suspendedEntry.armed = true;
+        suspendedEntry.suspendedByFullscreen = m_fullscreenSuspended.load(std::memory_order_relaxed);
+        suspendedEntry.suspendedByRemote = m_remoteSuspended.load(std::memory_order_relaxed);
+        suspendedEntry.suspendedByApp = shouldSuspendForAppLocked(name);
+        m_hotkeys.emplace(name, std::move(suspendedEntry));
         return true;
     }
 
@@ -771,9 +971,11 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
 
     if (!registered) {
         DWORD err = GetLastError();
-        LOG_ERROR("注册快捷键失败: name={}, def={}, error={}", name, def.toString(), err);
         if (err == ERROR_HOTKEY_ALREADY_REGISTERED) {
-            LOG_ERROR("快捷键 {} 已被其他程序占用", def.toString());
+            LOG_WARN("Hotkey conflict (already occupied by another app): name={}, def={}, error={}",
+                     name, def.toString(), err);
+        } else {
+            LOG_ERROR("注册快捷键失败: name={}, def={}, error={}", name, def.toString(), err);
         }
         return false;
     }
@@ -795,7 +997,7 @@ void HotkeyManager::unregisterHotkey(const std::string& name) {
     std::lock_guard lock(m_mutex);
     auto it = m_hotkeys.find(name);
     if (it == m_hotkeys.end()) {
-        LOG_WARN("尝试注销不存在的快捷键: name={}", name);
+        LOG_DEBUG("尝试注销不存在的快捷键: name={}", name);
         return;
     }
     if (it->second.registered) {
@@ -859,12 +1061,14 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
     }
 
     if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
-        m_remoteSuspended.load(std::memory_order_relaxed)) {
+        m_remoteSuspended.load(std::memory_order_relaxed) ||
+        shouldSuspendForAppLocked(name)) {
         it->second.def = newDef;
         it->second.registered = false;
         it->second.useHook = false;
         it->second.suspendedByFullscreen = m_fullscreenSuspended.load(std::memory_order_relaxed);
         it->second.suspendedByRemote = m_remoteSuspended.load(std::memory_order_relaxed);
+        it->second.suspendedByApp = shouldSuspendForAppLocked(name);
         it->second.suspendedByPause = false;
         LOG_INFO("快捷键重绑定成功: name={}, {} → {}", name, oldDef.toString(), newDef.toString());
         return true;
@@ -971,6 +1175,7 @@ bool HotkeyManager::clearHotkey(const std::string& name) {
     it->second.suspendedByFullscreen = false;
     it->second.suspendedByRemote = false;
     it->second.suspendedByPause = false;
+    it->second.suspendedByApp = false;
     LOG_INFO("快捷键已禁用: name={}", name);
     return true;
 }
@@ -1003,6 +1208,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
         it->second.suspendedByFullscreen = false;
         it->second.suspendedByRemote = false;
         it->second.suspendedByPause = false;
+        it->second.suspendedByApp = false;
         if (it->second.registered) {
             if (it->second.useHook) {
                 KeyboardHook::instance().unregisterHookHotkey(it->second.id);
@@ -1018,9 +1224,11 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
     }
 
     if (m_fullscreenSuspended.load(std::memory_order_relaxed) ||
-        m_remoteSuspended.load(std::memory_order_relaxed)) {
+        m_remoteSuspended.load(std::memory_order_relaxed) ||
+        shouldSuspendForAppLocked(name)) {
         it->second.suspendedByFullscreen = m_fullscreenSuspended.load(std::memory_order_relaxed);
         it->second.suspendedByRemote = m_remoteSuspended.load(std::memory_order_relaxed);
+        it->second.suspendedByApp = shouldSuspendForAppLocked(name);
         it->second.suspendedByPause = false;
         return true;
     }
@@ -1079,7 +1287,8 @@ bool HotkeyManager::setHotkeyScope(const std::string& name, const std::string& s
 bool HotkeyManager::isConflict(const HotkeyDef& def) const {
     std::lock_guard lock(m_mutex);
     for (const auto& [name, entry] : m_hotkeys) {
-        if ((entry.registered || entry.suspendedByFullscreen || entry.suspendedByRemote || entry.suspendedByPause) &&
+        if ((entry.registered || entry.suspendedByFullscreen || entry.suspendedByRemote ||
+             entry.suspendedByPause || entry.suspendedByApp) &&
             def.virtualKey != 0 && entry.def == def) {
             return true;
         }
@@ -1162,6 +1371,7 @@ void HotkeyManager::handleHotkeyMessage(WPARAM wParam) {
         name = it->second;
         auto entryIt = m_hotkeys.find(name);
         if (entryIt == m_hotkeys.end()) return;
+        if (entryIt->second.suspendedByApp) return;
 
         callback = entryIt->second.callback;
     }
@@ -1193,7 +1403,10 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
 
     for (const auto& [name, entry] : m_hotkeys) {
         HotkeyEntry item = entry;
-        if (item.suspendedByFullscreen || item.suspendedByRemote || item.suspendedByPause) {
+        if (const auto exIt = m_perHotkeyExcludedApps.find(name); exIt != m_perHotkeyExcludedApps.end()) {
+            item.excludedApps = exIt->second;
+        }
+        if (item.suspendedByFullscreen || item.suspendedByRemote || item.suspendedByPause || item.suspendedByApp) {
             item.registered = true;
         }
         if (item.def.virtualKey == 0) {
@@ -1214,7 +1427,8 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
                     }
                 }
                 item.conflictWith = "与插件/功能 [" + others + "] 冲突";
-            } else if (!item.suspendedByFullscreen && !item.suspendedByRemote && !item.suspendedByPause &&
+            } else if (!item.suspendedByFullscreen && !item.suspendedByRemote &&
+                       !item.suspendedByPause && !item.suspendedByApp &&
                        hotkeyLooksExternallyConflicted(
                            item.def.virtualKey != 0, item.armed, item.registered)) {
                 // 外部冲突 (被其它第三方软件占用)

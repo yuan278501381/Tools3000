@@ -35,6 +35,12 @@ struct SpotlightSettings {
     int shakeThreshold = 4;            // 摇晃检测灵敏度 (默认 4，极速响应)
     std::string spotlightAnimStyle = "inward_gravity"; // inward_gravity (默认向心引力超聚焦), tactical_sonar (科技声纳), aurora_ripple (极简涟漪)
 
+    // 双击 Ctrl 演示模式与电影级平滑交互放大 (Issue #34)
+    std::string doubleCtrlMode = "spotlight"; // spotlight (经典聚光灯) | cinema_zoom (电影级平滑放大) | cinema_zoom_ring (电影放大+光标光环)
+    float zoomLevel = 2.0f;                   // 电影放大默认倍率 (1.25 ~ 4.0)
+    bool zoomFollowCursor = true;             // 放大期间镜头柔和死区跟随光标
+    bool zoomWheelAdjust = true;              // 放大期间允许 Ctrl+滚轮 无级调节倍率
+
     // 鼠标点击与轨迹特效 (演示辅助)
     bool clickRippleEnabled = false;
     bool mouseTrailEnabled = false;
@@ -56,11 +62,14 @@ public:
     bool initialize(HINSTANCE hInstance);
     void shutdown();
 
-    /// 触发聚光灯，若 pt={0,0} 且 autoFetch=true 则自动采集当前光标坐标
-    void trigger(POINT pt = {0, 0}, bool autoFetch = true);
+    /// 触发聚光灯或电影级交互放大，若 pt={0,0} 且 autoFetch=true 则自动采集当前光标坐标
+    void trigger(POINT pt = {0, 0}, bool autoFetch = true, bool allowCinemaZoom = true);
 
-    /// 立即取消或提前平滑淡出聚光灯（例如按键按下或鼠标点击）
+    /// 立即取消或提前平滑淡出聚光灯/电影放大（例如按键按下、鼠标点击或锁屏）
     void dismiss();
+
+    /// 电影级平滑放大完全归位至 1.0x 后的联动收尾回调（自动收起伴随光环）
+    void onCinemaZoomEnded();
 
     /// 设置与持久化
     void updateSettings(const SpotlightSettings& settings);
@@ -162,6 +171,7 @@ public:
         std::vector<ClickRipple> ripples;
         std::vector<TrailParticle> trail;
         ViewportBounds bounds;
+        bool ringOnlyMode = false;
     };
 
     void renderSnapshot(const RenderSnapshot& snapshot);
@@ -204,6 +214,7 @@ private:
     float m_focusProgress = 0.0f;       // 0.0 ~ 1.0 向心聚焦/扩散进程
     float m_scalePulse = 1.0f;          // 物理弹性回弹缩放因子
     float m_reticleAngle = 0.0f;        // 战术准星旋转角度
+    bool m_ringOnlyMode = false;        // 电影放大伴随光环模式（无全屏暗角，仅局部柔光引导环）
 
     // 双击 Ctrl 工业级状态机 (Down ➔ Up ➔ Down 严格闭环，杜绝 Auto-Repeat 连发与长按误触)
     enum class CtrlDoubleTapState {

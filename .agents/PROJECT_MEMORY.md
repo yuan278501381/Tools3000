@@ -6,6 +6,34 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-26] 五维交互体验升维与硬核排障 (`feat/cinema-zoom-translate-search-copy-fixes`): 双击 `Ctrl` 电影级平滑交互放大 (`#34`)、热键级按前台应用自动让位（默认避让 SSMS / Emacs `Alt+X`）、`Alt+X` 透明空框根治与语种切换、搜索框 `Ctrl+C` 复制文件本体、消除「空格快速预览」幽灵侧边栏
+- **1. 双击 `Ctrl` 电影级平滑交互放大引擎 (`CinemaZoomEngine.{h,cpp}`, `SpotlightOverlay*`, `MouseHook.{h,cpp}`, `src/main.cpp`, `SpotlightPage.{tsx,css}`, `test_ui_lifecycle.inc`, GitHub Issue `#34 @cainiaoNO1`)**：
+  - *技术路线*：动态加载 `Magnification.dll`（`MagInitialize` / `MagSetFullscreenTransform` / `MagUninitialize`，无静态库硬链接、天然兼容 x64/ARM64），结合 3 通道闭式解析临界阻尼物理弹簧（`zoom` / `centerX` / `centerY`，0 过冲不眩晕）+ `DwmFlush()` VSync 同步 + 中心柔和死区跟焦（`deadzoneRatio = 0.24`，点击微调画面稳如泰山，近边缘丝滑平移），**兼得电影级推拉与全程原生点击、拖拽、打字**；
+  - *三模式兼容*：`doubleCtrlMode` 支持 `spotlight`（经典聚光灯，老用户默认零惊喜变化）、`cinema_zoom`（纯电影级平滑放大）、`cinema_zoom_ring`（电影放大 + `SpotlightOverlay` 局部小包围盒非暗角双环光标定位）；
+  - *调倍与五重防卡死复位铁甲*：在 `core::MouseHook` 增设零锁原子前置拦截器 `setPreInterceptor` 支持放大期 `Ctrl+滚轮` 与 `Ctrl+±/0` 无级调倍（`1.25x~4.0x`）；提供再次双击 `Ctrl` / `Esc` 退出、锁屏/休眠/`WM_DISPLAYCHANGE` 硬复位、程序退出硬复位、`SetUnhandledExceptionFilter` 崩溃前无锁复位 `1.0x`，闲置自动 `MagUninitialize()` 零占用。
+- **2. 热键级「按前台应用自动让位」架构 (`HotkeyManager.{h,cpp}`, `MessageBridge.cpp`, `src/main.cpp`, `HotkeyAppExclusionBar.{tsx,css}`, `processName.ts`, `OcrPage.tsx`, `GeneralPage.{tsx,css}`, `test_core.inc`)**：
+  - *根因与设计*：解决 `Alt+X` 等全局热键与专业软件高频局部热键（如 SSMS 执行 SQL、Emacs `M-x`）硬冲突；基于主进程既有 `EVENT_SYSTEM_FOREGROUND` 零轮询监听，在 `HotkeyManager` 新增与全屏/远控/录制正交的 **单热键维度 `suspendedByApp`** 状态位；
+  - *精准单键交还*：焦点切入命中进程时仅卸下对应单条 `RegisterHotKey`，100% 原生透传给专业软件（零模拟重放、不污染 Alt 修饰键），同时保留 `F1`/`Alt+Space`/`Alt+V` 等其余热键；焦点切离毫秒级恢复；`getAllHotkeys` 不误报外部冲突并回传 `excludedApps`；
+  - *开箱默认与统一复用*：首次初始化默认给 `"Translate Selection"` 预设 `["ssms.exe", "emacs.exe", "runemacs.exe"]`（标志位 `/hotkeys/appExclusionInitialized` 防覆盖用户手动删除），同时支持「单快捷键专属避让」与「全局热键免打扰名单」，前端复用 `RunningWindowPicker` 实现一键拾取运行中窗口。
+- **3. `Alt+X` 原生 Direct2D 翻译浮窗透明空框与点击穿透根治（路线 B 省资源版）（`QuickTranslatePopupWindow.{h,cpp}`, `test_ui_lifecycle.inc`）**：
+  - *根因*：`QuickTranslatePopupWindow.cpp` 误调用 `WinUtils::applyTaskbarSafeOverlayStyle(hwnd)`，给普通 `ID2D1HwndRenderTarget` 窗体强行注入 `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`，导致客户区 Alpha 全透明仅剩 DWM 圆角灰框且点击全穿透；
+  - *根治与增强*：移除误调用改用 `SetPropW(hwnd, L"NonRudeHWND", TRUE)` + `allowWindowCapture`；零 WebView2 下新增顶栏语种方向胶囊点击循环切换目标语种（`AUTO -> ZH -> EN -> JA -> AUTO`）并就地重译。
+- **4. `Alt+Space` 搜索框 `Ctrl+C` 复制文件本体 / `Ctrl+Shift+C` 复制路径 (`useSearchKeyboard.ts`, `useSearchActions.ts`, `SearchContextMenu.tsx`, `SearchFooter.tsx`, `SearchApp.tsx`, `searchKeyboard.test.ts`)**：
+  - 对调为 Windows 资源管理器 / Everything / Listary 肌肉记忆：`Ctrl+C` 直接写入 `CF_HDROP` 复制文件本体（微信/桌面直接粘贴文件；`bookmark`/`command` 非磁盘项自动降级复制文本；搜索框有拖选文字时放行原生文本复制），`Ctrl+Shift+C` 复制完整路径。
+- **5. 消除侧边栏「空格快速预览 (`quick_look`)」幽灵菜单并解耦初始化 (`routes.ts`, `App.tsx`, `src/main.cpp`, `routesAndExclusion.test.ts`)**：
+  - 在 `routes.ts` 抽离 `isBuiltinPluginId(id)` 单一事实源替代 `App.tsx` 手写过时白名单 `standardPluginIds`，同时要求 `p.isExtension !== false`，彻底杜绝内置模块误入外部扩展菜单并落入 `GeneralPage` 兜底；同步把 `main.cpp` 中 `g_quickLookEnabled` 移出 `if (pm.isEnabledAtLaunch("search"))` 条件块，修复停用文件搜索时空格快速预览开关失效的隐藏接线缺陷。
+- **6. 全球化 8 语种文案去地域割裂 + 全触点核心亮点与加密云同步补齐 (`StudioPreviewWindow*.cpp`, 6 套 `resources/locales/native/*.json`, 8 套 `ui/src/i18n/locales/*.json`, `OnboardingModal.tsx`, `SearchPage.tsx`, `CapturePage.tsx`, `DialogEnhancerPage.tsx`, `search/*`)**：
+  - 全库彻底清除 `微信 / WeChat / Lark / 国内 / PixPin / Snipaste / Listary / uTools / WPS` 在 8 语种 Toast、演播室导出提示与设置文案中的地域/竞品割裂感（搜索复制统一简洁提示「已复制文件到剪贴板」），并在新手引导 Step 0/1/2/3、侧边栏副标题、功能模块列表、托盘提示与关于页同步补齐全能文件/全文/应用/书签/命令搜索、多语原位与 `Alt+X` 划词翻译、`Ctrl+G` 对话框快跳即搜、电影级自动运镜录屏、双击 `Ctrl` 交互放大、专业软件避让及端到端加密配置云同步亮点。
+- **7. 官网 PC 桌面端 + 手机移动端双端响应式与模块化架构升级 (`docs/site/index.html`)**：
+  - 引入安全区适配、`theme-color` 动态联动、手机识别伴随横幅（一键复制电脑访问链接 / GitHub 收藏）、移动端汉堡抽屉菜单、Scoop/WinGet 双源安装命令切换、触摸左右滑动 + 横向 snap 滑轨 + 灯箱放大预览的 Demo 剧场、13 项模块化分类筛选、端到端加密云同步 + 专业软件零冲突自动避让 + 350 KB MCP + 内存对比四格架构深潜区与手机吸底快捷栏；
+  - 针对欧美极客对“多合一全家桶”的顾虑，全站中英双语突出「**每个功能均可个性化独立开关，关闭即卸载，零后台占用**」（`toggle every module independently — disabled tools unload completely with zero background usage`），且 100% 完整保留 `scripts/release.ps1` 的 6 处自动版本替换正则锚点。
+- **8. 全链路日志实机审计与五项精准加固 (`GestureAction.cpp`, `BuiltinCommands.cpp`, `GestureTrailOverlay.cpp`, `GestureEngine.cpp`, `KeyboardHook.cpp`, `HotkeyManager.cpp`, `SearchPipeClient.cpp`, `CinemaZoomEngine.{h,cpp}`, `SettingsWindow.cpp`, `test_gesture.inc`)**：
+  - ① **修复跨线程 `TraceId` 断链**：`GestureAction::execute` 与 `BuiltinCommandDispatcher::execute` 由默认生成新 ID 改为 `TraceId::Scope(TraceId::current())` 继承父链路，并新增 `GestureAuditRegressionTest.ActionAndBuiltinPreserveParentTraceId` 防回退单测；`CinemaZoomEngine::activate` 将调用方 `TraceId` 完整透传至后台 `workerLoop`；
+  - ② **收敛正常退出与幂等假 `WARN`**：`HotkeyManager::unregisterHotkey` 退出幂等注销与 `KeyboardHook::install` 幂等重入降级 `LOG_DEBUG`；`registerHotkey` 遇 `ERROR_HOTKEY_ALREADY_REGISTERED (1409)` 合并为单条结构化 `LOG_WARN`（非 1409 系统异常保留 `LOG_ERROR`）；
+  - ③ **治理鼠标手势热路径 `INFO` 刷屏**：将帧提交、详细诊断、选窗与动作起止微步收敛至 `LOG_DEBUG`，日常 `INFO` 仅保留 `手势识别成功` 与 `执行手势动作` 高密度摘要（失败分支仍全量保留 `WARN`/`ERROR` 与窗口诊断信息）；
+  - ④ **补齐故障上下文与系统错误码**：`SearchPipeClient` 3 处初始化失败 `LOG_ERROR` 补充 `GetLastError()` / `sidLen`，`CinemaZoomEngine` 放大失败 `LOG_WARN` 补充主屏尺寸、虚拟多屏坐标范围与错误码；
+  - ⑤ **消除 `SettingsWindow::hide()` 毫秒级重复隐藏与重复倒计时日志**：入口增设 `!m_visible && !IsWindowVisible` 幂等防重入守卫。
+
 ### [2026-11-26] `v1.4.15` 十维体验与可靠性跃升：任务栏右键 0ms 放行、专业 CAD/UG/3D 右键智能避让、原生 `Alt+X` 翻译浮窗、`quick_look` 独立开关 (`#32`)、对话框快捷键总览 SSOT、标注缩放跟手与高 DPI 矢量光标、屏摄暗底报错条 OCR 救援、SearchWindow 零闪揭幕 (`#29`)、默认 Bilibili 翻译、技术栈实证刷新、离线分页更新日志 (`#31`)
 - **1. Windows 10/11 任务栏右键控制菜单被接管失效根治（LINUX DO `@kidcode`）与专业 CAD/UG/EDA/3D 软件右键 0ms 单键直通（`GestureInputPolicy.h`, `MouseHook.{h,cpp}`, `GestureProfile.cpp`, `GestureEngine.{h,cpp}`, `PluginEntry.cpp`, `GesturePage.{tsx,css}`, `test_gesture.inc`）**：
   - *任务栏三层纵深根治*：① `GestureProfile::createTaskbarProfile()` 默认设 `"right" = TriggerModeState::Disabled` 并对存量老用户做 `/gesture/taskbarRightClickPassthroughV1Migrated` 平滑迁移；② `MouseHook` 维护无锁原子 `m_bypassTaskbarRightClick` / `m_bypassTaskbarMiddleClick` / `m_bypassTaskbarAll`（在 `refreshForegroundBypass` 入口优先同步防早退漏刷），按下瞬间通过 `classifyGestureHookPoint` + `shouldBypassHookForTargetWindow` 对主副任务栏及系统瞬态壳层弹窗 0ms 放行；③ 打通全 Profile `isTriggerDisabledInProfile` 判定，并将 `reinjectTriggerClick` 升级为 `DOWN -> 10ms -> UP` 两阶段回放；

@@ -17,6 +17,7 @@
 
 #include <windows.h>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <functional>
 #include <mutex>
@@ -82,7 +83,9 @@ struct HotkeyEntry {
     bool suspendedByFullscreen = false; // 是否因全屏游戏防打扰临时挂起卸下
     bool suspendedByRemote = false;     // 是否因远控窗口前台激活临时挂起让位
     bool suspendedByPause = false;      // 是否因快捷键静默录制模式临时卸下
+    bool suspendedByApp = false;        // 是否因当前前台应用命中避让规则临时卸下让位
     std::string scope = "global";       // 作用域语义: "global" | "recording" | "dialog"
+    std::vector<std::string> excludedApps; // 该热键专属避让进程名单（小写进程名，如 ssms.exe）
 };
 
 class TOOLS3000CORE_API HotkeyManager {
@@ -145,17 +148,41 @@ public:
     void setRemoteSuspended(bool suspended);
     bool isRemoteSuspended() const;
 
+    /// 进程名规范化与热键按前台应用避让判定（纯静态逻辑，支持离线单测）
+    static std::string normalizeProcessName(std::string_view raw);
+    static bool isProcessExcluded(
+        std::string_view activeProcessLower,
+        const std::vector<std::string>& globalExclusions,
+        const std::vector<std::string>& perHotkeyExclusions);
+
+    /// 全局热键免打扰进程名单（命中时临时卸下所有全局热键并交还前台应用）
+    void setGlobalExcludedApps(const std::vector<std::string>& apps);
+    std::vector<std::string> getGlobalExcludedApps() const;
+
+    /// 单条热键专属避让进程名单（如 Translate Selection 避让 ssms.exe / emacs.exe）
+    void setHotkeyExcludedApps(const std::string& name, const std::vector<std::string>& apps);
+    std::vector<std::string> getHotkeyExcludedApps(const std::string& name) const;
+    std::unordered_map<std::string, std::vector<std::string>> getAllPerHotkeyExcludedApps() const;
+
+    /// 前台窗口切换通知（事件驱动，精准按单条热键增量卸下/重挂，不干扰无关热键）
+    void updateForegroundProcess(const std::string& processName);
+
 private:
     HotkeyManager() = default;
     HotkeyManager(const HotkeyManager&) = delete;
     HotkeyManager& operator=(const HotkeyManager&) = delete;
 
     int generateId();
+    bool shouldSuspendForAppLocked(const std::string& name) const;
+    void syncAppExclusionsLocked();
 
     HWND m_hwnd = nullptr;
     std::atomic<DWORD> m_ownerThreadId{0};
     std::unordered_map<std::string, HotkeyEntry> m_hotkeys;  // name → entry
     std::unordered_map<int, std::string> m_idToName;         // id → name (反向查找)
+    std::vector<std::string> m_globalExcludedApps;
+    std::unordered_map<std::string, std::vector<std::string>> m_perHotkeyExcludedApps;
+    std::string m_activeForegroundProcessLower;
     mutable std::mutex m_mutex;
     std::atomic<int> m_nextId{1};
     std::atomic<bool> m_paused{false};

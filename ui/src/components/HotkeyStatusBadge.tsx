@@ -9,6 +9,8 @@ export interface HotkeyEntry {
   registered?: boolean;
   armed?: boolean;
   scope?: 'global' | 'recording' | 'dialog' | string;
+  suspendedByApp?: boolean;
+  excludedApps?: string[];
   conflict?: boolean;
   conflictType?: 'none' | 'internal' | 'external' | 'invalid' | string;
   conflictWith?: string;

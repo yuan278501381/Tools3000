@@ -1983,4 +1983,69 @@ TEST(QuickTranslatePopupContractTest, FormatsProviderLabelAndDirectionBadge) {
 
     EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("en", "zh-CN"), "EN -> ZH");
     EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("auto", "ja"), "AUTO -> JA");
+    EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage(""), "zh-CN");
+    EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("zh-CN"), "en");
+    EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("en"), "ja");
+    EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("ja"), "");
+}
+
+TEST(CinemaZoomEngineContractTest, CriticallyDampedSpringConvergesWithoutOvershoot) {
+    using tools3000::ui::CinemaZoomEngine;
+
+    CinemaZoomEngine::SpringState s{1.0, 0.0};
+    constexpr double kTarget = 2.5;
+    for (int frame = 0; frame < 60; ++frame) {
+        s = CinemaZoomEngine::stepCriticallyDampedSpring(s, kTarget, 20.0, 1.0 / 60.0);
+        // 临界阻尼单调逼近，绝不过冲目标倍率
+        EXPECT_LE(s.pos, kTarget + 1e-6);
+        EXPECT_GE(s.pos, 1.0 - 1e-6);
+    }
+    EXPECT_NEAR(s.pos, kTarget, 0.002);
+}
+
+TEST(CinemaZoomEngineContractTest, ViewportOriginAndDeadzoneStayWithinMultiMonitorBounds) {
+    using tools3000::ui::CinemaZoomEngine;
+
+    // 模拟左侧副屏 (-1920..0) + 主屏 (0..1920) 的跨双屏虚拟桌面
+    const RECT virtualDesktop{-1920, 0, 1920, 1080};
+
+    // 主屏中央 2.0x 放大：视口 960x540，左上角应在 (480, 270)
+    const auto centerOrigin = CinemaZoomEngine::computeZoomViewportOrigin(960.0, 540.0, 2.0f, 1920, 1080, virtualDesktop);
+    EXPECT_EQ(centerOrigin.x, 480);
+    EXPECT_EQ(centerOrigin.y, 270);
+
+    // 副屏左上极限角 (-1920, 0)：安全钳制在虚拟桌面左边界 -1920，不越界露黑边
+    const auto leftEdgeOrigin = CinemaZoomEngine::computeZoomViewportOrigin(-1920.0, 0.0, 2.0f, 1920, 1080, virtualDesktop);
+    EXPECT_EQ(leftEdgeOrigin.x, -1920);
+    EXPECT_EQ(leftEdgeOrigin.y, 0);
+
+    // 右下极限角 (1920, 1080)：安全钳制在 right - viewW = 960, bottom - viewH = 540
+    const auto rightBottomOrigin = CinemaZoomEngine::computeZoomViewportOrigin(1920.0, 1080.0, 2.0f, 1920, 1080, virtualDesktop);
+    EXPECT_EQ(rightBottomOrigin.x, 960);
+    EXPECT_EQ(rightBottomOrigin.y, 540);
+
+    // 中心死区内微调光标 (偏移 20px < deadHalfW=115.2px)，镜头目标中心保持纹丝不动
+    const auto [stillX, stillY] = CinemaZoomEngine::applyCursorDeadzone(
+        960.0, 540.0, 980.0, 555.0, 2.0f, 1920, 1080, virtualDesktop, 0.24);
+    EXPECT_DOUBLE_EQ(stillX, 960.0);
+    EXPECT_DOUBLE_EQ(stillY, 540.0);
+
+    // 光标大幅移出中心死区后，镜头目标沿移动方向平滑推进
+    const auto [pannedX, pannedY] = CinemaZoomEngine::applyCursorDeadzone(
+        960.0, 540.0, 1300.0, 750.0, 2.0f, 1920, 1080, virtualDesktop, 0.24);
+    EXPECT_GT(pannedX, 960.0);
+    EXPECT_GT(pannedY, 540.0);
+}
+
+TEST(CinemaZoomEngineContractTest, ZoomLevelClampingAndWheelStep) {
+    using tools3000::ui::CinemaZoomEngine;
+
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::clampZoomLevel(0.5f), 1.25f);
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::clampZoomLevel(9.0f), 4.0f);
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::clampZoomLevel(2.5f), 2.5f);
+
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(2.0f, WHEEL_DELTA), 2.25f);
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(2.0f, -WHEEL_DELTA), 1.75f);
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(4.0f, WHEEL_DELTA), 4.0f);
+    EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(1.25f, -WHEEL_DELTA), 1.25f);
 }

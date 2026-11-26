@@ -367,6 +367,7 @@ set(UI_OBJECT_SOURCES
     src/text_expander/TextExpanderManager.cpp
     src/ui/QuickTranslatePopupWindow.cpp
     src/ui/WebViewSuspend.cpp
+    src/ui/CinemaZoomEngine.cpp
     src/ui/SpotlightOverlay.cpp
     src/ui/SpotlightOverlayInputController.cpp
     src/ui/SpotlightOverlayRenderer.cpp

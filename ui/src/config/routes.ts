@@ -171,6 +171,17 @@ export function getBuiltinPluginAliases(id: string): readonly string[] {
   return BUILTIN_PLUGIN_ALIAS_GROUPS[canonical] ?? [canonical];
 }
 
+const BUILTIN_DOMAIN_CANONICAL_IDS = new Set<string>(
+  PLUGIN_DOMAIN_GROUPS.flatMap((group) => group.pluginIds.map((id) => normalizeBuiltinPluginId(id))),
+);
+
+/**
+ * 判断模块 ID 是否属于内置功能模块单一事实源（含无独立侧边栏路由的纯开关模块如 quick_look）
+ */
+export function isBuiltinPluginId(id: string): boolean {
+  return BUILTIN_DOMAIN_CANONICAL_IDS.has(normalizeBuiltinPluginId(id));
+}
+
 export function isPluginActiveInSet(
   activePlugins: ReadonlySet<string> | undefined,
   pluginId: string | undefined,

@@ -67,7 +67,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'gen-theme', navId: 'general', labelKey: 'general.theme', descKey: 'general.themeDesc', keywords: 'dark light appearance mode zhuti shense qianse' },
   { id: 'gen-accent', navId: 'general', labelKey: 'general.accentColor', descKey: 'general.accentColorDesc', keywords: 'brand color violet blue cyan mint coral zhutise' },
   { id: 'gen-lang', navId: 'general', labelKey: 'general.language', descKey: 'general.languageDesc', keywords: 'english chinese locale i18n yuyan' },
-  { id: 'gen-hotkeys', navId: 'general', labelKey: 'general.keyboardShortcuts', descKey: 'general.keyboardShortcutsDesc', keywords: 'shortcut keybind conflict kuaijiejian rejian' },
+  { id: 'gen-hotkeys', navId: 'general', labelKey: 'general.keyboardShortcuts', descKey: 'general.keyboardShortcutsDesc', keywords: 'shortcut keybind conflict exclude app bypass ssms emacs kuaijiejian rejian birang' },
   { id: 'gen-portable', navId: 'general', labelKey: 'general.portableMode', descKey: 'general.portableModeDesc', keywords: 'portable appdata folder bianxie' },
   { id: 'gen-logs', navId: 'general', labelKey: 'general.exportLogs', descKey: 'general.exportLogsDesc', keywords: 'log diagnostic debug export rizhi' },
   { id: 'gen-changelog', navId: 'general', labelKey: 'general.showChangelogOnUpdate', descKey: 'general.showChangelogOnUpdateDesc', keywords: 'changelog whats new release notes update history gengxin rizhi banben' },
@@ -119,6 +119,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   // Keycast, Spotlight, Dialog Enhancer, Remote Boost, Stats
   { id: 'kc-filter', navId: 'keycast', labelKey: 'keycast.filterSection', descKey: 'keycast.filterSmartShortcutsDesc', keywords: 'keycast keystroke osd modifier jianpan touying' },
   { id: 'spt-focus', navId: 'spotlight', labelKey: 'spotlight.animStyle', descKey: 'spotlight.animStyleDesc', keywords: 'spotlight double ctrl shake cursor juguangdeng' },
+  { id: 'spt-cinema-zoom', navId: 'spotlight', labelKey: 'spotlight.doubleCtrlModeTitle', descKey: 'spotlight.doubleCtrlModeDesc', keywords: 'cinema zoom magnify smooth double ctrl presenter fangda fangdajing shuangji yanshi' },
   { id: 'spt-ripple', navId: 'spotlight', labelKey: 'spotlight.clickRipple', descKey: 'spotlight.clickRippleDesc', keywords: 'click ripple trail sonar bowen' },
   { id: 'dlg-memory', navId: 'dialog_enhancer', labelKey: 'dialog.perAppMemory', descKey: 'dialog.perAppMemoryDesc', keywords: 'dialog open save explorer favorite folder duihuakuang' },
   { id: 'dlg-quick-jump', navId: 'dialog_enhancer', labelKey: 'dialog.quickJumpHotkeyLabel', descKey: 'dialog.quickJumpHotkeyDesc', keywords: 'ctrl+g listary quick switch jump explorer total commander opus xyplorer q-dir files qt jetbrains tiaozhuan mulu' },

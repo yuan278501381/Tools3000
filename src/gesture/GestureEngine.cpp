@@ -1829,8 +1829,8 @@ void GestureEngine::endTracking(const MouseEvent& event) {
     if (hasValidResult) {
         LOG_INFO("手势识别成功: code={}, fullCode={}, arrows={}, 点数={}, 距离={:.0f}px",
                  bareCode, fullCode, result->toArrowString(), result->rawPoints.size(), result->totalDistance);
-        LOG_INFO("Gesture diagnostic: code={}, fullCode={}, dur={}ms, minSeg={}px, shapeThresh={}%, {}",
-                 bareCode, fullCode, elapsed, minSegDist, shapeThreshold, result->formatDiagnosticSummary());
+        LOG_DEBUG("Gesture diagnostic: code={}, fullCode={}, dur={}ms, minSeg={}px, shapeThresh={}%, {}",
+                  bareCode, fullCode, elapsed, minSegDist, shapeThreshold, result->formatDiagnosticSummary());
     }
 
     // 查找适用的 Profile（优先使用异步预解析快照，若未命中则降级同步解析）
@@ -1952,11 +1952,11 @@ void GestureEngine::executeActionInternal(
             const std::string traceId = m_gestureTraceId;
             if (!tools3000::core::MainThreadDispatcher::instance().postDeferred([act, traceId]() {
                     tools3000::core::TraceId::setCurrent(traceId);
-                    LOG_INFO("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
-                             act.name, static_cast<int>(act.type), 0);
+                    LOG_DEBUG("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
+                              act.name, static_cast<int>(act.type), 0);
                     try {
                         act.execute(nullptr);
-                        LOG_INFO("手势动作执行完毕: action={}", act.name);
+                        LOG_DEBUG("手势动作执行完毕: action={}", act.name);
                     } catch (const std::exception& e) {
                         LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
                     } catch (...) {
@@ -1994,25 +1994,25 @@ void GestureEngine::executeActionInternal(
                 std::lock_guard lock(m_mutex);
                 m_lastExternalWindow = hwnd;
             }
-            LOG_INFO("手势选窗: mode={} start=({},{}) end=({},{}) hwnd=0x{:X} class={} exe={}",
-                     gestureTargetModeKey(targetMode),
-                     startPt.x, startPt.y, endPt.x, endPt.y,
-                     reinterpret_cast<uintptr_t>(hwnd),
-                     hwnd ? tools3000::core::WinUtils::wstringToUtf8(
-                                tools3000::core::WinUtils::getWindowClassName(hwnd)) : "",
-                     hwnd ? tools3000::core::WinUtils::getProcessNameFromWindow(hwnd) : "");
+            LOG_DEBUG("手势选窗: mode={} start=({},{}) end=({},{}) hwnd=0x{:X} class={} exe={}",
+                      gestureTargetModeKey(targetMode),
+                      startPt.x, startPt.y, endPt.x, endPt.y,
+                      reinterpret_cast<uintptr_t>(hwnd),
+                      hwnd ? tools3000::core::WinUtils::wstringToUtf8(
+                                 tools3000::core::WinUtils::getWindowClassName(hwnd)) : "",
+                      hwnd ? tools3000::core::WinUtils::getProcessNameFromWindow(hwnd) : "");
             if (onInputThread) {
-                LOG_INFO("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
-                         act.name, static_cast<int>(act.type),
-                         reinterpret_cast<uintptr_t>(hwnd));
+                LOG_DEBUG("手势动作开始执行(输入线程): action={}, type={}, targetHwnd=0x{:X}",
+                          act.name, static_cast<int>(act.type),
+                          reinterpret_cast<uintptr_t>(hwnd));
             } else {
-                LOG_INFO("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
-                         act.name, static_cast<int>(act.type),
-                         reinterpret_cast<uintptr_t>(hwnd));
+                LOG_DEBUG("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
+                          act.name, static_cast<int>(act.type),
+                          reinterpret_cast<uintptr_t>(hwnd));
             }
             try {
                 act.execute(hwnd);
-                LOG_INFO("手势动作执行完毕: action={}", act.name);
+                LOG_DEBUG("手势动作执行完毕: action={}", act.name);
             } catch (const std::exception& e) {
                 LOG_ERROR("手势动作执行异常: action={}, error={}", act.name, e.what());
             } catch (...) {
@@ -2215,12 +2215,12 @@ void GestureEngine::actionWorkerLoop(std::stop_token stopToken) {
             job.customTask();
             continue;
         }
-        LOG_INFO("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
-                 job.action.name, static_cast<int>(job.action.type),
-                 reinterpret_cast<uintptr_t>(job.targetWindow));
+        LOG_DEBUG("手势动作开始执行(后台队列): action={}, type={}, targetHwnd=0x{:X}",
+                  job.action.name, static_cast<int>(job.action.type),
+                  reinterpret_cast<uintptr_t>(job.targetWindow));
         try {
             job.action.execute(job.targetWindow);
-            LOG_INFO("手势动作执行完毕: action={}", job.action.name);
+            LOG_DEBUG("手势动作执行完毕: action={}", job.action.name);
         } catch (const std::exception& e) {
             LOG_ERROR("手势动作执行异常: action={}, error={}", job.action.name, e.what());
         } catch (...) {

@@ -2510,7 +2510,7 @@ bool GestureTrailOverlay::render() {
     const uint64_t epoch = m_trailEpoch.load(std::memory_order_relaxed);
     if (m_loggedPresentEpoch != epoch) {
         m_loggedPresentEpoch = epoch;
-        LOG_INFO("手势轨迹已提交: points={}, {}x{}, dcomp={}", points.size(), m_width, m_height, m_compositorReady);
+        LOG_DEBUG("手势轨迹已提交: points={}, {}x{}, dcomp={}", points.size(), m_width, m_height, m_compositorReady);
     }
     return gestureFrameReadyToFade(true, shouldShowToast, toastOk);
 }

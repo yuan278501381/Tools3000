@@ -656,7 +656,7 @@ export const SearchPage: FC = () => {
 
                 <SettingRow
                   label={t('searchPage.hideOnBlurTitle', 'Auto-Hide When Clicking Outside')}
-                  description={t('searchPage.hideOnBlurDesc', 'Automatically hide the search window when focus moves elsewhere (Listary / uTools style). Stays open while pinned, previewing via QuickLook, or using menus.')}
+                  description={t('searchPage.hideOnBlurDesc', 'Automatically hide the search window when focus moves elsewhere. Stays open while pinned, previewing via QuickLook, or using menus.')}
                 >
                   <Toggle
                     id="search-hide-on-blur-toggle"
@@ -737,7 +737,7 @@ export const SearchPage: FC = () => {
 
                 <SettingRow
                   label={t('searchPage.pinyinTitle', 'Smart Pinyin Search')}
-                  description={t('searchPage.pinyinDesc', 'Supports Chinese Pinyin initials (e.g. wx for WeChat) and full pinyin')}
+                  description={t('searchPage.pinyinDesc', 'Supports Chinese Pinyin initials (e.g. wd for wendang) and full Pinyin')}
                 >
                   <Toggle
                     id="search-pinyin-toggle"

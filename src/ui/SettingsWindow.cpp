@@ -207,6 +207,10 @@ UINT SettingsWindow::resolveIdleDestroyTimeoutMs() const noexcept {
 
 void SettingsWindow::hide() {
     if (m_hwnd && IsWindow(m_hwnd)) {
+        // 幂等防重入守卫：防止窗口关闭时 IPC 与 WM_CLOSE 在毫秒内连触两次隐藏与重复日志
+        if (!m_visible.load() && !IsWindowVisible(m_hwnd)) {
+            return;
+        }
         persistGeometry();
         ShowWindow(m_hwnd, SW_HIDE);
         m_visible = false;

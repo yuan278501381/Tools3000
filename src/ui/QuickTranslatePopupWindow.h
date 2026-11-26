@@ -47,6 +47,7 @@ public:
         Close = 2,
         Copy = 3,
         Retry = 4,
+        LangSwitch = 5,
     };
 
     static QuickTranslatePopupWindow& instance();
@@ -57,8 +58,16 @@ public:
     /// 触发一次全局划词/剪贴板快速翻译（异步捕获 + 1ms 立即弹出加载卡片 + 异步翻译）
     void triggerQuickTranslate(POINT cursorPt, HWND foregroundHwnd, const std::string& hotkeyDisplay);
 
-    /// 直接对给定文本执行翻译并展示浮窗（便于重试与测试）
-    void translateTextAsync(const std::string& textUtf8, bool fromClipboard, POINT anchorPt, bool bypassCache = false);
+    /// 直接对给定文本执行翻译并展示浮窗（便于重试、快捷切换目标语种与测试）
+    void translateTextAsync(
+        const std::string& textUtf8,
+        bool fromClipboard,
+        POINT anchorPt,
+        bool bypassCache = false,
+        const std::string& targetLangOverride = {});
+
+    /// 循环切换快捷目标语种（"" 自动 -> "zh-CN" -> "en" -> "ja" -> ""）
+    static std::string nextQuickTargetLanguage(std::string_view currentOverride) noexcept;
 
     /// 显式切换深浅主题/强调色时同步刷新可见浮窗
     void reloadTheme();
@@ -122,6 +131,7 @@ private:
     HitButton hitTestButton(POINT clientPt) const noexcept;
     void copyTranslationToClipboard();
     void triggerRetry();
+    void cycleTargetLanguage();
 
     HINSTANCE m_hInstance = nullptr;
     std::atomic<HWND> m_hwnd{nullptr};
@@ -142,6 +152,7 @@ private:
     std::string m_errorTextUtf8;
     std::string m_providerLabelUtf8;
     std::string m_directionLabelUtf8;
+    std::string m_targetLangOverride;
     bool m_fromClipboard = false;
     bool m_pinned = false;
     bool m_copiedFeedbackActive = false;
@@ -157,6 +168,7 @@ private:
 
     // 按钮命中区（DIP）
     D2D1_RECT_F m_headerDragRect{};
+    D2D1_RECT_F m_dirBadgeRect{};
     D2D1_RECT_F m_pinBtnRect{};
     D2D1_RECT_F m_closeBtnRect{};
     D2D1_RECT_F m_copyBtnRect{};

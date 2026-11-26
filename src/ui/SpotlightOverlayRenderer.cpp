@@ -29,6 +29,7 @@ void SpotlightOverlay::render() {
         snapshot.ripples = m_ripples;
         snapshot.trail = m_trail;
         snapshot.bounds = calculateViewportBoundsLocked();
+        snapshot.ringOnlyMode = m_ringOnlyMode;
     }
     renderSnapshot(snapshot);
 }
@@ -83,7 +84,7 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
         1.0f, 3.0f);
 
     // ─────────────────────────────────────────────────────────────────────────
-    // 1. 绘制聚光灯 (极致通透纯净全屏暗角 + 激光微晶细环 + 优雅向心视线导引)
+    // 1. 绘制聚光灯 (经典全屏暗角聚焦 / 电影放大伴随纯净光标光环)
     // ─────────────────────────────────────────────────────────────────────────
     if (snapshot.animState != AnimState::Idle && snapshot.currentAlpha > 0.01f) {
         const float spotScale = std::clamp(
@@ -91,11 +92,52 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
             1.0f, 3.0f);
         float localCenterX = static_cast<float>(snapshot.targetPos.x - bounds.x);
         float localCenterY = static_cast<float>(snapshot.targetPos.y - bounds.y);
+        float alpha = snapshot.currentAlpha;
+        D2D1_COLOR_F baseColor = parseColor(snapshot.settings.spotlightColor, 1.0f);
+
+        if (snapshot.ringOnlyMode) {
+            // 电影放大伴随光环模式：绝不压暗全屏，仅围绕光标绘制高通透双层柔和定位光环
+            const float ringRadius = 18.0f * spotScale;
+            const float haloRadius = 24.0f * spotScale;
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> outerGlowBrush;
+            m_d2dContext->CreateSolidColorBrush(
+                D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.28f * alpha),
+                outerGlowBrush.GetAddressOf()
+            );
+            if (outerGlowBrush) {
+                m_d2dContext->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), haloRadius, haloRadius),
+                    outerGlowBrush.Get(), 5.0f * spotScale
+                );
+            }
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> crispRingBrush;
+            m_d2dContext->CreateSolidColorBrush(
+                D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.88f * alpha),
+                crispRingBrush.GetAddressOf()
+            );
+            if (crispRingBrush) {
+                m_d2dContext->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), ringRadius, ringRadius),
+                    crispRingBrush.Get(), 2.2f * spotScale
+                );
+            }
+
+            Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> innerEdgeBrush;
+            m_d2dContext->CreateSolidColorBrush(
+                D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.48f * alpha),
+                innerEdgeBrush.GetAddressOf()
+            );
+            if (innerEdgeBrush) {
+                m_d2dContext->DrawEllipse(
+                    D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), ringRadius - 1.5f * spotScale, ringRadius - 1.5f * spotScale),
+                    innerEdgeBrush.Get(), 1.0f * spotScale
+                );
+            }
+        } else {
         float baseRadius = (static_cast<float>((std::max)(40, snapshot.settings.spotlightSize)) / 2.0f) * spotScale;
         float radius = baseRadius * snapshot.scalePulse;
-        float alpha = snapshot.currentAlpha;
-
-        D2D1_COLOR_F baseColor = parseColor(snapshot.settings.spotlightColor, 1.0f);
 
         // 纯净全屏暗角：精准几何对齐，在 radius 边缘 1 像素内平滑过渡到深灰暗幕，彻底消除任何内外白边缝隙
         float outerRadius = (std::max)(radius + 60.0f * spotScale, radius * 1.35f);
@@ -411,6 +453,7 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
                 }
             }
         }
+        } // end if (!snapshot.ringOnlyMode)
 
     }
 

@@ -2,12 +2,13 @@
 <html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" id="metaThemeColor" content="#090d16" />
   <title>Tools3000 — Native C++20 &amp; Rust 13-in-1 Productivity Suite for Windows</title>
-  <meta name="description" content="13 everyday Windows power tools in one ~15 MB native C++20/Rust binary: instant NTFS &amp; content search (+ 350 KB MCP server), persistent clipboard, Text Expander, 8-lang offline OCR &amp; 1:1 translation, auto-zoom screen recorder, mouse gestures &amp; &lt;2 MB Picasa viewer." />
+  <meta name="description" content="Replace scattered Windows utilities without all-in-one bloat — every module toggles independently (off = unloaded, zero background usage). ~15 MB native C++20/Rust binary: instant file/content/app/bookmark search (+ 350 KB MCP), persistent clipboard, offline OCR &amp; in-place/quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app auto-bypass &amp; E2E cloud sync." />
   <meta property="og:type" content="website" />
-  <meta property="og:title" content="Tools3000 — Native C++20 &amp; Rust 13-in-1 Windows Suite" />
-  <meta property="og:description" content="Zero Electron. ~15 MB idle RAM. Instant NTFS/content search + 350 KB MCP server, persistent clipboard, Text Expander, 8-language offline OCR &amp; 1:1 translation, auto-zoom studio &amp; Picasa viewer." />
+  <meta property="og:title" content="Tools3000 — Modular Native C++20 &amp; Rust Windows Utility Suite" />
+  <meta property="og:description" content="Zero Electron, ~15 MB idle RAM, every tool independently toggleable (disabled = unloaded, zero background usage). Instant NTFS/content/app/bookmark search + 350 KB MCP, persistent clipboard, offline OCR &amp; translate, Ctrl+G dialog jump, cinema zoom &amp; E2E cloud sync." />
   <meta property="og:url" content="https://yuan278501381.github.io/Tools3000/" />
   <meta property="og:image" content="https://yuan278501381.github.io/Tools3000/images/social-preview-1280x640.png" />
   <meta name="twitter:card" content="summary_large_image" />
@@ -15,229 +16,824 @@
   <link rel="icon" type="image/svg+xml" href="./logo.svg" />
   <style>
     :root {
+      color-scheme: dark;
       --font-sans: 'Inter Variable', 'Plus Jakarta Sans', 'Segoe UI Variable Text', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'HarmonyOS Sans SC', 'MiSans', 'Microsoft YaHei UI', sans-serif;
       --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
       --bg: #090d16;
-      --bg-elevated: rgba(17, 24, 39, 0.76);
-      --bg-card: rgba(22, 31, 50, 0.68);
+      --bg-elevated: rgba(13, 19, 33, 0.84);
+      --bg-card: rgba(20, 29, 48, 0.72);
+      --bg-card-hover: rgba(28, 40, 66, 0.84);
+      --bg-well: rgba(9, 13, 22, 0.72);
       --border: rgba(148, 163, 184, 0.16);
-      --border-strong: rgba(99, 102, 241, 0.42);
+      --border-strong: rgba(99, 102, 241, 0.48);
       --text: #f8fafc;
+      --text-secondary: #cbd5e1;
       --text-muted: #94a3b8;
       --primary: #6366f1;
       --primary-hover: #4f46e5;
+      --primary-soft: rgba(99, 102, 241, 0.14);
       --accent: #0ea5e9;
       --emerald: #10b981;
-      --glow: radial-gradient(circle at 20% 0%, rgba(99, 102, 241, 0.22), transparent 48%),
-              radial-gradient(circle at 82% 8%, rgba(14, 165, 233, 0.18), transparent 44%);
+      --emerald-soft: rgba(16, 185, 129, 0.14);
+      --danger: #ef4444;
+      --shadow-card: 0 12px 32px -16px rgba(0, 0, 0, 0.55);
+      --glow: radial-gradient(circle at 18% 0%, rgba(99, 102, 241, 0.22), transparent 46%),
+              radial-gradient(circle at 84% 6%, rgba(14, 165, 233, 0.18), transparent 42%);
     }
     [data-theme="light"] {
+      color-scheme: light;
       --bg: #f8fafc;
-      --bg-elevated: rgba(255, 255, 255, 0.86);
-      --bg-card: rgba(255, 255, 255, 0.92);
+      --bg-elevated: rgba(255, 255, 255, 0.90);
+      --bg-card: rgba(255, 255, 255, 0.96);
+      --bg-card-hover: #ffffff;
+      --bg-well: #f1f5f9;
       --border: rgba(15, 23, 42, 0.10);
       --border-strong: rgba(79, 70, 229, 0.36);
       --text: #0f172a;
+      --text-secondary: #334155;
       --text-muted: #475569;
       --primary: #4f46e5;
       --primary-hover: #4338ca;
+      --primary-soft: rgba(79, 70, 229, 0.10);
       --accent: #0284c7;
       --emerald: #059669;
-      --glow: radial-gradient(circle at 20% 0%, rgba(99, 102, 241, 0.12), transparent 48%),
-              radial-gradient(circle at 82% 8%, rgba(14, 165, 233, 0.10), transparent 44%);
+      --emerald-soft: rgba(5, 150, 105, 0.10);
+      --danger: #dc2626;
+      --shadow-card: 0 10px 26px -14px rgba(15, 23, 42, 0.14);
+      --glow: radial-gradient(circle at 18% 0%, rgba(99, 102, 241, 0.11), transparent 46%),
+              radial-gradient(circle at 84% 6%, rgba(14, 165, 233, 0.09), transparent 42%);
     }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    html { scroll-behavior: smooth; }
+    html {
+      scroll-behavior: smooth;
+      -webkit-text-size-adjust: 100%;
+      overflow-x: clip;
+    }
     body {
       font-family: var(--font-sans);
       font-weight: 500;
-      line-height: 1.55;
+      line-height: 1.58;
       background-color: var(--bg);
       background-image: var(--glow);
       background-attachment: fixed;
       color: var(--text);
       min-height: 100vh;
+      overflow-x: clip;
+      -webkit-tap-highlight-color: transparent;
     }
     .num { font-variant-numeric: tabular-nums lining-nums; font-feature-settings: "tnum" 1; }
     a { color: inherit; text-decoration: none; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; container-type: inline-size; }
+    button { font-family: inherit; }
+    :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; border-radius: 8px; }
 
-    /* Navbar */
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 24px;
+      container-type: inline-size;
+    }
+
+    /* ── Navbar ─────────────────────────────────────────────────────────────── */
     .nav {
-      position: sticky; top: 0; z-index: 50;
-      backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+      position: sticky;
+      top: 0;
+      z-index: 60;
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
       background: var(--bg-elevated);
       border-bottom: 1px solid var(--border);
+      padding-top: env(safe-area-inset-top, 0px);
     }
     .nav-inner {
-      max-width: 1200px; margin: 0 auto; padding: 14px 24px;
-      display: flex; align-items: center; justify-content: space-between; gap: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
     }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 1.15rem; letter-spacing: -0.02em; }
-    .brand img { width: 30px; height: 30px; }
-    .nav-links { display: flex; align-items: center; gap: 22px; font-size: 0.9rem; color: var(--text-muted); }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 750;
+      font-size: 1.12rem;
+      letter-spacing: -0.02em;
+      flex-shrink: 0;
+    }
+    .brand img { width: 28px; height: 28px; display: block; }
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      font-size: 0.9rem;
+      font-weight: 550;
+      color: var(--text-muted);
+    }
+    .nav-links a { transition: color 0.15s; white-space: nowrap; }
     .nav-links a:hover { color: var(--text); }
-    .nav-actions { display: flex; align-items: center; gap: 10px; }
+    .nav-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-shrink: 0;
+    }
     .pill-btn {
-      display: inline-flex; align-items: center; gap: 6px;
-      padding: 6px 12px; border-radius: 999px;
-      border: 1px solid var(--border); background: var(--bg-card);
-      color: var(--text); font-family: var(--font-sans); font-size: 0.84rem; font-weight: 600;
-      cursor: pointer; transition: border-color 0.16s, transform 0.16s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 36px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text);
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: border-color 0.16s, background 0.16s, transform 0.16s;
     }
-    .pill-btn:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .pill-btn:hover { border-color: var(--border-strong); background: var(--bg-card-hover); transform: translateY(-1px); }
+    .pill-btn--icon { width: 36px; padding: 0; }
+    .menu-toggle { display: none; }
 
-    /* Hero */
-    .hero { padding: 72px 0 48px; text-align: center; }
-    .hero-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 6px 14px; border-radius: 999px;
-      border: 1px solid var(--border-strong);
-      background: rgba(99, 102, 241, 0.10);
-      font-size: 0.84rem; font-weight: 600; color: var(--text);
-      margin-bottom: 22px;
+    /* Mobile Drawer */
+    .mobile-drawer {
+      display: none;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elevated);
+      padding: 12px 20px 18px;
     }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); }
+    .mobile-drawer.open { display: block; }
+    .mobile-drawer__links {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .mobile-drawer__link {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .mobile-drawer__cta {
+      display: flex;
+      gap: 8px;
+    }
+    .mobile-drawer__cta a { flex: 1; justify-content: center; padding: 10px 12px; font-size: 0.88rem; }
+
+    /* ── Hero ───────────────────────────────────────────────────────────────── */
+    .hero { padding: 64px 0 36px; text-align: center; }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border-radius: 999px;
+      border: 1px solid var(--border-strong);
+      background: var(--primary-soft);
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 20px;
+      max-width: 100%;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--emerald); flex-shrink: 0; }
     .hero h1 {
-      font-size: clamp(2.1rem, 4.6vw, 3.6rem);
-      font-weight: 800; letter-spacing: -0.03em; line-height: 1.14;
-      max-width: 920px; margin: 0 auto 20px;
+      font-size: clamp(1.95rem, 4.6vw, 3.55rem);
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      max-width: 920px;
+      margin: 0 auto 18px;
     }
     .grad {
-      background: linear-gradient(135deg, #818cf8 0%, #38bdf8 55%, #34d399 100%);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
+      background: linear-gradient(135deg, #818cf8 0%, #38bdf8 52%, #34d399 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
     }
-    .hero p {
-      font-size: clamp(1rem, 1.5vw, 1.16rem);
-      color: var(--text-muted); max-width: 780px; margin: 0 auto 32px;
+    .hero-sub {
+      font-size: clamp(0.96rem, 1.45vw, 1.14rem);
+      color: var(--text-muted);
+      max-width: 820px;
+      margin: 0 auto 28px;
     }
-    .cta-row { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin-bottom: 24px; }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+      margin-bottom: 20px;
+    }
     .btn-primary {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 13px 24px; border-radius: 12px;
-      background: var(--primary); color: #ffffff;
-      font-weight: 650; font-size: 0.96rem;
-      box-shadow: 0 10px 28px -8px rgba(99, 102, 241, 0.65);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 12px 24px;
+      border-radius: 12px;
+      background: var(--primary);
+      color: #ffffff;
+      font-weight: 650;
+      font-size: 0.95rem;
+      box-shadow: 0 10px 28px -8px rgba(99, 102, 241, 0.6);
       transition: background 0.16s, transform 0.16s;
     }
     .btn-primary:hover { background: var(--primary-hover); transform: translateY(-1px); }
     .btn-secondary {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 13px 20px; border-radius: 12px;
-      border: 1px solid var(--border); background: var(--bg-card);
-      color: var(--text); font-weight: 600; font-size: 0.95rem;
-      transition: border-color 0.16s, transform 0.16s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 46px;
+      padding: 12px 20px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text);
+      font-weight: 600;
+      font-size: 0.94rem;
+      transition: border-color 0.16s, background 0.16s, transform 0.16s;
     }
-    .btn-secondary:hover { border-color: var(--border-strong); transform: translateY(-1px); }
+    .btn-secondary:hover { border-color: var(--border-strong); background: var(--bg-card-hover); transform: translateY(-1px); }
 
-    .cli-box {
-      max-width: 660px; margin: 0 auto 44px;
-      display: flex; align-items: center; justify-content: space-between; gap: 12px;
-      padding: 10px 14px; border-radius: 12px;
-      border: 1px solid var(--border); background: var(--bg-card);
-      font-family: var(--font-mono); font-size: 0.85rem;
+    /* Mobile-only Companion Banner */
+    .mobile-banner {
+      display: none;
+      max-width: 680px;
+      margin: 0 auto 20px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid var(--border-strong);
+      background: var(--primary-soft);
+      text-align: left;
+      gap: 10px;
+      flex-direction: column;
     }
-    .cli-box code { overflow-x: auto; white-space: nowrap; color: var(--text); }
+    .mobile-banner.visible { display: flex; }
+    .mobile-banner__top {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      font-size: 0.86rem;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+    .mobile-banner__top svg { flex-shrink: 0; margin-top: 2px; color: var(--primary); }
+    .mobile-banner__actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .mobile-banner__actions .pill-btn { flex: 1 1 130px; min-height: 38px; }
+
+    /* CLI Multi-Tab Box */
+    .cli-wrap {
+      max-width: 720px;
+      margin: 0 auto 38px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      overflow: hidden;
+      text-align: left;
+      box-shadow: var(--shadow-card);
+    }
+    .cli-tabs {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-well);
+    }
+    .cli-tab-group { display: flex; gap: 6px; }
+    .cli-tab {
+      padding: 4px 10px;
+      border-radius: 7px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.83rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s;
+    }
+    .cli-tab.active {
+      background: var(--bg-card);
+      border-color: var(--border-strong);
+      color: var(--text);
+    }
+    .cli-body {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 11px 14px;
+      font-family: var(--font-mono);
+      font-size: 0.84rem;
+    }
+    .cli-body code {
+      min-width: 0;
+      flex: 1;
+      overflow-x: auto;
+      white-space: nowrap;
+      color: var(--text);
+      scrollbar-width: thin;
+      padding-bottom: 2px;
+    }
 
     /* Stats */
     .stats-grid {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 64px;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 36px;
     }
     .stat-card {
-      padding: 20px; border-radius: 16px;
-      border: 1px solid var(--border); background: var(--bg-card); text-align: left;
+      padding: 18px 20px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      text-align: left;
+      box-shadow: var(--shadow-card);
     }
-    .stat-val { font-size: 1.75rem; font-weight: 800; letter-spacing: -0.02em; margin-bottom: 4px; }
-    .stat-lbl { font-size: 0.86rem; color: var(--text-muted); }
+    .stat-val { font-size: clamp(1.4rem, 2.3vw, 1.8rem); font-weight: 800; letter-spacing: -0.02em; margin-bottom: 4px; }
+    .stat-lbl { font-size: 0.85rem; color: var(--text-muted); line-height: 1.4; }
 
-    /* Section */
-    section { padding: 44px 0; }
-    .sec-head { text-align: center; margin-bottom: 32px; }
-    .sec-head h2 { font-size: clamp(1.55rem, 2.8vw, 2.2rem); font-weight: 750; letter-spacing: -0.02em; margin-bottom: 8px; }
-    .sec-head p { color: var(--text-muted); font-size: 0.98rem; max-width: 680px; margin: 0 auto; }
+    /* ── Sections ───────────────────────────────────────────────────────────── */
+    section { padding: 40px 0; scroll-margin-top: 72px; }
+    .sec-head { text-align: center; margin-bottom: 28px; }
+    .sec-head h2 {
+      font-size: clamp(1.45rem, 2.8vw, 2.15rem);
+      font-weight: 750;
+      letter-spacing: -0.025em;
+      margin-bottom: 8px;
+      line-height: 1.22;
+    }
+    .sec-head p { color: var(--text-muted); font-size: 0.96rem; max-width: 700px; margin: 0 auto; }
 
-    /* Interactive Demo Theater */
+    /* ── Interactive Demo Theater ────────────────────────────────────────────── */
     .theater {
-      border: 1px solid var(--border); border-radius: 20px;
-      background: var(--bg-card); padding: 20px;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      background: var(--bg-card);
+      padding: 18px;
+      box-shadow: var(--shadow-card);
     }
     .demo-tabs {
-      display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; justify-content: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+      justify-content: center;
     }
     .demo-tab {
-      padding: 8px 14px; border-radius: 10px;
-      border: 1px solid var(--border); background: transparent;
-      color: var(--text-muted); font-family: var(--font-sans); font-size: 0.86rem; font-weight: 600;
-      cursor: pointer; transition: all 0.15s;
+      padding: 8px 14px;
+      min-height: 36px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: transparent;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: all 0.15s;
     }
     .demo-tab.active, .demo-tab:hover {
-      color: #ffffff; background: var(--primary); border-color: var(--primary);
+      color: #ffffff;
+      background: var(--primary);
+      border-color: var(--primary);
     }
     .demo-stage {
-      border-radius: 14px; overflow: hidden; border: 1px solid var(--border);
-      background: #050811; display: flex; flex-direction: column; align-items: center;
+      position: relative;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      background: #050811;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      touch-action: pan-y;
     }
-    .demo-stage img { width: 100%; max-height: 620px; object-fit: contain; display: block; }
+    .demo-media-wrap {
+      position: relative;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #050811;
+      cursor: zoom-in;
+    }
+    .demo-stage img {
+      width: 100%;
+      max-height: 600px;
+      object-fit: contain;
+      display: block;
+      user-select: none;
+      -webkit-user-drag: none;
+    }
+    .demo-zoom-pill {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(9, 13, 22, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #f8fafc;
+      font-size: 0.83rem;
+      font-weight: 600;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+    }
+    .demo-bar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
     .demo-caption {
-      width: 100%; padding: 12px 18px; border-top: 1px solid var(--border);
-      font-size: 0.9rem; color: var(--text-muted); text-align: center; background: var(--bg-elevated);
+      flex: 1;
+      min-width: 0;
+      font-size: 0.89rem;
+      color: var(--text-secondary);
+      text-align: left;
+      line-height: 1.48;
+    }
+    .demo-pager {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .demo-count {
+      font-family: var(--font-mono);
+      font-size: 0.83rem;
+      font-weight: 650;
+      color: var(--text-muted);
+      min-width: 42px;
+      text-align: center;
     }
 
-    /* Bento 13 Tools */
+    /* ── Bento 13 Tools with Category Filter ────────────────────────────────── */
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 22px;
+    }
+    .filter-pill {
+      padding: 7px 14px;
+      min-height: 36px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: all 0.15s;
+    }
+    .filter-pill.active, .filter-pill:hover {
+      border-color: var(--primary);
+      background: var(--primary-soft);
+      color: var(--text);
+    }
     .bento-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
     }
     .bento-card {
-      padding: 22px; border-radius: 16px;
-      border: 1px solid var(--border); background: var(--bg-card);
-      display: flex; flex-direction: column; gap: 8px;
+      padding: 20px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      box-shadow: var(--shadow-card);
+      transition: border-color 0.16s, transform 0.16s, background 0.16s;
     }
-    .bento-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-    .bento-title { font-size: 1.02rem; font-weight: 700; }
+    .bento-card:hover {
+      border-color: var(--border-strong);
+      background: var(--bg-card-hover);
+      transform: translateY(-2px);
+    }
+    .bento-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .bento-title { font-size: 1rem; font-weight: 700; line-height: 1.35; }
     .kbd {
-      font-family: var(--font-mono); font-size: 0.83rem; font-weight: 600;
-      padding: 2px 8px; border-radius: 6px; border: 1px solid var(--border);
-      color: var(--text-muted); background: var(--bg-elevated);
+      font-family: var(--font-mono);
+      font-size: 0.83rem;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      background: var(--bg-well);
+      white-space: nowrap;
+      flex-shrink: 0;
     }
-    .bento-desc { font-size: 0.88rem; color: var(--text-muted); }
+    .bento-desc { font-size: 0.88rem; color: var(--text-muted); line-height: 1.5; }
 
-    /* MCP & Compare */
-    .split-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; }
-    .code-panel {
-      padding: 24px; border-radius: 18px; border: 1px solid var(--border); background: var(--bg-card);
-      display: flex; flex-direction: column; justify-content: space-between; gap: 16px;
+    /* ── Architecture Deep-Dive 2x2 Grid (Sync, Privacy, MCP, Footprint) ───── */
+    .arch-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      align-items: stretch;
     }
+    .panel {
+      padding: 24px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: var(--bg-card);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      gap: 16px;
+      box-shadow: var(--shadow-card);
+      min-width: 0;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .panel-icon {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--primary-soft);
+      color: var(--primary);
+      flex-shrink: 0;
+    }
+    .panel-icon--emerald { background: var(--emerald-soft); color: var(--emerald); }
+    .panel h3 { font-size: 1.16rem; font-weight: 750; line-height: 1.3; }
+    .panel-desc { font-size: 0.9rem; color: var(--text-muted); margin-bottom: 14px; line-height: 1.55; }
+    .feature-list {
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+    }
+    .feature-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 9px;
+      font-size: 0.88rem;
+      color: var(--text-secondary);
+      line-height: 1.48;
+    }
+    .feature-list li svg { flex-shrink: 0; margin-top: 3px; color: var(--emerald); }
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 4px;
+    }
+    .tag-chip {
+      padding: 4px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-well);
+      font-family: var(--font-mono);
+      font-size: 0.83rem;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+
     pre {
-      padding: 16px; border-radius: 12px; background: #070b13; color: #e2e8f0;
+      padding: 14px 16px;
+      border-radius: 12px;
+      background: #070b13;
+      color: #e2e8f0;
       border: 1px solid rgba(148, 163, 184, 0.16);
-      font-family: var(--font-mono); font-size: 0.84rem; overflow-x: auto; line-height: 1.5;
+      font-family: var(--font-mono);
+      font-size: 0.83rem;
+      overflow-x: auto;
+      line-height: 1.5;
+      max-width: 100%;
+    }
+    .panel-foot {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
     }
     .bar-row { margin-top: 12px; }
-    .bar-meta { display: flex; justify-content: space-between; font-size: 0.86rem; margin-bottom: 6px; font-weight: 600; }
-    .bar-track { height: 12px; border-radius: 999px; background: rgba(148, 163, 184, 0.15); overflow: hidden; }
+    .bar-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 0.86rem; margin-bottom: 6px; font-weight: 600; }
+    .bar-track { height: 12px; border-radius: 999px; background: rgba(148, 163, 184, 0.16); overflow: hidden; }
     .bar-fill-good { height: 100%; width: 3%; min-width: 14px; background: var(--emerald); border-radius: 999px; }
-    .bar-fill-heavy { height: 100%; width: 96%; background: #ef4444; border-radius: 999px; }
+    .bar-fill-heavy { height: 100%; width: 96%; background: var(--danger); border-radius: 999px; }
+    .ram-foot { font-size: 0.85rem; color: var(--text-muted); line-height: 1.5; }
 
+    /* ── Lightbox Modal ─────────────────────────────────────────────────────── */
+    .lightbox {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(5, 8, 17, 0.90);
+      backdrop-filter: blur(10px);
+    }
+    .lightbox.open { display: flex; }
+    .lightbox__inner {
+      position: relative;
+      max-width: 96vw;
+      max-height: 92vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 12px;
+    }
+    .lightbox__inner img {
+      max-width: 96vw;
+      max-height: 80vh;
+      object-fit: contain;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+    }
+    .lightbox__cap {
+      color: #e2e8f0;
+      font-size: 0.9rem;
+      text-align: center;
+      max-width: 720px;
+    }
+    .lightbox__close {
+      position: fixed;
+      top: calc(16px + env(safe-area-inset-top, 0px));
+      right: 16px;
+      width: 42px;
+      height: 42px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      background: rgba(15, 23, 42, 0.85);
+      color: #ffffff;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+
+    /* ── Mobile Sticky Bottom Bar ───────────────────────────────────────────── */
+    .mobile-dock {
+      display: none;
+      position: fixed;
+      left: 12px;
+      right: 12px;
+      bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+      z-index: 55;
+      padding: 8px;
+      border-radius: 16px;
+      border: 1px solid var(--border-strong);
+      background: var(--bg-elevated);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      box-shadow: 0 14px 36px -10px rgba(0, 0, 0, 0.5);
+      align-items: center;
+      gap: 8px;
+      opacity: 0;
+      transform: translateY(18px);
+      pointer-events: none;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+    .mobile-dock.visible {
+      opacity: 1;
+      transform: translateY(0);
+      pointer-events: auto;
+    }
+    .mobile-dock__btn {
+      flex: 1;
+      min-height: 40px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 0.84rem;
+      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .mobile-dock__btn--primary { background: var(--primary); color: #ffffff; border: none; }
+    .mobile-dock__btn--ghost { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); }
+    .mobile-dock__top {
+      width: 40px;
+      height: 40px;
+      flex: 0 0 40px;
+      padding: 0;
+    }
+
+    /* ── Footer ─────────────────────────────────────────────────────────────── */
     footer {
-      margin-top: 56px; padding: 36px 0; border-top: 1px solid var(--border);
-      font-size: 0.86rem; color: var(--text-muted);
+      margin-top: 48px;
+      padding: 32px 0 calc(32px + env(safe-area-inset-bottom, 0px));
+      border-top: 1px solid var(--border);
+      font-size: 0.85rem;
+      color: var(--text-muted);
     }
     .foot-inner {
-      display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 16px;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
     }
-    .foot-links { display: flex; flex-wrap: wrap; gap: 18px; }
+    .foot-links { display: flex; flex-wrap: wrap; gap: 16px; }
     .foot-links a:hover { color: var(--text); }
 
-    @container (max-width: 900px) {
-      .stats-grid { grid-template-columns: repeat(2, 1fr); }
-      .bento-grid { grid-template-columns: repeat(2, 1fr); }
-      .split-grid { grid-template-columns: 1fr; }
+    /* ── Container & Responsive Breakpoints (PC / Tablet / Mobile) ──────────── */
+    @container (max-width: 960px) {
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .bento-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .arch-grid { grid-template-columns: minmax(0, 1fr); }
     }
-    @container (max-width: 600px) {
-      .stats-grid, .bento-grid { grid-template-columns: 1fr; }
+    @container (max-width: 620px) {
+      .bento-grid { grid-template-columns: minmax(0, 1fr); }
+      .demo-bar { flex-direction: column; align-items: stretch; }
+      .demo-pager { justify-content: space-between; }
     }
-    @media (max-width: 760px) {
+
+    @media (max-width: 860px) {
       .nav-links { display: none; }
+      .nav-github-desktop { display: none; }
+      .menu-toggle { display: inline-flex; }
+    }
+
+    @media (max-width: 680px) {
+      body { background-attachment: scroll; }
+      .container { padding: 0 16px; }
+      .nav-inner { padding: 10px 16px; }
+      .hero { padding: 36px 0 24px; }
+      .hero-badge { font-size: 0.83rem; padding: 5px 12px; }
+      .cta-row { flex-direction: column; align-items: stretch; }
+      .cta-row a { width: 100%; }
+      .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+      .stat-card { padding: 14px; }
+      .theater { padding: 12px; border-radius: 16px; }
+      .demo-tabs {
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        overflow-x: auto;
+        scroll-snap-type: x proximity;
+        padding-bottom: 6px;
+        margin-bottom: 12px;
+        scrollbar-width: none;
+      }
+      .demo-tabs::-webkit-scrollbar { display: none; }
+      .demo-tab { scroll-snap-align: center; }
+      .filter-bar {
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+        overflow-x: auto;
+        padding-bottom: 6px;
+        scrollbar-width: none;
+      }
+      .filter-bar::-webkit-scrollbar { display: none; }
+      .panel { padding: 18px; }
+      .mobile-dock { display: flex; }
+      footer { padding-bottom: calc(88px + env(safe-area-inset-bottom, 0px)); }
     }
   </style>
 </head>
@@ -250,47 +846,86 @@
       </a>
       <nav class="nav-links" aria-label="Primary">
         <a href="#demos" data-i18n="navDemos">Live Demos</a>
-        <a href="#modules" data-i18n="navModules">13-in-1 Suite</a>
+        <a href="#modules" data-i18n="navModules">Modular Tools</a>
+        <a href="#architecture" data-i18n="navSync">Sync &amp; Privacy</a>
         <a href="#mcp" data-i18n="navMcp">MCP &amp; Footprint</a>
         <a href="https://github.com/yuan278501381/Tools3000/releases" target="_blank" rel="noopener" data-i18n="navReleases">Releases</a>
-        <a href="https://github.com/yuan278501381/Tools3000/discussions" target="_blank" rel="noopener">Discussions</a>
       </nav>
       <div class="nav-actions">
         <button type="button" class="pill-btn" id="langBtn" aria-label="Switch language">中文</button>
-        <button type="button" class="pill-btn" id="themeBtn" aria-label="Toggle color theme">Theme</button>
-        <a class="pill-btn" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener">
+        <button type="button" class="pill-btn pill-btn--icon" id="themeBtn" aria-label="Toggle color theme" title="Toggle color theme">
+          <svg id="themeIconSun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></svg>
+          <svg id="themeIconMoon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="display:none;"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></svg>
+        </button>
+        <a class="pill-btn nav-github-desktop" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M15 22v-4a4.8 4.8 0 0 0-1-3.5c3 0 6-2 6-5.5.08-1.25-.27-2.48-1-3.5.28-1.15.28-2.35 0-3.5 0 0-1 0-3 1.5-2.64-.5-5.36-.5-8 0C6 2 5 2 5 2c-.3 1.15-.3 2.35 0 3.5A5.403 5.403 0 0 0 4 9c0 3.5 3 5.5 6 5.5-.39.49-.68 1.05-.85 1.65-.17.6-.22 1.23-.15 1.85v4"/><path d="M9 18c-4.51 2-5-2-7-2"/></svg>
           <span>GitHub</span>
         </a>
+        <button type="button" class="pill-btn pill-btn--icon menu-toggle" id="menuToggleBtn" aria-label="Menu" aria-expanded="false" aria-controls="mobileDrawer">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="17" x2="20" y2="17"/></svg>
+        </button>
+      </div>
+    </div>
+    <div class="mobile-drawer" id="mobileDrawer">
+      <div class="mobile-drawer__links">
+        <a class="mobile-drawer__link" href="#demos" data-i18n="navDemos">Live Demos</a>
+        <a class="mobile-drawer__link" href="#modules" data-i18n="navModules">Modular Tools</a>
+        <a class="mobile-drawer__link" href="#architecture" data-i18n="navSync">Sync &amp; Privacy</a>
+        <a class="mobile-drawer__link" href="#mcp" data-i18n="navMcp">MCP &amp; Footprint</a>
+      </div>
+      <div class="mobile-drawer__cta">
+        <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000/releases" target="_blank" rel="noopener" data-i18n="navReleases">Releases</a>
+        <a class="btn-primary" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener" data-i18n="viewSource">Star on GitHub</a>
       </div>
     </div>
   </header>
 
   <main class="container">
-    <section class="hero">
+    <section class="hero" id="top">
       <div class="hero-badge">
         <span class="dot"></span>
-        <span data-i18n="heroBadge">v1.4.15 Released · Native C++20 &amp; Rust · Zero Electron · GPL-3.0</span>
+        <span data-i18n="heroBadge">v1.4.16 Released · Native C++20 &amp; Rust · Zero Electron · GPL-3.0</span>
       </div>
-      <h1 data-i18n-html="heroTitle">13 Everyday Windows Power Tools.<br /><span class="grad">One ~15 MB Native Binary.</span></h1>
-      <p data-i18n="heroSub">Replace ten heavy background apps with one cohesive, 100% local-first suite: instant NTFS, app, bookmark &amp; full-text search (+ 350 KB MCP server), persistent clipboard, Text Expander, 8-language offline OCR &amp; 1:1 translation, auto-zoom screen studio, global mouse gestures, and a &lt;2 MB Rust Picasa viewer.</p>
+      <h1 data-i18n-html="heroTitle">13 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span></h1>
+      <p class="hero-sub" data-i18n="heroSub">Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark &amp; command search (+ 350 KB MCP), persistent clipboard, 8-language offline OCR with in-place &amp; quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app auto-bypass &amp; E2E-encrypted cloud sync.</p>
 
       <div class="cta-row">
-        <a class="btn-primary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.4.15-Setup.exe">
+        <a class="btn-primary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.4.16-Setup.exe">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span data-i18n="dlInstaller">Download Installer (x64)</span>
+          <span data-i18n="dlInstaller">Download Installer (v1.4.16)</span>
         </a>
-        <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.4.15-win-x64-portable.zip">
+        <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.4.16-win-x64-portable.zip">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
           <span data-i18n="dlPortable">Portable ZIP (No Install)</span>
         </a>
         <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
           <span data-i18n="viewSource">Star on GitHub</span>
         </a>
       </div>
 
-      <div class="cli-box">
-        <code id="scoopCmd">scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 &amp;&amp; scoop install tools3000</code>
-        <button type="button" class="pill-btn" id="copyCliBtn" data-i18n="copyBtn">Copy</button>
+      <div class="mobile-banner" id="mobileBanner" role="note">
+        <div class="mobile-banner__top">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          <span data-i18n="mobileTip">Browsing on a phone or tablet? Tools3000 runs natively on Windows 10/11 (x64 &amp; ARM64). Save this link to install on your PC later.</span>
+        </div>
+        <div class="mobile-banner__actions">
+          <button type="button" class="pill-btn" id="copyPageLinkBtn" data-i18n="copyPcLink">Copy Link for PC</button>
+          <a class="pill-btn" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener" data-i18n="starForLater">Star on GitHub</a>
+        </div>
+      </div>
+
+      <div class="cli-wrap">
+        <div class="cli-tabs">
+          <div class="cli-tab-group" role="tablist" aria-label="Install method">
+            <button type="button" class="cli-tab active" data-cli="scoop" role="tab" aria-selected="true">Scoop</button>
+            <button type="button" class="cli-tab" data-cli="winget" role="tab" aria-selected="false">WinGet</button>
+          </div>
+          <button type="button" class="pill-btn" id="copyCliBtn" data-i18n="copyBtn" style="min-height:30px;padding:4px 10px;">Copy</button>
+        </div>
+        <div class="cli-body">
+          <code id="cliCmd">scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 &amp;&amp; scoop install tools3000</code>
+        </div>
       </div>
 
       <div class="stats-grid">
@@ -308,7 +943,7 @@
         </div>
         <div class="stat-card">
           <div class="stat-val num">8 Langs</div>
-          <div class="stat-lbl" data-i18n="stat4">UI + auto offline OCR &amp; 1:1 translation</div>
+          <div class="stat-lbl" data-i18n="stat4">UI + offline OCR &amp; in-place translation</div>
         </div>
       </div>
     </section>
@@ -316,31 +951,125 @@
     <section id="demos">
       <div class="sec-head">
         <h2 data-i18n="demoTitle">See It in Action</h2>
-        <p data-i18n="demoSub">Real native recordings on Windows 11 — zero mockups, zero cloud latency.</p>
+        <p data-i18n="demoSub">Real native recordings on Windows 11 — swipe or tap to zoom on mobile, zero mockups.</p>
       </div>
       <div class="theater">
         <div class="demo-tabs" id="demoTabs" role="tablist"></div>
-        <div class="demo-stage">
-          <img id="demoImg" src="./images/en-US/search_demo.webp" alt="Tools3000 feature demonstration" loading="eager" />
-          <div class="demo-caption" id="demoCaption"></div>
+        <div class="demo-stage" id="demoStage">
+          <div class="demo-media-wrap" id="demoMediaWrap">
+            <img id="demoImg" src="./images/en-US/search_demo.webp" alt="Tools3000 feature demonstration" loading="eager" />
+            <span class="demo-zoom-pill">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+              <span data-i18n="tapZoom">Zoom</span>
+            </span>
+          </div>
+          <div class="demo-bar">
+            <div class="demo-caption" id="demoCaption"></div>
+            <div class="demo-pager">
+              <button type="button" class="pill-btn pill-btn--icon" id="demoPrevBtn" aria-label="Previous demo">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
+              </button>
+              <span class="demo-count num" id="demoCount">1 / 8</span>
+              <button type="button" class="pill-btn pill-btn--icon" id="demoNextBtn" aria-label="Next demo">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
     <section id="modules">
       <div class="sec-head">
-        <h2 data-i18n="modTitle">One Cohesive 13-in-1 Native Architecture</h2>
-        <p data-i18n="modSub">Every module can be toggled independently — disabled tools unhook completely with 0 background RAM.</p>
+        <h2 data-i18n="modTitle">Modular by Design — Pick 1 Tool or All 13</h2>
+        <p data-i18n="modSub">Love single-purpose tools without juggling 10 background processes? Toggle every module independently — disabled tools unload completely with zero background usage.</p>
       </div>
+      <div class="filter-bar" id="moduleFilters" role="tablist" aria-label="Filter modules"></div>
       <div class="bento-grid" id="bentoGrid"></div>
     </section>
 
-    <section id="mcp">
-      <div class="split-grid">
-        <div class="code-panel">
+    <section id="architecture">
+      <div class="sec-head">
+        <h2 data-i18n="archTitle">Built for Multi-PC Workflows, Privacy &amp; Pro Software</h2>
+        <p data-i18n="archSub">Local-first by default with zero telemetry, optional E2E-encrypted cloud sync, and automatic conflict avoidance in professional apps.</p>
+      </div>
+      <div class="arch-grid">
+        <div class="panel">
           <div>
-            <h3 style="font-size:1.25rem;font-weight:750;margin-bottom:8px;" data-i18n="mcpTitle">AI-Ready 350 KB Local MCP Server</h3>
-            <p style="font-size:0.9rem;color:var(--text-muted);margin-bottom:14px;" data-i18n="mcpDesc">Give Claude Desktop, Cursor, or Windsurf instant read-only NTFS &amp; document full-text search without Node.js or Python. Opt-in by default with hardcoded blocking of .ssh, .env, and private keys.</p>
+            <div class="panel-head">
+              <span class="panel-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+              </span>
+              <h3 data-i18n="syncTitle">E2E-Encrypted Multi-PC Config Sync</h3>
+            </div>
+            <p class="panel-desc" data-i18n="syncDesc">Back up and restore your settings, hotkeys, scope rules &amp; custom Lua scripts across PCs without creating an account.</p>
+            <ul class="feature-list">
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="syncBullet1">OneDrive / Google Drive sync folders, WebDAV &amp; S3-compatible storage (R2 / OSS / MinIO)</span>
+              </li>
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="syncBullet2">Optional local AES-256-GCM passphrase encryption &amp; Windows DPAPI credential storage</span>
+              </li>
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="syncBullet3">Silent auto-backup on exit with rolling snapshot history &amp; 1-click cloud restore</span>
+              </li>
+            </ul>
+          </div>
+          <div class="tag-row">
+            <span class="tag-chip">AES-256-GCM</span>
+            <span class="tag-chip">OneDrive / Drive</span>
+            <span class="tag-chip">WebDAV</span>
+            <span class="tag-chip">S3 / R2</span>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div>
+            <div class="panel-head">
+              <span class="panel-icon panel-icon--emerald">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </span>
+              <h3 data-i18n="bypassTitle">Zero-Conflict Pro-App Auto-Bypass</h3>
+            </div>
+            <p class="panel-desc" data-i18n="bypassDesc">Engineered to stay invisible whenever professional tools need native right-click drags or dedicated hotkeys.</p>
+            <ul class="feature-list">
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="bypassBullet1">Zero-latency right-click gesture bypass in 30+ CAD, UG/NX, SolidWorks, EDA &amp; 3D apps</span>
+              </li>
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="bypassBullet2">Per-hotkey foreground auto-yield (e.g. Alt+X yields cleanly to SSMS Execute SQL &amp; Emacs)</span>
+              </li>
+              <li>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
+                <span data-i18n="bypassBullet3">Automatic fullscreen game DND, password-manager privacy exclusion &amp; zero telemetry</span>
+              </li>
+            </ul>
+          </div>
+          <div class="tag-row">
+            <span class="tag-chip">CAD / 3D 0ms</span>
+            <span class="tag-chip">SSMS / Emacs</span>
+            <span class="tag-chip">Zero Telemetry</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="mcp">
+      <div class="arch-grid">
+        <div class="panel">
+          <div>
+            <div class="panel-head">
+              <span class="panel-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+              </span>
+              <h3 data-i18n="mcpTitle">AI-Ready 350 KB Local MCP Server</h3>
+            </div>
+            <p class="panel-desc" data-i18n="mcpDesc">Give Claude Desktop, Cursor, or Windsurf instant read-only NTFS &amp; document full-text search without Node.js or Python. Opt-in by default with hardcoded blocking of .ssh, .env, and private keys.</p>
             <pre id="mcpJson">{
   "mcpServers": {
     "tools3000-search": {
@@ -350,32 +1079,55 @@
   }
 }</pre>
           </div>
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div class="panel-foot">
             <a href="https://glama.ai/mcp/servers/yuan278501381/Tools3000" target="_blank" rel="noopener">
-              <img src="https://glama.ai/mcp/servers/yuan278501381/Tools3000/badges/score.svg" alt="Tools3000 MCP server score on Glama" height="28" />
+              <img src="https://glama.ai/mcp/servers/yuan278501381/Tools3000/badges/score.svg" alt="Tools3000 MCP server score on Glama" height="28" loading="lazy" />
             </a>
             <button type="button" class="pill-btn" id="copyMcpBtn" data-i18n="copyMcp">Copy MCP Config</button>
           </div>
         </div>
 
-        <div class="code-panel">
+        <div class="panel">
           <div>
-            <h3 style="font-size:1.25rem;font-weight:750;margin-bottom:8px;" data-i18n="ramTitle">Why Native C++20 &amp; Rust Matters</h3>
-            <p style="font-size:0.9rem;color:var(--text-muted);margin-bottom:18px;" data-i18n="ramDesc">Running 10 separate Electron/WPF utilities drains over 1.2 GB of RAM and spawns conflicting global keyboard/mouse hooks. Tools3000 shares a single microkernel.</p>
+            <div class="panel-head">
+              <span class="panel-icon panel-icon--emerald">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3"/><path d="M15 1v3"/><path d="M9 20v3"/><path d="M15 20v3"/><path d="M20 9h3"/><path d="M20 14h3"/><path d="M1 9h3"/><path d="M1 14h3"/></svg>
+              </span>
+              <h3 data-i18n="ramTitle">Why Native C++20 &amp; Rust Matters</h3>
+            </div>
+            <p class="panel-desc" data-i18n="ramDesc">Running 10 separate Electron/WPF utilities drains over 1.2 GB of RAM and spawns conflicting global keyboard/mouse hooks. Tools3000 shares a single microkernel.</p>
             <div class="bar-row">
               <div class="bar-meta"><span data-i18n="ramGood">Tools3000 (All 13 modules ready)</span><span class="num" style="color:var(--emerald);">~15 MB</span></div>
               <div class="bar-track"><div class="bar-fill-good"></div></div>
             </div>
             <div class="bar-row" style="margin-top:20px;">
-              <div class="bar-meta"><span data-i18n="ramHeavy">10 Separate Utilities (Electron / .NET / Qt)</span><span class="num" style="color:#ef4444;">1,200+ MB</span></div>
+              <div class="bar-meta"><span data-i18n="ramHeavy">10 Separate Utilities (Electron / .NET / Qt)</span><span class="num" style="color:var(--danger);">1,200+ MB</span></div>
               <div class="bar-track"><div class="bar-fill-heavy"></div></div>
             </div>
           </div>
-          <div style="font-size:0.85rem;color:var(--text-muted);" data-i18n="ramFoot">Supports Windows 10 / 11 &amp; Windows Server (2019–2025) across x64 &amp; ARM64, with full non-ASCII Unicode path support.</div>
+          <div class="ram-foot" data-i18n="ramFoot">Supports Windows 10 / 11 &amp; Windows Server (2019-2025) across x64 &amp; ARM64, with full non-ASCII Unicode path support.</div>
         </div>
       </div>
     </section>
   </main>
+
+  <div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="Image preview">
+    <button type="button" class="lightbox__close" id="lightboxClose" aria-label="Close preview">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+    <div class="lightbox__inner">
+      <img id="lightboxImg" src="" alt="" />
+      <div class="lightbox__cap" id="lightboxCap"></div>
+    </div>
+  </div>
+
+  <div class="mobile-dock" id="mobileDock">
+    <button type="button" class="mobile-dock__btn mobile-dock__btn--primary" id="dockCopyLinkBtn" data-i18n="copyPcLink">Copy Link for PC</button>
+    <a class="mobile-dock__btn mobile-dock__btn--ghost" href="https://github.com/yuan278501381/Tools3000" target="_blank" rel="noopener">GitHub</a>
+    <button type="button" class="mobile-dock__btn mobile-dock__btn--ghost mobile-dock__top" id="dockTopBtn" aria-label="Back to top">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="18 15 12 9 6 15"/></svg>
+    </button>
+  </div>
 
   <footer>
     <div class="container foot-inner">
@@ -391,69 +1143,222 @@
   </footer>
 
   <script>
+    const CLI_COMMANDS = {
+      scoop: 'scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000',
+      winget: 'winget install Yy1.Tools3000'
+    };
+
     const DEMOS = [
-      { id: 'search', file: 'search_demo.webp', en: 'Instant Search', zh: '极速搜索与启动', capEn: 'Alt + Space: NTFS MFT files, apps, 37 system commands & browser bookmarks with real Favicons + Spacebar QuickLook.', capZh: 'Alt + Space 毫秒搜全盘文件、已装应用、37 条系统命令与原站图标书签，按空格直接预览文档/压缩包/字体/音视频。' },
-      { id: 'ocr', file: 'ocr_live_text_demo.webp', en: 'Offline OCR & 1:1 Translate', zh: '8语离线识字与原位翻译', capEn: 'Auto-detects 8 languages offline and translates text cleanly in place while preserving the original background.', capZh: '自动识别 8 国语言离线文字，无痕擦除原文并原位排版译文，贴图上可直接像网页一样划词复制。' },
-      { id: 'expander', file: 'text_expander_demo.webp', en: 'Text Expander', zh: '文本扩展器', capEn: 'Type ;mail or ;date anywhere to expand snippets & dynamic macros with automatic password-manager exclusion.', capZh: '敲入 ;mail / ;date 等短词瞬间展开长文本与动态宏，自动避让密码管理器且零剪贴板污染。' },
-      { id: 'clipboard', file: 'clipboard_demo.webp', en: 'Clipboard Drag-Paste', zh: '持久化剪贴板直拖', capEn: 'Alt + V: Rust crash-safe clipboard history that survives reboots, with drag-to-paste and active-app tracking.', capZh: 'Alt + V 重启不丢的剪贴板历史，支持拖拽直贴连续投递、置顶切窗自动跟随与隐藏置顶净化。' },
-      { id: 'record', file: 'screen_recording_demo.webp', en: 'Auto-Zoom Studio', zh: '自动运镜录屏演播室', capEn: 'Smooth cursor-following zoom & click ripples, exporting crisp MP4, WeChat-ready GIF, or animated WebP.', capZh: '自动跟随鼠标焦点平滑推拉镜头，一键导出高清 MP4、微信直发 GIF 与动态 WebP。' },
-      { id: 'capture', file: 'capture_markup_demo.webp', en: 'Capture & Region Manager', zh: '标注截图与选区工作台', capEn: 'F1 precision capture, Shift + F1 repeat last region, R cycling, and pinned custom region presets.', capZh: 'F1 精准标注截图、Shift + F1 重复上次选区、R 循环切换历史框，支持固定选区管理工作台。' },
-      { id: 'dialog', file: 'dialog_enhancer_demo.webp', en: 'File Dialog Jump', zh: '打开/保存弹窗快跳', capEn: 'Inline folder search & instant Explorer path sync inside standard Windows Open / Save dialogs.', capZh: '在所有软件的打开/另存为弹窗内直接搜索目录或一键切到当前打开的文件夹，保护文件名不丢失。' },
-      { id: 'gesture', file: 'mouse_gesture_demo.webp', en: 'Mouse Gestures', zh: '全局鼠标手势', capEn: 'Right-drag gestures with pause-to-cancel, smart window activation, hot corners, and Lua automation.', capZh: '右键流光轨迹手势，支持中途停顿自动取消、智能激活已有窗口、四角触发与 Lua 脚本扩展。' }
+      { id: 'search', file: 'search_demo.webp', en: 'Omni Search', zh: '全能聚合秒搜', capEn: 'Alt + Space: NTFS MFT files, full text, apps, 37 system commands & browser bookmarks with real Favicons + Spacebar QuickLook.', capZh: 'Alt + Space 毫秒聚合搜全盘文件、文档全文、已装应用、37 条系统命令与书签，按空格直接预览。' },
+      { id: 'ocr', file: 'ocr_live_text_demo.webp', en: 'OCR & In-Place Translate', zh: '离线识字与原位翻译', capEn: 'Auto-detects 8 languages offline, renders clean in-place screenshot translations, plus Alt + X instant quick translate.', capZh: '离线自动识别多语文字，无痕原位排版译文，并支持 Alt + X 纯原生轻量划词与剪贴板翻译。' },
+      { id: 'dialog', file: 'dialog_enhancer_demo.webp', en: 'Ctrl+G Dialog Jump', zh: 'Ctrl+G 对话框快跳', capEn: 'Press Ctrl + G inside Open/Save dialogs to jump straight to active folders, or Ctrl + Shift + G for inline directory search.', capZh: '打开/保存弹窗内按 Ctrl + G 一键直达活跃文件夹，按 Ctrl + Shift + G 内嵌全盘目录即搜。' },
+      { id: 'record', file: 'screen_recording_demo.webp', en: 'Cinema Auto-Zoom Studio', zh: '电影级自动运镜录屏', capEn: 'Critically-damped spring camera zoom following clicks & waveform trimming, exporting crisp MP4, compact chat GIF, or animated WebP.', capZh: '点击自动平滑推拉弹簧运镜 + 音轨波形剪辑，一键导出高清 MP4、轻量聊天动图 GIF 与动态 WebP。' },
+      { id: 'clipboard', file: 'clipboard_demo.webp', en: 'Clipboard Drag-Paste', zh: '持久化剪贴板直拖', capEn: 'Alt + V: Rust crash-safe clipboard history surviving reboots, with multi-select merge, drag-to-paste & image OCR/translate.', capZh: 'Alt + V 跨重启不丢的剪贴板历史，支持多选合并、拖拽直贴、收藏分组与图片一键识字翻译。' },
+      { id: 'expander', file: 'text_expander_demo.webp', en: 'Text Expander', zh: '文本扩展器', capEn: 'Type ;mail or ;date anywhere to expand snippets & 15 dynamic macros with automatic password-manager exclusion.', capZh: '敲入 ;mail / ;date 等短词瞬间展开长文本与 15 类动态宏，自动避让密码管理器且零剪贴板污染。' },
+      { id: 'capture', file: 'capture_markup_demo.webp', en: 'Capture & Region Studio', zh: '标注截图与固定选区', capEn: 'F1 precision vector markup, Shift + F1 repeat last region, R cycling, and pinned custom region presets.', capZh: 'F1 精准矢量标注、Shift + F1 重复上次选区、R 循环切换历史框，支持置顶固定选区工作台。' },
+      { id: 'gesture', file: 'mouse_gesture_demo.webp', en: 'Gestures & Auto-Bypass', zh: '全局手势与专业避让', capEn: 'Right-drag gestures with pause-to-cancel, hot corners, edge scroll & 0ms right-click bypass in CAD/3D apps.', capZh: '右键流光轨迹手势，支持停顿取消、四角触发、边缘滚轮调节，内置 CAD/3D 专业软件零延迟右键避让。' }
+    ];
+
+    const FILTER_CATS = [
+      { id: 'all', en: 'All 13 Tools', zh: '全部 13 项' },
+      { id: 'search', en: 'Search & Input', zh: '搜索、剪贴板与输入' },
+      { id: 'media', en: 'Capture, OCR & Studio', zh: '截图、翻译与录屏' },
+      { id: 'system', en: 'Presenter, Gestures & System', zh: '演示、手势与系统' }
     ];
 
     const MODULES = [
-      { kbd: 'Alt + Space', en: ['Instant File, App & Bookmark Search', 'Millisecond NTFS MFT + Live Watch, 3 RAM tiers (down to 0 MB sleep), and Spacebar QuickLook.'], zh: ['极速文件 / 应用 / 书签搜索', 'NTFS 毫秒级检索 + 实时刷新、3 档内存模式（含 0 MB 休眠）与空格快速预览。'] },
-      { kbd: 'content:', en: ['Full-Text Document Search', 'Rust SIMD search across code, Markdown, Word, Excel, PowerPoint, PDF & OFD with line snippets.'], zh: ['多格式文档内容全文搜索', 'Rust SIMD 极速检索代码、Word、Excel、PPT、PDF 与 OFD 正文并高亮上下文。'] },
-      { kbd: 'Alt + V', en: ['Persistent Clipboard History', 'Color source app icons, universal drag-to-paste (browsers, terminals & AI IDEs), active-window tracking & reboot persistence.'], zh: ['重启不丢的剪贴板历史', '真实彩色来源应用图标，支持拖入浏览器搜索框/命令行终端/AI 编程工具直贴，置顶切窗自动跟随。'] },
-      { kbd: ';trigger', en: ['Native Text Expander', 'Expand triggers & 15 dynamic macros (date offsets, UUID, weekday, cursor) with CJK fullwidth compatibility & zero idle hooks.'], zh: ['全局文本扩展器', '任意输入框敲短词秒展长文与 15 类动态宏（支持全半角符号智能兼容与实时预览），关闭零占用。'] },
-      { kbd: 'F1 / Shift+F1', en: ['Precision Capture & Region Manager', 'Vector annotations, decoupled copy/save finish actions, R region history cycling & pinned region presets.'], zh: ['精准截图与选区管理工作台', '丰富矢量标注、独立控制自动保存与复制、R 键历史选区复用与置顶固定选区工作台。'] },
-      { kbd: 'Scroll', en: ['Scrolling Long Screenshot', 'Auto-scrolls web pages, chat logs & code editors with real-time stitching preview.'], zh: ['智能滚动长截图', '自动平滑滚动网页、长聊天记录与代码编辑器，实时预览无缝拼接。'] },
-      { kbd: 'F3', en: ['120Hz+ Grouped Desktop Pins', 'Hardware-composited wheel zoom, lossless cold compression for 4K/long pins, and hover-priority Live Text.'], zh: ['120Hz 顺滑贴图与无损内存封顶', 'GPU 丝滑缩放、多标签贴图组，多张 4K/长图自动无损冷压缩省内存，文字直接划选复制。'] },
-      { kbd: 'Ctrl+Shift+O', en: ['8-Lang Offline OCR & 1:1 Translate', 'Offline PP-OCR auto-detects CJK/JP/KR/RU/ES/PT/EN and renders clean in-place translations.'], zh: ['8 语种离线识字与原位翻译', '自动识别中英日韩俄西葡离线文字，无痕擦除原字并原位排版译文。'] },
-      { kbd: 'Ctrl+Shift+R', en: ['Auto-Zoom Screen Studio', 'Records screen/audio with automatic cursor zoom, exporting MP4, GIF & animated WebP.'], zh: ['自动运镜录屏演播室', '自动跟随点击平滑推拉镜头，一键导出高清 MP4、微信 GIF 与动态 WebP。'] },
-      { kbd: 'Right Drag', en: ['Global Mouse Gestures & Lua', '60fps trail, pause-to-cancel, run-or-activate window switching, hot corners & edge wheel.'], zh: ['全局鼠标手势与触发角', '停顿防误触取消、智能激活已有程序窗口、屏幕四角触发与边缘滚轮调节。'] },
-      { kbd: 'Open / Save', en: ['File Dialog Enhancer', 'Listary-style inline directory search & recent Explorer folder jump inside Open/Save dialogs.'], zh: ['文件对话框内嵌快跳助手', '在打开/另存为弹窗内直接搜目录秒跳、一键切当前资源管理器目录。'] },
-      { kbd: 'Right Click', en: ['File Locksmith & <2 MB Picasa Viewer', 'Zero-resident right-click file unlocker + ultra-fast standalone Rust photo viewer (41 formats).'], zh: ['文件占用解锁 & 轻量 Picasa 看图', '平时 0 内存常驻的一键查杀文件占用锁 + 不足 2 MB 秒开 41 种格式的独立看图器。'] },
-      { kbd: 'Cloud / HUD', en: ['Encrypted Backup, Keycast & Remote Boost', 'Optional E2E-encrypted OneDrive/WebDAV/S3 config backup, portable hot-update, keycast HUD, spotlight & RDP stuck-key flush.'], zh: ['加密配置云备份、演示特效与远控增强', '支持同步盘/WebDAV/S3 端到端加密配置备份、便携版原地热更新、按键回显聚光灯与远控防卡键。'] }
+      { cat: 'search', kbd: 'Alt + Space', en: ['Omni File, App & Bookmark Search', 'Millisecond NTFS MFT search across files, apps, bookmarks & commands, with Ctrl+C file copy, 0 MB sleep & Spacebar QuickLook.'], zh: ['全能文件 / 应用 / 书签秒搜', 'NTFS 毫秒级聚合检索文件、应用、书签与系统命令，支持 Ctrl+C 直接复制文件本体、0 MB 休眠与空格预览。'] },
+      { cat: 'search', kbd: 'content:', en: ['Full-Text Document Search', 'Rust SIMD search across code, Markdown, Office, PDF & OFD content with highlighted line snippets.'], zh: ['多格式文档内容全文搜索', 'Rust SIMD 极速检索代码、Markdown、Office、PDF 与 OFD 正文并高亮上下文。'] },
+      { cat: 'search', kbd: 'Alt + V', en: ['Persistent Clipboard History', 'Color source app icons, universal drag-to-paste (browsers, terminals & AI IDEs), multi-select merge & reboot persistence.'], zh: ['重启不丢的剪贴板历史', '彩色来源图标、支持拖入浏览器/终端/AI 编程工具直贴、多选合并粘贴与图片一键识字翻译。'] },
+      { cat: 'search', kbd: ';trigger', en: ['Native Text Expander', 'Expand triggers & 15 dynamic macros (date offsets, UUID, weekday, cursor) with fullwidth compatibility & zero idle hooks.'], zh: ['全局文本扩展器', '任意输入框敲短词秒展长文与 15 类动态宏（支持全半角符号智能兼容与实时预览），关闭零占用。'] },
+      { cat: 'media', kbd: 'F1 / Shift+F1', en: ['Precision Capture & Region Manager', 'Vector annotations, decoupled copy/save actions, R region history cycling & pinned region presets.'], zh: ['精准截图与固定选区工作台', '矢量标注、独立控制自动保存与复制、R 键历史选区复用与置顶固定选区工作台。'] },
+      { cat: 'media', kbd: 'Scroll', en: ['Scrolling Long Screenshot', 'Auto-scrolls web pages, chat threads & code editors with real-time stitching preview.'], zh: ['智能滚动长截图', '自动平滑滚动网页、长会话与代码编辑器，实时预览无缝拼接。'] },
+      { cat: 'media', kbd: 'F3', en: ['120Hz+ Grouped Desktop Pins', 'GPU wheel zoom, lossless cold compression for 4K/long pins, and hover-priority Live Text selection.'], zh: ['120Hz 顺滑贴图与无损内存封顶', 'GPU 丝滑缩放、多标签贴图组、多张 4K/长图无损冷压缩，贴图文字直接划选复制。'] },
+      { cat: 'media', kbd: 'Ctrl+Shift+O / Alt+X', en: ['Offline OCR, In-Place & Quick Translate', '8-language offline OCR with seamless 1:1 in-place translation, plus zero-WebView Alt+X selection translate with SSMS/Emacs auto-yield.'], zh: ['多语离线识字、原位与划词翻译', '8 语种离线 OCR 与无痕截图原位翻译，附带零 WebView 的 Alt+X 划词翻译（自动避让 SSMS / Emacs）。'] },
+      { cat: 'media', kbd: 'Ctrl+Shift+R', en: ['Cinema Auto-Zoom Screen Studio', 'Smooth spring click-following zoom & audio waveform trim, exporting crisp MP4, compact chat GIF & animated WebP.'], zh: ['电影级自动运镜录屏演播室', '临界阻尼弹簧自动跟焦推拉 + 音轨波形剪辑，一键导出高清 MP4、轻量聊天动图 GIF 与动态 WebP。'] },
+      { cat: 'system', kbd: 'Ctrl+G / Shift+G', en: ['File Dialog Quick Jump & Search', 'Press Ctrl+G inside Open/Save dialogs to jump to active folders, Ctrl+Shift+G for inline directory search & per-app path memory.'], zh: ['文件对话框 Ctrl+G 快跳与即搜', '打开/保存弹窗按 Ctrl+G 一键直达活跃文件夹，Ctrl+Shift+G 内嵌目录即搜并自动记忆各软件路径。'] },
+      { cat: 'system', kbd: 'Right Drag', en: ['Global Gestures & Pro-App Bypass', '60fps trail, pause-to-cancel, hot corners, edge wheel volume/brightness & 0ms right-click bypass in 30+ CAD/3D apps.'], zh: ['全局手势与专业软件自动避让', '停顿防误触、四角触发、边缘滚轮调音亮，内置 30+ 款 CAD/UG/3D 软件右键零延迟直通。'] },
+      { cat: 'system', kbd: 'Double Ctrl', en: ['Cinema Interactive Zoom & Keycast', 'Double-press Ctrl for smooth hardware zoom where clicking & typing keep working, plus spotlight, click ripples & keycast HUD.'], zh: ['双击 Ctrl 电影级交互放大与演示', '双击 Ctrl 丝滑推拉放大且全程支持真实点击与打字（Ctrl+滚轮调倍），兼备聚光灯与按键回显。'] },
+      { cat: 'system', kbd: 'Cloud / Right Click', en: ['E2E Cloud Sync, Unlocker & <2 MB Viewer', 'AES-256-GCM cloud config sync (OneDrive/WebDAV/S3), zero-resident File Locksmith, <2 MB Rust Picasa Viewer & RDP key flush.'], zh: ['加密云同步、占用解锁与轻量看图', '端到端加密配置云备份（OneDrive/WebDAV/S3）、零常驻文件解锁、不足 2 MB Rust 看图器与远控防卡键。'] }
     ];
 
     const I18N = {
       en: {
-        navDemos: 'Live Demos', navModules: '13-in-1 Suite', navMcp: 'MCP & Footprint', navReleases: 'Releases',
-        heroBadge: 'v1.4.15 Released · Native C++20 & Rust · Zero Electron · GPL-3.0',
-        heroTitle: '13 Everyday Windows Power Tools.<br /><span class="grad">One ~15 MB Native Binary.</span>',
-        heroSub: 'Replace ten heavy background apps with one cohesive, 100% local-first suite: instant NTFS, app, bookmark & full-text search (+ 350 KB MCP server), persistent clipboard, Text Expander, 8-language offline OCR & 1:1 translation, auto-zoom screen studio, global mouse gestures, and a <2 MB Rust Picasa viewer.',
-        dlInstaller: 'Download Installer (v1.4.15)', dlPortable: 'Portable ZIP (No Install)', viewSource: 'Star on GitHub', copyBtn: 'Copy',
-        stat1: 'Idle RAM (0 MB optional search sleep)', stat2: 'Million-file NTFS MFT + USN query', stat3: 'Zero-dependency Rust CLI & MCP server', stat4: 'UI + auto offline OCR & 1:1 translation',
-        demoTitle: 'See It in Action', demoSub: 'Real native recordings on Windows 11 — zero mockups, zero cloud latency.',
-        modTitle: 'One Cohesive 13-in-1 Native Architecture', modSub: 'Every module can be toggled independently — disabled tools unhook completely with 0 background RAM.',
+        navDemos: 'Live Demos', navModules: 'Modular Tools', navSync: 'Sync & Privacy', navMcp: 'MCP & Footprint', navReleases: 'Releases',
+        heroBadge: 'v1.4.16 Released · Native C++20 & Rust · Zero Electron · GPL-3.0',
+        heroTitle: '13 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span>',
+        heroSub: 'Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark & command search (+ 350 KB MCP), persistent clipboard, 8-language offline OCR with in-place & quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app auto-bypass & E2E-encrypted cloud sync.',
+        dlInstaller: 'Download Installer (v1.4.16)', dlPortable: 'Portable ZIP (No Install)', viewSource: 'Star on GitHub', copyBtn: 'Copy',
+        mobileTip: 'Browsing on a phone or tablet? Tools3000 runs natively on Windows 10/11 (x64 & ARM64). Copy the link to install on your PC later.',
+        copyPcLink: 'Copy Link for PC', starForLater: 'Star on GitHub',
+        stat1: 'Idle RAM (0 MB optional search sleep)', stat2: 'Million-file NTFS MFT + USN query', stat3: 'Zero-dependency Rust CLI & MCP server', stat4: 'UI + offline OCR & in-place translation',
+        demoTitle: 'See It in Action', demoSub: 'Real native recordings on Windows 11 — swipe or tap to zoom on mobile, zero mockups.', tapZoom: 'Zoom',
+        modTitle: 'Modular by Design — Pick 1 Tool or All 13', modSub: 'Love single-purpose tools without juggling 10 background processes? Toggle every module independently — disabled tools unload completely with zero background usage.',
+        archTitle: 'Built for Multi-PC Workflows, Privacy & Pro Software', archSub: 'Local-first by default with zero telemetry, optional E2E-encrypted cloud sync, and automatic conflict avoidance in professional apps.',
+        syncTitle: 'E2E-Encrypted Multi-PC Config Sync', syncDesc: 'Back up and restore your settings, hotkeys, scope rules & custom Lua scripts across PCs without creating an account.',
+        syncBullet1: 'OneDrive / Google Drive sync folders, WebDAV & S3-compatible storage (R2 / OSS / MinIO)',
+        syncBullet2: 'Optional local AES-256-GCM passphrase encryption & Windows DPAPI credential storage',
+        syncBullet3: 'Silent auto-backup on exit with rolling snapshot history & 1-click cloud restore',
+        bypassTitle: 'Zero-Conflict Pro-App Auto-Bypass', bypassDesc: 'Engineered to stay invisible whenever professional tools need native right-click drags or dedicated hotkeys.',
+        bypassBullet1: 'Zero-latency right-click gesture bypass in 30+ CAD, UG/NX, SolidWorks, EDA & 3D apps',
+        bypassBullet2: 'Per-hotkey foreground auto-yield (e.g. Alt+X yields cleanly to SSMS Execute SQL & Emacs)',
+        bypassBullet3: 'Automatic fullscreen game DND, password-manager privacy exclusion & zero telemetry',
         mcpTitle: 'AI-Ready 350 KB Local MCP Server', mcpDesc: 'Give Claude Desktop, Cursor, or Windsurf instant read-only NTFS & document full-text search without Node.js or Python. Opt-in by default with hardcoded blocking of .ssh, .env, and private keys.',
         copyMcp: 'Copy MCP Config', ramTitle: 'Why Native C++20 & Rust Matters', ramDesc: 'Running 10 separate Electron/WPF utilities drains over 1.2 GB of RAM and spawns conflicting global keyboard/mouse hooks. Tools3000 shares a single microkernel.',
-        ramGood: 'Tools3000 (All 13 modules ready)', ramHeavy: '10 Separate Utilities (Electron / .NET / Qt)', ramFoot: 'Supports Windows 10 / 11 & Windows Server (2019–2025) across x64 & ARM64, with full non-ASCII Unicode path support.'
+        ramGood: 'Tools3000 (All 13 modules ready)', ramHeavy: '10 Separate Utilities (Electron / .NET / Qt)', ramFoot: 'Supports Windows 10 / 11 & Windows Server (2019-2025) across x64 & ARM64, with full non-ASCII Unicode path support.'
       },
       zh: {
-        navDemos: '实机演示', navModules: '13 合 1 矩阵', navMcp: 'MCP 与内存对比', navReleases: '版本下载',
-        heroBadge: 'v1.4.15 正式发布 · 原生 C++20 & Rust · 零 Electron · GPL-3.0 开源',
-        heroTitle: '13 款高频 Windows 效率神器<br /><span class="grad">浓缩进一个 ~15 MB 原生程序</span>',
-        heroSub: '告别十几个后台常驻软件抢热键、吃内存：集齐毫秒级文件/应用/书签与文档全文搜索（附 350 KB 本地 MCP 服务）、重启不丢剪贴板、文本扩展器、8 语种离线识字与无痕原位翻译、自动运镜录屏演播室、全局鼠标手势与不足 2 MB 的 Rust Picasa 看图器。',
-        dlInstaller: '下载标准安装包 (v1.4.15)', dlPortable: '下载绿色便携包 (免安装)', viewSource: '前往 GitHub 点 Star', copyBtn: '复制命令',
-        stat1: '日常待机内存（搜索支持闲置 0 MB 休眠）', stat2: '百万级文件 NTFS MFT 秒搜响应', stat3: '零依赖纯 Rust 命令行与 MCP 服务', stat4: '界面多语言 + 自动离线识字与原位翻译',
-        demoTitle: '全功能实机动态演示', demoSub: '100% Windows 真机实录，本地离线瞬时响应。',
-        modTitle: '高内聚 13 合 1 原生微内核矩阵', modSub: '所有模块均可独立开关，关闭即卸载底层钩子、归零后台占用。',
+        navDemos: '实机演示', navModules: '模块化工具', navSync: '云同步与避让', navMcp: 'MCP 与内存', navReleases: '版本下载',
+        heroBadge: 'v1.4.16 正式发布 · 原生 C++20 & Rust · 零 Electron · GPL-3.0 开源',
+        heroTitle: '13 款高频 Windows 效率神器<br /><span class="grad">按需独立开关 · 仅 ~15 MB 原生内核</span>',
+        heroSub: '告别十几个后台常驻软件抢热键、吃内存：一站集成全盘文件/全文/应用/书签与命令秒搜（附 350 KB 本地 MCP）、持久化剪贴板、8 语种离线识字与原位/划词翻译、文件对话框 Ctrl+G 快跳即搜、电影级自动运镜录屏、双击 Ctrl 交互平滑放大、专业软件自动避让与端到端加密配置云同步。每个功能均可个性化独立开关，关闭即卸载，零后台占用，只开你真正需要的那几项。',
+        dlInstaller: '下载标准安装包 (v1.4.16)', dlPortable: '下载绿色便携包 (免安装)', viewSource: '前往 GitHub 点 Star', copyBtn: '复制命令',
+        mobileTip: '当前正在手机/平板上浏览：Tools3000 为 Windows 10/11 原生桌面软件（支持 x64 & ARM64），可先复制链接发到电脑，或在 GitHub 点 Star 收藏。',
+        copyPcLink: '复制电脑访问链接', starForLater: 'GitHub 收藏',
+        stat1: '日常待机内存（搜索支持闲置 0 MB 休眠）', stat2: '百万级文件 NTFS MFT 秒搜响应', stat3: '零依赖纯 Rust 命令行与 MCP 服务', stat4: '界面多语言 + 离线识字与原位翻译',
+        demoTitle: '全功能实机动态演示', demoSub: '100% Windows 真机实录 — 手机端支持左右滑动切换与点击放大查看细节。', tapZoom: '放大查看',
+        modTitle: '模块化自由组合 — 只开 1 项或全开 13 项随你决定', modSub: '既拒绝十几个独立软件各自常驻抢热键、吃内存，也不强迫“全家桶绑定”——每个功能均可独立开关，关闭即卸载，零后台占用。',
+        archTitle: '为多台电脑、数据隐私与专业软件而生', archSub: '默认 100% 本地运行零遥测，可选端到端加密配置云同步，并在 CAD/3D/数据库等专业软件中自动让位零冲突。',
+        syncTitle: '端到端加密多端配置云同步', syncDesc: '无需注册账号，即可将全部设置、快捷键、应用规则与自定义 Lua 脚本在多台电脑间安全备份与一键恢复。',
+        syncBullet1: '支持 OneDrive / Google Drive 同步文件夹、WebDAV 网盘与 S3 兼容存储（R2 / OSS / MinIO）',
+        syncBullet2: '可选本地 AES-256-GCM 口令加密（云端零明文），凭据经 Windows DPAPI 本机安全保存',
+        syncBullet3: '支持退出时静默自动备份、历史快照滚动保留与云端一键回滚还原',
+        bypassTitle: '专业软件零冲突智能避让', bypassDesc: '从底层钩子与热键引擎出发，切入专业生产力环境瞬间自动交还控制权，绝不打断核心操作。',
+        bypassBullet1: '内置 30+ 款 CAD / UG / SolidWorks / EDA / 3D 软件右键手势零延迟自动直通',
+        bypassBullet2: '支持单条热键按前台应用自动让位（如 Alt+X 切入 SSMS 执行 SQL / Emacs 时自动放行）',
+        bypassBullet3: '全屏游戏智能免打扰、密码管理器自动免录，零遥测、零静默联网上传',
         mcpTitle: '内置 350 KB 零依赖本地 MCP 搜索服务', mcpDesc: '无需安装 Node.js 或 Python，一行配置让 Claude Desktop、Cursor、Windsurf 秒搜本地文件与 Office/PDF/代码正文；默认安全关闭，内置拦截 .ssh / .env / 私钥目录。',
         copyMcp: '复制 MCP 配置', ramTitle: '为什么坚持原生 C++20 + Rust', ramDesc: '同时开齐十款 Electron / .NET 独立效率软件往往常驻吃掉 1.2 GB+ 内存并引发全局钩子冲突；Tools3000 共享单一轻量微内核。',
         ramGood: 'Tools3000（13 大模块全就绪待机）', ramHeavy: '10 款传统独立效率软件合计占用', ramFoot: '全面支持 Windows 10 / 11 与 Windows Server 多用户桌面（x64 & ARM64），完美兼容中文及多语种安装路径。'
       }
     };
 
-    let lang = (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    function detectInitialLang() {
+      const params = new URLSearchParams(window.location.search);
+      const urlLang = (params.get('lang') || '').toLowerCase();
+      if (urlLang === 'zh' || urlLang === 'en') return urlLang;
+      try {
+        const stored = localStorage.getItem('tools3000_site_lang');
+        if (stored === 'zh' || stored === 'en') return stored;
+      } catch (e) {}
+      return (navigator.language || '').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+    }
+
+    function detectInitialTheme() {
+      try {
+        const stored = localStorage.getItem('tools3000_site_theme');
+        if (stored === 'dark' || stored === 'light') return stored;
+      } catch (e) {}
+      if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) return 'light';
+      return 'dark';
+    }
+
+    let lang = detectInitialLang();
+    let theme = detectInitialTheme();
     let activeDemo = 0;
+    let activeCli = 'scoop';
+    let activeFilter = 'all';
+
+    function applyTheme(nextTheme) {
+      theme = nextTheme;
+      document.documentElement.setAttribute('data-theme', theme);
+      const sun = document.getElementById('themeIconSun');
+      const moon = document.getElementById('themeIconMoon');
+      if (sun && moon) {
+        sun.style.display = theme === 'dark' ? 'block' : 'none';
+        moon.style.display = theme === 'light' ? 'block' : 'none';
+      }
+      const meta = document.getElementById('metaThemeColor');
+      if (meta) meta.setAttribute('content', theme === 'dark' ? '#090d16' : '#f8fafc');
+      try { localStorage.setItem('tools3000_site_theme', theme); } catch (e) {}
+    }
+
+    function copyTextWithFeedback(text, btn) {
+      const done = () => {
+        const old = btn.textContent;
+        btn.textContent = '[OK]';
+        setTimeout(() => { btn.textContent = old; }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => {
+          const ta = document.createElement('textarea');
+          ta.value = text;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          try { document.execCommand('copy'); } catch (e) {}
+          ta.remove();
+          done();
+        });
+      } else {
+        done();
+      }
+    }
+
+    function renderFilters() {
+      const bar = document.getElementById('moduleFilters');
+      bar.innerHTML = '';
+      FILTER_CATS.forEach(c => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.role = 'tab';
+        b.setAttribute('aria-selected', String(activeFilter === c.id));
+        b.className = 'filter-pill' + (activeFilter === c.id ? ' active' : '');
+        b.textContent = lang === 'zh' ? c.zh : c.en;
+        b.onclick = () => {
+          activeFilter = c.id;
+          renderFilters();
+          renderBento();
+        };
+        bar.appendChild(b);
+      });
+    }
+
+    function renderBento() {
+      const grid = document.getElementById('bentoGrid');
+      grid.innerHTML = '';
+      MODULES.filter(m => activeFilter === 'all' || m.cat === activeFilter).forEach(m => {
+        const [title, desc] = lang === 'zh' ? m.zh : m.en;
+        const card = document.createElement('div');
+        card.className = 'bento-card';
+        card.innerHTML = `<div class="bento-top"><span class="bento-title">${title}</span><span class="kbd">${m.kbd}</span></div><div class="bento-desc">${desc}</div>`;
+        grid.appendChild(card);
+      });
+    }
+
+    function renderTabsActive(scrollActive) {
+      document.querySelectorAll('.demo-tab').forEach((el, idx) => {
+        const isCur = idx === activeDemo;
+        el.classList.toggle('active', isCur);
+        el.setAttribute('aria-selected', String(isCur));
+        if (isCur && scrollActive && el.scrollIntoView) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        }
+      });
+    }
+
+    function updateDemoStage() {
+      const d = DEMOS[activeDemo];
+      const folder = lang === 'zh' ? 'zh-CN' : 'en-US';
+      const src = `./images/${folder}/${d.file}`;
+      const cap = lang === 'zh' ? d.capZh : d.capEn;
+      document.getElementById('demoImg').src = src;
+      document.getElementById('demoImg').alt = lang === 'zh' ? d.zh : d.en;
+      document.getElementById('demoCaption').textContent = cap;
+      document.getElementById('demoCount').textContent = `${activeDemo + 1} / ${DEMOS.length}`;
+    }
+
+    function stepDemo(delta) {
+      activeDemo = (activeDemo + delta + DEMOS.length) % DEMOS.length;
+      updateDemoStage();
+      renderTabsActive(true);
+    }
 
     function render() {
       const dict = I18N[lang];
       document.documentElement.lang = lang === 'zh' ? 'zh-CN' : 'en';
-      document.getElementById('langBtn').textContent = lang === 'zh' ? 'English' : '中文';
+      document.getElementById('langBtn').textContent = lang === 'zh' ? 'EN' : '中文';
       document.querySelectorAll('[data-i18n]').forEach(el => {
         const k = el.getAttribute('data-i18n');
         if (dict[k]) el.textContent = dict[k];
@@ -468,53 +1373,118 @@
       DEMOS.forEach((d, idx) => {
         const b = document.createElement('button');
         b.type = 'button';
+        b.role = 'tab';
+        b.setAttribute('aria-selected', String(idx === activeDemo));
         b.className = 'demo-tab' + (idx === activeDemo ? ' active' : '');
         b.textContent = lang === 'zh' ? d.zh : d.en;
-        b.onclick = () => { activeDemo = idx; updateDemoStage(); renderTabsActive(); };
+        b.onclick = () => { activeDemo = idx; updateDemoStage(); renderTabsActive(true); };
         tabs.appendChild(b);
       });
       updateDemoStage();
+      renderFilters();
+      renderBento();
+    }
 
-      const grid = document.getElementById('bentoGrid');
-      grid.innerHTML = '';
-      MODULES.forEach(m => {
-        const [title, desc] = lang === 'zh' ? m.zh : m.en;
-        const card = document.createElement('div');
-        card.className = 'bento-card';
-        card.innerHTML = `<div class="bento-top"><span class="bento-title">${title}</span><span class="kbd">${m.kbd}</span></div><div class="bento-desc">${desc}</div>`;
-        grid.appendChild(card);
+    // Mobile device hint banner detection
+    function updateMobileBanner() {
+      const isTouchMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '') ||
+        (window.matchMedia && window.matchMedia('(max-width: 680px)').matches);
+      document.getElementById('mobileBanner').classList.toggle('visible', isTouchMobile);
+    }
+
+    // Events
+    document.getElementById('langBtn').onclick = () => {
+      lang = lang === 'zh' ? 'en' : 'zh';
+      try { localStorage.setItem('tools3000_site_lang', lang); } catch (e) {}
+      render();
+    };
+    document.getElementById('themeBtn').onclick = () => applyTheme(theme === 'dark' ? 'light' : 'dark');
+
+    // Mobile drawer toggle
+    const menuToggleBtn = document.getElementById('menuToggleBtn');
+    const mobileDrawer = document.getElementById('mobileDrawer');
+    menuToggleBtn.onclick = () => {
+      const open = mobileDrawer.classList.toggle('open');
+      menuToggleBtn.setAttribute('aria-expanded', String(open));
+    };
+    mobileDrawer.querySelectorAll('a').forEach(a => {
+      a.addEventListener('click', () => {
+        mobileDrawer.classList.remove('open');
+        menuToggleBtn.setAttribute('aria-expanded', 'false');
       });
-    }
+    });
 
-    function renderTabsActive() {
-      document.querySelectorAll('.demo-tab').forEach((el, idx) => {
-        el.classList.toggle('active', idx === activeDemo);
-      });
-    }
+    // CLI tabs
+    document.querySelectorAll('.cli-tab').forEach(tab => {
+      tab.onclick = () => {
+        activeCli = tab.getAttribute('data-cli') || 'scoop';
+        document.querySelectorAll('.cli-tab').forEach(t => {
+          const isCur = t === tab;
+          t.classList.toggle('active', isCur);
+          t.setAttribute('aria-selected', String(isCur));
+        });
+        document.getElementById('cliCmd').textContent = CLI_COMMANDS[activeCli];
+      };
+    });
 
-    function updateDemoStage() {
-      const d = DEMOS[activeDemo];
-      const folder = lang === 'zh' ? 'zh-CN' : 'en-US';
-      document.getElementById('demoImg').src = `./images/${folder}/${d.file}`;
-      document.getElementById('demoCaption').textContent = lang === 'zh' ? d.capZh : d.capEn;
-    }
+    document.getElementById('copyCliBtn').onclick = (e) => copyTextWithFeedback(CLI_COMMANDS[activeCli], e.currentTarget);
+    document.getElementById('copyMcpBtn').onclick = (e) => copyTextWithFeedback(document.getElementById('mcpJson').textContent, e.currentTarget);
+    document.getElementById('copyPageLinkBtn').onclick = (e) => copyTextWithFeedback('https://yuan278501381.github.io/Tools3000/', e.currentTarget);
+    document.getElementById('dockCopyLinkBtn').onclick = (e) => copyTextWithFeedback('https://yuan278501381.github.io/Tools3000/', e.currentTarget);
+    document.getElementById('dockTopBtn').onclick = () => window.scrollTo({ top: 0, behavior: 'smooth' });
 
-    document.getElementById('langBtn').onclick = () => { lang = lang === 'zh' ? 'en' : 'zh'; render(); };
-    document.getElementById('themeBtn').onclick = () => {
-      const cur = document.documentElement.getAttribute('data-theme');
-      document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+    document.getElementById('demoPrevBtn').onclick = () => stepDemo(-1);
+    document.getElementById('demoNextBtn').onclick = () => stepDemo(1);
+
+    // Touch swipe for Demo Theater
+    let touchStartX = 0;
+    let touchStartY = 0;
+    const demoStage = document.getElementById('demoStage');
+    demoStage.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      touchStartX = e.touches[0].clientX;
+      touchStartY = e.touches[0].clientY;
+    }, { passive: true });
+    demoStage.addEventListener('touchend', (e) => {
+      if (!e.changedTouches || e.changedTouches.length !== 1) return;
+      const dx = e.changedTouches[0].clientX - touchStartX;
+      const dy = e.changedTouches[0].clientY - touchStartY;
+      if (Math.abs(dx) > 42 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+        stepDemo(dx < 0 ? 1 : -1);
+      }
+    }, { passive: true });
+
+    // Lightbox zoom preview
+    const lightbox = document.getElementById('lightbox');
+    const lightboxImg = document.getElementById('lightboxImg');
+    const lightboxCap = document.getElementById('lightboxCap');
+    function closeLightbox() { lightbox.classList.remove('open'); }
+    document.getElementById('demoMediaWrap').onclick = () => {
+      const curImg = document.getElementById('demoImg');
+      lightboxImg.src = curImg.src;
+      lightboxImg.alt = curImg.alt;
+      lightboxCap.textContent = document.getElementById('demoCaption').textContent;
+      lightbox.classList.add('open');
     };
-    document.getElementById('copyCliBtn').onclick = (e) => {
-      navigator.clipboard.writeText('scoop bucket add tools3000 https://github.com/yuan278501381/Tools3000 && scoop install tools3000');
-      const btn = e.currentTarget; const old = btn.textContent; btn.textContent = '[OK]';
-      setTimeout(() => { btn.textContent = old; }, 1400);
-    };
-    document.getElementById('copyMcpBtn').onclick = (e) => {
-      navigator.clipboard.writeText(document.getElementById('mcpJson').textContent);
-      const btn = e.currentTarget; const old = btn.textContent; btn.textContent = '[OK]';
-      setTimeout(() => { btn.textContent = old; }, 1400);
-    };
+    document.getElementById('lightboxClose').onclick = closeLightbox;
+    lightbox.onclick = (e) => { if (e.target === lightbox) closeLightbox(); };
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeLightbox();
+        mobileDrawer.classList.remove('open');
+        menuToggleBtn.setAttribute('aria-expanded', 'false');
+      }
+    });
 
+    // Show mobile sticky dock after scrolling past hero
+    const mobileDock = document.getElementById('mobileDock');
+    window.addEventListener('scroll', () => {
+      mobileDock.classList.toggle('visible', window.scrollY > 420);
+    }, { passive: true });
+    window.addEventListener('resize', updateMobileBanner, { passive: true });
+
+    applyTheme(theme);
+    updateMobileBanner();
     render();
   </script>
 </body>

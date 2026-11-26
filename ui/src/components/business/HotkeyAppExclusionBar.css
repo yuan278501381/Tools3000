@@ -1,0 +1,96 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * HotkeyAppExclusionBar.css — 快捷键按应用自动让位胶囊栏 (@container 自适应)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.hotkey-exclusion-bar {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.hotkey-exclusion-bar--compact {
+  gap: 8px;
+}
+
+.hotkey-exclusion-bar__chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+}
+
+.hotkey-exclusion-bar__empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.hotkey-exclusion-bar__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 6px 3px 9px;
+  border-radius: 999px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+}
+
+.hotkey-exclusion-bar__chip-name {
+  user-select: text;
+}
+
+.hotkey-exclusion-bar__chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.hotkey-exclusion-bar__chip-remove:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.hotkey-exclusion-bar__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.hotkey-exclusion-bar__input-wrap {
+  flex: 1 1 200px;
+  min-width: 180px;
+  max-width: 300px;
+}
+
+.hotkey-exclusion-bar__picker-preview {
+  margin-top: 12px;
+}
+
+@container (max-width: 480px) {
+  .hotkey-exclusion-bar__input-wrap {
+    max-width: 100%;
+    flex-basis: 100%;
+  }
+}

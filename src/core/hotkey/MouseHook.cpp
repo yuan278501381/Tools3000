@@ -88,6 +88,7 @@ void MouseHook::inputThreadWorker(HANDLE readyEvent) {
 void MouseHook::reclaimRetiredCallbacksLocked() noexcept {
     if (m_activeHookCalls.load(std::memory_order_seq_cst) == 0) {
         m_retiredActivityCallbacks.clear();
+        m_retiredPreInterceptors.clear();
         m_retiredInterceptors.clear();
         m_retiredRawMoveCallbacks.clear();
     }
@@ -99,6 +100,8 @@ void MouseHook::uninstall() {
         std::lock_guard lock(m_callbackMutex);
         m_hasActivityCallback.store(false, std::memory_order_release);
         m_activityCallback.store(nullptr, std::memory_order_seq_cst);
+        m_hasPreInterceptor.store(false, std::memory_order_release);
+        m_preInterceptor.store(nullptr, std::memory_order_seq_cst);
         m_hasInterceptor.store(false, std::memory_order_release);
         m_interceptor.store(nullptr, std::memory_order_seq_cst);
         m_hasRawMoveCallback.store(false, std::memory_order_release);
@@ -124,6 +127,9 @@ void MouseHook::uninstall() {
         std::lock_guard lock(m_callbackMutex);
         if (m_activityCallbackHolder) {
             m_retiredActivityCallbacks.push_back(std::move(m_activityCallbackHolder));
+        }
+        if (m_preInterceptorHolder) {
+            m_retiredPreInterceptors.push_back(std::move(m_preInterceptorHolder));
         }
         if (m_interceptorHolder) {
             m_retiredInterceptors.push_back(std::move(m_interceptorHolder));
@@ -179,6 +185,22 @@ void MouseHook::setRawMoveCallback(MouseRawMoveCallback cb) {
     reclaimRetiredCallbacksLocked();
 }
 
+void MouseHook::setPreInterceptor(MouseHookRawCallback interceptor) {
+    std::lock_guard lock(m_callbackMutex);
+    if (m_preInterceptorHolder) {
+        m_retiredPreInterceptors.push_back(std::move(m_preInterceptorHolder));
+    }
+    if (interceptor) {
+        m_preInterceptorHolder = std::make_unique<MouseHookRawCallback>(std::move(interceptor));
+        m_preInterceptor.store(m_preInterceptorHolder.get(), std::memory_order_seq_cst);
+        m_hasPreInterceptor.store(true, std::memory_order_release);
+    } else {
+        m_hasPreInterceptor.store(false, std::memory_order_release);
+        m_preInterceptor.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
+}
+
 void MouseHook::setInterceptor(MouseHookRawCallback interceptor) {
     std::lock_guard lock(m_callbackMutex);
     if (m_interceptorHolder) {
@@ -223,6 +245,22 @@ LRESULT CALLBACK MouseHook::lowLevelMouseProc(int nCode, WPARAM wParam, LPARAM l
                 if (!s_allowInjected || data->dwExtraInfo == SELF_REINJECT_EXTRA_INFO) {
                     HHOOK h = self.m_hookHandle.load(std::memory_order_relaxed);
                     return CallNextHookEx(h, nCode, wParam, lParam);
+                }
+            }
+
+            // 0. 高优先级前置拦截器（如电影放大活跃期 Ctrl+滚轮 调倍，平时单次原子读短路）
+            if (self.m_hasPreInterceptor.load(std::memory_order_relaxed)) {
+                auto* pre = self.m_preInterceptor.load(std::memory_order_acquire);
+                if (pre && *pre) {
+                    try {
+                        if ((*pre)(nCode, wParam, *data)) {
+                            return 1;
+                        }
+                    } catch (const std::exception& e) {
+                        LOG_ERROR("MouseHook pre-interceptor exception: {}", e.what());
+                    } catch (...) {
+                        LOG_ERROR("MouseHook pre-interceptor unknown exception");
+                    }
                 }
             }
 

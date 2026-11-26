@@ -543,17 +543,30 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
 
     case 'hotkey.getAll':
       return [
-        { name: 'Screenshot', shortcut: 'F1' },
-        { name: 'Repeat Last Capture', shortcut: 'Shift+F1' },
-        { name: 'Record', shortcut: 'Ctrl+Shift+R' },
-        { name: 'OCR', shortcut: 'Ctrl+Shift+O' },
-        { name: 'Pause Gestures', shortcut: 'Ctrl+Alt+Shift+W' },
-        { name: 'Toggle Search', shortcut: 'Alt+Space' },
-        { name: 'Pin Toggle', shortcut: 'Ctrl+Alt+Shift+X' },
-        { name: 'Pin Paste', shortcut: 'F3' },
-        { name: 'Pin Hide All', shortcut: 'Ctrl+Alt+Shift+H' },
-        { name: 'Pin Arrange', shortcut: 'Ctrl+Alt+Shift+G' },
+        { name: 'Screenshot', shortcut: 'F1', excludedApps: [] },
+        { name: 'Repeat Last Capture', shortcut: 'Shift+F1', excludedApps: [] },
+        { name: 'Record', shortcut: 'Ctrl+Shift+R', excludedApps: [] },
+        { name: 'OCR', shortcut: 'Ctrl+Shift+O', excludedApps: [] },
+        { name: 'Translate Selection', shortcut: 'Alt+X', excludedApps: ['ssms.exe', 'emacs.exe', 'runemacs.exe'] },
+        { name: 'Pause Gestures', shortcut: 'Ctrl+Alt+Shift+W', excludedApps: [] },
+        { name: 'Toggle Search', shortcut: 'Alt+Space', excludedApps: [] },
+        { name: 'Pin Toggle', shortcut: 'Ctrl+Alt+Shift+X', excludedApps: [] },
+        { name: 'Pin Paste', shortcut: 'F3', excludedApps: [] },
+        { name: 'Pin Hide All', shortcut: 'Ctrl+Alt+Shift+H', excludedApps: [] },
+        { name: 'Pin Arrange', shortcut: 'Ctrl+Alt+Shift+G', excludedApps: [] },
       ];
+
+    case 'hotkey.getExclusions':
+      return {
+        global: [],
+        perHotkey: {
+          'Translate Selection': ['ssms.exe', 'emacs.exe', 'runemacs.exe'],
+        },
+      };
+
+    case 'hotkey.setGlobalExclusions':
+    case 'hotkey.setHotkeyExclusions':
+      return { success: true };
 
     case 'config.get':
       return false;

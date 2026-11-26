@@ -123,16 +123,23 @@ describe('useSearchKeyboard IME Composition Protection', () => {
     expect(event.defaultPrevented).toBe(true);
   });
 
-  it('triggers copyFileResult on Ctrl+Shift+C, quickLookResult on F3/Alt+Space, and leaves Ctrl+Space free for OS IME', () => {
+  it('triggers copyFileResult on Ctrl+C, copyPathResult on Ctrl+Shift+C, quickLookResult on F3/Alt+Space, and leaves Ctrl+Space free for OS IME', () => {
     const copyFileResult = vi.fn();
+    const copyPathResult = vi.fn();
     const quickLookResult = vi.fn();
-    const props = createProps({ isComposing: false, copyFileResult, quickLookResult });
+    const props = createProps({ isComposing: false, copyFileResult, copyPathResult, quickLookResult });
     const { result } = renderHook(() => useSearchKeyboard(props));
 
-    const copyEvent = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true, cancelable: true });
-    result.current.handleUnifiedKeyDown(copyEvent);
+    const copyFileEvent = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, cancelable: true });
+    result.current.handleUnifiedKeyDown(copyFileEvent);
     expect(copyFileResult).toHaveBeenCalledTimes(1);
-    expect(copyEvent.defaultPrevented).toBe(true);
+    expect(copyPathResult).not.toHaveBeenCalled();
+    expect(copyFileEvent.defaultPrevented).toBe(true);
+
+    const copyPathEvent = new KeyboardEvent('keydown', { key: 'C', ctrlKey: true, shiftKey: true, cancelable: true });
+    result.current.handleUnifiedKeyDown(copyPathEvent);
+    expect(copyPathResult).toHaveBeenCalledTimes(1);
+    expect(copyPathEvent.defaultPrevented).toBe(true);
 
     const imeEvent = new KeyboardEvent('keydown', { key: ' ', code: 'Space', ctrlKey: true, cancelable: true });
     result.current.handleUnifiedKeyDown(imeEvent);
@@ -196,9 +203,10 @@ describe('useSearchKeyboard IME Composition Protection', () => {
     expect(selectCategory).not.toHaveBeenCalled();
   });
 
-  it('preserves native Ctrl+C when text is selected inside search input, and copies path otherwise', () => {
+  it('preserves native Ctrl+C when text is selected inside search input, and copies file otherwise', () => {
+    const copyFileResult = vi.fn();
     const copyPathResult = vi.fn();
-    const props = createProps({ isComposing: false, copyPathResult });
+    const props = createProps({ isComposing: false, copyFileResult, copyPathResult });
     const input = props.inputRef.current!;
     input.value = 'report 2026';
     input.focus();
@@ -208,14 +216,16 @@ describe('useSearchKeyboard IME Composition Protection', () => {
 
     const selectedCopyEvent = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
     input.dispatchEvent(selectedCopyEvent);
+    expect(copyFileResult).not.toHaveBeenCalled();
     expect(copyPathResult).not.toHaveBeenCalled();
     expect(selectedCopyEvent.defaultPrevented).toBe(false);
 
-    // Collapsed caret inside search input -> Ctrl+C copies selected file path
+    // Collapsed caret inside search input -> Ctrl+C copies selected file object (CF_HDROP)
     input.setSelectionRange(6, 6);
     const collapsedCopyEvent = new KeyboardEvent('keydown', { key: 'c', ctrlKey: true, bubbles: true, cancelable: true });
     input.dispatchEvent(collapsedCopyEvent);
-    expect(copyPathResult).toHaveBeenCalledTimes(1);
+    expect(copyFileResult).toHaveBeenCalledTimes(1);
+    expect(copyPathResult).not.toHaveBeenCalled();
     expect(collapsedCopyEvent.defaultPrevented).toBe(true);
     input.remove();
   });

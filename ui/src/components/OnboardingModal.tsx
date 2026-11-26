@@ -16,7 +16,7 @@ import {
   Search, Camera, Mouse, Sparkles, FolderSymlink,
   Keyboard, Highlighter, ChevronRight, ChevronLeft, Check, Zap,
   Cast, RotateCcw, Languages, ClipboardList, Video, Image as ImageIcon,
-  Pin, SlidersHorizontal, Layers, TextCursorInput,
+  Pin, SlidersHorizontal, Layers, TextCursorInput, Cloud,
 } from 'lucide-react';
 import './OnboardingModal.css';
 
@@ -33,6 +33,8 @@ interface OnboardingHotkeyMap {
   pin: string;
   record: string;
   ocr: string;
+  translate: string;
+  dialogJump: string;
   remoteFlush: string;
 }
 
@@ -43,6 +45,8 @@ const DEFAULT_ONBOARDING_HOTKEYS: OnboardingHotkeyMap = {
   pin: 'F3',
   record: 'Ctrl + Shift + R',
   ocr: 'Ctrl + Shift + O',
+  translate: 'Alt + X',
+  dialogJump: 'Ctrl + G',
   remoteFlush: 'Ctrl + Alt + Backspace',
 };
 
@@ -93,6 +97,8 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
         pin: formatDisplayHotkey(findShortcut('Pin Paste', 'Paste as Pin', 'Pin'), prev.pin),
         record: formatDisplayHotkey(findShortcut('Record', 'Screen Record'), prev.record),
         ocr: formatDisplayHotkey(findShortcut('OCR', 'Text OCR'), prev.ocr),
+        translate: formatDisplayHotkey(findShortcut('Translate Selection', 'Quick Translate'), prev.translate),
+        dialogJump: formatDisplayHotkey(findShortcut('Dialog Quick Jump'), prev.dialogJump),
         remoteFlush: formatDisplayHotkey(flushRaw, prev.remoteFlush),
       }));
     });
@@ -332,6 +338,20 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
               </div>
               <div className="onboarding__shortcut-row">
                 <span className="onboarding__shortcut-name">
+                  <Languages size={14} style={{ color: '#14b8a6', marginRight: 6 }} aria-hidden="true" />
+                  {t('onboarding.shortcutTranslate' as never, 'Quick Selection Translate')}
+                </span>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.translate}</kbd>
+              </div>
+              <div className="onboarding__shortcut-row">
+                <span className="onboarding__shortcut-name">
+                  <FolderSymlink size={14} style={{ color: '#f59e0b', marginRight: 6 }} aria-hidden="true" />
+                  {t('onboarding.shortcutDialogJump' as never, 'Dialog Folder Quick Jump')}
+                </span>
+                <kbd className="onboarding__shortcut-kbd">{liveHotkeys.dialogJump}</kbd>
+              </div>
+              <div className="onboarding__shortcut-row">
+                <span className="onboarding__shortcut-name">
                   <Highlighter size={14} style={{ color: '#38bdf8', marginRight: 6 }} aria-hidden="true" />
                   {t('onboarding.shortcutSpotlight')}
                 </span>
@@ -525,6 +545,10 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
               <div className="onboarding__complete-tip">
                 <TextCursorInput size={15} className="onboarding__complete-tip-icon" aria-hidden="true" />
                 <span>{t('onboarding.completeTipTextExpander' as never, 'Try typing ;date or ;now anywhere with built-in "Text Expander" (customize or toggle off anytime)')}</span>
+              </div>
+              <div className="onboarding__complete-tip">
+                <Cloud size={15} className="onboarding__complete-tip-icon" aria-hidden="true" />
+                <span>{t('onboarding.completeTipCloudSync' as never, 'Enable E2E-encrypted cloud backup (OneDrive / WebDAV / S3) in General Settings to sync configs & shortcuts across PCs')}</span>
               </div>
               <div className="onboarding__complete-tip">
                 <Layers size={15} className="onboarding__complete-tip-icon" aria-hidden="true" />
