@@ -171,6 +171,9 @@ public:
     /// 复制 UTF-8 文本到剪贴板
     static bool copyToClipboard(const std::string& text, HWND owner = nullptr);
 
+    /// 读取当前剪贴板中的纯文本 (UTF-8)；若剪贴板为空或非文本格式则返回空字符串
+    static std::string getClipboardText();
+
     /// 复制文件路径到剪贴板 (CF_HDROP)，方便用户直接在资源管理器或聊天软件中 Ctrl+V 粘贴文件
     static bool copyFileToClipboard(const std::wstring& filePath, HWND owner = nullptr);
 

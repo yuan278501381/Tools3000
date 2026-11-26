@@ -294,6 +294,14 @@ public:
         mb.registerHandler("gesture.getState", [](const nlohmann::json&) -> nlohmann::json {
             auto& engine = tools3000::gesture::GestureEngine::instance();
             auto& config = tools3000::core::ConfigManager::instance();
+            nlohmann::json proPresets = nlohmann::json::array();
+            for (const auto& preset : tools3000::gesture::kProRightClickAppPresets) {
+                proPresets.push_back({
+                    {"processName", std::string(preset.processName)},
+                    {"displayName", std::string(preset.displayName)},
+                    {"category", std::string(preset.category)}
+                });
+            }
             return {
                 {"paused", engine.isPaused()},
                 {"enabled", !engine.isPaused()},
@@ -302,6 +310,8 @@ public:
                 {"trailFadeEnabled", engine.trailFadeEnabled()},
                 {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
+                {"autoBypassProRightClickApps", engine.autoBypassProRightClickApps()},
+                {"proRightClickPresetApps", std::move(proPresets)},
                 {"enableScribbleCancel", config.get<bool>("/gesture/enableScribbleCancel", true)},
                 {"pauseCancelEnabled", engine.pauseCancelEnabled()},
                 {"pauseCancelMs", engine.pauseCancelMs()},
@@ -328,6 +338,7 @@ public:
             static const std::unordered_set<std::string> allowed = {
                 "enabled", "paused", "triggerButton", "trailVisible",
                 "trailFadeEnabled", "showActionHint", "autoBypassFullscreen",
+                "autoBypassProRightClickApps",
                 "targetMode", "initialTimeoutMs", "minSegmentDistance",
                 "shapeMatchThreshold",
                 "pauseCancelEnabled", "pauseCancelMs",
@@ -345,6 +356,7 @@ public:
                 (params.contains("trailFadeEnabled") && !params["trailFadeEnabled"].is_boolean()) ||
                 (params.contains("showActionHint") && !params["showActionHint"].is_boolean()) ||
                 (params.contains("autoBypassFullscreen") && !params["autoBypassFullscreen"].is_boolean()) ||
+                (params.contains("autoBypassProRightClickApps") && !params["autoBypassProRightClickApps"].is_boolean()) ||
                 (params.contains("enableScribbleCancel") && !params["enableScribbleCancel"].is_boolean()) ||
                 (params.contains("pauseCancelEnabled") && !params["pauseCancelEnabled"].is_boolean()) ||
                 (params.contains("pauseCancelMs") && !params["pauseCancelMs"].is_number_integer()) ||
@@ -383,6 +395,8 @@ public:
             const bool trailFadeEnabled = params.value("trailFadeEnabled", engine.trailFadeEnabled());
             const bool showActionHint = params.value("showActionHint", engine.showActionHint());
             const bool autoBypassFullscreen = params.value("autoBypassFullscreen", engine.autoBypassFullscreen());
+            const bool autoBypassProRightClickApps =
+                params.value("autoBypassProRightClickApps", engine.autoBypassProRightClickApps());
             std::string targetMode = params.value("targetMode", engine.targetMode());
             if (targetMode != "underPointer" && targetMode != "foreground") {
                 return {{"success", false}, {"error", "invalid targetMode"}};
@@ -424,6 +438,7 @@ public:
                 {"trailFadeEnabled", trailFadeEnabled},
                 {"showActionHint", showActionHint},
                 {"autoBypassFullscreen", autoBypassFullscreen},
+                {"autoBypassProRightClickApps", autoBypassProRightClickApps},
                 {"enableScribbleCancel", enableScribbleCancel},
                 {"pauseCancelEnabled", pauseCancelEnabled},
                 {"pauseCancelMs", pauseCancelMs},
@@ -445,6 +460,7 @@ public:
             engine.setTrailFadeEnabled(trailFadeEnabled);
             engine.setShowActionHint(showActionHint);
             engine.setAutoBypassFullscreen(autoBypassFullscreen);
+            engine.setAutoBypassProRightClickApps(autoBypassProRightClickApps);
             engine.setTargetMode(targetMode);
             engine.setInitialTimeoutMs(initialTimeoutMs);
             engine.setPauseCancelEnabled(pauseCancelEnabled);
@@ -467,6 +483,7 @@ public:
                 {"trailFadeEnabled", engine.trailFadeEnabled()},
                 {"showActionHint", engine.showActionHint()},
                 {"autoBypassFullscreen", engine.autoBypassFullscreen()},
+                {"autoBypassProRightClickApps", engine.autoBypassProRightClickApps()},
                 {"enableScribbleCancel", enableScribbleCancel},
                 {"pauseCancelEnabled", engine.pauseCancelEnabled()},
                 {"pauseCancelMs", engine.pauseCancelMs()},

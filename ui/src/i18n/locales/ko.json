@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "외부 충돌: 시스템 또는 다른 앱에서 이미 사용 중입니다",
     "shortcutActive": "정상 동작",
     "shortcutRecordingOnly": "녹화 중에만 동작",
+    "shortcutDialogOnly": "파일 대화상자에서만 활성",
     "shortcutDisabled": "미지정",
     "recheckShortcuts": "충돌 다시 검사",
     "shortcutsOverview": "단축키 상태",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. 선택한 기본 글꼴로 본문을 우선 렌더링합니다. 2. 지원되지 않는 문자나 다국어 글리프가 나타나면 DirectWrite가 글리프 단위로 시스템 기본 고딕(Segoe UI / Malgun Gothic 등)으로 자동 폴백하여 네모 깨짐(□) 현상을 완벽히 방지합니다. 3. 시스템 디렉터리에 전혀 쓰지 않아 업그레이드 및 제거가 깔끔합니다.",
     "hotkeysAllCount": "전체 {{count}}개",
     "hotkeysActiveCount": "활성 {{count}}개",
-    "hotkeysSessionCount": "녹화 전용 {{count}}개",
+    "hotkeysSessionCount": "조건부 활성 {{count}}개",
     "hotkeysInternalConflictsCount": "내부 충돌 {{count}}개",
     "hotkeysExternalConflictsCount": "외부 충돌 {{count}}개",
     "hotkeysUnboundCount": "미지정 {{count}}개",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "텍스트 확장기",
         "description": "날짜·클립보드·커서 위치 매크로와 비밀번호 관리자 자동 예외, 클립보드 기록 비오염을 지원하는 전역 텍스트 확장 엔진. 기본 활성화로 바로 사용할 수 있으며 끌 때는 훅과 메모리 점유가 0입니다."
+      },
+      "quick_look": {
+        "name": "스페이스바 빠른 미리보기",
+        "description": "탐색기, 바탕 화면, 빠른 검색에서 스페이스바로 파일을 즉시 미리 봅니다. 끄면 스페이스바를 지연 없이 그대로 통과시켜 타사 미리보기 도구와 충돌 없이 공존하며 메모리도 해제합니다."
       }
     },
     "title": "기능 모듈 및 확장",
@@ -940,6 +945,13 @@
     "showTrailDesc": "제스처를 그릴 때 화면에 시각적 궤적을 표시합니다",
     "autoBypassFullscreen": "전체 화면 게임/영상 자동 회피",
     "autoBypassFullscreenDesc": "전면 창이 단독 전체 화면 모드일 때 3D 게임 시점 전환 등을 방해하지 않도록 제스처 후킹을 자동 우회합니다",
+    "autoBypassProRightClickApps": "CAD / 3D / EDA 전문 앱 우클릭 자동 우회",
+    "autoBypassProRightClickAppsDesc": "AutoCAD, Siemens NX (UG), SolidWorks, Blender, Altium 등 우클릭 조작이 핵심인 전문 소프트웨어에서 우클릭을 지연 없이 그대로 통과시킵니다(가운데/측면 버튼 및 보조 모니터 제스처는 계속 작동).",
+    "proRightClickPresetToggle": "기본 자동 우회 앱 목록 보기 ({{count}}개)",
+    "proRightClickPresetOverrideHint": "목록의 특정 앱에서 우클릭 제스처를 켜려면 아래 '적용 대상'에 해당 프로세스를 추가하고 우클릭 트리거를 직접 활성화하세요.",
+    "proRightClickCatCad": "CAD / 산업 및 건축 설계",
+    "proRightClickCatEda": "EDA 및 PCB 회로 설계",
+    "proRightClickCatDcc3d": "3D 모델링·스컬프팅 및 게임 엔진",
     "adminHintTitle": "관리자 권한 창 지원",
     "adminHintDesc": "작업 관리자, CMD, 레지스트리 편집기 같은 관리자 권한 창에서 마우스 제스처를 사용하려면 '일반 설정'에서 '관리자 권한으로 실행'을 켜세요.",
     "adminHintElevatedDesc": "현재 관리자 권한으로 실행 중입니다. 모든 권한 상승 창에서 제스처를 자유롭게 사용할 수 있습니다.",

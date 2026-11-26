@@ -126,7 +126,7 @@ export const PLUGIN_DOMAIN_GROUPS: readonly PluginDomainGroupMeta[] = [
   {
     id: 'file_system',
     titleKey: 'plugins.domainFileSystem',
-    pluginIds: ['search', 'dialog_enhancer', 'file_locksmith', 'picasa_viewer'],
+    pluginIds: ['search', 'dialog_enhancer', 'file_locksmith', 'picasa_viewer', 'quick_look'],
   },
   {
     id: 'present_remote',
@@ -148,6 +148,8 @@ const BUILTIN_PLUGIN_ALIAS_TO_CANONICAL: Readonly<Record<string, string>> = {
   remote_boost: 'remote_boost',
   picasaviewer: 'picasa_viewer',
   picasa_viewer: 'picasa_viewer',
+  quicklook: 'quick_look',
+  quick_look: 'quick_look',
 };
 
 const BUILTIN_PLUGIN_ALIAS_GROUPS: Readonly<Record<string, readonly string[]>> = {
@@ -156,6 +158,7 @@ const BUILTIN_PLUGIN_ALIAS_GROUPS: Readonly<Record<string, readonly string[]>> =
   text_expander: ['text_expander', 'textexpander'],
   remote_boost: ['remote_boost', 'remote'],
   picasa_viewer: ['picasa_viewer', 'picasaviewer'],
+  quick_look: ['quick_look', 'quicklook'],
 };
 
 export function normalizeBuiltinPluginId(id: string): string {

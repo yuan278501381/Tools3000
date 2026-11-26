@@ -82,6 +82,7 @@ struct HotkeyEntry {
     bool suspendedByFullscreen = false; // 是否因全屏游戏防打扰临时挂起卸下
     bool suspendedByRemote = false;     // 是否因远控窗口前台激活临时挂起让位
     bool suspendedByPause = false;      // 是否因快捷键静默录制模式临时卸下
+    std::string scope = "global";       // 作用域语义: "global" | "recording" | "dialog"
 };
 
 class TOOLS3000CORE_API HotkeyManager {
@@ -116,6 +117,9 @@ public:
 
     /// 会话外卸下/重新占用系统热键。卸下后设置页仍显示绑定，前台应用能收到该组合键。
     bool setHotkeyArmed(const std::string& name, bool armed);
+
+    /// 设置快捷键的作用域标签（"global" | "recording" | "dialog"），供总览页与单页徽章单一事实源展示
+    bool setHotkeyScope(const std::string& name, const std::string& scope);
 
     /// 检查快捷键是否已被占用
     bool isConflict(const HotkeyDef& def) const;

@@ -76,6 +76,7 @@
 #include "ui/SearchWindow.h"
 #include "ui/WebViewOriginPolicy.h"
 #include "ui/QuickLookNavigation.h"
+#include "ui/QuickTranslatePopupWindow.h"
 #include "ui/WebViewSuspend.h"
 #include "ui/KeyboardPipeline.h"
 #include "service/PipeEndpoint.h"

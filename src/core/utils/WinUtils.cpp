@@ -1262,6 +1262,30 @@ bool WinUtils::copyToClipboard(const std::string& text, HWND owner) {
     return copyToClipboard(utf8ToWstring(text), owner);
 }
 
+std::string WinUtils::getClipboardText() {
+    for (int retry = 0; retry < 5; ++retry) {
+        if (OpenClipboard(nullptr)) {
+            struct ClipboardGuard {
+                ~ClipboardGuard() { CloseClipboard(); }
+            } guard;
+            HANDLE hData = GetClipboardData(CF_UNICODETEXT);
+            if (hData) {
+                const SIZE_T maxChars = GlobalSize(hData) / sizeof(wchar_t);
+                auto* pszText = (maxChars > 0) ? static_cast<const wchar_t*>(GlobalLock(hData)) : nullptr;
+                if (pszText) {
+                    const size_t safeLen = wcsnlen(pszText, maxChars);
+                    std::wstring safeWide(pszText, safeLen);
+                    GlobalUnlock(hData);
+                    return wstringToUtf8(safeWide);
+                }
+            }
+            return {};
+        }
+        Sleep(5);
+    }
+    return {};
+}
+
 bool WinUtils::copyFileToClipboard(const std::wstring& filePath, HWND owner) {
     if (filePath.empty()) return false;
     DWORD attrs = GetFileAttributesW(filePath.c_str());
@@ -2813,7 +2837,21 @@ std::string WinUtils::captureSelectedText() {
         inputs.push_back(in);
     };
 
-    // 若用户通过组合热键（如 Ctrl+Alt+C / Alt+Shift+*）触发划词，先抬起冲突修饰键，确保目标窗口收到纯净 Ctrl+C。
+    // 若用户刚通过组合热键（如 Alt+X / Ctrl+Alt+C）触发划词，先短暂等待物理修饰键松开（最长 55ms），
+    // 避免目标应用（Chrome/Electron/VSCode/IDE）在 Alt 或触发字母键尚未释放时忽略随后的 Ctrl+C。
+    for (int waitStep = 0; waitStep < 11; ++waitStep) {
+        const bool anyBlockingModDown =
+            ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_LWIN) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_RWIN) & 0x8000) != 0);
+        if (!anyBlockingModDown) {
+            break;
+        }
+        Sleep(5);
+    }
+
+    // 若用户仍按住组合修饰键，先抬起冲突修饰键，确保目标窗口收到纯净 Ctrl+C。
     // 仅当 Alt 实际处于按下态时，才先行注入无害掩护键 VK_F24 脉冲再释放 Alt，杜绝误激活菜单栏 (SC_KEYMENU) 吞掉 Ctrl+C。
     const bool lAltDown = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
     const bool rAltDown = (GetAsyncKeyState(VK_RMENU) & 0x8000) != 0;
@@ -2843,9 +2881,9 @@ std::string WinUtils::captureSelectedText() {
 
     SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
 
-    // 轮询剪贴板序列号更新（最快 5ms 即刻返回，最长等待 80ms 兼容 Electron/Word）
+    // 轮询剪贴板序列号更新（最快 5ms 即刻返回，最长等待 180ms 兼容 Electron/Chrome/VSCode/Word 慢拷贝）
     bool updated = false;
-    for (int step = 0; step < 16; ++step) {
+    for (int step = 0; step < 36; ++step) {
         Sleep(5);
         if (GetClipboardSequenceNumber() != seqBefore) {
             updated = true;
@@ -2856,28 +2894,7 @@ std::string WinUtils::captureSelectedText() {
         return {};
     }
 
-    for (int retry = 0; retry < 5; ++retry) {
-        if (OpenClipboard(nullptr)) {
-            struct ClipboardGuard {
-                ~ClipboardGuard() { CloseClipboard(); }
-            } guard;
-            HANDLE hData = GetClipboardData(CF_UNICODETEXT);
-            if (hData) {
-                const SIZE_T maxChars = GlobalSize(hData) / sizeof(wchar_t);
-                auto* pszText = (maxChars > 0) ? static_cast<const wchar_t*>(GlobalLock(hData)) : nullptr;
-                if (pszText) {
-                    const size_t safeLen = wcsnlen(pszText, maxChars);
-                    std::wstring safeWide(pszText, safeLen);
-                    GlobalUnlock(hData);
-                    return wstringToUtf8(safeWide);
-                }
-            }
-            return {};
-        }
-        Sleep(5);
-    }
-
-    return {};
+    return getClipboardText();
 }
 
 std::vector<WinUtils::SystemDriveInfo> WinUtils::getSystemDrives() {

@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "External Conflict: occupied by system or 3rd-party app",
     "shortcutActive": "Active",
     "shortcutRecordingOnly": "Active while recording",
+    "shortcutDialogOnly": "Active in file dialogs",
     "shortcutDisabled": "Disabled",
     "recheckShortcuts": "Re-check Conflicts",
     "shortcutsOverview": "Shortcut Health",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. Primary glyphs are rendered with the preferred font family; 2. Automatically triggers Glyph-Level Fallback to native flagship fonts (YaHei UI / PingFang / Segoe UI) whenever missing glyphs or unsupported characters occur, completely preventing square tofu (□) and rendering glitches; 3. Zero system directory pollution with 100% clean portability.",
     "hotkeysAllCount": "All {{count}} items",
     "hotkeysActiveCount": "Active {{count}} items",
-    "hotkeysSessionCount": "Recording Only {{count}} items",
+    "hotkeysSessionCount": "Scoped {{count}} items",
     "hotkeysInternalConflictsCount": "Internal Conflicts {{count}} items",
     "hotkeysExternalConflictsCount": "External Conflicts {{count}} items",
     "hotkeysUnboundCount": "Unbound {{count}} items",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "Text Expander",
         "description": "Native system-wide snippet expansion with dynamic date/clipboard/cursor macros, password-manager privacy guard, and zero clipboard history pollution. Ready out of the box and unhooks cleanly with zero idle RAM when turned off."
+      },
+      "quick_look": {
+        "name": "Spacebar Quick Preview",
+        "description": "Preview files with Spacebar in Explorer, Desktop, or Quick Search. Turn off to pass Spacebar through with zero latency for seamless coexistence with third-party preview tools."
       }
     },
     "title": "Plugins & Extensions",
@@ -940,6 +945,13 @@
     "showTrailDesc": "Display a visual trail while drawing gestures",
     "autoBypassFullscreen": "Fullscreen Game/Video Bypass",
     "autoBypassFullscreenDesc": "Automatically bypass gesture hook when foreground window is in exclusive fullscreen mode",
+    "autoBypassProRightClickApps": "Auto-Bypass Right-Click in CAD / 3D / EDA Apps",
+    "autoBypassProRightClickAppsDesc": "Pass right-click through natively with zero latency in AutoCAD, Siemens NX (UG), SolidWorks, Blender, Altium, and similar right-click-heavy tools while keeping middle/side-button and secondary-monitor gestures active",
+    "proRightClickPresetToggle": "View built-in bypass list ({{count}} apps)",
+    "proRightClickPresetOverrideHint": "To enable right-click gestures for a specific app in this list, add it under Scope Targets below and explicitly turn on its Right-button trigger pill.",
+    "proRightClickCatCad": "CAD / Industrial & Architectural Design",
+    "proRightClickCatEda": "EDA & PCB Design",
+    "proRightClickCatDcc3d": "3D Modeling, Sculpting & Game Engines",
     "adminHintTitle": "Elevated Windows Support",
     "adminHintDesc": "To use gestures over elevated windows like Task Manager, CMD, or Regedit, enable 'Run as administrator' in General Settings.",
     "adminHintElevatedDesc": "Currently running as administrator. Gestures can interact with all elevated windows freely.",

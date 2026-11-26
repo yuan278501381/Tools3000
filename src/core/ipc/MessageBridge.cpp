@@ -1696,7 +1696,8 @@ bool isCoreBuiltinPlugin(const std::string& id) {
            id == "spotlight" || id == "clipboard" || id == "remote_boost" || id == "remote" ||
            id == "text_expander" || id == "textexpander" ||
            id == "picasa_viewer" || id == "picasaviewer" ||
-           id == "file_locksmith" || id == "filelocksmith";
+           id == "file_locksmith" || id == "filelocksmith" ||
+           id == "quick_look" || id == "quicklook";
 }
 
 constexpr wchar_t PicasaViewerExeName[] = L"Tools3000_Picasa_Viewer.exe";
@@ -2319,6 +2320,28 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("file_locksmith");
+
+        // 内置核心模块：空格快速预览 (quick_look，关闭后底层钩子 0ms 原生放行空格键，与第三方预览工具零冲突)
+        const bool quickLookEnabled = ConfigManager::instance().has("/plugins/quick_look/enabled")
+            ? ConfigManager::instance().get<bool>("/plugins/quick_look/enabled", true)
+            : ConfigManager::instance().get<bool>("/quicklook/enabled", true);
+        plugins.push_back({
+            {"id", "quick_look"},
+            {"name", "空格快速预览"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"spacebar-preview", "file-preview", "zero-idle-when-off"}},
+            {"permissions", {"low-level-keyboard-hook"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", quickLookEnabled},
+            {"active", quickLookEnabled},
+            {"restartRequired", false},
+            {"state", quickLookEnabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("quick_look");
         return plugins;
     });
 
@@ -2346,6 +2369,16 @@ void MessageBridge::registerBuiltinHandlers() {
             EventBus::instance().publish(ClipboardStateChangedEvent{enabled});
             MessageBridge::instance().pushEvent("clipboard:stateChanged", {{"enabled", enabled}});
             MessageBridge::instance().pushEvent("plugins:changed", {{"id", "clipboard"}, {"enabled", enabled}});
+            releasePluginResourcesAndTrim();
+            return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "quick_look" || id == "quicklook") {
+            ConfigManager::instance().set<bool>("/quicklook/enabled", enabled);
+            ConfigManager::instance().set<bool>("/plugins/quick_look/enabled", enabled);
+            EventBus::instance().publish(QuickLookStateChangedEvent{enabled});
+            MessageBridge::instance().pushEvent("quicklook:stateChanged", {{"enabled", enabled}});
+            MessageBridge::instance().pushEvent("plugins:changed", {{"id", "quick_look"}, {"enabled", enabled}});
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
         }
@@ -2680,13 +2713,14 @@ void MessageBridge::registerBuiltinHandlers() {
                 {"shortcut", entry.def.toString()},
                 {"registered", entry.registered},
                 {"armed", entry.armed},
+                {"scope", entry.scope},
                 {"conflict", entry.conflict},
                 {"conflictType", entry.conflictType},
                 {"conflictWith", entry.conflictWith}
             });
         }
         auto hotkeyPriorityRank = [](std::string_view name) noexcept -> int {
-            static constexpr std::array<std::string_view, 16> kPriorityOrder = {
+            static constexpr std::array<std::string_view, 18> kPriorityOrder = {
                 "Screenshot",
                 "Repeat Last Capture",
                 "Toggle Clipboard",
@@ -2702,6 +2736,8 @@ void MessageBridge::registerBuiltinHandlers() {
                 "Record Snapshot",
                 "Mute System Audio",
                 "Mute Microphone",
+                "Dialog Quick Jump",
+                "Dialog Inline Search",
                 "Pause Gestures",
             };
             for (size_t i = 0; i < kPriorityOrder.size(); ++i) {
@@ -2752,6 +2788,23 @@ void MessageBridge::registerBuiltinHandlers() {
         if (previous == entries.end()) {
             return {{"success", false}, {"error", "unknown hotkey"}};
         }
+        auto syncDialogScopedHotkeyMirror = [](const std::string& hotkeyName, const std::string& shortcutStr) {
+            if (hotkeyName == "Dialog Quick Jump") {
+                ConfigManager::instance().set("/dialog/quickJumpHotkey", shortcutStr);
+                DialogHotkeysChangedEvent ev{};
+                ev.quickJumpHotkey = shortcutStr;
+                ev.hasQuickJump = true;
+                EventBus::instance().publish(ev);
+                MessageBridge::instance().pushEvent("dialog:configChanged", {{"quickJumpHotkey", shortcutStr}});
+            } else if (hotkeyName == "Dialog Inline Search") {
+                ConfigManager::instance().set("/dialog/inlineSearchHotkey", shortcutStr);
+                DialogHotkeysChangedEvent ev{};
+                ev.inlineSearchHotkey = shortcutStr;
+                ev.hasInlineSearch = true;
+                EventBus::instance().publish(ev);
+                MessageBridge::instance().pushEvent("dialog:configChanged", {{"inlineSearchHotkey", shortcutStr}});
+            }
+        };
         if (text.empty()) {
             if (!manager.clearHotkey(name)) {
                 return {{"success", false}, {"error", "could not disable hotkey"}};
@@ -2761,10 +2814,20 @@ void MessageBridge::registerBuiltinHandlers() {
                 return {{"success", false}, {"error", "failed to persist hotkey"},
                         {"name", name}, {"shortcut", previous->def.toString()}};
             }
+            syncDialogScopedHotkeyMirror(name, "");
             return {{"success", true}, {"name", name}, {"shortcut", ""}};
         }
         const auto parsed = HotkeyDef::fromString(text);
         if (!parsed) return {{"success", false}, {"error", "invalid hotkey"}};
+        if (name == "Dialog Quick Jump" || name == "Dialog Inline Search") {
+            const auto conflictInfo = manager.checkConflict(*parsed, name);
+            if (conflictInfo.hasConflict) {
+                return {{"success", false}, {"error", conflictInfo.conflictWith},
+                        {"conflictType", conflictInfo.conflictType},
+                        {"conflictWith", conflictInfo.conflictWith},
+                        {"name", name}, {"shortcut", previous->def.toString()}};
+            }
+        }
         if (!manager.rebindHotkey(name, *parsed)) {
             auto conflictInfo = manager.checkConflict(*parsed, name);
             std::string errMsg = conflictInfo.hasConflict && !conflictInfo.conflictWith.empty()
@@ -2785,6 +2848,7 @@ void MessageBridge::registerBuiltinHandlers() {
             return {{"success", false}, {"error", "failed to persist hotkey"},
                     {"name", name}, {"shortcut", previous->def.toString()}};
         }
+        syncDialogScopedHotkeyMirror(name, parsed->toString());
         return {{"success", true}, {"name", name}, {"shortcut", parsed->toString()}};
     });
     registerHandler("hotkey.setPaused", [](const json& params) -> json {

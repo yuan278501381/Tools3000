@@ -140,6 +140,11 @@ struct ClipboardStateChangedEvent {
     bool enabled = true;
 };
 
+/// 空格快速预览 (QuickLook) 模块启用状态变化事件
+struct QuickLookStateChangedEvent {
+    bool enabled = true;
+};
+
 /// 请求将本地图片文件悬浮贴图（可选自动执行离线 OCR 或原位翻译，跨模块零耦合桥接）
 struct ActionPinImageFileEvent {
     std::string path;
@@ -150,6 +155,14 @@ struct ActionPinImageFileEvent {
 // ─────────────────────────────────────────────────────────────────────────────// 显示全局 Toast 的事件
 struct ShowToastEvent {
     std::wstring message;
+};
+
+/// 文件对话框作用域快捷键双向同步事件（快捷键总览 <-> 文件对话框增强插件单一事实源）
+struct DialogHotkeysChangedEvent {
+    std::string quickJumpHotkey;
+    std::string inlineSearchHotkey;
+    bool hasQuickJump = false;
+    bool hasInlineSearch = false;
 };
 
 /// 主题模式与强调色变更事件

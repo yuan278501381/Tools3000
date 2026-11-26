@@ -79,6 +79,7 @@
 #include "ui/ClipboardWindow.h"
 #include "ui/FileLocksmithWindow.h"
 #include "ui/QuickLookWindow.h"
+#include "ui/QuickTranslatePopupWindow.h"
 #include "clipboard/ClipboardManager.h"
 #include "text_expander/TextExpanderManager.h"
 #include "ui/QuickLookNavigation.h"
@@ -124,6 +125,7 @@ static HWINEVENTHOOK g_fullscreenMoveSizeHook = nullptr;
 static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 static std::atomic<ULONGLONG> g_lastQuietIdleTrimTick{0};
 static uint32_t g_fullscreenGuardTickCounter = 0;
+static std::atomic<bool> g_quickLookEnabled{true};
 
 namespace {
 
@@ -1268,9 +1270,29 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 }
                 return {{"success", false}, {"error", "missing width or height"}};
             });
+        {
+            auto& cfg = tools3000::core::ConfigManager::instance();
+            const bool quickLookEnabled = cfg.has("/plugins/quick_look/enabled")
+                ? cfg.get<bool>("/plugins/quick_look/enabled", true)
+                : cfg.get<bool>("/quicklook/enabled", true);
+            g_quickLookEnabled.store(quickLookEnabled, std::memory_order_release);
+            tools3000::core::EventBus::instance().subscribe<tools3000::core::QuickLookStateChangedEvent>(
+                [](const tools3000::core::QuickLookStateChangedEvent& e) {
+                    g_quickLookEnabled.store(e.enabled, std::memory_order_release);
+                    if (!e.enabled) {
+                        tools3000::core::MainThreadDispatcher::instance().post([]() {
+                            tools3000::ui::QuickLookWindow::instance().destroy();
+                        });
+                    }
+                });
+        }
+
         tools3000::core::MessageBridge::instance().registerHostHandler(
             "search.quickLook",
             [](const nlohmann::json& params) -> nlohmann::json {
+                if (!g_quickLookEnabled.load(std::memory_order_acquire)) {
+                    return {{"success", false}, {"disabled", true}};
+                }
                 const std::string pathUtf8 = jsonStringOr(params, "path");
                 if (pathUtf8.empty()) {
                     return {{"success", false}, {"error", "missing path"}};
@@ -1301,7 +1323,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             });
     }
 
-    // 注册 Alt+X 划词极速翻译快捷键
+    // 注册 Alt+X 全局划词与剪贴板轻量翻译浮窗快捷键（复用内置 TranslationService 单一事实源）
     const tools3000::core::HotkeyDef translateFallback{tools3000::core::ModKey::Alt, 'X'};
     const auto translateText = tools3000::core::ConfigManager::instance().get<std::string>(
         "/hotkeys/Translate Selection", translateFallback.toString());
@@ -1312,53 +1334,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (fg && tools3000::core::WinUtils::shouldSuspendHotkeysForWindow(fg)) {
             return;
         }
-        std::string selected = tools3000::core::WinUtils::captureSelectedText();
-        const auto firstNotSpace = selected.find_first_not_of(" \t\n\r");
-        if (firstNotSpace == std::string::npos) {
-            tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-                tools3000::core::trWCstr(L"请先划选文字或复制文本后再按 Alt+X", L"Select or copy text first before pressing Alt+X")});
-            return;
-        }
-        const auto lastNotSpace = selected.find_last_not_of(" \t\n\r");
-        selected = selected.substr(firstNotSpace, lastNotSpace - firstNotSpace + 1);
-
-        std::wstring wideSelected = tools3000::core::WinUtils::utf8ToWstring(selected);
-        constexpr size_t kMaxTranslateChars = 1200;
-        if (wideSelected.size() > kMaxTranslateChars) {
-            size_t cutPos = kMaxTranslateChars;
-            if (cutPos > 0 && wideSelected[cutPos - 1] >= 0xD800 && wideSelected[cutPos - 1] <= 0xDBFF) {
-                --cutPos;
-            }
-            wideSelected.resize(cutPos);
-            selected = tools3000::core::WinUtils::wstringToUtf8(wideSelected);
-        }
-
-        size_t cjkCount = 0;
-        size_t latinCount = 0;
-        for (wchar_t ch : wideSelected) {
-            if ((ch >= 0x4E00 && ch <= 0x9FFF) || (ch >= 0x3400 && ch <= 0x4DBF)) {
-                ++cjkCount;
-            } else if ((ch >= L'A' && ch <= L'Z') || (ch >= L'a' && ch <= L'z')) {
-                ++latinCount;
-            }
-        }
-        const char* targetLang = (cjkCount > 0 && cjkCount * 3 >= latinCount) ? "en" : "zh-CN";
-
-        std::string encoded;
-        encoded.reserve(selected.size() * 3);
-        for (unsigned char c : selected) {
-            if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-                encoded += static_cast<char>(c);
-            } else {
-                char buf[4];
-                snprintf(buf, sizeof(buf), "%%%02X", c);
-                encoded += buf;
-            }
-        }
-        std::string url = std::string("https://translate.google.com/?sl=auto&tl=") + targetLang + "&op=translate&text=" + encoded;
-        tools3000::core::WinUtils::openUrl(tools3000::core::WinUtils::utf8ToWstring(url));
-        tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
-            tools3000::core::trWCstr(L"正在打开划词翻译", L"Opening selection translation")});
+        POINT cursorPt{};
+        GetCursorPos(&cursorPt);
+        const std::string configuredKey = tools3000::core::ConfigManager::instance().get<std::string>(
+            "/hotkeys/Translate Selection", "Alt+X");
+        tools3000::ui::QuickTranslatePopupWindow::instance().triggerQuickTranslate(
+            cursorPt, fg, configuredKey.empty() ? "Alt+X" : configuredKey);
     });
 
     // 注册核心基础 IPC 处理器
@@ -2474,9 +2455,10 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) return false;
 
         // 1. 空格键 (Space / Alt+Space): 在搜索窗口、资源管理器或桌面触发/关闭 QuickLook 文件预览
+        //    当用户在「功能模块」中关闭空格快速预览后，此处通过原子标志 0ms 原生直通空格键（与第三方 QuickLook 零冲突）。
         //    截图或长截图浮层激活期间（Space 用于平移选区或暂停/继续滚动）严禁跨模块劫持空格键。
         //    严守 1000Hz 钩子红线：通过无锁原子位判断浮层可见态，严禁在 WH_KEYBOARD_LL 内执行 FindWindowW 或跨进程 COM。
-        if (vkCode == VK_SPACE) {
+        if (vkCode == VK_SPACE && g_quickLookEnabled.load(std::memory_order_acquire)) {
             if (!tools3000::core::KeyboardHook::instance().isAnyCaptureOverlayVisible()) {
                 const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
                 const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
@@ -2628,6 +2610,15 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     // 7. UI Overlay 初始化
     tools3000::ui::ToastOverlay::instance().initialize(GetModuleHandleW(nullptr));
+    tools3000::ui::QuickTranslatePopupWindow::instance().initialize(GetModuleHandleW(nullptr));
+
+    tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
+        [](const tools3000::core::ThemeChangedEvent&) {
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                tools3000::ui::QuickTranslatePopupWindow::instance().reloadTheme();
+            });
+        }
+    );
 
     tools3000::core::EventBus::instance().subscribe<tools3000::core::ShowToastEvent>(
         [](const tools3000::core::ShowToastEvent& ev) {
@@ -2716,6 +2707,7 @@ void shutdownSubsystems() {
     tools3000::core::PluginManager::instance().shutdownPlugins();
     tools3000::core::HotkeyManager::instance().shutdown();
     tools3000::core::ShellContextMenuService::instance().shutdown();
+    tools3000::ui::QuickTranslatePopupWindow::instance().shutdown();
     tools3000::ui::ToastOverlay::instance().shutdown();
     tools3000::ui::SpotlightOverlay::instance().shutdown();
     tools3000::ui::WebViewEnvironmentManager::instance().shutdown();
@@ -2779,7 +2771,8 @@ static bool isAnyHostSurfaceActive() noexcept {
            tools3000::ui::SearchWindow::instance().isVisible() ||
            tools3000::ui::ClipboardWindow::instance().isVisible() ||
            tools3000::ui::TrayWindow::instance().isVisible() ||
-           tools3000::ui::QuickLookWindow::instance().isVisible();
+           tools3000::ui::QuickLookWindow::instance().isVisible() ||
+           tools3000::ui::QuickTranslatePopupWindow::instance().isVisible();
 }
 
 static void cleanupQuietIdleWorkingSet(HWND hwnd) {
@@ -2893,6 +2886,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         if (wParam == TIMER_ID_QUICKLOOK_REFRESH) {
             KillTimer(hwnd, TIMER_ID_QUICKLOOK_REFRESH);
+            if (!g_quickLookEnabled.load(std::memory_order_acquire)) return 0;
             auto& quickLook = tools3000::ui::QuickLookWindow::instance();
             if (!quickLook.isVisible()) return 0;
             if (tools3000::ui::SearchWindow::instance().isVisible()) {

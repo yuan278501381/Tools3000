@@ -125,11 +125,17 @@ export const DialogEnhancerPage: FC = () => {
   }, []);
 
   useBridgeEvent('dialog:configChanged', (data: unknown) => {
-    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
-    if (payload && typeof payload.enabled === 'boolean') {
-      const nextEnabled = payload.enabled;
-      setConfig((prev) => ({ ...prev, enabled: nextEnabled }));
-    }
+    const payload =
+      data && typeof data === 'object'
+        ? (data as { enabled?: boolean; quickJumpHotkey?: string; inlineSearchHotkey?: string })
+        : null;
+    if (!payload) return;
+    setConfig((prev) => ({
+      ...prev,
+      ...(typeof payload.enabled === 'boolean' ? { enabled: payload.enabled } : {}),
+      ...(typeof payload.quickJumpHotkey === 'string' ? { quickJumpHotkey: payload.quickJumpHotkey } : {}),
+      ...(typeof payload.inlineSearchHotkey === 'string' ? { inlineSearchHotkey: payload.inlineSearchHotkey } : {}),
+    }));
   });
 
   useBridgeEvent('plugins:changed', (data: unknown) => {

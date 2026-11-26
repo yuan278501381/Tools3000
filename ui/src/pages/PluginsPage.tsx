@@ -4,6 +4,7 @@ import {
   Cast,
   ChevronDown,
   ClipboardList,
+  Eye,
   FileSearch,
   FolderSymlink,
   Image as ImageIcon,
@@ -81,6 +82,8 @@ const ICONS = {
   clipboard: ClipboardList,
   text_expander: TextCursorInput,
   textexpander: TextCursorInput,
+  quick_look: Eye,
+  quicklook: Eye,
 } as const;
 
 const ALL_BUILTIN_DOMAIN_IDS = new Set<string>(
@@ -208,6 +211,13 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
     const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
     if (payload && typeof payload.enabled === 'boolean') {
       updatePluginState('text_expander', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('quicklook:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('quick_look', payload.enabled);
     }
   });
 

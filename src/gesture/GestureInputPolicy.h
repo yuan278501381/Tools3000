@@ -476,6 +476,51 @@ inline bool isTools3000UiClassName(std::wstring_view cls) noexcept {
 /// 低级鼠标钩子检测到该签名时无条件放行，彻底阻断生产及 E2E 注入测试模式下的补发自环递归。
 inline constexpr ULONG_PTR kSelfReinjectMouseExtraInfo = 0x54334B52;
 
+/// 补发普通点击时按下与抬起之间的自然按压驻留时长 (毫秒)：
+/// Windows 11 XAML / WinUI 3 InputSite 易丢弃 0ms 同帧合并的 SendInput(2, [DOWN, UP])，
+/// 拆分为独立 DOWN -> 10ms -> UP 可确保合法的时间戳差值与完整点击状态迁移。
+inline constexpr DWORD kReinjectClickHoldMs = 10;
+
+/// 将鼠标触发按下事件映射为 Profile triggerStates 键名
+inline constexpr const char* triggerKeyForDownEvent(MouseEventType type) noexcept {
+    switch (type) {
+        case MouseEventType::RightDown:  return "right";
+        case MouseEventType::MiddleDown: return "middle";
+        case MouseEventType::X1Down:     return "xbutton1";
+        case MouseEventType::X2Down:     return "xbutton2";
+        case MouseEventType::LeftDown:   return "left";
+        default:                         return "";
+    }
+}
+
+/// 识别 Windows 主/副屏任务栏主体宿主及子控件类名
+inline bool isTaskbarHostClassName(std::wstring_view cls) noexcept {
+    return cls == L"Shell_TrayWnd" ||
+           cls == L"Shell_SecondaryTrayWnd" ||
+           cls == L"TrayNotifyWnd" ||
+           cls == L"MSTaskListWClass" ||
+           cls == L"MSTaskSwWClass" ||
+           cls == L"TrayClockWClass";
+}
+
+/// 识别 Windows 系统瞬态壳层交互弹窗（托盘隐藏图标溢出区、任务栏悬停缩略图、Jump List 与经典右键菜单）：
+/// 这些窗口本身就是菜单或托盘控制面板，右键点击必须始终 0ms 原生直通，绝不允许手势钩子拦截吞噬。
+inline bool isSystemTransientShellMenuClassName(std::wstring_view cls) noexcept {
+    return cls == L"NotifyIconOverflowWindow" ||
+           cls == L"TopLevelWindowForOverflowXamlIsland" ||
+           cls == L"TaskListThumbnailWnd" ||
+           cls == L"XamlExplorerHostIslandWindow" ||
+           cls == L"#32768";
+}
+
+/// 识别 Windows 任务栏与系统托盘窗口（包括主任务栏、多显示器副任务栏、托盘通知区、悬停缩略图与 Win10/Win11 托盘溢出浮窗）
+inline bool isSystemTrayOrTaskbar(std::wstring_view cls) noexcept {
+    return isTaskbarHostClassName(cls) ||
+           cls == L"NotifyIconOverflowWindow" ||
+           cls == L"TopLevelWindowForOverflowXamlIsland" ||
+           cls == L"TaskListThumbnailWnd";
+}
+
 inline bool isGestureOverlayClassName(std::wstring_view cls) noexcept {
     return cls == L"Tools3000_GestureOverlay";
 }
@@ -496,6 +541,7 @@ inline bool isGestureExemptInteractiveClassName(std::wstring_view cls) noexcept 
            cls == L"Tools3000_PinWindow" ||
            cls == L"Tools3000_OcrResult" ||
            cls == L"Tools3000_OcrResultWindow" ||
+           cls == L"Tools3000_QuickTranslatePopup" ||
            cls == L"Tools3000_DialogRibbon" ||
            cls == L"Tools3000_DialogRibbonOverlay";
 }
@@ -513,51 +559,206 @@ inline bool isGestureGlobalModalOverlayVisible() noexcept {
            visibleByClass(L"Tools3000_ScrollCaptureOverlay");
 }
 
-/// 检查指定物理坐标处是否命中自身交互浮层或全局模态浮层
-inline bool isGestureExemptOverlayActiveAtPoint(POINT pt) noexcept {
+/// 钩子按下瞬间光标命中的目标窗口分类结果（单次 WindowFromPoint 扫描即可同时判定）
+struct GestureHookPointClassification {
+    bool isExemptOverlay = false;
+    bool isTransientShellMenu = false;
+    bool isTaskbarHost = false;
+};
+
+/// 单次低开销判定指定物理坐标下的窗口分类（自动穿透 Tools3000 自身覆盖层，遍历自身/GA_ROOT/GA_ROOTOWNER）
+inline GestureHookPointClassification classifyGestureHookPoint(POINT pt) noexcept {
+    GestureHookPointClassification result{};
     if (isGestureGlobalModalOverlayVisible()) {
-        return true;
+        result.isExemptOverlay = true;
+        return result;
     }
 
-    auto checkHwndChain = [](HWND h) noexcept -> bool {
-        if (!h || !IsWindow(h)) return false;
-        auto matchSingle = [](HWND w) noexcept -> bool {
-            if (!w || !IsWindow(w)) return false;
-            wchar_t buf[128]{};
-            if (GetClassNameW(w, buf, static_cast<int>(std::size(buf))) > 0) {
-                return isGestureExemptInteractiveClassName(buf);
-            }
-            return false;
-        };
-        if (matchSingle(h)) return true;
-        const HWND root = GetAncestor(h, GA_ROOT);
-        if (root && root != h && matchSingle(root)) return true;
-        const HWND rootOwner = GetAncestor(h, GA_ROOTOWNER);
-        if (rootOwner && rootOwner != h && rootOwner != root && matchSingle(rootOwner)) return true;
-        return false;
+    HWND hit = WindowFromPoint(pt);
+    if (!hit || !IsWindow(hit)) {
+        return result;
+    }
+
+    wchar_t hitCls[128]{};
+    GetClassNameW(hit, hitCls, static_cast<int>(std::size(hitCls)));
+    if (isGesturePassThroughClassName(hitCls)) {
+        for (HWND cur = GetTopWindow(nullptr); cur != nullptr; cur = GetWindow(cur, GW_HWNDNEXT)) {
+            if (!IsWindowVisible(cur)) continue;
+            RECT rc{};
+            if (!GetWindowRect(cur, &rc) || !PtInRect(&rc, pt)) continue;
+            wchar_t curCls[128]{};
+            if (GetClassNameW(cur, curCls, static_cast<int>(std::size(curCls))) <= 0) continue;
+            if (isGesturePassThroughClassName(curCls)) continue;
+            hit = cur;
+            break;
+        }
+    }
+
+    auto classifySingle = [&](HWND w) noexcept {
+        if (!w || !IsWindow(w)) return;
+        wchar_t buf[128]{};
+        if (GetClassNameW(w, buf, static_cast<int>(std::size(buf))) <= 0) return;
+        const std::wstring_view cls(buf);
+        if (isGestureExemptInteractiveClassName(cls)) result.isExemptOverlay = true;
+        if (isSystemTransientShellMenuClassName(cls)) result.isTransientShellMenu = true;
+        if (isTaskbarHostClassName(cls)) result.isTaskbarHost = true;
     };
 
-    HWND hit = WindowFromPoint(pt);
-    if (hit) {
-        wchar_t hitCls[128]{};
-        GetClassNameW(hit, hitCls, static_cast<int>(std::size(hitCls)));
-        if (isGesturePassThroughClassName(hitCls)) {
-            for (HWND cur = GetTopWindow(nullptr); cur != nullptr; cur = GetWindow(cur, GW_HWNDNEXT)) {
-                if (!IsWindowVisible(cur)) continue;
-                RECT rc{};
-                if (!GetWindowRect(cur, &rc) || !PtInRect(&rc, pt)) continue;
-                wchar_t curCls[128]{};
-                if (GetClassNameW(cur, curCls, static_cast<int>(std::size(curCls))) <= 0) continue;
-                if (isGesturePassThroughClassName(curCls)) continue;
-                hit = cur;
-                break;
-            }
+    classifySingle(hit);
+    const HWND root = GetAncestor(hit, GA_ROOT);
+    if (root && root != hit) {
+        classifySingle(root);
+    }
+    const HWND rootOwner = GetAncestor(hit, GA_ROOTOWNER);
+    if (rootOwner && rootOwner != hit && rootOwner != root) {
+        classifySingle(rootOwner);
+    }
+    return result;
+}
+
+/// 纯策略判定：在 WH_MOUSE_LL 按下/滚轮瞬间是否应当 0ms 原生放行该事件（绝不吞掉物理按键）
+inline constexpr bool shouldBypassHookForTargetWindow(
+    bool isExemptOverlay,
+    bool isTransientShellMenu,
+    bool isTaskbarHost,
+    WPARAM wParam,
+    bool bypassTaskbarRightClick,
+    bool bypassTaskbarMiddleClick,
+    bool bypassTaskbarAll) noexcept {
+    if (isExemptOverlay) {
+        return true;
+    }
+    if (isTransientShellMenu) {
+        return wParam == WM_RBUTTONDOWN ||
+               wParam == WM_MBUTTONDOWN ||
+               wParam == WM_XBUTTONDOWN ||
+               wParam == WM_LBUTTONDOWN;
+    }
+    if (isTaskbarHost) {
+        if (bypassTaskbarAll) {
+            return true;
         }
-        if (checkHwndChain(hit)) {
+        if (wParam == WM_RBUTTONDOWN && bypassTaskbarRightClick) {
+            return true;
+        }
+        if (wParam == WM_MBUTTONDOWN && bypassTaskbarMiddleClick) {
             return true;
         }
     }
     return false;
+}
+
+/// 专业右键密集软件内置避让条目元数据（单一事实源：前后端共用，严禁多头维护名单）
+struct ProRightClickAppPreset {
+    std::string_view processName;
+    std::string_view displayName;
+    std::string_view category; // "cad" | "eda" | "dcc3d"
+};
+
+/// 高置信度专业 CAD / UG / EDA / 3D 建模软件清单：
+/// 这些软件将右键作为核心实时拖拽/视口旋转/径向菜单/命令确认键，默认 0ms 原生放行右键，
+/// 同时保留中键/侧键及副屏非冲突窗口手势，并允许用户在应用作用域中对任意软件单独覆盖开启。
+inline constexpr ProRightClickAppPreset kProRightClickAppPresets[] = {
+    // ── 工业机械 CAD / CAE / BIM ─────────────────────────────────────────────
+    {"acad.exe",                        "AutoCAD",              "cad"},
+    {"zwcad.exe",                       "ZWCAD",                "cad"},
+    {"gcad.exe",                        "GstarCAD",             "cad"},
+    {"caxa*.exe",                       "CAXA CAD",             "cad"},
+    {"ugraf.exe",                       "Siemens NX (UG)",      "cad"},
+    {"sldworks.exe",                    "SolidWorks",           "cad"},
+    {"cnext.exe",                       "CATIA",                "cad"},
+    {"xtop.exe",                        "Creo / Pro/ENGINEER",  "cad"},
+    {"inventor.exe",                    "Autodesk Inventor",    "cad"},
+    {"fusion360.exe",                   "Autodesk Fusion",      "cad"},
+    {"rhino.exe",                       "Rhinoceros 3D",        "cad"},
+    {"revit.exe",                       "Autodesk Revit",       "cad"},
+    {"sketchup.exe",                    "SketchUp",             "cad"},
+    {"microstation.exe",                "MicroStation",         "cad"},
+    {"mastercam.exe",                   "Mastercam",            "cad"},
+    // ── EDA 电子电路与 PCB 设计 ──────────────────────────────────────────────
+    {"x2.exe",                          "Altium Designer",      "eda"},
+    {"lceda-pro.exe",                   "EasyEDA Pro",          "eda"},
+    {"pcbnew.exe",                      "KiCad PCB",            "eda"},
+    {"eeschema.exe",                    "KiCad Schematic",      "eda"},
+    {"kicad.exe",                       "KiCad",                "eda"},
+    {"allegro.exe",                     "Cadence Allegro",      "eda"},
+    {"powerpcb.exe",                    "PADS Layout",          "eda"},
+    // ── 3D DCC / 建模 / 雕刻 / 游戏引擎 ──────────────────────────────────────
+    {"blender.exe",                     "Blender",              "dcc3d"},
+    {"maya.exe",                        "Autodesk Maya",        "dcc3d"},
+    {"3dsmax.exe",                      "3ds Max",              "dcc3d"},
+    {"cinema 4d.exe",                   "Cinema 4D",            "dcc3d"},
+    {"houdini.exe",                     "Houdini",              "dcc3d"},
+    {"houdinifx.exe",                   "Houdini FX",           "dcc3d"},
+    {"zbrush.exe",                      "ZBrush",               "dcc3d"},
+    {"unrealeditor.exe",                "Unreal Engine",        "dcc3d"},
+    {"ue4editor.exe",                   "Unreal Engine 4",      "dcc3d"},
+    {"unity.exe",                       "Unity Editor",         "dcc3d"},
+    {"adobe substance 3d painter.exe",  "Substance 3D Painter", "dcc3d"},
+};
+
+/// 零分配判断进程名是否命中高置信度专业右键密集软件清单（支持不区分大小写与安全单星号通配符如 caxa*.exe）
+inline constexpr bool isProfessionalRightClickAppProcess(std::string_view exeName) noexcept {
+    if (exeName.empty()) {
+        return false;
+    }
+    auto asciiLower = [](char c) constexpr noexcept -> char {
+        return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+    };
+    auto eqIgnoreCase = [&](std::string_view a, std::string_view b) constexpr noexcept -> bool {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            if (asciiLower(a[i]) != asciiLower(b[i])) return false;
+        }
+        return true;
+    };
+    auto matchPattern = [&](std::string_view name, std::string_view pattern) constexpr noexcept -> bool {
+        const size_t star = pattern.find('*');
+        if (star == std::string_view::npos) {
+            return eqIgnoreCase(name, pattern);
+        }
+        const std::string_view prefix = pattern.substr(0, star);
+        const std::string_view suffix = pattern.substr(star + 1);
+        if (name.size() < prefix.size() + suffix.size()) {
+            return false;
+        }
+        return eqIgnoreCase(name.substr(0, prefix.size()), prefix) &&
+               eqIgnoreCase(name.substr(name.size() - suffix.size()), suffix);
+    };
+
+    for (const auto& preset : kProRightClickAppPresets) {
+        if (matchPattern(exeName, preset.processName)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// 纯策略判定：在 WH_MOUSE_LL 入口结合全量绕行与前台单右键绕行（支持多屏窗口矩形限定）
+inline constexpr bool shouldBypassForegroundEvent(
+    bool bypassAll,
+    bool bypassRightOnly,
+    bool restrictToRect,
+    POINT pt,
+    RECT rect,
+    WPARAM wParam) noexcept {
+    const bool inTargetRegion = !restrictToRect ||
+        (pt.x >= rect.left && pt.x < rect.right && pt.y >= rect.top && pt.y < rect.bottom);
+    if (!inTargetRegion) {
+        return false;
+    }
+    if (bypassAll) {
+        return true;
+    }
+    if (bypassRightOnly && (wParam == WM_RBUTTONDOWN || wParam == WM_RBUTTONUP)) {
+        return true;
+    }
+    return false;
+}
+
+/// 检查指定物理坐标处是否命中自身交互浮层或全局模态浮层
+inline bool isGestureExemptOverlayActiveAtPoint(POINT pt) noexcept {
+    return classifyGestureHookPoint(pt).isExemptOverlay;
 }
 
 /// 起始静止超时纯策略判定：按下触发键后尚未跨过起始识别阈值且无已识别方向，驻留超过 timeoutMs 时取消手势并还原原生按键
@@ -648,15 +849,6 @@ inline constexpr bool shouldWatchdogAbortGesture(int64_t totalElapsedMs,
 inline bool shouldBypassGestureForNativeSearchMenu(std::wstring_view cls,
                                                     bool shiftPressed) noexcept {
     return shiftPressed && cls == L"Tools3000_SearchWindow";
-}
-
-/// 识别 Windows 任务栏与系统托盘窗口（包括主任务栏、多显示器副任务栏、托盘通知区与 Win10/Win11 托盘溢出浮窗）
-inline bool isSystemTrayOrTaskbar(std::wstring_view cls) noexcept {
-    return cls == L"Shell_TrayWnd" ||
-           cls == L"Shell_SecondaryTrayWnd" ||
-           cls == L"TrayNotifyWnd" ||
-           cls == L"NotifyIconOverflowWindow" ||
-           cls == L"TopLevelWindowForOverflowXamlIsland";
 }
 
 /// 识别 Windows 系统级外壳、桌面、任务栏、开始菜单与弹出菜单窗口

@@ -323,15 +323,18 @@ function main() {
   };
 
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-  const serialized = `${JSON.stringify(payload, null, 2)}\n`;
+  const serializedLf = `${JSON.stringify(payload, null, 2)}\n`;
 
-  // 若内容完全未变化则跳过写入，避免触发 Vite/ESLint 不必要重建
+  // 若逻辑内容未变化（忽略 Windows CRLF / LF 行尾差异）则跳过写入，避免反复构建弄脏 Git 工作区或触发 Vite 不必要重建
   const prev = fs.existsSync(OUTPUT_FILE) ? fs.readFileSync(OUTPUT_FILE, 'utf8') : null;
-  if (prev !== serialized) {
-    fs.writeFileSync(OUTPUT_FILE, serialized, 'utf8');
+  const prevNormalized = prev !== null ? prev.replace(/\r\n/g, '\n') : null;
+  if (prevNormalized !== serializedLf) {
+    const useCrlf = prev !== null ? prev.includes('\r\n') : process.platform === 'win32';
+    const serializedOut = useCrlf ? serializedLf.replace(/\n/g, '\r\n') : serializedLf;
+    fs.writeFileSync(OUTPUT_FILE, serializedOut, 'utf8');
   }
 
-  const sizeKb = (Buffer.byteLength(serialized, 'utf8') / 1024).toFixed(1);
+  const sizeKb = (Buffer.byteLength(serializedLf, 'utf8') / 1024).toFixed(1);
   const latest = releases[0]?.tag ?? 'none';
   console.log(`[OK] Changelog bundle ready: ${releases.length} releases (latest ${latest}, ${sizeKb} KB) -> ${path.relative(REPO_ROOT, OUTPUT_FILE)}`);
 }

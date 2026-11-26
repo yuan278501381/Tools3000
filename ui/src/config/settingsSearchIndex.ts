@@ -96,6 +96,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
 
   // Gesture & HotCorner
   { id: 'gst-trigger', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
+  { id: 'gst-pro-bypass', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.autoBypassProRightClickApps', descKey: 'gesture.autoBypassProRightClickAppsDesc', keywords: 'cad autocad ug nx solidworks catia creo rhino blender maya altium kicad eda 3d right click bypass zhuanye ruanjian youjian birang' },
   { id: 'gst-trail', navId: 'gesture', tabId: 'appearance', labelKey: 'gesture.showTrail', descKey: 'gesture.showTrailDesc', keywords: 'trail color width outline fade hint text brightness delete backspace guiji jianyin tishi liangdu shanchu' },
   { id: 'gst-scope', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.targetConfigTitle', descKey: 'gesture.scopeRules', keywords: 'scope app blacklist whitelist rule yingyong' },
   { id: 'gst-websearch', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.webSearchEngine', descKey: 'gesture.webSearchEngineDesc', keywords: 'web search engine bing google baidu duckduckgo wheel edge' },
@@ -127,9 +128,10 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'rmt-ime', navId: 'remote_boost', labelKey: 'remoteBoost.imeSanitizerTitle', descKey: 'remoteBoost.imeSanitizerDesc', keywords: 'ime english input method shurufa' },
   { id: 'pv-assoc', navId: 'picasa_viewer', labelKey: 'picasaViewer.associateAllTitle', descKey: 'picasaViewer.heroDesc', keywords: 'picasa photo image picture viewer rust association jpg png webp kantu tupian' },
   { id: 'pv-custom', navId: 'picasa_viewer', labelKey: 'picasaViewer.customFormatsTitle', descKey: 'picasaViewer.customFormatsDesc', keywords: 'picasa format config default apps extension raw heic avif geshi guanlian' },
-  // File Locksmith
+  // File Locksmith & Quick Preview
   { id: 'fl-menu', navId: 'file_locksmith', labelKey: 'general.shellMenuFileLocksmith', descKey: 'general.shellMenuFileLocksmithDesc', keywords: 'file locksmith unlock lock handle process context menu explorer shift wenjian zhanyong jiesuo' },
   { id: 'fl-inspect', navId: 'file_locksmith', labelKey: 'fileLocksmith.instantInspectGroup', descKey: 'fileLocksmith.instantInspectDesc', keywords: 'inspect locked file folder process kill unlock jiance zhanyong' },
+  { id: 'plg-quicklook', navId: 'plugins', labelKey: 'plugins.items.quick_look.name', descKey: 'plugins.items.quick_look.description', keywords: 'quicklook space spacebar preview kongge yulan disable toggle switch' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
   { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory policy ram trim suspend unload destroy lifecycle idle schedule neicun celue huishou shijianbiao xingneng' },
 ];

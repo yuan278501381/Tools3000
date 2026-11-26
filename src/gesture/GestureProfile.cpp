@@ -341,6 +341,11 @@ GestureProfile GestureProfile::createTaskbarProfile() {
     GestureProfile profile("special_taskbar");
     const bool zh = tools3000::core::isUiLanguageChinese();
 
+    // Windows 10/11 任务栏原生右键用于弹出程序控制菜单 (Jump List) 与系统托盘菜单，
+    // 且 Win11 XAML 任务栏对钩子吞没后的 SendInput 合成右键极易排斥丢弃；
+    // 因此默认在任务栏禁用右键手势拦截以保持 0ms 原生右键直通，需要时可在设置页手动开启。
+    profile.setTriggerState("right", TriggerModeState::Disabled);
+
     auto addBuiltin = [&](const std::string& code, const std::string& name,
                           BuiltinCommand cmd, const std::string& desc = "",
                           bool enabled = true) {

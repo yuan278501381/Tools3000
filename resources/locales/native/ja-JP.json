@@ -986,5 +986,8 @@
   "Refining": "高精度再認識中",
   "Detected {0}, re-recognizing with script pack...": "{0} を検出しました。専用モデルで再認識中...",
   "Export destination is locked or unwritable; raw recording preserved": "書き出し先がロックされているか書き込めません。元の録画は安全に保持されています",
-  "Encoder initialization failed for this format; raw recording preserved": "この形式のエンコーダー初期化に失敗しました。元の録画は安全に保持されています"
+  "Encoder initialization failed for this format; raw recording preserved": "この形式のエンコーダー初期化に失敗しました。元の録画は安全に保持されています",
+  "Translation copied to clipboard": "翻訳をクリップボードにコピーしました",
+  "Clipboard": "クリップボード",
+  "Selection": "選択テキスト"
 }

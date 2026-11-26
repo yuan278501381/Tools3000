@@ -986,5 +986,8 @@
   "Refining": "Уточнение",
   "Detected {0}, re-recognizing with script pack...": "Обнаружен язык ({0}), повторное распознавание...",
   "Export destination is locked or unwritable; raw recording preserved": "Путь экспорта занят или недоступен для записи; исходная запись сохранена",
-  "Encoder initialization failed for this format; raw recording preserved": "Не удалось инициализировать кодек для этого формата; исходная запись сохранена"
+  "Encoder initialization failed for this format; raw recording preserved": "Не удалось инициализировать кодек для этого формата; исходная запись сохранена",
+  "Translation copied to clipboard": "Перевод скопирован в буфер обмена",
+  "Clipboard": "Буфер обмена",
+  "Selection": "Выделение"
 }

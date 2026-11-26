@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "Conflicto externo: ocupado por Windows u otra aplicación",
     "shortcutActive": "Activo",
     "shortcutRecordingOnly": "Solo durante grabación",
+    "shortcutDialogOnly": "Activo en cuadros de diálogo",
     "shortcutDisabled": "Sin asignar",
     "recheckShortcuts": "Comprobar conflictos",
     "shortcutsOverview": "Estado de los atajos",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. Los caracteres principales usan la fuente seleccionada; 2. Si faltan glifos en algún idioma, DirectWrite recurre por carácter a fuentes nativas del sistema (Segoe UI / YaHei UI / PingFang) evitando cuadros vacíos; 3. Cero escritura en carpetas del sistema y portabilidad total.",
     "hotkeysAllCount": "Todos: {{count}}",
     "hotkeysActiveCount": "Activos: {{count}}",
-    "hotkeysSessionCount": "Solo al grabar: {{count}}",
+    "hotkeysSessionCount": "Contextuales: {{count}}",
     "hotkeysInternalConflictsCount": "Conflictos internos: {{count}}",
     "hotkeysExternalConflictsCount": "Conflictos externos: {{count}}",
     "hotkeysUnboundCount": "Sin asignar: {{count}}",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "Expansor de Texto",
         "description": "Expansión nativa de abreviaturas en todo el sistema con macros de fecha, portapapeles y cursor, pausa automática en gestores de contraseñas y cero contaminación del historial. Listo para usar y sin ganchos ni RAM al desactivarlo."
+      },
+      "quick_look": {
+        "name": "Vista rápida con Espacio",
+        "description": "Previsualiza archivos con la barra espaciadora en el Explorador, el Escritorio o la Búsqueda rápida. Al desactivarlo, la tecla Espacio pasa sin latencia para convivir sin conflictos con otras utilidades de vista previa."
       }
     },
     "title": "Módulos y extensiones",
@@ -940,6 +945,13 @@
     "showTrailDesc": "Muestra una estela visual al trazar gestos",
     "autoBypassFullscreen": "Omitir en juegos y vídeos a pantalla completa",
     "autoBypassFullscreenDesc": "Deja pasar el ratón sin interceptarlo cuando la ventana activa está en pantalla completa exclusiva",
+    "autoBypassProRightClickApps": "Paso directo del clic derecho en apps CAD / 3D / EDA",
+    "autoBypassProRightClickAppsDesc": "Deja pasar el clic derecho sin latencia en AutoCAD, Siemens NX (UG), SolidWorks, Blender, Altium y herramientas similares, manteniendo activos los gestos del botón central, botones laterales y monitores secundarios",
+    "proRightClickPresetToggle": "Ver lista integrada de exclusión ({{count}} apps)",
+    "proRightClickPresetOverrideHint": "Para activar gestos con clic derecho en una app concreta de esta lista, agrégala abajo en Ámbitos y activa explícitamente su botón derecho.",
+    "proRightClickCatCad": "CAD y diseño industrial / arquitectónico",
+    "proRightClickCatEda": "EDA y diseño de PCB",
+    "proRightClickCatDcc3d": "Modelado 3D, escultura y motores de juego",
     "adminHintTitle": "Compatibilidad con ventanas elevadas",
     "adminHintDesc": "Para usar gestos sobre ventanas elevadas como Administrador de tareas, CMD o Regedit, activa «Ejecutar como administrador» en Configuración general.",
     "adminHintElevatedDesc": "Ejecutándose como administrador. Los gestos funcionan libremente en todas las ventanas elevadas.",

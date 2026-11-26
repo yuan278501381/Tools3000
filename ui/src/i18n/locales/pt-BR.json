@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "Conflito externo: ocupado pelo sistema ou outro aplicativo",
     "shortcutActive": "Ativo",
     "shortcutRecordingOnly": "Ativo durante gravação",
+    "shortcutDialogOnly": "Ativo em diálogos de arquivo",
     "shortcutDisabled": "Desativado",
     "recheckShortcuts": "Reverificar conflitos",
     "shortcutsOverview": "Saúde dos atalhos",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. Os glifos principais são renderizados com a fonte selecionada; 2. Quando houver caracteres ausentes ou não suportados, o motor aciona automaticamente o fallback por glifo para fontes nativas (YaHei UI / PingFang / Segoe UI), evitando quadrados vazios (□) e falhas visuais; 3. Zero gravação em pastas do sistema e portabilidade 100% limpa.",
     "hotkeysAllCount": "Todos ({{count}})",
     "hotkeysActiveCount": "Ativos ({{count}})",
-    "hotkeysSessionCount": "Só gravação ({{count}})",
+    "hotkeysSessionCount": "Contextuais ({{count}})",
     "hotkeysInternalConflictsCount": "Conflitos internos ({{count}})",
     "hotkeysExternalConflictsCount": "Conflitos externos ({{count}})",
     "hotkeysUnboundCount": "Sem vínculo ({{count}})",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "Expansor de Texto",
         "description": "Expansão nativa de abreviações em todo o sistema com macros de data, área de transferência e cursor, proteção para gerenciadores de senha e zero poluição do histórico. Pronto para uso e sem ganchos ou RAM quando desativado."
+      },
+      "quick_look": {
+        "name": "Pré-visualização com Espaço",
+        "description": "Visualize arquivos rapidamente com a barra de espaço no Explorador, Área de Trabalho ou Busca Rápida. Ao desativar, a tecla Espaço passa sem latência para coexistir sem conflitos com ferramentas de terceiros."
       }
     },
     "title": "Módulos e Extensões",
@@ -940,6 +945,13 @@
     "showTrailDesc": "Exibe uma trilha visual enquanto você desenha gestos",
     "autoBypassFullscreen": "Pausa em jogos/vídeos em tela cheia",
     "autoBypassFullscreenDesc": "Libera automaticamente os botões do mouse quando a janela ativa está em tela cheia exclusiva",
+    "autoBypassProRightClickApps": "Liberar botão direito em apps CAD / 3D / EDA",
+    "autoBypassProRightClickAppsDesc": "Passa o botão direito de forma nativa com latência zero no AutoCAD, Siemens NX (UG), SolidWorks, Blender, Altium e similares, mantendo ativos os gestos do botão do meio, botões laterais e outros monitores",
+    "proRightClickPresetToggle": "Ver lista integrada de exclusão ({{count}} apps)",
+    "proRightClickPresetOverrideHint": "Para ativar gestos com o botão direito em um app específico desta lista, adicione-o em Escopos abaixo e ative explicitamente o gatilho do botão direito.",
+    "proRightClickCatCad": "CAD e design industrial / arquitetônico",
+    "proRightClickCatEda": "EDA e design de PCB",
+    "proRightClickCatDcc3d": "Modelagem 3D, escultura e motores de jogo",
     "adminHintTitle": "Suporte a janelas elevadas",
     "adminHintDesc": "Para usar gestos em janelas com privilégio de administrador (Gerenciador de Tarefas, CMD, Regedit), ative 'Executar como administrador' em Configurações Gerais.",
     "adminHintElevatedDesc": "Em execução como administrador. Os gestos funcionam livremente em todas as janelas elevadas.",

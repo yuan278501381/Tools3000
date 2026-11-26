@@ -1060,6 +1060,22 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
     return ok;
 }
 
+bool HotkeyManager::setHotkeyScope(const std::string& name, const std::string& scope) {
+    const DWORD ownerThreadId = m_ownerThreadId.load(std::memory_order_acquire);
+    if (isForeignHotkeyThread(ownerThreadId)) {
+        return dispatchToHotkeyThread<bool>(
+            ownerThreadId, "setHotkeyScope", false,
+            [this, name, scope]() { return setHotkeyScope(name, scope); });
+    }
+    std::lock_guard lock(m_mutex);
+    auto it = m_hotkeys.find(name);
+    if (it == m_hotkeys.end()) {
+        return false;
+    }
+    it->second.scope = scope.empty() ? std::string("global") : scope;
+    return true;
+}
+
 bool HotkeyManager::isConflict(const HotkeyDef& def) const {
     std::lock_guard lock(m_mutex);
     for (const auto& [name, entry] : m_hotkeys) {
@@ -1090,10 +1106,19 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
     std::lock_guard lock(m_mutex);
 
     // 1. 优先检查内部插件与功能冲突
+    bool currentIsScopedUnarmed = false;
+    if (const auto selfIt = m_hotkeys.find(currentName); selfIt != m_hotkeys.end()) {
+        currentIsScopedUnarmed = !selfIt->second.armed;
+    }
     for (const auto& [name, entry] : m_hotkeys) {
         if (name != currentName && entry.def.virtualKey != 0 && entry.def == def) {
             return {true, "internal", "与 [" + name + "] 冲突"};
         }
+    }
+
+    // 场景按需热键（如文件对话框前台热键、录屏期间热键）平时不占用全局系统热键，无需用全局探针误报外部冲突
+    if (currentIsScopedUnarmed) {
+        return {false, "none", ""};
     }
 
     // 2. 针对系统保留特殊键（单功能键 F1~F24、Alt+Space、Win+* 等），底层键盘钩子合法兜底，不误报外部冲突

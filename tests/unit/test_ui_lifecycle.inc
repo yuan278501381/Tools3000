@@ -1935,3 +1935,52 @@ TEST(SearchWindowNativeAppContractTest, ZeroFlashCloakPolicyOnShow) {
     // 5. 最小化还原唤醒：同样 cloak 等待一帧合成后再原子揭幕
     EXPECT_TRUE(SearchWindow::shouldCloakOnShow(true, true, false, true));
 }
+
+TEST(QuickTranslatePopupContractTest, SanitizesInputAndPreservesUtf16SurrogatePairs) {
+    using tools3000::ui::QuickTranslatePopupWindow;
+
+    EXPECT_EQ(QuickTranslatePopupWindow::sanitizeAndTrimInput("   \t\r\n  "), "");
+    EXPECT_EQ(QuickTranslatePopupWindow::sanitizeAndTrimInput("  Hello World\r\n  "), "Hello World");
+
+    // 4 字节 UTF-8 字符（UTF-16 代理对，占 2 个 code unit）在奇数上限处截断时绝不能劈裂代理对
+    const std::string surrogateUtf8 = "\xF0\x9F\x9A\x80\xF0\x9F\x9A\x80";  // 两个四字节字符 (4 UTF-16 units)
+    const std::string clipped = QuickTranslatePopupWindow::sanitizeAndTrimInput(surrogateUtf8, 3);
+    EXPECT_EQ(clipped, "\xF0\x9F\x9A\x80");
+}
+
+TEST(QuickTranslatePopupContractTest, ComputesSafeMultiMonitorPopupPlacement) {
+    using tools3000::ui::QuickTranslatePopupWindow;
+
+    const RECT workArea{0, 0, 1920, 1040};
+    // 常规光标位置：贴近光标右下方且不越界
+    const RECT normal = QuickTranslatePopupWindow::computePopupPlacement(POINT{400, 300}, 420, 220, workArea);
+    EXPECT_GE(normal.left, workArea.left);
+    EXPECT_LE(normal.right, workArea.right);
+    EXPECT_GE(normal.top, workArea.top);
+    EXPECT_LE(normal.bottom, workArea.bottom);
+    EXPECT_EQ(normal.right - normal.left, 420);
+    EXPECT_EQ(normal.bottom - normal.top, 220);
+
+    // 贴近右下角任务栏：自动向左上方翻转且严格处于工作区内
+    const RECT flipped = QuickTranslatePopupWindow::computePopupPlacement(POINT{1890, 1015}, 420, 220, workArea);
+    EXPECT_LT(flipped.right, 1890);
+    EXPECT_LT(flipped.bottom, 1015);
+    EXPECT_GE(flipped.left, workArea.left);
+    EXPECT_GE(flipped.top, workArea.top);
+}
+
+TEST(QuickTranslatePopupContractTest, FormatsProviderLabelAndDirectionBadge) {
+    using tools3000::core::translate::TranslationSettings;
+    using tools3000::ui::QuickTranslatePopupWindow;
+
+    TranslationSettings settings;
+    settings.provider = "openai_compatible";
+    settings.openaiBaseUrl = tools3000::core::translate::TranslationConstants::kIndexTranslateBaseUrl;
+    settings.openaiModel = "Index-Translate-9B";
+    EXPECT_EQ(QuickTranslatePopupWindow::formatProviderDisplayLabel(settings), "Index-Translate");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatProviderDisplayLabel(settings, "edge_free"), "Edge Translate");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatProviderDisplayLabel(settings, "google_free"), "Google Translate");
+
+    EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("en", "zh-CN"), "EN -> ZH");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("auto", "ja"), "AUTO -> JA");
+}

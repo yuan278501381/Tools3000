@@ -8,6 +8,7 @@ export interface HotkeyEntry {
   shortcut: string;
   registered?: boolean;
   armed?: boolean;
+  scope?: 'global' | 'recording' | 'dialog' | string;
   conflict?: boolean;
   conflictType?: 'none' | 'internal' | 'external' | 'invalid' | string;
   conflictWith?: string;
@@ -52,10 +53,14 @@ export const HotkeyStatusBadge: FC<HotkeyStatusBadgeProps> = ({
   const isActive = (registered !== false) && armed && !entry?.conflict && !isInternal && !isExternal;
 
   if (isSessionOnly) {
+    const isDialogScope = entry?.scope === 'dialog';
+    const scopedLabel = isDialogScope
+      ? t('general.shortcutDialogOnly', 'Active in file dialogs')
+      : t('general.shortcutRecordingOnly', 'Active while recording');
     return (
-      <span className="hotkey-badge badge-session" title={t('general.shortcutRecordingOnly', 'Active while recording')}>
+      <span className="hotkey-badge badge-session" title={scopedLabel}>
         <span className="hotkey-badge__dot" aria-hidden="true" />
-        <span>{t('general.shortcutRecordingOnly', 'Active while recording')}</span>
+        <span>{scopedLabel}</span>
       </span>
     );
   }

@@ -56,7 +56,7 @@ import {
   AlertTriangle,
   AlertOctagon,
   FolderOpen,
-  Disc,
+  Layers,
   MinusCircle,
   Package,
   HardDrive,
@@ -664,7 +664,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
               </span>
               {sessionOnlyCount > 0 && (
                 <span className="general-page__stat-pill session">
-                  <Disc size={12} /> {t('general.hotkeysSessionCount', 'Recording Only {{count}} items', { count: sessionOnlyCount })}
+                  <Layers size={12} /> {t('general.hotkeysSessionCount', 'Scoped {{count}} items', { count: sessionOnlyCount })}
                 </span>
               )}
               {internalConflictsCount > 0 && (

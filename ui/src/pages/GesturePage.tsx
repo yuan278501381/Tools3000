@@ -16,6 +16,7 @@ import {
   SubSettingGroup,
   Tabs,
   Badge,
+  CodeBadge,
   Select,
   Button,
   ColorPickerInput,
@@ -83,8 +84,15 @@ import {
   Zap,
   VolumeX,
   GripVertical,
+  ChevronDown,
 } from 'lucide-react';
 import './GesturePage.css';
+
+interface ProRightClickPresetApp {
+  processName: string;
+  displayName: string;
+  category: 'cad' | 'eda' | 'dcc3d' | string;
+}
 
 interface GestureState {
   enabled: boolean;
@@ -94,6 +102,8 @@ interface GestureState {
   trailFadeEnabled?: boolean;
   showActionHint?: boolean;
   autoBypassFullscreen?: boolean;
+  autoBypassProRightClickApps?: boolean;
+  proRightClickPresetApps?: ProRightClickPresetApp[];
   enableScribbleCancel?: boolean;
   pauseCancelEnabled?: boolean;
   pauseCancelMs?: number;
@@ -200,6 +210,8 @@ export const GesturePage: FC = () => {
   const [trailFadeEnabled, setTrailFadeEnabled] = useState(true);
   const [showActionHint, setShowActionHint] = useState(true);
   const [autoBypassFullscreen, setAutoBypassFullscreen] = useState(true);
+  const [autoBypassProRightClickApps, setAutoBypassProRightClickApps] = useState(true);
+  const [proRightClickPresetApps, setProRightClickPresetApps] = useState<ProRightClickPresetApp[]>([]);
   const [targetMode, setTargetMode] = useState<'underPointer' | 'foreground'>('underPointer');
   const [initialTimeoutMs, setInitialTimeoutMs] = useState(0);
   const [minSegmentDistance, setMinSegmentDistance] = useState(24);
@@ -329,6 +341,10 @@ export const GesturePage: FC = () => {
         setTrailFadeEnabled(state.trailFadeEnabled ?? true);
         setShowActionHint(state.showActionHint ?? true);
         setAutoBypassFullscreen(state.autoBypassFullscreen ?? true);
+        setAutoBypassProRightClickApps(state.autoBypassProRightClickApps ?? true);
+        if (Array.isArray(state.proRightClickPresetApps)) {
+          setProRightClickPresetApps(state.proRightClickPresetApps);
+        }
         setScribbleCancel(state.enableScribbleCancel ?? true);
         setPauseCancelEnabled(state.pauseCancelEnabled ?? true);
         setPauseCancelMs(state.pauseCancelMs ?? 700);
@@ -812,6 +828,20 @@ export const GesturePage: FC = () => {
     }
   };
 
+  const handleToggleAutoBypassProRightClick = async (checked: boolean) => {
+    setAutoBypassProRightClickApps(checked);
+    try {
+      const result = await bridgeRequest<OperationResult>('gesture.updateSettings', {
+        autoBypassProRightClickApps: checked,
+      });
+      if (!result || !result.success) throw new Error(result?.error || tr('gesture.saveFailed'));
+    } catch (err) {
+      setAutoBypassProRightClickApps(!checked);
+      console.error('Failed to update gesture autoBypassProRightClickApps state:', err);
+      toast.error(tr('gesture.saveFailed'), { description: String(err) });
+    }
+  };
+
   const handleInitialTimeoutChange = async (val: number) => {
     const previous = initialTimeoutMs;
     const clamped = val <= 0 ? 0 : Math.max(100, Math.min(3000, Math.round(val)));
@@ -1084,6 +1114,51 @@ export const GesturePage: FC = () => {
                 checked={autoBypassFullscreen}
                 onChange={handleToggleAutoBypass}
               />
+              <Toggle
+                id="gesture-bypass-pro-right-click"
+                label={tr('gesture.autoBypassProRightClickApps')}
+                description={tr('gesture.autoBypassProRightClickAppsDesc')}
+                checked={autoBypassProRightClickApps}
+                onChange={handleToggleAutoBypassProRightClick}
+              />
+              {proRightClickPresetApps.length > 0 && (
+                <details className="gesture-pro-presets-details">
+                  <summary className="gesture-pro-presets-summary">
+                    <span>
+                      {t('gesture.proRightClickPresetToggle', 'View built-in bypass list ({{count}} apps)', {
+                        count: proRightClickPresetApps.length,
+                      })}
+                    </span>
+                    <ChevronDown size={14} className="gesture-pro-presets-chevron" aria-hidden="true" />
+                  </summary>
+                  <div className="gesture-pro-presets-body">
+                    {(
+                      [
+                        { id: 'cad', titleKey: 'gesture.proRightClickCatCad' },
+                        { id: 'eda', titleKey: 'gesture.proRightClickCatEda' },
+                        { id: 'dcc3d', titleKey: 'gesture.proRightClickCatDcc3d' },
+                      ] as const
+                    ).map((cat) => {
+                      const items = proRightClickPresetApps.filter((a) => a.category === cat.id);
+                      if (items.length === 0) return null;
+                      return (
+                        <div key={cat.id} className="gesture-pro-presets-group">
+                          <div className="gesture-pro-presets-group-title">{tr(cat.titleKey)}</div>
+                          <div className="gesture-pro-presets-chips">
+                            {items.map((app) => (
+                              <span key={app.processName} className="gesture-pro-preset-item">
+                                <span className="gesture-pro-preset-name">{app.displayName}</span>
+                                <CodeBadge variant="muted">{app.processName}</CodeBadge>
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                    <p className="gesture-pro-presets-hint">{tr('gesture.proRightClickPresetOverrideHint')}</p>
+                  </div>
+                </details>
+              )}
               <SettingRow
                 label={
                   <div className="gesture-inline-label">

@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "外部衝突：已被第三方軟體或系統佔用",
     "shortcutActive": "正常生效",
     "shortcutRecordingOnly": "僅錄影時生效",
+    "shortcutDialogOnly": "僅對話方塊生效",
     "shortcutDisabled": "未綁定",
     "recheckShortcuts": "重新偵測衝突",
     "shortcutsOverview": "快速鍵健康度",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. 優先呼叫所選字型族渲染內文；2. 當特定字元、罕用漢字、日韓文或系統未預裝所選字型時，DirectWrite 引擎將透過 Glyph-Level 逐字字形回退平滑降級至系統原廠優質黑體（微軟正黑體 / 雅黑 UI / 蘋方 / Segoe UI），100% 杜絕方框豆腐塊與亂碼；3. 零系統目錄寫入，升級與解除安裝完全純淨。",
     "hotkeysAllCount": "全部 {{count}} 項",
     "hotkeysActiveCount": "生效 {{count}} 項",
-    "hotkeysSessionCount": "僅錄影生效 {{count}} 項",
+    "hotkeysSessionCount": "按需生效 {{count}} 項",
     "hotkeysInternalConflictsCount": "內部衝突 {{count}} 項",
     "hotkeysExternalConflictsCount": "外部衝突 {{count}} 項",
     "hotkeysUnboundCount": "未綁定 {{count}} 項",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "文字擴展器",
         "description": "原生全域文字縮寫與動態巨集展開引擎，支援日期／剪貼簿／游標定位，內建密碼管理器避讓與零剪貼簿歷史污染；預設開箱即用，關閉即刻卸載掛鉤零記憶體佔用。"
+      },
+      "quick_look": {
+        "name": "空格快速預覽",
+        "description": "在檔案總管、桌面或搜尋結果中按空白鍵快速預覽檔案內容；關閉後立即零延遲放行空白鍵，方便與第三方空格預覽工具無衝突共存並釋放記憶體。"
       }
     },
     "title": "功能模組與擴充外掛",
@@ -940,6 +945,13 @@
     "showTrailDesc": "在繪製手勢時顯示可視軌跡",
     "autoBypassFullscreen": "全螢幕遊戲/影片勿擾",
     "autoBypassFullscreenDesc": "前景處於全螢幕獨佔應用程式時自動放行滑鼠按鍵，防止 3D 遊戲轉視角被打擾",
+    "autoBypassProRightClickApps": "專業 CAD / 3D / EDA 軟體右鍵自動避讓",
+    "autoBypassProRightClickAppsDesc": "在 AutoCAD、UG、SolidWorks、Blender、Altium 等以右鍵為核心操作的專業軟體中預設零延遲原生放行右鍵（中鍵、側鍵與副螢幕手勢照常可用）",
+    "proRightClickPresetToggle": "檢視內建自動避讓軟體清單（{{count}} 款）",
+    "proRightClickPresetOverrideHint": "如需在其中某款軟體啟用右鍵手勢，可在下方「應用程式作用域」新增該程序並單獨點亮「右鍵」觸發開關覆寫預設避讓。",
+    "proRightClickCatCad": "CAD / 工業設計與建築建模",
+    "proRightClickCatEda": "EDA 電路與 PCB 設計",
+    "proRightClickCatDcc3d": "3D 建模、雕刻與遊戲引擎",
     "adminHintTitle": "特權視窗手勢支援",
     "adminHintDesc": "若需在工作管理員、CMD、登錄編輯程式等系統管理員權限視窗上使用滑鼠手勢，請前往「一般設定」開啟「以系統管理員身分執行」。",
     "adminHintElevatedDesc": "目前程式已在系統管理員權限下執行，可在工作管理員、登錄編輯程式等所有特權視窗正常使用手勢。",

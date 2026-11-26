@@ -244,7 +244,9 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
         default: break;
     }
 
-    // 0. 自身交互浮层豁免：截图、长截图、贴图、OCR 结果窗、对话框工具条激活/命中时 100% 放行物理触发键与边缘滚轮
+    // 0. 自身交互浮层豁免 + 任务栏/系统托盘溢出区/缩略图/弹出菜单 0ms 原生放行：
+    // 仅在潜在手势触发键按下/滚轮瞬间执行单次轻量命中检查（1000Hz WM_MOUSEMOVE 零开销），
+    // 确保 Windows 10/11 任务栏程序图标控制菜单、托盘菜单与自身交互浮层 100% 物理原生直达。
     const bool isPotentialGestureTrigger =
         (wParam == WM_RBUTTONDOWN || wParam == WM_MBUTTONDOWN ||
          wParam == WM_XBUTTONDOWN || wParam == WM_MOUSEWHEEL ||
@@ -253,23 +255,33 @@ bool MouseHook::handleRawMouseEvent(int nCode, WPARAM wParam, const MSLLHOOKSTRU
            (GestureTriggerMask::Left | GestureTriggerMask::EdgeTopLeft | GestureTriggerMask::AnyEdge)) != 0));
     if (isPotentialGestureTrigger &&
         !m_triggerButtonDown.load(std::memory_order_relaxed) &&
-        !m_isTracking.load(std::memory_order_relaxed) &&
-        isGestureExemptOverlayActiveAtPoint(data.pt)) {
-        if (wParam == WM_LBUTTONDOWN) {
-            tools3000::core::StatsManager::instance().recordLeftClick();
-        } else if (wParam == WM_RBUTTONDOWN) {
-            tools3000::core::StatsManager::instance().recordRightClick();
-        } else if (wParam == WM_MOUSEWHEEL) {
-            tools3000::core::StatsManager::instance().recordScroll();
+        !m_isTracking.load(std::memory_order_relaxed)) {
+        const auto ptClass = classifyGestureHookPoint(data.pt);
+        if (shouldBypassHookForTargetWindow(
+                ptClass.isExemptOverlay,
+                ptClass.isTransientShellMenu,
+                ptClass.isTaskbarHost,
+                wParam,
+                m_bypassTaskbarRightClick.load(std::memory_order_acquire),
+                m_bypassTaskbarMiddleClick.load(std::memory_order_acquire),
+                m_bypassTaskbarAll.load(std::memory_order_acquire))) {
+            if (wParam == WM_LBUTTONDOWN) {
+                tools3000::core::StatsManager::instance().recordLeftClick();
+            } else if (wParam == WM_RBUTTONDOWN) {
+                tools3000::core::StatsManager::instance().recordRightClick();
+            } else if (wParam == WM_MOUSEWHEEL) {
+                tools3000::core::StatsManager::instance().recordScroll();
+            }
+            return false;
         }
-        return false;
     }
 
-    // 0c. HIGH-26: 当前前台窗口命中全屏独占游戏、远控/虚拟机客户端或 ScopeRule::Disable 禁用名单时，
+    // 0c. HIGH-26: 当前前台窗口命中全屏独占游戏、远控/虚拟机客户端、ScopeRule::Disable 禁用名单，
+    // 或专业右键密集软件(CAD/UG/EDA/3D) / 自定义单应用禁用右键时，
     // O(1) 读取无锁原子标志直接 CallNextHookEx 0ms 原生放行，绝不吞掉物理右键按下，也绝不入队绘制轨迹
     const bool triggerDownBefore = m_triggerButtonDown.load(std::memory_order_relaxed);
     const bool trackingBefore = m_isTracking.load(std::memory_order_relaxed);
-    if (!triggerDownBefore && !trackingBefore && shouldBypassAtPoint(data.pt)) {
+    if (!triggerDownBefore && !trackingBefore && shouldBypassAtPoint(data.pt, wParam)) {
         if (wParam == WM_MOUSEMOVE) {
             static POINT s_bypassLastPt = { -1, -1 };
             if (s_bypassLastPt.x != -1 && s_bypassLastPt.y != -1) {

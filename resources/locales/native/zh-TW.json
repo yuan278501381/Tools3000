@@ -986,5 +986,8 @@
   "Refining": "低置信度精修中",
   "Detected {0}, re-recognizing with script pack...": "偵測到 {0}，正在使用擴充語種模型複核...",
   "Export destination is locked or unwritable; raw recording preserved": "匯出目標路徑被佔用或無法寫入，已安全保留原始錄影",
-  "Encoder initialization failed for this format; raw recording preserved": "目前匯出格式編碼器初始化失敗，已安全保留原始錄影"
+  "Encoder initialization failed for this format; raw recording preserved": "目前匯出格式編碼器初始化失敗，已安全保留原始錄影",
+  "Translation copied to clipboard": "譯文已複製到剪貼簿",
+  "Clipboard": "剪貼簿",
+  "Selection": "選取文字"
 }

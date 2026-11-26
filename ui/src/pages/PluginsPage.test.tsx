@@ -276,4 +276,48 @@ describe('PluginsPage', () => {
       .map((item) => normalizeBuiltinPluginId(item.pluginId));
     expect(trayPluginOrder).toEqual(BUILTIN_PLUGIN_ORDER.filter((id) => id !== 'picasa_viewer'));
   });
+
+  it('renders quick_look toggle in file_system domain and calls plugins.setEnabled when disabled (Issue #32)', async () => {
+    const pluginsWithQuickLook: PluginStatus[] = [
+      ...mockPlugins,
+      {
+        id: 'quick_look',
+        name: '空格快速预览',
+        version: '1.4.15',
+        fileName: 'Tools3000.exe',
+        abiVersion: 1,
+        capabilities: ['spacebar-preview', 'file-preview', 'zero-idle-when-off'],
+        permissions: ['low-level-keyboard-hook'],
+        executionModel: 'trusted-native-in-process',
+        enabled: true,
+        active: true,
+        restartRequired: false,
+        state: 'running',
+        error: '',
+        isExtension: false,
+      },
+    ];
+    bridgeSpy.mockImplementation(async (method: string) => {
+      if (method === 'plugins.getAll') return pluginsWithQuickLook;
+      return { success: true, restartRequired: false };
+    });
+
+    await act(async () => {
+      render(<PluginsPage initialPlugins={pluginsWithQuickLook} onNavigate={vi.fn()} />);
+    });
+
+    const toggle = document.getElementById('plugin-quick_look');
+    expect(toggle).toBeDefined();
+    expect(screen.getByText('spacebar-preview')).toBeDefined();
+
+    await act(async () => {
+      fireEvent.click(toggle!);
+    });
+
+    expect(bridgeSpy).toHaveBeenCalledWith(
+      'plugins.setEnabled',
+      { id: 'quick_look', enabled: false },
+      { silent: true }
+    );
+  });
 });

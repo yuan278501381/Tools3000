@@ -1187,9 +1187,11 @@ public:
         hotkeys.registerHotkey("Record Pause", configuredHotkey("Record Pause", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Shift, 'P'}), []() {
             toggleRecordingPauseWithFeedback();
         });
+        hotkeys.setHotkeyScope("Record Pause", "recording");
         hotkeys.registerHotkey("Record Snapshot", configuredHotkey("Record Snapshot", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Shift, 'S'}), []() {
             ScreenRecorder::instance().requestSnapshot();
         });
+        hotkeys.setHotkeyScope("Record Snapshot", "recording");
         armRecordPauseHotkey(ScreenRecorder::instance().state());
         configureRecorderStateCallback();
         hotkeys.registerHotkey("OCR", configuredHotkey("OCR", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Shift, 'O'}), []() {
@@ -1210,9 +1212,11 @@ public:
         hotkeys.registerHotkey("Mute System Audio", configuredHotkey("Mute System Audio", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift, 'S'}), []() {
             toggleSystemAudioMuteWithFeedback();
         });
+        hotkeys.setHotkeyScope("Mute System Audio", "recording");
         hotkeys.registerHotkey("Mute Microphone", configuredHotkey("Mute Microphone", {tools3000::core::ModKey::Ctrl | tools3000::core::ModKey::Alt | tools3000::core::ModKey::Shift, 'M'}), []() {
             toggleMicrophoneMuteWithFeedback();
         });
+        hotkeys.setHotkeyScope("Mute Microphone", "recording");
 
         mb.registerHandler("capture.getSettings", [](const nlohmann::json&) -> nlohmann::json {
             auto& config = tools3000::core::ConfigManager::instance();

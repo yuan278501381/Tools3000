@@ -12,6 +12,7 @@
 #include "core/ipc/MessageBridge.h"
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
+#include "core/hotkey/HotkeyManager.h"
 #include "core/i18n/UiI18n.h"
 #include "core/utils/OutOfProcessFileDialog.h"
 #include "core/utils/WinUtils.h"
@@ -67,9 +68,38 @@ public:
             }
         }
 
+        // 将文件对话框作用域双快捷键纳入 HotkeyManager 统一总览（SSOT）：
+        // 先注册空热键再置 armed=false & scope="dialog" 后重绑目标键值，确保绝不占用全局系统热键。
+        auto registerScopedDialogHotkey = [](const std::string& name, const std::string& shortcut) {
+            auto& hm = tools3000::core::HotkeyManager::instance();
+            hm.registerHotkey(name, tools3000::core::HotkeyDef{}, []() {});
+            hm.setHotkeyArmed(name, false);
+            hm.setHotkeyScope(name, "dialog");
+            if (!shortcut.empty()) {
+                if (const auto parsed = tools3000::core::HotkeyDef::fromString(shortcut);
+                    parsed && parsed->isSafe()) {
+                    hm.rebindHotkey(name, *parsed);
+                }
+            }
+        };
+        auto& pathMgr = PathMemoryManager::instance();
+        registerScopedDialogHotkey("Dialog Quick Jump", pathMgr.getQuickJumpHotkey());
+        registerScopedDialogHotkey("Dialog Inline Search", pathMgr.getInlineSearchHotkey());
+
         m_themeSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
             [](const tools3000::core::ThemeChangedEvent&) {
                 DialogRibbonOverlay::instance().onThemeChanged();
+            });
+        m_dialogHotkeysSubId = tools3000::core::EventBus::instance().subscribe<tools3000::core::DialogHotkeysChangedEvent>(
+            [](const tools3000::core::DialogHotkeysChangedEvent& ev) {
+                auto& mgr = PathMemoryManager::instance();
+                if (ev.hasQuickJump && mgr.getQuickJumpHotkey() != ev.quickJumpHotkey) {
+                    mgr.setQuickJumpHotkey(ev.quickJumpHotkey);
+                }
+                if (ev.hasInlineSearch && mgr.getInlineSearchHotkey() != ev.inlineSearchHotkey) {
+                    mgr.setInlineSearchHotkey(ev.inlineSearchHotkey);
+                }
+                DialogEngine::instance().syncScopedHotkeys();
             });
 
         registerIpcHandlers();
@@ -78,10 +108,16 @@ public:
 
     void shutdown() override {
         LOG_INFO("关闭文件对话框增强插件 (DialogEnhancerPlugin)");
+        if (m_dialogHotkeysSubId != 0) {
+            tools3000::core::EventBus::instance().unsubscribeAndWait(m_dialogHotkeysSubId);
+            m_dialogHotkeysSubId = 0;
+        }
         if (m_themeSubId != 0) {
             tools3000::core::EventBus::instance().unsubscribeAndWait(m_themeSubId);
             m_themeSubId = 0;
         }
+        tools3000::core::HotkeyManager::instance().unregisterHotkey("Dialog Quick Jump");
+        tools3000::core::HotkeyManager::instance().unregisterHotkey("Dialog Inline Search");
         unregisterIpcHandlers();
         DialogEngine::instance().stop();
         DialogNavigator::instance().shutdownAsyncWorker();
@@ -135,11 +171,26 @@ private:
             if (params.contains("ribbonPosition") && params["ribbonPosition"].is_string()) {
                 mgr.setRibbonPosition(params["ribbonPosition"].get<std::string>());
             }
+            auto mirrorDialogHotkeyToManager = [](const std::string& hotkeyName, const std::string& shortcut) {
+                auto& hm = tools3000::core::HotkeyManager::instance();
+                if (shortcut.empty()) {
+                    hm.clearHotkey(hotkeyName);
+                    tools3000::core::ConfigManager::instance().set("/hotkeys/" + hotkeyName, "");
+                    return;
+                }
+                if (const auto parsed = tools3000::core::HotkeyDef::fromString(shortcut);
+                    parsed && parsed->isSafe()) {
+                    hm.rebindHotkey(hotkeyName, *parsed);
+                    tools3000::core::ConfigManager::instance().set("/hotkeys/" + hotkeyName, parsed->toString());
+                }
+            };
             if (params.contains("quickJumpHotkey") && params["quickJumpHotkey"].is_string()) {
                 mgr.setQuickJumpHotkey(params["quickJumpHotkey"].get<std::string>());
+                mirrorDialogHotkeyToManager("Dialog Quick Jump", mgr.getQuickJumpHotkey());
             }
             if (params.contains("inlineSearchHotkey") && params["inlineSearchHotkey"].is_string()) {
                 mgr.setInlineSearchHotkey(params["inlineSearchHotkey"].get<std::string>());
+                mirrorDialogHotkeyToManager("Dialog Inline Search", mgr.getInlineSearchHotkey());
             }
             const bool reEnabledRibbon =
                 params.contains("ribbonEnabled") && params["ribbonEnabled"].is_boolean() &&
@@ -258,6 +309,7 @@ private:
     }
 
     tools3000::core::SubscriptionId m_themeSubId = 0;
+    tools3000::core::SubscriptionId m_dialogHotkeysSubId = 0;
 };
 
 extern "C" __declspec(dllexport) tools3000::core::IPlugin* CreatePlugin() {

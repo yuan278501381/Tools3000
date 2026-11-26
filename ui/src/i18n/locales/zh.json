@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "外部冲突：已被第三方软件或系统占用",
     "shortcutActive": "正常生效",
     "shortcutRecordingOnly": "仅录屏时生效",
+    "shortcutDialogOnly": "仅对话框生效",
     "shortcutDisabled": "未绑定",
     "recheckShortcuts": "重新检测冲突",
     "shortcutsOverview": "快捷键健康度",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. 优先调用所选字体族渲染正文；2. 当特定字符、生僻汉字、日韩文或系统未预装所选字体时，DirectWrite 引擎将通过 Glyph-Level 逐字字形回退平滑降级至系统原厂优质黑体（微软雅黑 UI / 苹方 / Segoe UI），100% 杜绝方框豆腐块与乱码；3. 零系统目录写入，升级卸载完全纯净。",
     "hotkeysAllCount": "全部 {{count}} 项",
     "hotkeysActiveCount": "生效 {{count}} 项",
-    "hotkeysSessionCount": "仅录屏生效 {{count}} 项",
+    "hotkeysSessionCount": "按需生效 {{count}} 项",
     "hotkeysInternalConflictsCount": "内部冲突 {{count}} 项",
     "hotkeysExternalConflictsCount": "外部冲突 {{count}} 项",
     "hotkeysUnboundCount": "未绑定 {{count}} 项",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "文本扩展器",
         "description": "原生全局文本缩写与动态宏展开引擎，支持日期/剪贴板/光标定位，内置密码管理器避让与零剪贴板历史污染；默认开箱即用，关闭即刻卸载钩子零内存占用。"
+      },
+      "quick_look": {
+        "name": "空格快速预览",
+        "description": "在资源管理器、桌面或搜索结果中按空格键快速预览文件内容；关闭后立即零延迟放行空格键，方便与第三方空格预览工具无冲突共存并释放内存。"
       }
     },
     "title": "功能模块与扩展插件",
@@ -944,6 +949,13 @@
     "showTrailDesc": "在绘制手势时显示可视轨迹",
     "autoBypassFullscreen": "全屏游戏/视频免打扰",
     "autoBypassFullscreenDesc": "前台处于全屏独占应用时自动放行鼠标按键，防止 3D 游戏转视角被打扰",
+    "autoBypassProRightClickApps": "专业 CAD / 3D / EDA 软件右键自动避让",
+    "autoBypassProRightClickAppsDesc": "在 AutoCAD、UG、SolidWorks、Blender、Altium 等右键为核心操作的专业软件中默认零延迟原生放行右键（中键、侧键与副屏手势照常可用）",
+    "proRightClickPresetToggle": "查看内置自动避让软件清单（{{count}} 款）",
+    "proRightClickPresetOverrideHint": "如需在其中某款软件启用右键手势，可在下方「应用作用域」添加该进程并单独点亮「右键」触发开关覆盖默认避让。",
+    "proRightClickCatCad": "CAD / 工业设计与建筑建模",
+    "proRightClickCatEda": "EDA 电路与 PCB 设计",
+    "proRightClickCatDcc3d": "3D 建模、雕刻与游戏引擎",
     "adminHintTitle": "特权窗口手势支持",
     "adminHintDesc": "若需在任务管理器、CMD、注册表编辑器等管理员权限窗口上使用鼠标手势，请前往「通用设置」开启「以管理员身份运行」。",
     "adminHintElevatedDesc": "当前程序已在管理员权限下运行，可在任务管理器、注册表编辑器等所有特权窗口正常使用手势。",

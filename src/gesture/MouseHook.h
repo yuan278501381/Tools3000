@@ -138,9 +138,9 @@ public:
     void setPaused(bool paused);
     bool isPaused() const { return m_paused.load(std::memory_order_relaxed); }
 
-    /// 前台全屏游戏 / 远控虚拟机 / ScopeRule::Disable 0ms 无锁原子原生放行控制
-    void setBypassState(bool bypass, bool restrictToRect = false, RECT bypassRect = {}) noexcept {
-        if (bypass && restrictToRect) {
+    /// 前台全屏游戏 / 远控虚拟机 / ScopeRule::Disable / 专业软件单右键 0ms 无锁原子原生放行控制
+    void setBypassState(bool bypassAll, bool bypassRightOnly, bool restrictToRect, RECT bypassRect) noexcept {
+        if ((bypassAll || bypassRightOnly) && restrictToRect) {
             m_bypassLeft.store(bypassRect.left, std::memory_order_relaxed);
             m_bypassTop.store(bypassRect.top, std::memory_order_relaxed);
             m_bypassRight.store(bypassRect.right, std::memory_order_relaxed);
@@ -149,12 +149,53 @@ public:
         } else {
             m_bypassUseRect.store(false, std::memory_order_release);
         }
-        m_bypassHook.store(bypass, std::memory_order_release);
+        m_bypassRightClickOnly.store(bypassRightOnly, std::memory_order_release);
+        m_bypassHook.store(bypassAll, std::memory_order_release);
+    }
+    void setBypassState(bool bypass, bool restrictToRect = false, RECT bypassRect = {}) noexcept {
+        setBypassState(bypass, false, restrictToRect, bypassRect);
     }
     void setBypassHook(bool bypass) noexcept {
-        setBypassState(bypass, false, {});
+        setBypassState(bypass, false, false, {});
+    }
+    /// 任务栏原生右键/中键/全量 0ms 无锁放行控制（默认放行任务栏原生右键，杜绝接管 Win10/11 任务栏程序控制菜单）
+    void setTaskbarBypassState(bool bypassRightClick, bool bypassMiddleClick = false, bool bypassAll = false) noexcept {
+        m_bypassTaskbarRightClick.store(bypassRightClick, std::memory_order_release);
+        m_bypassTaskbarMiddleClick.store(bypassMiddleClick, std::memory_order_release);
+        m_bypassTaskbarAll.store(bypassAll, std::memory_order_release);
+    }
+    bool isTaskbarRightClickBypassed() const noexcept {
+        return m_bypassTaskbarRightClick.load(std::memory_order_acquire);
+    }
+    bool isTaskbarMiddleClickBypassed() const noexcept {
+        return m_bypassTaskbarMiddleClick.load(std::memory_order_acquire);
+    }
+    bool isTaskbarAllBypassed() const noexcept {
+        return m_bypassTaskbarAll.load(std::memory_order_acquire);
     }
     bool isBypassHook() const noexcept { return m_bypassHook.load(std::memory_order_acquire); }
+    bool isForegroundRightClickBypassed() const noexcept {
+        return m_bypassHook.load(std::memory_order_acquire) ||
+               m_bypassRightClickOnly.load(std::memory_order_acquire);
+    }
+    bool shouldBypassAtPoint(POINT pt, WPARAM wParam) const noexcept {
+        const bool bypassAll = m_bypassHook.load(std::memory_order_acquire);
+        const bool bypassRightOnly = m_bypassRightClickOnly.load(std::memory_order_acquire);
+        if (!bypassAll && !bypassRightOnly) {
+            return false;
+        }
+        if (!bypassAll && wParam != WM_RBUTTONDOWN && wParam != WM_RBUTTONUP) {
+            return false;
+        }
+        if (!m_bypassUseRect.load(std::memory_order_acquire)) {
+            return true;
+        }
+        const int left = m_bypassLeft.load(std::memory_order_relaxed);
+        const int top = m_bypassTop.load(std::memory_order_relaxed);
+        const int right = m_bypassRight.load(std::memory_order_relaxed);
+        const int bottom = m_bypassBottom.load(std::memory_order_relaxed);
+        return pt.x >= left && pt.x < right && pt.y >= top && pt.y < bottom;
+    }
     bool shouldBypassAtPoint(POINT pt) const noexcept {
         if (!m_bypassHook.load(std::memory_order_acquire)) {
             return false;
@@ -259,11 +300,15 @@ private:
     std::atomic<bool> m_installed{false};
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_bypassHook{false};
+    std::atomic<bool> m_bypassRightClickOnly{false};
     std::atomic<bool> m_bypassUseRect{false};
     std::atomic<int> m_bypassLeft{0};
     std::atomic<int> m_bypassTop{0};
     std::atomic<int> m_bypassRight{0};
     std::atomic<int> m_bypassBottom{0};
+    std::atomic<bool> m_bypassTaskbarRightClick{true};
+    std::atomic<bool> m_bypassTaskbarMiddleClick{false};
+    std::atomic<bool> m_bypassTaskbarAll{false};
     std::atomic<bool> m_triggerButtonDown{false};
     std::atomic<uint32_t> m_hardwareButtonMask{0};
     std::atomic<TriggerMode> m_configuredTriggerMode{TriggerMode::RightOnly};

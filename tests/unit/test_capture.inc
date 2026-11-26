@@ -3750,8 +3750,11 @@ TEST(CapturePolymorphicFeaturesAndDevOpsTest, TextFontSizeConfigPersistenceFrame
     handler->resize(*textElem, -200, -200, HitArea::RB);
     EXPECT_FLOAT_EQ(textElem->fontSize, 12.0f);
 
-    // 极大拉伸测试 (高于 180px 截断保护)
+    // 极大拉伸测试：1:1 比例跟手放大时 (500,500) 应平滑落在合理字号区间，超大拖拽 (2500,2500) 触发 180px 截断保护
     handler->resize(*textElem, 500, 500, HitArea::RB);
+    EXPECT_GT(textElem->fontSize, 30.0f);
+    EXPECT_LT(textElem->fontSize, 120.0f);
+    handler->resize(*textElem, 2500, 2500, HitArea::RB);
     EXPECT_FLOAT_EQ(textElem->fontSize, 180.0f);
 
     // 4. 验证包围盒随字号自适应重算

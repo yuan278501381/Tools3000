@@ -62,6 +62,8 @@ describe('hotkeyCatalog SSOT', () => {
 
     // 模拟旧版按字母序返回的乱序列表（Mute Microphone 排第一、Screenshot 沉底）
     const alphabeticalInput = [
+      { name: 'Dialog Inline Search', shortcut: 'Ctrl+Shift+G' },
+      { name: 'Dialog Quick Jump', shortcut: 'Ctrl+G' },
       { name: 'Mute Microphone', shortcut: 'Ctrl+Alt+Shift+M' },
       { name: 'Mute System Audio', shortcut: 'Ctrl+Alt+Shift+S' },
       { name: 'OCR', shortcut: 'Ctrl+Shift+O' },
@@ -85,7 +87,7 @@ describe('hotkeyCatalog SSOT', () => {
     ]);
 
     const grouped = groupHotkeysByDomain(alphabeticalInput);
-    expect(grouped.map((g) => g.id)).toEqual(['core', 'pin_ocr', 'recording', 'input']);
+    expect(grouped.map((g) => g.id)).toEqual(['core', 'pin_ocr', 'recording', 'dialog', 'input']);
     expect(grouped[0].items.map((x) => x.name)).toEqual([
       'Screenshot',
       'Repeat Last Capture',
@@ -100,6 +102,10 @@ describe('hotkeyCatalog SSOT', () => {
       'Mute Microphone',
     ]);
     expect(grouped[3].items.map((x) => x.name)).toEqual([
+      'Dialog Quick Jump',
+      'Dialog Inline Search',
+    ]);
+    expect(grouped[4].items.map((x) => x.name)).toEqual([
       'Pause Gestures',
       'Future Custom Action',
     ]);

@@ -92,6 +92,10 @@ public:
     void setAutoBypassFullscreen(bool enable);
     bool autoBypassFullscreen() const { return m_autoBypassFullscreen.load(); }
 
+    /// 专业 CAD / UG / EDA / 3D 右键密集软件自动避让开关（默认开启：0ms 原生直通右键，保留中键/侧键与副屏手势）
+    void setAutoBypassProRightClickApps(bool enable);
+    bool autoBypassProRightClickApps() const { return m_autoBypassProRightClickApps.load(std::memory_order_acquire); }
+
     /// 手势作用窗口：起点下方，或当前前台窗口。
     void setTargetMode(const std::string& mode);
     std::string targetMode() const;
@@ -163,6 +167,9 @@ public:
 
     /// 同步全生命周期触发掩码到底层鼠标钩子
     void syncTriggerMask();
+
+    /// 同步任务栏 0ms 原生放行状态到底层鼠标钩子（融合 special_taskbar 触发状态、ScopeRules 与黑名单）
+    void syncTaskbarBypass();
 
     /// 刷新当前前台窗口的 0ms 无锁绕行标志 (全屏游戏 / 远控虚拟机 / ScopeRule::Disable)
     void refreshForegroundBypass(HWND fgHwnd = nullptr);
@@ -241,6 +248,7 @@ private:
     std::atomic<bool> m_trailFadeEnabled{true};
     std::atomic<bool> m_showActionHint{true};
     std::atomic<bool> m_autoBypassFullscreen{true};
+    std::atomic<bool> m_autoBypassProRightClickApps{true};
     std::atomic<GestureTargetMode> m_targetMode{GestureTargetMode::UnderPointer};
     std::atomic<int> m_initialTimeoutMs{0};
     std::atomic<bool> m_pauseCancelEnabled{true};

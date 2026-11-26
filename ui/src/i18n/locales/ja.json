@@ -252,6 +252,7 @@
     "shortcutConflictExternal": "外部競合：OS または他アプリに占有されています",
     "shortcutActive": "有効",
     "shortcutRecordingOnly": "録画中のみ有効",
+    "shortcutDialogOnly": "ダイアログ内のみ有効",
     "shortcutDisabled": "未割り当て",
     "recheckShortcuts": "競合を再チェック",
     "shortcutsOverview": "ショートカット健全性",
@@ -268,7 +269,7 @@
     "fontFallbackDesc": "1. 選択したフォントファミリーを最優先で描画します；2. 異体字・CJK 拡張文字・未収録グリフに遭遇した場合、DirectWrite が文字単位でシステム標準フォントへ滑らかにフォールバックし、文字化けや豆腐（□）を防ぎます；3. システムフォントディレクトリへ一切書き込まない完全クリーン設計です。",
     "hotkeysAllCount": "全 {{count}} 件",
     "hotkeysActiveCount": "有効 {{count}} 件",
-    "hotkeysSessionCount": "録画中のみ {{count}} 件",
+    "hotkeysSessionCount": "条件付き有効 {{count}} 件",
     "hotkeysInternalConflictsCount": "内部競合 {{count}} 件",
     "hotkeysExternalConflictsCount": "外部競合 {{count}} 件",
     "hotkeysUnboundCount": "未割り当て {{count}} 件",
@@ -404,6 +405,10 @@
       "text_expander": {
         "name": "テキスト展開",
         "description": "システム全体で動作する軽量スニペット展開エンジン。日付・クリップボード・カーソル位置マクロ、パスワード管理アプリ自動除外、履歴非汚染に対応。すぐに使えて、オフ時はフックもメモリ消費もゼロ。"
+      },
+      "quick_look": {
+        "name": "スペースキー クイックプレビュー",
+        "description": "エクスプローラー、デスクトップ、検索結果でスペースキーを押してファイルを即座にプレビューします。オフにするとスペースキーを遅延ゼロでそのまま通し、外部プレビューツールと干渉せずメモリも解放します。"
       }
     },
     "title": "モジュール＆拡張プラグイン",
@@ -940,6 +945,13 @@
     "showTrailDesc": "ジェスチャー描画中に視覚的な軌跡ラインを表示します",
     "autoBypassFullscreen": "全画面ゲーム・動画で自動スキップ",
     "autoBypassFullscreenDesc": "前面ウィンドウが排他全画面のときマウス入力を素通しにし、3D ゲームの視点操作などを妨げません",
+    "autoBypassProRightClickApps": "CAD / 3D / EDA ソフトで右クリックを自動パススルー",
+    "autoBypassProRightClickAppsDesc": "AutoCAD、Siemens NX (UG)、SolidWorks、Blender、Altium など右クリック操作が中心の専門ソフトでは遅延ゼロで右クリックをそのまま通します（中ボタン・サイドボタン・別モニターのジェスチャーは引き続き有効）",
+    "proRightClickPresetToggle": "組み込み自動回避アプリ一覧を表示（{{count}} 件）",
+    "proRightClickPresetOverrideHint": "一覧内の特定アプリで右クリックジェスチャーを有効にしたい場合は、下の「適用対象」にそのプロセスを追加し、「右クリック」トリガーを明示的にオンにしてください。",
+    "proRightClickCatCad": "CAD・工業設計・建築モデリング",
+    "proRightClickCatEda": "EDA・回路・PCB 設計",
+    "proRightClickCatDcc3d": "3D モデリング・スカルプト・ゲームエンジン",
     "adminHintTitle": "管理者権限ウィンドウでの動作",
     "adminHintDesc": "タスクマネージャー・コマンドプロンプト・レジストリエディター等の管理者ウィンドウ上で使うには、「一般設定」から「管理者権限で実行」を有効にしてください。",
     "adminHintElevatedDesc": "現在管理者権限で実行中のため、タスクマネージャー等の特権ウィンドウ上でも問題なくジェスチャーが動作します。",

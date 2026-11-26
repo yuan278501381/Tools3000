@@ -306,6 +306,20 @@ bool isRemoteOrVmClientWindow(HWND rootHwnd) {
     return winArea * 100 >= monArea * 85;
 }
 
+bool isTriggerDisabledInProfile(
+    const std::optional<GestureProfile>& profile,
+    MouseEventType triggerDown,
+    ScreenEdgeZone edgeZone) {
+    if (!profile || edgeZone != ScreenEdgeZone::None) {
+        return false;
+    }
+    const char* key = triggerKeyForDownEvent(triggerDown);
+    if (!key || key[0] == '\0') {
+        return false;
+    }
+    return profile->getTriggerState(key) == TriggerModeState::Disabled;
+}
+
 bool matchesConfiguredExceptionRule(HWND target) {
     if (!target) {
         return false;
@@ -499,6 +513,10 @@ void GestureEngine::refreshForegroundBypass(HWND fgHwnd) {
         return;
     }
 
+    // 无论当前是否存在常规前台窗口（或前台恰为自身透明浮层），均优先同步任务栏 0ms 放行态，
+    // 确保设置页修改任务栏 Profile / ScopeRules 后立即可观测生效，不被无前台早退跳过。
+    syncTaskbarBypass();
+
     HWND candidate = fgHwnd ? fgHwnd : GetForegroundWindow();
     if (!candidate || !IsWindow(candidate)) {
         MouseHook::instance().setBypassHook(false);
@@ -520,6 +538,7 @@ void GestureEngine::refreshForegroundBypass(HWND fgHwnd) {
     }
 
     bool bypass = false;
+    bool bypassRightOnly = false;
     bool fullscreenBypass = false;
 
     if (isGestureExemptInteractiveClassName(cls)) {
@@ -536,8 +555,13 @@ void GestureEngine::refreshForegroundBypass(HWND fgHwnd) {
         if (!bypass && matchesConfiguredExceptionRule(root)) {
             bypass = true;
         }
-        if (!bypass && !m_scopeRules.evaluate(root).has_value()) {
-            bypass = true;
+        if (!bypass) {
+            const auto resolvedProfile = resolveProfile(root);
+            if (!resolvedProfile.has_value()) {
+                bypass = true;
+            } else if (resolvedProfile->getTriggerState("right") == TriggerModeState::Disabled) {
+                bypassRightOnly = true;
+            }
         }
     }
 
@@ -546,10 +570,10 @@ void GestureEngine::refreshForegroundBypass(HWND fgHwnd) {
                          (fgRect.right > fgRect.left) &&
                          (fgRect.bottom > fgRect.top);
     const bool restrictToRect =
-        bypass && !fullscreenBypass && hasRect &&
+        (bypass || bypassRightOnly) && !fullscreenBypass && hasRect &&
         (m_targetMode.load(std::memory_order_acquire) == GestureTargetMode::UnderPointer);
 
-    MouseHook::instance().setBypassState(bypass, restrictToRect, fgRect);
+    MouseHook::instance().setBypassState(bypass, bypassRightOnly, restrictToRect, fgRect);
     {
         std::lock_guard lock(m_bypassEvalMutex);
         m_lastBypassEvalHwnd = root;
@@ -779,6 +803,12 @@ void GestureEngine::setAutoBypassFullscreen(bool enable) {
     LOG_INFO("手势全屏自动免打扰状态: enable={}", enable);
 }
 
+void GestureEngine::setAutoBypassProRightClickApps(bool enable) {
+    m_autoBypassProRightClickApps.store(enable, std::memory_order_release);
+    refreshForegroundBypass();
+    LOG_INFO("Gesture professional right-click app auto-bypass updated: enable={}", enable);
+}
+
 void GestureEngine::setTargetMode(const std::string& mode) {
     m_targetMode.store(parseGestureTargetMode(mode), std::memory_order_release);
     refreshForegroundBypass();
@@ -830,6 +860,7 @@ void GestureEngine::setProfile(const std::string& name, const GestureProfile& pr
         m_profiles.insert_or_assign(name, profile);
     }
     syncTriggerMask();
+    refreshForegroundBypass();
     LOG_INFO("设置手势配置集: name={}, 手势数={}", name, profile.getMappings().size());
 }
 
@@ -1354,7 +1385,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
             std::lock_guard lock(m_contextResultMutex);
             res = m_latestContextResult;
         }
-        if (res.disabled) {
+        if (res.disabled || isTriggerDisabledInProfile(res.profile, m_activeTriggerDown, m_gestureEdgeZone)) {
             LOG_INFO("手势异步检测命中黑名单或全屏独占，取消手势并补发原按键");
             const MouseEventType trigger = m_activeTriggerDown;
             const bool downSuppressed = m_activeDownWasSuppressed;
@@ -1524,7 +1555,7 @@ void GestureEngine::updateTracking(const MouseEvent& event) {
                     } else {
                         ctxRes = resolveContextInternal(m_previousForeground, m_gestureStartPt);
                     }
-                    if (ctxRes.disabled) {
+                    if (ctxRes.disabled || isTriggerDisabledInProfile(ctxRes.profile, m_activeTriggerDown, m_gestureEdgeZone)) {
                         const MouseEventType trigger = m_activeTriggerDown;
                         const bool downSuppressed = m_activeDownWasSuppressed;
                         cancelTracking();
@@ -1706,7 +1737,7 @@ void GestureEngine::endTracking(const MouseEvent& event) {
             std::lock_guard lock(m_contextResultMutex);
             res = m_latestContextResult;
         }
-        if (res.disabled) {
+        if (res.disabled || isTriggerDisabledInProfile(res.profile, triggerSnap, m_gestureEdgeZone)) {
             const bool wasConsumed = m_gestureConsumed;
             LOG_INFO("手势抬起检测到当前窗口在手势黑名单或全屏放行，还原为原生点击");
             clearTrackingSessionFields();
@@ -1804,8 +1835,8 @@ void GestureEngine::endTracking(const MouseEvent& event) {
 
     // 查找适用的 Profile（优先使用异步预解析快照，若未命中则降级同步解析）
     auto profile = activeProfileSnapshot ? activeProfileSnapshot : resolveProfile(startWindow);
-    if (!profile) {
-        // 手势在当前窗口被禁用 → 仅在未消费且初始按下确被吞没时还原为普通点击
+    if (!profile || isTriggerDisabledInProfile(profile, triggerSnap, edgeZoneSnap)) {
+        // 手势在当前窗口被禁用（或该目标配置集显式禁用了本次触发键）→ 仅在未消费且初始按下确被吞没时还原为普通点击
         m_state = GestureState::Idle;
         if (overlayWasActivated && hasOverlayVisuals()) GestureTrailOverlay::instance().endTrail();
         if (!wasConsumed && downSuppressed) {
@@ -2269,7 +2300,7 @@ void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride, bool do
         return;
     }
     const std::string traceId = m_gestureTraceId;
-    auto inject = [trigger, traceId]() {
+    auto inject = [trigger, traceId](bool splitWithHoldDelay) {
         tools3000::core::TraceId::setCurrent(traceId);
         INPUT in[2] = {};
         in[0].type = INPUT_MOUSE;
@@ -2301,6 +2332,24 @@ void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride, bool do
             return;
         }
         LOG_TRACE("无手势, 补发{}键点击以还原正常操作", btnName);
+        if (splitWithHoldDelay) {
+            // 两阶段真实按压节奏回放（DOWN -> 10ms -> UP）：
+            // 避免 Windows 11 XAML / WinUI 3 InputSite 忽略 0ms 同帧合并的 SendInput(2, [DOWN, UP])，
+            // 且确保只要 DOWN 发送成功就必然成对补发 UP，严禁遗留孤立按下状态。
+            const UINT sentDown = SendInput(1, &in[0], sizeof(INPUT));
+            if (sentDown != 1) {
+                LOG_ERROR("补发{}键点击失败: sent={}, error={}",
+                          btnName, sentDown, GetLastError());
+                return;
+            }
+            Sleep(kReinjectClickHoldMs);
+            const UINT sentUp = SendInput(1, &in[1], sizeof(INPUT));
+            if (sentUp != 1) {
+                LOG_ERROR("补发{}键点击失败: sent={}, error={}",
+                          btnName, sentUp, GetLastError());
+            }
+            return;
+        }
         const UINT sent = SendInput(2, in, sizeof(INPUT));
         if (sent != 2) {
             LOG_ERROR("补发{}键点击失败: sent={}, error={}",
@@ -2308,10 +2357,15 @@ void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride, bool do
         }
     };
 
-    // 低级钩子回调必须尽快返回；SendInput 可能同步唤醒目标程序并造成数百毫秒延迟。
-    if (!tools3000::core::MainThreadDispatcher::instance().postDeferred(inject)) {
+    // 优先在后台动作工作线程执行两阶段回放（不阻塞低级鼠标钩子，也不阻塞 UI 主线程消息泵）；
+    // 若动作工作线程尚未启动，则回退至主线程延迟队列执行即时成对回放。
+    if (m_actionWorker.joinable()) {
+        enqueueCustomAction(traceId, [inject]() { inject(true); });
+        return;
+    }
+    if (!tools3000::core::MainThreadDispatcher::instance().postDeferred([inject]() { inject(false); })) {
         LOG_WARN("主线程延迟队列不可用，立即补发触发键点击");
-        inject();
+        inject(false);
     }
 }
 
@@ -2371,26 +2425,45 @@ std::optional<GestureProfile> GestureEngine::resolveProfile(HWND hwnd) const {
         return std::nullopt;
     }
 
-    std::shared_lock lock(m_profileMutex);
-    const auto fallback = m_profiles.find("default");
-    if (profileName->empty()) {
-        // 空字符串表示使用全局默认
-        return fallback != m_profiles.end()
-            ? std::optional<GestureProfile>(fallback->second)
-            : std::nullopt;
+    std::optional<GestureProfile> resolved;
+    bool explicitProfileMatched = false;
+    {
+        std::shared_lock lock(m_profileMutex);
+        const auto fallback = m_profiles.find("default");
+        if (profileName->empty()) {
+            // 空字符串表示使用全局默认
+            if (fallback != m_profiles.end()) {
+                resolved = fallback->second;
+            }
+        } else {
+            auto it = m_profiles.find(*profileName);
+            if (it != m_profiles.end()) {
+                resolved = it->second;
+                explicitProfileMatched = true;
+            } else {
+                // 找不到指定 Profile，fallback 到默认
+                LOG_WARN("指定的 Profile 不存在: {}, 使用默认 Profile", *profileName);
+                if (fallback != m_profiles.end()) {
+                    resolved = fallback->second;
+                }
+            }
+        }
     }
 
-    // 使用指定的 Profile
-    auto it = m_profiles.find(*profileName);
-    if (it != m_profiles.end()) {
-        return it->second;
+    // 专业右键密集软件自动避让（CAD / UG / EDA / 3D）：
+    // 仅在未命中用户显式开启右键(Enabled)的自定义 Profile 时生效，0ms 放行右键同时保留中键/侧键手势。
+    if (resolved && hwnd && m_autoBypassProRightClickApps.load(std::memory_order_acquire)) {
+        const bool explicitlyEnabledRight =
+            explicitProfileMatched && resolved->getTriggerState("right") == TriggerModeState::Enabled;
+        if (!explicitlyEnabledRight && resolved->getTriggerState("right") != TriggerModeState::Disabled) {
+            const std::string exeName = tools3000::core::WinUtils::getProcessNameFromWindow(hwnd);
+            if (isProfessionalRightClickAppProcess(exeName)) {
+                resolved->setTriggerState("right", TriggerModeState::Disabled);
+            }
+        }
     }
 
-    // 找不到指定 Profile，fallback 到默认
-    LOG_WARN("指定的 Profile 不存在: {}, 使用默认 Profile", *profileName);
-    return fallback != m_profiles.end()
-        ? std::optional<GestureProfile>(fallback->second)
-        : std::nullopt;
+    return resolved;
 }
 
 // ── 配置持久化 ───────────────────────────────────────────────────────────────
@@ -2407,6 +2480,7 @@ void GestureEngine::loadFromConfig() {
     setTrailFadeEnabled(config.get<bool>("/gesture/trailFadeEnabled", true));
     setShowActionHint(config.get<bool>("/gesture/showActionHint", true));
     setAutoBypassFullscreen(config.get<bool>("/gesture/autoBypassFullscreen", true));
+    setAutoBypassProRightClickApps(config.get<bool>("/gesture/autoBypassProRightClickApps", true));
     setTargetMode(config.get<std::string>("/gesture/targetMode", "underPointer"));
     int rawTimeoutMs = config.get<int>("/gesture/initialTimeoutMs", 0);
     if (!config.get<bool>("/gesture/initialTimeoutV2Migrated", false)) {
@@ -2466,6 +2540,25 @@ void GestureEngine::loadFromConfig() {
             config.set<nlohmann::json>("/gesture/profiles", updatedProfiles);
         }
     }
+    // 一次性平滑迁移：老版本默认未对 special_taskbar 禁用右键触发，导致 Win10/11 任务栏程序控制菜单无法右键弹出；
+    // 仅在 special_taskbar 未显式设为 Enabled 时自动设为 Disabled，100% 尊重用户后续在设置页的手动启用。
+    if (!config.get<bool>("/gesture/taskbarRightClickPassthroughV1Migrated", false)) {
+        bool migratedTaskbar = false;
+        if (auto itTaskbar = loadedProfiles.find("special_taskbar"); itTaskbar != loadedProfiles.end()) {
+            if (itTaskbar->second.getTriggerState("right") == TriggerModeState::Default) {
+                itTaskbar->second.setTriggerState("right", TriggerModeState::Disabled);
+                migratedTaskbar = true;
+            }
+        }
+        config.set<bool>("/gesture/taskbarRightClickPassthroughV1Migrated", true);
+        if (migratedTaskbar && hadSavedProfiles) {
+            nlohmann::json updatedProfiles = nlohmann::json::array();
+            for (const auto& [_, prof] : loadedProfiles) {
+                updatedProfiles.push_back(prof.toJson());
+            }
+            config.set<nlohmann::json>("/gesture/profiles", updatedProfiles);
+        }
+    }
     const auto loadedCount = loadedProfiles.size();
     {
         std::unique_lock lock(m_profileMutex);
@@ -2508,6 +2601,7 @@ bool GestureEngine::saveToConfig() {
             {"trailFadeEnabled", m_trailFadeEnabled.load()},
             {"showActionHint", m_showActionHint.load()},
             {"autoBypassFullscreen", m_autoBypassFullscreen.load()},
+            {"autoBypassProRightClickApps", m_autoBypassProRightClickApps.load()},
             {"enableScribbleCancel", recCfg.enableScribbleCancel},
             {"targetMode", targetMode()},
             {"initialTimeoutMs", m_initialTimeoutMs.load()},
@@ -2578,9 +2672,71 @@ uint32_t GestureEngine::computeTriggerMask() const {
     return mask;
 }
 
+void GestureEngine::syncTaskbarBypass() {
+    bool bypassAll = false;
+    // 1. ScopeRules 中针对任务栏 (Shell_TrayWnd / explorer.exe) 的显式禁用规则
+    const auto evaluated = m_scopeRules.evaluateWindow(nullptr, L"explorer.exe", L"Shell_TrayWnd", false, true);
+    if (!evaluated.has_value()) {
+        bypassAll = true;
+    }
+
+    // 2. 兼容旧版 /gesture/exceptions 黑名单
+    if (!bypassAll) {
+        auto exceptions = tools3000::core::ConfigManager::instance().get<nlohmann::json>(
+            "/gesture/exceptions", nlohmann::json::array());
+        if (exceptions.is_array()) {
+            for (const auto& rule : exceptions) {
+                if (!rule.is_object()) continue;
+                const std::string ruleType = rule.value("type", "");
+                const std::string ruleValue = rule.value("value", "");
+                if (ruleType == "process" &&
+                    tools3000::core::WinUtils::toLower(ruleValue) == "explorer.exe") {
+                    bypassAll = true;
+                    break;
+                }
+                if (ruleType == "class" &&
+                    (ruleValue == "Shell_TrayWnd" || ruleValue == "Shell_SecondaryTrayWnd")) {
+                    bypassAll = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    bool bypassRight = bypassAll;
+    bool bypassMiddle = bypassAll;
+    if (!bypassAll) {
+        std::shared_lock lock(m_profileMutex);
+        const auto itDef = m_profiles.find("default");
+        const GestureProfile* defaultProf = (itDef != m_profiles.end()) ? &itDef->second : nullptr;
+
+        const std::string targetProfileName = evaluated->empty() ? std::string("special_taskbar") : *evaluated;
+        const auto itTaskbar = m_profiles.find(targetProfileName);
+        const GestureProfile* taskbarProf = (itTaskbar != m_profiles.end()) ? &itTaskbar->second : nullptr;
+
+        auto isTaskbarTriggerDisabled = [&](const std::string& key, bool missingProfileDisables) -> bool {
+            if (!taskbarProf) {
+                return missingProfileDisables;
+            }
+            const TriggerModeState state = taskbarProf->getTriggerState(key);
+            if (state == TriggerModeState::Disabled) return true;
+            if (state == TriggerModeState::Enabled) return false;
+            return defaultProf && defaultProf->getTriggerState(key) == TriggerModeState::Disabled;
+        };
+
+        bypassRight = isTaskbarTriggerDisabled("right", true);
+        bypassMiddle = isTaskbarTriggerDisabled("middle", false);
+    }
+
+    MouseHook::instance().setTaskbarBypassState(bypassRight, bypassMiddle, bypassAll);
+    LOG_DEBUG("Taskbar gesture bypass synced: right={}, middle={}, all={}",
+              bypassRight, bypassMiddle, bypassAll);
+}
+
 void GestureEngine::syncTriggerMask() {
     const uint32_t mask = computeTriggerMask();
     MouseHook::instance().setActiveTriggerMask(mask);
+    syncTaskbarBypass();
     LOG_INFO("手势触发掩码已同步: 0x{:08X}", mask);
 }
 

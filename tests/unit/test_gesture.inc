@@ -4941,6 +4941,163 @@ TEST(LuaEngineUpgradeTest, WindowSwitchApisChunkCacheAndLocalGestureExecution) {
     lua.shutdown();
 }
 
+TEST(GestureAuditRegressionTest, TaskbarRightClickNativePassthroughAndPerProfileDisable) {
+    // 1. 默认 special_taskbar 配置集必须默认禁用右键触发，确保 Windows 10/11 任务栏右键菜单 0ms 原生直通
+    const auto taskbarProfile = GestureProfile::createTaskbarProfile();
+    EXPECT_EQ(taskbarProfile.name(), "special_taskbar");
+    EXPECT_EQ(taskbarProfile.getTriggerState("right"), TriggerModeState::Disabled);
+    EXPECT_EQ(taskbarProfile.getTriggerState("middle"), TriggerModeState::Default);
+
+    // 2. Win10 / Win11 任务栏主体与系统瞬态菜单/溢出区/悬停缩略图类名覆盖完整性
+    EXPECT_TRUE(isTaskbarHostClassName(L"Shell_TrayWnd"));
+    EXPECT_TRUE(isTaskbarHostClassName(L"Shell_SecondaryTrayWnd"));
+    EXPECT_TRUE(isTaskbarHostClassName(L"TrayNotifyWnd"));
+    EXPECT_TRUE(isTaskbarHostClassName(L"MSTaskListWClass"));
+    EXPECT_TRUE(isTaskbarHostClassName(L"MSTaskSwWClass"));
+    EXPECT_TRUE(isTaskbarHostClassName(L"TrayClockWClass"));
+    EXPECT_FALSE(isTaskbarHostClassName(L"Chrome_WidgetWin_1"));
+    EXPECT_FALSE(isTaskbarHostClassName(L"Progman"));
+
+    EXPECT_TRUE(isSystemTransientShellMenuClassName(L"NotifyIconOverflowWindow"));
+    EXPECT_TRUE(isSystemTransientShellMenuClassName(L"TopLevelWindowForOverflowXamlIsland"));
+    EXPECT_TRUE(isSystemTransientShellMenuClassName(L"TaskListThumbnailWnd"));
+    EXPECT_TRUE(isSystemTransientShellMenuClassName(L"XamlExplorerHostIslandWindow"));
+    EXPECT_TRUE(isSystemTransientShellMenuClassName(L"#32768"));
+    EXPECT_FALSE(isSystemTransientShellMenuClassName(L"Shell_TrayWnd"));
+    EXPECT_FALSE(isSystemTransientShellMenuClassName(L"CabinetWClass"));
+
+    EXPECT_TRUE(isSystemTrayOrTaskbar(L"TaskListThumbnailWnd"));
+    EXPECT_STREQ(triggerKeyForDownEvent(MouseEventType::RightDown), "right");
+    EXPECT_STREQ(triggerKeyForDownEvent(MouseEventType::MiddleDown), "middle");
+    EXPECT_STREQ(triggerKeyForDownEvent(MouseEventType::X1Down), "xbutton1");
+    EXPECT_STREQ(triggerKeyForDownEvent(MouseEventType::X2Down), "xbutton2");
+
+    // 3. 纯策略钩子放行真值表校验
+    // 3a. 默认任务栏配置 (bypassTaskbarRightClick=true): 右键 0ms 原生放行，中键/滚轮仍按配置受控
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, false, true, WM_RBUTTONDOWN, true, false, false));
+    EXPECT_FALSE(shouldBypassHookForTargetWindow(false, false, true, WM_MBUTTONDOWN, true, false, false));
+    EXPECT_FALSE(shouldBypassHookForTargetWindow(false, false, true, WM_MOUSEWHEEL, true, false, false));
+
+    // 3b. 用户显式启用任务栏右键手势 (bypassTaskbarRightClick=false): 允许在任务栏主体画右键手势
+    EXPECT_FALSE(shouldBypassHookForTargetWindow(false, false, true, WM_RBUTTONDOWN, false, false, false));
+
+    // 3c. 托盘溢出窗/任务栏缩略图/Jump List/右键菜单: 无论任务栏是否启用右键手势，均无条件原生放行右键
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, true, false, WM_RBUTTONDOWN, false, false, false));
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, true, false, WM_MBUTTONDOWN, false, false, false));
+
+    // 3d. 任务栏被 ScopeRule::Disable 整块禁用 (bypassTaskbarAll=true): 全部按键与滚轮均 0ms 放行
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, false, true, WM_RBUTTONDOWN, false, false, true));
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, false, true, WM_MBUTTONDOWN, false, false, true));
+    EXPECT_TRUE(shouldBypassHookForTargetWindow(false, false, true, WM_MOUSEWHEEL, false, false, true));
+
+    // 3e. 普通应用窗口不受任务栏绕行影响
+    EXPECT_FALSE(shouldBypassHookForTargetWindow(false, false, false, WM_RBUTTONDOWN, true, true, true));
+
+    // 4. GestureEngine::syncTaskbarBypass() 与 MouseHook 无锁原子标志联动
+    auto& engine = GestureEngine::instance();
+    auto& hook = tools3000::gesture::MouseHook::instance();
+    const auto oldTaskbar = engine.getProfile("special_taskbar");
+    const auto oldRules = engine.scopeRules().getRules();
+
+    engine.scopeRules().clearRules();
+    engine.setProfile("special_taskbar", GestureProfile::createTaskbarProfile());
+    EXPECT_TRUE(hook.isTaskbarRightClickBypassed());
+    EXPECT_FALSE(hook.isTaskbarAllBypassed());
+
+    // 用户手动开启任务栏右键手势 -> 钩子立即解除任务栏右键绕行
+    auto enabledTaskbar = GestureProfile::createTaskbarProfile();
+    enabledTaskbar.setTriggerState("right", TriggerModeState::Enabled);
+    engine.setProfile("special_taskbar", enabledTaskbar);
+    EXPECT_FALSE(hook.isTaskbarRightClickBypassed());
+    EXPECT_FALSE(hook.isTaskbarAllBypassed());
+
+    // ScopeRule 显式禁用 Shell_TrayWnd -> 立即进入全量任务栏绕行
+    ScopeRule disableTaskbarRule;
+    disableTaskbarRule.id = "disable_taskbar_test";
+    disableTaskbarRule.windowClass = "Shell_TrayWnd";
+    disableTaskbarRule.effect = RuleEffect::Disable;
+    engine.scopeRules().addRule(disableTaskbarRule);
+    engine.refreshForegroundBypass();
+    EXPECT_TRUE(hook.isTaskbarAllBypassed());
+    EXPECT_TRUE(hook.isTaskbarRightClickBypassed());
+
+    // 5. 还原全局状态，避免污染其他测试
+    engine.scopeRules().clearRules();
+    engine.scopeRules().addRules(oldRules);
+    if (oldTaskbar) {
+        engine.setProfile("special_taskbar", *oldTaskbar);
+    } else {
+        engine.setProfile("special_taskbar", GestureProfile::createTaskbarProfile());
+    }
+    engine.refreshForegroundBypass();
+}
+
+TEST(GestureAuditRegressionTest, ProRightClickAppsBypassAndForegroundSingleButtonPassthrough) {
+    using namespace tools3000::gesture;
+
+    // 1. 高置信度 CAD / UG / EDA / 3D 名单精准匹配（大小写无关 + 安全通配符），日常软件绝对 0 误杀
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("acad.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("ACAD.EXE"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("ugraf.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("sldworks.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("cnext.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("xtop.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("caxa2024.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("CAXADraft.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("x2.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("pcbnew.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("blender.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("UnrealEditor.exe"));
+    EXPECT_TRUE(isProfessionalRightClickAppProcess("adobe substance 3d painter.exe"));
+
+    EXPECT_FALSE(isProfessionalRightClickAppProcess(""));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("chrome.exe"));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("msedge.exe"));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("edge.exe"));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("explorer.exe"));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("code.exe"));
+    EXPECT_FALSE(isProfessionalRightClickAppProcess("caxa_readme.txt"));
+
+    // 2. 前台单右键 0ms 直通纯策略：仅放行窗口矩形内右键，保留中键/侧键/滚轮与副屏右键手势
+    const RECT cadRect{100, 100, 1100, 900};
+    const POINT insideCad{500, 500};
+    const POINT outsideCad{1500, 500};
+
+    EXPECT_TRUE(shouldBypassForegroundEvent(false, true, true, insideCad, cadRect, WM_RBUTTONDOWN));
+    EXPECT_TRUE(shouldBypassForegroundEvent(false, true, true, insideCad, cadRect, WM_RBUTTONUP));
+    EXPECT_FALSE(shouldBypassForegroundEvent(false, true, true, insideCad, cadRect, WM_MBUTTONDOWN));
+    EXPECT_FALSE(shouldBypassForegroundEvent(false, true, true, insideCad, cadRect, WM_XBUTTONDOWN));
+    EXPECT_FALSE(shouldBypassForegroundEvent(false, true, true, insideCad, cadRect, WM_MOUSEWHEEL));
+    EXPECT_FALSE(shouldBypassForegroundEvent(false, true, true, outsideCad, cadRect, WM_RBUTTONDOWN));
+
+    // 全量绕行优先级高于单键绕行
+    EXPECT_TRUE(shouldBypassForegroundEvent(true, false, true, insideCad, cadRect, WM_MBUTTONDOWN));
+    EXPECT_FALSE(shouldBypassForegroundEvent(true, false, true, outsideCad, cadRect, WM_RBUTTONDOWN));
+
+    // 3. MouseHook 无锁原子单右键绕行契约
+    auto& hook = tools3000::gesture::MouseHook::instance();
+    hook.setBypassState(false, true, true, cadRect);
+    EXPECT_FALSE(hook.isBypassHook());
+    EXPECT_TRUE(hook.isForegroundRightClickBypassed());
+    EXPECT_TRUE(hook.shouldBypassAtPoint(insideCad, WM_RBUTTONDOWN));
+    EXPECT_TRUE(hook.shouldBypassAtPoint(insideCad, WM_RBUTTONUP));
+    EXPECT_FALSE(hook.shouldBypassAtPoint(insideCad, WM_MBUTTONDOWN));
+    EXPECT_FALSE(hook.shouldBypassAtPoint(insideCad, WM_XBUTTONDOWN));
+    EXPECT_FALSE(hook.shouldBypassAtPoint(outsideCad, WM_RBUTTONDOWN));
+    hook.setBypassHook(false);
+    EXPECT_FALSE(hook.isForegroundRightClickBypassed());
+
+    // 4. GestureEngine 默认开启开关并可实时切换
+    auto& engine = GestureEngine::instance();
+    const bool prevAutoBypassPro = engine.autoBypassProRightClickApps();
+    engine.setAutoBypassProRightClickApps(false);
+    EXPECT_FALSE(engine.autoBypassProRightClickApps());
+    engine.setAutoBypassProRightClickApps(true);
+    EXPECT_TRUE(engine.autoBypassProRightClickApps());
+    engine.setAutoBypassProRightClickApps(prevAutoBypassPro);
+}
+
+
 
 
 

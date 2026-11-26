@@ -986,5 +986,8 @@
   "Refining": "Refinando",
   "Detected {0}, re-recognizing with script pack...": "Detectado {0}, reconhecendo novamente com pacote de idioma...",
   "Export destination is locked or unwritable; raw recording preserved": "O destino de exportação está bloqueado ou sem permissão de gravação; a gravação original foi preservada",
-  "Encoder initialization failed for this format; raw recording preserved": "Falha ao inicializar o codificador para este formato; a gravação original foi preservada"
+  "Encoder initialization failed for this format; raw recording preserved": "Falha ao inicializar o codificador para este formato; a gravação original foi preservada",
+  "Translation copied to clipboard": "Tradução copiada para a área de transferência",
+  "Clipboard": "Área de transferência",
+  "Selection": "Seleção"
 }

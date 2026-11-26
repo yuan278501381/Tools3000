@@ -6967,3 +6967,92 @@ TEST(PerformanceMonitorPrivateWorkingSetTest, ReportsTruePrivateWorkingSetAndImm
     EXPECT_TRUE(res.contains("beforePrivateMemoryMB"));
     EXPECT_TRUE(res.contains("afterPrivateMemoryMB"));
 }
+
+TEST(ScopedHotkeyAndPluginSwitchContractTest, ScopedDialogHotkeysReportScopeAndSkipExternalConflict) {
+    using namespace tools3000::core;
+    auto& hm = HotkeyManager::instance();
+    const std::string nameA = "__TestScopedDialogJump";
+    const std::string nameB = "__TestScopedDialogSearch";
+
+    hm.unregisterHotkey(nameA);
+    hm.unregisterHotkey(nameB);
+    hm.registerHotkey(nameA, HotkeyDef{}, []() {});
+    hm.setHotkeyArmed(nameA, false);
+    hm.setHotkeyScope(nameA, "dialog");
+    hm.rebindHotkey(nameA, HotkeyDef{ModKey::Ctrl, 'G'});
+
+    hm.registerHotkey(nameB, HotkeyDef{}, []() {});
+    hm.setHotkeyArmed(nameB, false);
+    hm.setHotkeyScope(nameB, "dialog");
+    hm.rebindHotkey(nameB, HotkeyDef{ModKey::Ctrl | ModKey::Shift, 'G'});
+
+    // 场景热键 armed=false 不抢注全局 Ctrl+G，也不应产生误报外部冲突
+    const auto conflictA = hm.checkConflict(HotkeyDef{ModKey::Ctrl, 'G'}, nameA);
+    EXPECT_FALSE(conflictA.hasConflict);
+    EXPECT_EQ(conflictA.conflictType, "none");
+
+    // 两个场景热键若绑定成同一组合，必须检出内部冲突
+    hm.rebindHotkey(nameB, HotkeyDef{ModKey::Ctrl, 'G'});
+    const auto internalConflict = hm.checkConflict(HotkeyDef{ModKey::Ctrl, 'G'}, nameB);
+    EXPECT_TRUE(internalConflict.hasConflict);
+    EXPECT_EQ(internalConflict.conflictType, "internal");
+
+    bool foundScoped = false;
+    for (const auto& entry : hm.getAllHotkeys()) {
+        if (entry.name == nameA) {
+            EXPECT_EQ(entry.scope, "dialog");
+            EXPECT_FALSE(entry.armed);
+            foundScoped = true;
+        }
+    }
+    EXPECT_TRUE(foundScoped);
+
+    hm.unregisterHotkey(nameA);
+    hm.unregisterHotkey(nameB);
+}
+
+TEST(ScopedHotkeyAndPluginSwitchContractTest, QuickLookPluginTogglePersistsAndPublishesEvent) {
+    using namespace tools3000::core;
+    auto& cfg = ConfigManager::instance();
+    auto& bridge = MessageBridge::instance();
+    bridge.registerBuiltinHandlers();
+    const bool hadPluginKey = cfg.has("/plugins/quick_look/enabled");
+    const bool prevPluginVal = cfg.get<bool>("/plugins/quick_look/enabled", true);
+    const bool hadLegacyKey = cfg.has("/quicklook/enabled");
+    const bool prevLegacyVal = cfg.get<bool>("/quicklook/enabled", true);
+
+    bool receivedEvent = false;
+    bool lastEventEnabled = true;
+    const auto subId = EventBus::instance().subscribe<QuickLookStateChangedEvent>(
+        [&](const QuickLookStateChangedEvent& e) {
+            receivedEvent = true;
+            lastEventEnabled = e.enabled;
+        });
+
+    const auto listResp = nlohmann::json::parse(
+        bridge.handleMessage(R"({"id":9410,"method":"plugins.getAll","params":{}})"));
+    ASSERT_TRUE(listResp.contains("result"));
+    ASSERT_TRUE(listResp["result"].is_array());
+    bool foundQuickLook = false;
+    for (const auto& item : listResp["result"]) {
+        if (item.value("id", "") == "quick_look") {
+            foundQuickLook = true;
+            EXPECT_FALSE(item.value("isExtension", true));
+        }
+    }
+    EXPECT_TRUE(foundQuickLook);
+
+    const auto disableResp = nlohmann::json::parse(bridge.handleMessage(
+        R"({"id":9411,"method":"plugins.setEnabled","params":{"id":"quick_look","enabled":false}})"));
+    EXPECT_TRUE(disableResp["result"].value("success", false));
+    EXPECT_FALSE(disableResp["result"].value("restartRequired", true));
+    EXPECT_TRUE(receivedEvent);
+    EXPECT_FALSE(lastEventEnabled);
+    EXPECT_FALSE(cfg.get<bool>("/plugins/quick_look/enabled", true));
+    EXPECT_FALSE(cfg.get<bool>("/quicklook/enabled", true));
+
+    // 还原测试前配置，避免污染本机状态
+    EventBus::instance().unsubscribe(subId);
+    cfg.set<bool>("/plugins/quick_look/enabled", hadPluginKey ? prevPluginVal : true);
+    cfg.set<bool>("/quicklook/enabled", hadLegacyKey ? prevLegacyVal : true);
+}

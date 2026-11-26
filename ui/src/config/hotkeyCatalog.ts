@@ -28,6 +28,8 @@ export const HOTKEY_LABEL_KEYS: Readonly<Record<string, string>> = {
   'Pin Arrange': 'general.shortcutPinArrange',
   'Mute System Audio': 'general.shortcutMuteSystemAudio',
   'Mute Microphone': 'general.shortcutMuteMicrophone',
+  'Dialog Quick Jump': 'dialog.quickJumpHotkeyLabel',
+  'Dialog Inline Search': 'dialog.inlineSearchHotkeyLabel',
   // 历史配置兼容别名
   capture: 'onboarding.shortcutCapture',
   recording: 'onboarding.shortcutRecord',
@@ -44,7 +46,7 @@ export function resolveHotkeyLabel(t: TFunction, name: string): string {
   return name;
 }
 
-export type HotkeyDomainGroupId = 'core' | 'pin_ocr' | 'recording' | 'input';
+export type HotkeyDomainGroupId = 'core' | 'pin_ocr' | 'recording' | 'dialog' | 'input';
 
 export interface HotkeyDomainGroupSpec {
   readonly id: HotkeyDomainGroupId;
@@ -98,6 +100,15 @@ export const HOTKEY_DOMAIN_GROUPS: readonly HotkeyDomainGroupSpec[] = [
       'Record Snapshot',
       'Mute System Audio',
       'Mute Microphone',
+    ],
+  },
+  {
+    id: 'dialog',
+    titleKey: 'nav.dialog_enhancer',
+    defaultTitle: 'File Dialog Enhancer',
+    members: [
+      'Dialog Quick Jump',
+      'Dialog Inline Search',
     ],
   },
   {

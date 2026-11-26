@@ -986,5 +986,8 @@
   "Refining": "고정밀 보정 중",
   "Detected {0}, re-recognizing with script pack...": "{0} 감지됨, 전용 언어 팩으로 재인식 중...",
   "Export destination is locked or unwritable; raw recording preserved": "내보내기 경로가 사용 중이거나 쓸 수 없습니다. 원본 녹화 파일은 안전하게 보관되었습니다",
-  "Encoder initialization failed for this format; raw recording preserved": "현재 형식의 인코더 초기화에 실패했습니다. 원본 녹화 파일은 안전하게 보관되었습니다"
+  "Encoder initialization failed for this format; raw recording preserved": "현재 형식의 인코더 초기화에 실패했습니다. 원본 녹화 파일은 안전하게 보관되었습니다",
+  "Translation copied to clipboard": "번역 결과가 클립보드에 복사되었습니다",
+  "Clipboard": "클립보드",
+  "Selection": "선택 영역"
 }
