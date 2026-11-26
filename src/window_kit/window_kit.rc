@@ -4,8 +4,8 @@
 1 ICON "../../resources/app.ico"
 
 1 VERSIONINFO
- FILEVERSION 1,4,17,0
- PRODUCTVERSION 1,4,17,0
+ FILEVERSION 1,5,0,0
+ PRODUCTVERSION 1,5,0,0
  FILEFLAGSMASK 0x3fL
  FILEFLAGS 0x0L
  FILEOS 0x00040004L
@@ -18,12 +18,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "Yy1 (yuan278501381)"
             VALUE "FileDescription",  "Tools3000 Window Kit"
-            VALUE "FileVersion",      "1.4.17.0"
+            VALUE "FileVersion",      "1.5.0.0"
             VALUE "InternalName",     "Tools3000_WindowKit"
             VALUE "LegalCopyright",   "Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors"
             VALUE "OriginalFilename", "Tools3000_WindowKit.exe"
             VALUE "ProductName",      "Tools3000 Window Kit"
-            VALUE "ProductVersion",   "1.4.17"
+            VALUE "ProductVersion",   "1.5.0"
         END
     END
     BLOCK "VarFileInfo"
