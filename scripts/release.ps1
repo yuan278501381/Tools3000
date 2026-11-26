@@ -378,8 +378,18 @@ if (Test-Path -LiteralPath $SiteIndexPath) {
     Write-Host "[OK] docs/site/index.html 下载直链与徽章版本已同步为: $TargetTag" -ForegroundColor Green
 }
 
+# 4.5 同步生成离线分页更新日志数据分块（纳入本次新版本 Release Notes）
+$ChangelogGenScript = Join-Path $ScriptDir "ui\scripts\generate-changelog-bundle.mjs"
+$ChangelogBundlePath = Join-Path $ScriptDir "ui\src\generated\changelogData.json"
+if (Test-Path -LiteralPath $ChangelogGenScript) {
+    & node $ChangelogGenScript
+    if ($LASTEXITCODE -ne 0) { throw "生成离线更新日志分块失败！" }
+    Write-Host "[OK] 离线更新日志分块已同步纳入 $TargetTag" -ForegroundColor Green
+}
+
 # 5. 提交版本升级 commit
 $FilesToStage = @("VERSION", "docs/RELEASE_NOTES_$TargetTag.md")
+if (Test-Path -LiteralPath $ChangelogBundlePath) { $FilesToStage += "ui/src/generated/changelogData.json" }
 if (Test-Path -LiteralPath (Join-Path $ScriptDir "CHANGELOG.md")) { $FilesToStage += "CHANGELOG.md" }
 if (Test-Path -LiteralPath $SiteIndexPath) { $FilesToStage += "docs/site/index.html" }
 if (Test-Path -LiteralPath $UiPackageJsonPath) { $FilesToStage += "ui/package.json" }

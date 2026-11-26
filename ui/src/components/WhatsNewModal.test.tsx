@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { WhatsNewModal } from './WhatsNewModal';
 import { compareSemver, formatLocalDateTime } from './whatsNewUtils';
+import changelogData from '../generated/changelogData.json';
 
 const bridgeRequestMock = vi.fn();
 const openExternalUrlMock = vi.fn();
@@ -48,21 +49,22 @@ describe('WhatsNewModal', () => {
   it('renders manual archive mode with top 10 releases, pagination, and keyword search', async () => {
     const onClose = vi.fn();
     const onToggle = vi.fn();
+    const latest = changelogData.releases[0];
 
     render(
       <WhatsNewModal
         open
         mode="manual"
-        currentVersion="1.4.14"
+        currentVersion={latest.version}
         showChangelogOnUpdate
         onToggleShowOnUpdate={onToggle}
         onClose={onClose}
       />,
     );
 
-    // 等待离线懒加载分块就绪：首屏展示最新 10 个版本，且默认展开最新版本 (v1.4.14)
+    // 等待离线懒加载分块就绪：首屏展示最新 10 个版本，且默认展开最新版本
     const loadMoreBtn = await screen.findByRole('button', { name: /changelog\.loadMoreBtn/i });
-    expect(screen.getAllByText('v1.4.14').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText(latest.tag).length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole('article').length).toBe(10);
 
     const releaseButtons = screen.getAllByRole('button', { expanded: true });
@@ -98,20 +100,22 @@ describe('WhatsNewModal', () => {
 
   it('renders upgrade mode with multi-version span banner and caps auto-expanded NEW versions to 3', async () => {
     const onClose = vi.fn();
+    const latest = changelogData.releases[0];
+    const fiveEarlier = changelogData.releases[5];
 
     render(
       <WhatsNewModal
         open
         mode="upgrade"
-        currentVersion="1.4.14"
-        previousVersion="1.4.9"
+        currentVersion={latest.version}
+        previousVersion={fiveEarlier.version}
         showChangelogOnUpdate
         onToggleShowOnUpdate={vi.fn()}
         onClose={onClose}
       />,
     );
 
-    // 跨 5 版迁移（1.4.10..1.4.14）顶部展示迁移横幅
+    // 跨 5 版迁移顶部展示迁移横幅
     expect(await screen.findByText(/changelog\.upgradeSpanBanner/)).toBeTruthy();
 
     // 超过 3 个新版本时仅自动展开最新 3 版，防止长屏过载
@@ -120,9 +124,9 @@ describe('WhatsNewModal', () => {
       expect(expandedBtns.length).toBe(3);
     });
 
-    // 所有 > 1.4.9 的版本均带 NEW 徽章
+    // 所有大于起点版本的记录均带 NEW 徽章
     const newBadges = screen.getAllByText('changelog.badgeNew');
-    expect(newBadges.length).toBeGreaterThanOrEqual(5);
+    expect(newBadges.length).toBe(5);
 
     // 按 Escape 关闭弹窗
     fireEvent.keyDown(window, { key: 'Escape' });
