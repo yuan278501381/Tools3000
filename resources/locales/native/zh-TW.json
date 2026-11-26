@@ -989,5 +989,7 @@
   "重点说明||Text": "重點說明",
   "静音||Off": "靜音",
   "高刷||Smooth": "高幀",
-  "鼠标自动运镜||Auto Zoom": "滑鼠自動運鏡"
+  "鼠标自动运镜||Auto Zoom": "滑鼠自動運鏡",
+  "Quick Translate": "劃詞翻譯",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "畫 T 形（←→↓）翻譯目前選取或剪貼簿中的文字"
 }

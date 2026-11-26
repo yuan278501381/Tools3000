@@ -11,6 +11,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ViewerProjectDir,
     [string]$CliProjectDir = "",
+    [string]$WindowKitProjectDir = "",
     [Parameter(Mandatory = $true)]
     [ValidateSet("x64", "arm64")]
     [string]$Arch,
@@ -123,6 +124,53 @@ if (-not $SkipTests -and $Arch -eq "x64" -and (Test-Path -LiteralPath (Join-Path
         }
         $ClipTestSw.Stop()
         Write-Host ("[RUST] [OK] Rust 剪贴板内核单元测试通过 ({0:N2}s)" -f $ClipTestSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+$CapsProjectDir = Join-Path (Split-Path -Parent $ViewerProjectDir) "caps_layer\rust_caps"
+if (-not $SkipTests -and $Arch -eq "x64" -and (Test-Path -LiteralPath (Join-Path $CapsProjectDir "Cargo.toml"))) {
+    Push-Location $CapsProjectDir
+    try {
+        $CapsTestSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-Host "[RUST] 运行 Rust CapsLayer 引导键状态机单元测试 (cargo test --target $ViewerRustTarget)..." -ForegroundColor Cyan
+        & $CargoPath test --target $ViewerRustTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust CapsLayer 单元测试失败！退出码: $LASTEXITCODE"
+        }
+        $CapsTestSw.Stop()
+        Write-Host ("[RUST] [OK] Rust CapsLayer 单元测试通过 ({0:N2}s)" -f $CapsTestSw.Elapsed.TotalSeconds) -ForegroundColor Green
+    } finally {
+        Pop-Location
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($WindowKitProjectDir)) {
+    $WindowKitProjectDir = Join-Path (Split-Path -Parent $ViewerProjectDir) "window_kit"
+}
+if (Test-Path -LiteralPath (Join-Path $WindowKitProjectDir "Cargo.toml")) {
+    Push-Location $WindowKitProjectDir
+    try {
+        if (-not $SkipTests -and $Arch -eq "x64") {
+            $WkTestSw = [System.Diagnostics.Stopwatch]::StartNew()
+            Write-Host "[RUST] 运行 Rust 窗口管理引擎单元测试 (cargo test --target $ViewerRustTarget)..." -ForegroundColor Cyan
+            & $CargoPath test --target $ViewerRustTarget
+            if ($LASTEXITCODE -ne 0) {
+                throw "Rust 窗口管理引擎单元测试失败！退出码: $LASTEXITCODE"
+            }
+            $WkTestSw.Stop()
+            Write-Host ("[RUST] [OK] Rust 窗口管理引擎单元测试通过 ({0:N2}s)" -f $WkTestSw.Elapsed.TotalSeconds) -ForegroundColor Green
+        }
+
+        $WkBuildSw = [System.Diagnostics.Stopwatch]::StartNew()
+        Write-Host "[RUST] 编译 Rust 窗口管理引擎 (Tools3000_WindowKit.exe, $Arch Release)..." -ForegroundColor Cyan
+        & $CargoPath build --release --target $ViewerRustTarget
+        if ($LASTEXITCODE -ne 0) {
+            throw "Rust 窗口管理引擎编译失败！退出码: $LASTEXITCODE"
+        }
+        $WkBuildSw.Stop()
+        Write-Host ("[RUST] [OK] Rust 窗口管理引擎编译完成 (build={0:N2}s)" -f $WkBuildSw.Elapsed.TotalSeconds) -ForegroundColor Green
     } finally {
         Pop-Location
     }

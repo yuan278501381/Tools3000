@@ -2559,6 +2559,28 @@ void GestureEngine::loadFromConfig() {
             config.set<nlohmann::json>("/gesture/profiles", updatedProfiles);
         }
     }
+    // 一次性无损补入默认划词翻译手势 (L-R-D 象形 T -> BuiltinCommand::QuickTranslate)：
+    // 仅在老用户默认全局 Profile 尚未占用 "L-R-D" 时注入，100% 尊重已有自定义映射。
+    if (!config.get<bool>("/gesture/quickTranslateDefaultV1Migrated", false)) {
+        bool injectedTranslate = false;
+        if (auto itDef = loadedProfiles.find("default"); itDef != loadedProfiles.end()) {
+            if (!itDef->second.hasGesture("L-R-D")) {
+                const GestureProfile freshDefault = GestureProfile::createDefaultGlobal();
+                if (auto preset = freshDefault.findMapping("L-R-D")) {
+                    itDef->second.addMapping(*preset);
+                    injectedTranslate = true;
+                }
+            }
+        }
+        config.set<bool>("/gesture/quickTranslateDefaultV1Migrated", true);
+        if (injectedTranslate && hadSavedProfiles) {
+            nlohmann::json updatedProfiles = nlohmann::json::array();
+            for (const auto& [_, prof] : loadedProfiles) {
+                updatedProfiles.push_back(prof.toJson());
+            }
+            config.set<nlohmann::json>("/gesture/profiles", updatedProfiles);
+        }
+    }
     const auto loadedCount = loadedProfiles.size();
     {
         std::unique_lock lock(m_profileMutex);

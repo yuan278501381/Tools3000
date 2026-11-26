@@ -3,6 +3,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 #include "core/ipc/MessageBridge.h"
+#include "core/ipc/WindowKitController.h"
 #include "core/i18n/UiI18n.h"
 #include "core/ipc/SystemInteractionHandlers.h"
 #include "core/ipc/AutoStartPolicy.h"
@@ -843,6 +844,7 @@ void applyLogLevel(const std::string& level) {
     };
     if (const auto it = levels.find(level); it != levels.end()) {
         tools3000::core::Logger::setLevel(it->second);
+        tools3000::core::WindowKitController::instance().notifyHostEnvironmentChanged();
     }
 }
 
@@ -864,7 +866,7 @@ void syncRuntimeSettingsFromConfig(const char* source) {
     const std::string language = config.get<std::string>("/general/language", "auto");
     tools3000::core::UiI18n::setConfiguredLanguage(language);
     tools3000::core::Logger::setLanguage(language);
-    applyLogLevel(config.get<std::string>("/general/logLevel", "info"));
+    applyLogLevel(config.get<std::string>("/general/logLevel", tools3000::core::Logger::kDefaultLogLevel));
     tools3000::core::Logger::setRetentionDays(config.get<uint32_t>("/general/logRetentionDays", 7));
 
     tools3000::core::KeyboardHook::instance().syncConfigCache();
@@ -1696,6 +1698,8 @@ bool isCoreBuiltinPlugin(const std::string& id) {
            id == "spotlight" || id == "clipboard" || id == "remote_boost" || id == "remote" ||
            id == "text_expander" || id == "textexpander" ||
            id == "picasa_viewer" || id == "picasaviewer" ||
+           id == "window_manager" || id == "windowmanager" ||
+           id == "caps_layer" || id == "capslayer" ||
            id == "file_locksmith" || id == "filelocksmith" ||
            id == "quick_look" || id == "quicklook";
 }
@@ -2136,6 +2140,15 @@ void MessageBridge::registerBuiltinHandlers() {
              "picasaViewer.openFormatConfig",
              "picasaViewer.openDefaultApps",
              "picasaViewer.launchViewer",
+             "windowManager.updateSettings",
+             "windowManager.execAction",
+             "windowManager.getMonitors",
+             "windowManager.getVirtualDesktops",
+             "windowManager.captureWorkspace",
+             "windowManager.importPowerToysLayouts",
+             "windowManager.getRuntimeStats",
+             "capsLayer.updateSettings",
+             "capsLayer.applyPreset",
          }) {
         markMethodAsync(method);
     }
@@ -2342,6 +2355,53 @@ void MessageBridge::registerBuiltinHandlers() {
             {"isExtension", false}
         });
         existingIds.insert("quick_look");
+
+        // 内置独立模块：纯 Rust 窗口管理套件 (window_manager，出厂默认关闭，0 进程 0 占用)
+        // 注意：active 表示模块在本次运行中已启用并激活可进入设置配置；子进程是否按需拉起由
+        // windowManager.getSettings().running 单独表达，避免总开关开启但子功能全关时隐藏设置页形成死锁。
+        const bool wkInstalled = WindowKitController::instance().isBinaryInstalled();
+        const bool wkEnabled = wkInstalled && (ConfigManager::instance().has("/plugins/window_manager/enabled")
+            ? ConfigManager::instance().get<bool>("/plugins/window_manager/enabled", false)
+            : ConfigManager::instance().get<bool>("/windowManager/enabled", false));
+        plugins.push_back({
+            {"id", "window_manager"},
+            {"name", "窗口管理"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000_WindowKit.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"snap-zones", "workspaces", "quick-switch", "always-on-top", "opacity", "alt-drag", "focus-border", "multi-monitor"}},
+            {"permissions", {"window-management", "low-level-hooks-on-demand"}},
+            {"executionModel", "standalone-rust-process"},
+            {"enabled", wkEnabled},
+            {"active", wkEnabled},
+            {"restartRequired", false},
+            {"state", !wkInstalled ? "unavailable" : (wkEnabled ? "running" : "disabled")},
+            {"error", wkInstalled ? "" : "Tools3000_WindowKit.exe not found"},
+            {"isExtension", false}
+        });
+        existingIds.insert("window_manager");
+
+        // 内置核心模块：CapsLayer 引导键与分应用改键 (纯 Rust 零分配状态机，默认关闭 < 1ns 短路)
+        const bool capsLayerEnabled = ConfigManager::instance().has("/plugins/caps_layer/enabled")
+            ? ConfigManager::instance().get<bool>("/plugins/caps_layer/enabled", false)
+            : ConfigManager::instance().get<bool>("/capsLayer/enabled", false);
+        plugins.push_back({
+            {"id", "caps_layer"},
+            {"name", "CapsLayer 引导键"},
+            {"version", tools3000::version::String},
+            {"fileName", "Tools3000.exe"},
+            {"abiVersion", 1},
+            {"capabilities", {"caps-leader-layer", "per-app-remap", "zero-rollover-stick", "zero-idle-when-off"}},
+            {"permissions", {"low-level-keyboard-hook", "input-synthesis"}},
+            {"executionModel", "trusted-native-in-process"},
+            {"enabled", capsLayerEnabled},
+            {"active", capsLayerEnabled},
+            {"restartRequired", false},
+            {"state", capsLayerEnabled ? "running" : "disabled"},
+            {"error", ""},
+            {"isExtension", false}
+        });
+        existingIds.insert("caps_layer");
         return plugins;
     });
 
@@ -2391,6 +2451,32 @@ void MessageBridge::registerBuiltinHandlers() {
             } else {
                 MessageBridge::instance().pushEvent("textExpander:stateChanged", {{"enabled", enabled}});
                 MessageBridge::instance().pushEvent("plugins:changed", {{"id", "text_expander"}, {"enabled", enabled}});
+            }
+            releasePluginResourcesAndTrim();
+            return {{"success", true}, {"restartRequired", false}};
+        }
+
+        if (id == "window_manager" || id == "windowmanager") {
+            std::string error;
+            const bool success = WindowKitController::instance().setMasterEnabled(enabled, error);
+            if (success) {
+                releasePluginResourcesAndTrim();
+            }
+            return {
+                {"success", success},
+                {"restartRequired", false},
+                {"error", error}
+            };
+        }
+
+        if (id == "caps_layer" || id == "capslayer") {
+            ConfigManager::instance().set<bool>("/capsLayer/enabled", enabled);
+            ConfigManager::instance().set<bool>("/plugins/caps_layer/enabled", enabled);
+            if (MessageBridge::instance().hasHandler("capsLayer.updateSettings")) {
+                MessageBridge::instance().invokeHandler("capsLayer.updateSettings", {{"enabled", enabled}});
+            } else {
+                MessageBridge::instance().pushEvent("capsLayer:stateChanged", {{"enabled", enabled}});
+                MessageBridge::instance().pushEvent("plugins:changed", {{"id", "caps_layer"}, {"enabled", enabled}});
             }
             releasePluginResourcesAndTrim();
             return {{"success", true}, {"restartRequired", false}};
@@ -2953,7 +3039,7 @@ void MessageBridge::registerBuiltinHandlers() {
             {"systemLanguage", UiI18n::getSystemLanguageTag()},
             {"resolvedLanguage", UiI18n::getEffectiveLanguageTag()},
             {"fontFamily", config.get<std::string>("/general/fontFamily", "auto")},
-            {"logLevel", config.get<std::string>("/general/logLevel", "info")},
+            {"logLevel", config.get<std::string>("/general/logLevel", tools3000::core::Logger::kDefaultLogLevel)},
             {"logRetentionDays", config.get<uint32_t>("/general/logRetentionDays", 7)},
             {"theme", config.get<std::string>("/general/theme", "system")},
             {"accentColor", config.get<std::string>("/general/accentColor", "blue")},

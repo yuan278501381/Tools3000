@@ -216,8 +216,9 @@ bool textAlreadyInTargetLanguage(
     }
     const size_t total = han + kana + hangul + cyrillic + latin + nonAsciiLatin;
     if (total == 0) return true;
-    if (targetLang == "zh-CN" || targetLang == "zh-TW") {
-        // 已包含汉字且无日/韩/俄文：短技术标签（<=32字且含>=2汉字，如 "$batch-UDTs批量新增表"）或汉字比例足够直接保留
+    if (targetLang == "zh-CN") {
+        // 已包含简体/汉字且无日/韩/俄文：短技术标签（<=32字且含>=2汉字，如 "$batch-UDTs批量新增表"）或汉字比例足够直接保留；
+        // 注意：绝不对 targetLang == "zh-TW" 触发汉字免译，保障简繁互译正常发送至翻译引擎。
         if (han >= 2 && kana == 0 && hangul == 0 && cyrillic == 0 &&
             (ws.size() <= 32 || han * 3 >= latin)) {
             return true;
@@ -661,6 +662,7 @@ public:
     virtual const char* id() const noexcept = 0;
     virtual TranslationBatchResult translate(
         const std::vector<std::string>& texts,
+        const std::string& effectiveSourceLang,
         const std::string& effectiveTargetLang,
         const TranslationSettings& settings,
         const std::atomic<bool>* cancelFlag) = 0;
@@ -687,6 +689,7 @@ public:
 
     TranslationBatchResult translate(
         const std::vector<std::string>& texts,
+        const std::string& effectiveSourceLang,
         const std::string& effectiveTargetLang,
         const TranslationSettings& settings,
         const std::atomic<bool>* cancelFlag) override {
@@ -695,6 +698,9 @@ public:
         out.effectiveTargetLang = effectiveTargetLang;
         out.translations.resize(texts.size());
 
+        const std::string edgeFromLang = (effectiveSourceLang.empty() || effectiveSourceLang == "auto")
+            ? std::string("auto-detect")
+            : TranslationService::toEdgeLangCode(effectiveSourceLang);
         const std::string edgeLang = TranslationService::toEdgeLangCode(effectiveTargetLang);
 
         const int edgeTimeoutMs = (std::min)(settings.timeoutMs, 4500);
@@ -750,7 +756,7 @@ public:
                     std::to_string(creds.reqSeq);
                 const ParsedHttpUrl parsed = crackUrl(apiUrl);
                 const std::string formBody =
-                    "fromLang=auto-detect&to=" + percentEncodeUtf8(edgeLang) +
+                    "fromLang=" + percentEncodeUtf8(edgeFromLang) + "&to=" + percentEncodeUtf8(edgeLang) +
                     "&text=" + percentEncodeUtf8(src) +
                     "&token=" + percentEncodeUtf8(creds.token) +
                     "&key=" + percentEncodeUtf8(creds.key);
@@ -807,12 +813,13 @@ public:
             return false;
         };
 
-        // 并发前先单线程预热一次 Bing 会话凭据，杜绝冷启多线程重复下载 600KB HTML 引发惊群与 205 风控
+        // 并发前先单线程预热一次 Bing 会话凭据，杜绝冷启多线程重复下载 600KB HTML 引发惊群与 205 风控；
+        // 使用快速超时上限（<= 4.5s）防止上游节点异常时拖垮容灾链路。
         {
             BingCredsSnapshot warmupCreds{};
             std::string warmErrCode;
             std::string warmErrDetail;
-            if (!m_acquireCreds(settings.timeoutMs, cancelFlag, warmupCreds, warmErrCode, warmErrDetail)) {
+            if (!m_acquireCreds(edgeTimeoutMs, cancelFlag, warmupCreds, warmErrCode, warmErrDetail)) {
                 out.errorCode = warmErrCode.empty() ? "network" : std::move(warmErrCode);
                 out.errorDetail = std::move(warmErrDetail);
                 return out;
@@ -909,7 +916,9 @@ public:
             out.errorCode = "cancelled";
             return out;
         }
-        out.detectedSourceLang = std::move(firstDetected);
+        out.detectedSourceLang = !firstDetected.empty()
+            ? std::move(firstDetected)
+            : ((effectiveSourceLang != "auto") ? effectiveSourceLang : TranslationService::detectDominantSourceLang(texts));
         out.success = true;
         return out;
     }
@@ -925,6 +934,7 @@ public:
 
     TranslationBatchResult translate(
         const std::vector<std::string>& texts,
+        const std::string& effectiveSourceLang,
         const std::string& effectiveTargetLang,
         const TranslationSettings& settings,
         const std::atomic<bool>* cancelFlag) override {
@@ -933,18 +943,23 @@ public:
         out.effectiveTargetLang = effectiveTargetLang;
         out.translations.resize(texts.size());
 
+        const std::string gSource = (effectiveSourceLang.empty() || effectiveSourceLang == "auto")
+            ? std::string("auto")
+            : TranslationService::toGoogleLangCode(effectiveSourceLang);
         const std::string gLang = TranslationService::toGoogleLangCode(effectiveTargetLang);
         const std::string endpointUrl =
-            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" +
+            "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" +
+            percentEncodeUtf8(gSource) + "&tl=" +
             percentEncodeUtf8(gLang) + "&dt=t";
         const ParsedHttpUrl parsed = crackUrl(endpointUrl);
 
+        const int googleTimeoutMs = (std::min)(settings.timeoutMs, 6000);
         auto translateSingle = [&](const std::string& src, std::string& dst, std::string& detected,
                                    std::string& errCode, std::string& errDetail) -> bool {
             const std::string formBody = "q=" + percentEncodeUtf8(src);
             const std::wstring headers = L"Content-Type: application/x-www-form-urlencoded; charset=utf-8\r\n";
             const WinHttpResult http = executeHttpRequest(
-                parsed, L"POST", headers, formBody, settings.timeoutMs, cancelFlag);
+                parsed, L"POST", headers, formBody, googleTimeoutMs, cancelFlag);
             if (http.cancelled) {
                 errCode = "cancelled";
                 return false;
@@ -1056,7 +1071,9 @@ public:
             out.errorCode = "cancelled";
             return out;
         }
-        out.detectedSourceLang = std::move(firstDetected);
+        out.detectedSourceLang = !firstDetected.empty()
+            ? std::move(firstDetected)
+            : ((effectiveSourceLang != "auto") ? effectiveSourceLang : TranslationService::detectDominantSourceLang(texts));
         out.success = true;
         return out;
     }
@@ -1068,6 +1085,7 @@ public:
 
     TranslationBatchResult translate(
         const std::vector<std::string>& texts,
+        const std::string& effectiveSourceLang,
         const std::string& effectiveTargetLang,
         const TranslationSettings& settings,
         const std::atomic<bool>* cancelFlag) override {
@@ -1106,13 +1124,22 @@ public:
         }
 
         const std::string targetHuman = TranslationService::toHumanLanguageName(effectiveTargetLang);
-        const std::string systemPrompt =
+        const bool hasExplicitSource = (!effectiveSourceLang.empty() && effectiveSourceLang != "auto");
+        const std::string sourceClause = hasExplicitSource
+            ? ("from " + TranslationService::toHumanLanguageName(effectiveSourceLang) + " ")
+            : std::string();
+        const std::string batchSystemPrompt =
             "You are a precise UI and screenshot text translator. "
-            "Translate each item in the input JSON array into " + targetHuman + ". "
+            "Translate each item in the input JSON array " + sourceClause + "into " + targetHuman + ". "
             "Preserve code identifiers, numbers, URLs, and concise UI phrasing. "
             "Return ONLY valid JSON in the exact schema: "
             "{\"translations\":[{\"id\":0,\"text\":\"...\"}]}. "
             "Do not add explanations or markdown fences.";
+        const std::string singlePlainSystemPrompt =
+            "You are a precise translator. "
+            "Translate the user's text directly " + sourceClause + "into " + targetHuman + ". "
+            "Preserve code identifiers, numbers, URLs, quotes, and line breaks. "
+            "Output ONLY the translated text without explanations, JSON wrappers, or markdown fences.";
 
         std::wstring headers = L"Content-Type: application/json; charset=utf-8\r\n";
         // 安全防线：内置免 Key 公网端点绝不透传用户历史保存的私有 API Key
@@ -1158,28 +1185,49 @@ public:
             }
 
             const size_t count = endIdx - beginIdx;
-            json items = json::array();
-            for (size_t i = beginIdx; i < endIdx; ++i) {
-                items.push_back(json{{"id", static_cast<int>(i - beginIdx)}, {"text", texts[i]}});
+            // 单条文本（划词翻译、连通探针及批量二分兜底）直接走纯文本直译快车道：
+            // 彻底根治原文含大量双引号/反斜杠/换行导致 9B 模型输出畸形 JSON 而耗时失败再卡容灾的痛点。
+            const bool useSinglePlainMode = (count == 1);
+            json reqJson;
+            if (useSinglePlainMode) {
+                reqJson = {
+                    {"model", model},
+                    {"temperature", isKeylessPublic ? 0.0 : 0.1},
+                    {"messages", json::array({
+                        json{{"role", "system"}, {"content", singlePlainSystemPrompt}},
+                        json{{"role", "user"}, {"content", texts[beginIdx]}}
+                    })}
+                };
+            } else {
+                json items = json::array();
+                for (size_t i = beginIdx; i < endIdx; ++i) {
+                    items.push_back(json{{"id", static_cast<int>(i - beginIdx)}, {"text", texts[i]}});
+                }
+                reqJson = {
+                    {"model", model},
+                    {"temperature", isKeylessPublic ? 0.0 : 0.1},
+                    {"messages", json::array({
+                        json{{"role", "system"}, {"content", batchSystemPrompt}},
+                        json{{"role", "user"}, {"content", json{{"items", items}}.dump()}}
+                    })}
+                };
             }
-            json reqJson = {
-                {"model", model},
-                {"temperature", isKeylessPublic ? 0.0 : 0.1},
-                {"messages", json::array({
-                    json{{"role", "system"}, {"content", systemPrompt}},
-                    json{{"role", "user"}, {"content", json{{"items", items}}.dump()}}
-                })}
-            };
             if (isKeylessPublic) {
-                // 对齐 Index-Translate 官方推荐参数，显式关闭思考链以降低延迟并避免思维块污染 JSON 输出
+                // 对齐 Index-Translate 官方推荐参数，显式关闭思考链以降低延迟并避免思维块污染输出
                 reqJson["chat_template_kwargs"] = json{{"enable_thinking", false}};
             }
             const std::string payload = reqJson.dump();
 
+            // 交互式单条免 Key 公网翻译将单次超时收敛至 <= 12s 且超时不盲目翻倍空等，确保卡顿快速止损
+            const int reqTimeoutMs = (useSinglePlainMode && isKeylessPublic)
+                ? (std::min)(policy.effectiveTimeoutMs, 12000)
+                : policy.effectiveTimeoutMs;
+            const int maxAttempts = (useSinglePlainMode && isKeylessPublic) ? 1 : 2;
+
             WinHttpResult http{};
-            for (int attempt = 0; attempt < 2; ++attempt) {
+            for (int attempt = 0; attempt < maxAttempts; ++attempt) {
                 http = executeHttpRequest(
-                    parsed, L"POST", headers, payload, policy.effectiveTimeoutMs, cancelFlag, effectiveUa);
+                    parsed, L"POST", headers, payload, reqTimeoutMs, cancelFlag, effectiveUa);
                 if (http.cancelled) {
                     recordFatal("cancelled", "");
                     return;
@@ -1188,7 +1236,7 @@ public:
                 const bool isTransientHttp = (http.transportOk &&
                     (http.statusCode == 429 || http.statusCode == 500 ||
                      http.statusCode == 502 || http.statusCode == 503 || http.statusCode == 504));
-                if ((isTimeout || isTransientHttp) && attempt == 0) {
+                if ((isTimeout || isTransientHttp) && attempt + 1 < maxAttempts) {
                     LOG_WARN("TranslationService: {} transient error (status={}, win32={}), retrying once (items={}, model={})",
                              out.providerUsed, http.statusCode, http.win32Error, count, model);
                     if (!sleepCancelAwareMs(kTransientRetryDelayMs, cancelFlag, localAbort)) {
@@ -1248,7 +1296,17 @@ public:
             }
 
             std::vector<std::string> chunkTranslations;
-            if (!TranslationService::parseOpenAiBatchResponse(http.body, count, chunkTranslations)) {
+            bool parsedOk = false;
+            if (useSinglePlainMode) {
+                std::string singleText;
+                if (TranslationService::parseOpenAiSingleTextResponse(http.body, singleText)) {
+                    chunkTranslations.push_back(std::move(singleText));
+                    parsedOk = true;
+                }
+            } else {
+                parsedOk = TranslationService::parseOpenAiBatchResponse(http.body, count, chunkTranslations);
+            }
+            if (!parsedOk) {
                 if (count > 1 && depth < kMaxBinarySplitDepth) {
                     const size_t mid = beginIdx + count / 2;
                     LOG_WARN("TranslationService: {} batch parse incomplete (items={}, depth={}), splitting",
@@ -1300,6 +1358,9 @@ public:
             }
         }
 
+        out.detectedSourceLang = hasExplicitSource
+            ? effectiveSourceLang
+            : TranslationService::detectDominantSourceLang(texts);
         out.success = true;
         return out;
     }
@@ -1311,6 +1372,7 @@ public:
 
     TranslationBatchResult translate(
         const std::vector<std::string>& texts,
+        const std::string& effectiveSourceLang,
         const std::string& effectiveTargetLang,
         const TranslationSettings& settings,
         const std::atomic<bool>* cancelFlag) override {
@@ -1338,6 +1400,9 @@ public:
         }
 
         const std::string deeplLang = TranslationService::toDeepLLangCode(effectiveTargetLang);
+        const std::string deeplSource = (effectiveSourceLang.empty() || effectiveSourceLang == "auto")
+            ? std::string()
+            : TranslationService::toDeepLSourceLangCode(effectiveSourceLang);
         std::wstring headers = L"Content-Type: application/json; charset=utf-8\r\n";
         if (!settings.deeplApiKey.empty()) {
             headers += L"Authorization: DeepL-Auth-Key " + WinUtils::utf8ToWstring(settings.deeplApiKey) + L"\r\n";
@@ -1348,10 +1413,13 @@ public:
         for (const auto& [beginIdx, endIdx] : batches) {
             json arr = json::array();
             for (size_t i = beginIdx; i < endIdx; ++i) arr.push_back(texts[i]);
-            const json reqJson = {
+            json reqJson = {
                 {"text", arr},
                 {"target_lang", deeplLang}
             };
+            if (!deeplSource.empty()) {
+                reqJson["source_lang"] = deeplSource;
+            }
             const std::string payload = reqJson.dump();
             WinHttpResult http{};
             for (int attempt = 0; attempt < 2; ++attempt) {
@@ -1646,16 +1714,24 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         return stampElapsed(std::move(emptyRes));
     }
 
+    const std::string effectiveSource = canonicalizeLanguageCode(request.sourceLangOverride);
     const std::string configuredTarget = !request.targetLangOverride.empty()
         ? request.targetLangOverride
         : settings.targetLang;
-    const std::string effectiveTarget = resolveEffectiveTargetLanguage(
-        request.texts, configuredTarget, settings.secondaryTargetLang, request.uiLanguageCode);
+    const std::string canonicalConfiguredTarget = canonicalizeLanguageCode(configuredTarget);
+    const bool explicitLockedTarget =
+        request.lockTargetLanguage &&
+        !canonicalConfiguredTarget.empty() &&
+        canonicalConfiguredTarget != "auto";
+    const std::string effectiveTarget = explicitLockedTarget
+        ? canonicalConfiguredTarget
+        : resolveEffectiveTargetLanguage(
+              request.texts, configuredTarget, settings.secondaryTargetLang, request.uiLanguageCode);
 
     const TranslationProviderKind kind = parseProviderKind(settings.provider);
 
     // 透明预处理加速管线：
-    // 1. 已属目标语种的混合标签（如 Postman "$batch-UDTs批量新增表"）免发网络直接保留原文；
+    // 1. 仅在自动模式（非显式锁定目标且未显式指定源语种）下跳过已属目标语种的混合标签（如 Postman "$batch-UDTs批量新增表"）；
     // 2. 会话级 LRU 缓存命中（峰值 <128KB）直接 0ms 复用；
     // 3. 批内重复 UI 词条（如多处 "reply" / "Key" / "是"）先去重再发网，返回后按索引扇出回填。
     bool batchHasHan = false;
@@ -1671,7 +1747,7 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         if (batchHasHan) break;
     }
 
-    std::string cacheScope = settings.provider + "|" + effectiveTarget;
+    std::string cacheScope = settings.provider + "|" + effectiveSource + "|" + effectiveTarget;
     if (kind == TranslationProviderKind::AutoFree) {
         cacheScope += "|" + settings.freePrimary;
     } else if (kind == TranslationProviderKind::OpenAiCompatible) {
@@ -1688,10 +1764,11 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
     slotToUnique.reserve(request.texts.size());
 
     auto& sessionCache = SessionTranslationCache::instance();
+    const bool allowSameLangShortCircuit = !explicitLockedTarget && (effectiveSource == "auto");
     for (size_t i = 0; i < request.texts.size(); ++i) {
         const std::string& src = request.texts[i];
         if (!request.bypassCache) {
-            if (textAlreadyInTargetLanguage(src, effectiveTarget, batchHasHan)) {
+            if (allowSameLangShortCircuit && textAlreadyInTargetLanguage(src, effectiveTarget, batchHasHan)) {
                 mergedOut[i] = src;
                 continue;
             }
@@ -1718,6 +1795,9 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         fastRes.providerUsed = (kind == TranslationProviderKind::OpenAiCompatible)
             ? "openai_cache"
             : ((kind == TranslationProviderKind::DeepL) ? "deepl_cache" : "session_cache");
+        fastRes.detectedSourceLang = (effectiveSource != "auto")
+            ? effectiveSource
+            : detectDominantSourceLang(request.texts);
         fastRes.effectiveTargetLang = effectiveTarget;
         fastRes.translations = std::move(mergedOut);
         return stampElapsed(std::move(fastRes));
@@ -1738,12 +1818,18 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
             mergedOut[origIdx] = subRes.translations[uIdx];
         }
         subRes.translations = std::move(mergedOut);
+        if (subRes.detectedSourceLang.empty()) {
+            subRes.detectedSourceLang = (effectiveSource != "auto")
+                ? effectiveSource
+                : detectDominantSourceLang(request.texts);
+        }
         return stampElapsed(std::move(subRes));
     };
 
     if (kind == TranslationProviderKind::OpenAiCompatible) {
         OpenAiCompatibleProvider provider;
-        TranslationBatchResult aiRes = provider.translate(uniqueToTranslate, effectiveTarget, settings, cancelFlag);
+        TranslationBatchResult aiRes = provider.translate(
+            uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag);
         if (aiRes.success || aiRes.errorCode == "cancelled") {
             return finalizeWithMerge(std::move(aiRes));
         }
@@ -1758,7 +1844,8 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
     }
     if (kind == TranslationProviderKind::DeepL) {
         DeepLProvider provider;
-        return finalizeWithMerge(provider.translate(uniqueToTranslate, effectiveTarget, settings, cancelFlag));
+        return finalizeWithMerge(provider.translate(
+            uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag));
     }
 
     // AutoFree 双源故障转移：遵循 settings.freePrimary 决定主/备顺序，任一失败无缝回退另一通道
@@ -1792,7 +1879,7 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         : static_cast<ITranslationProvider&>(googleProvider);
 
     TranslationBatchResult primaryRes = primaryProvider.translate(
-        uniqueToTranslate, effectiveTarget, settings, cancelFlag);
+        uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag);
     if (primaryRes.success || primaryRes.errorCode == "cancelled") {
         return finalizeWithMerge(std::move(primaryRes));
     }
@@ -1801,7 +1888,7 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
              primaryProvider.id(), primaryRes.errorCode, primaryRes.errorDetail, fallbackProvider.id());
 
     TranslationBatchResult fallbackRes = fallbackProvider.translate(
-        uniqueToTranslate, effectiveTarget, settings, cancelFlag);
+        uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag);
     if (fallbackRes.success || fallbackRes.errorCode == "cancelled") {
         // 若主通道 edge_free 触发风控/超时/拆行失败并成功由 google_free 兜底，开启 5 分钟智能冷却避免连环空等
         if (fallbackRes.success && !googleFirst && std::string_view(primaryProvider.id()) == "edge_free") {
@@ -2068,6 +2155,38 @@ std::string TranslationService::toDeepLLangCode(std::string_view canonicalLang) 
     return "ZH-HANS";
 }
 
+std::string TranslationService::toDeepLSourceLangCode(std::string_view canonicalLang) {
+    const std::string c = canonicalizeLanguageCode(canonicalLang);
+    if (c == "zh-CN" || c == "zh-TW") return "ZH";
+    if (c == "en") return "EN";
+    if (c == "ja") return "JA";
+    if (c == "ko") return "KO";
+    if (c == "ru") return "RU";
+    if (c == "pt-BR") return "PT";
+    if (c == "es") return "ES";
+    if (c == "fr") return "FR";
+    if (c == "de") return "DE";
+    return {};
+}
+
+std::string TranslationService::detectDominantSourceLang(const std::vector<std::string>& texts) {
+    const ScriptStats stats = analyzeScriptStats(texts);
+    if (stats.totalLetters == 0) return {};
+    const float total = static_cast<float>(stats.totalLetters);
+    const float hanRatio = static_cast<float>(stats.hanCount) / total;
+    const float kanaRatio = static_cast<float>(stats.kanaCount) / total;
+    const float hangulRatio = static_cast<float>(stats.hangulCount) / total;
+    const float cyrillicRatio = static_cast<float>(stats.cyrillicCount) / total;
+    const float latinRatio = static_cast<float>(stats.latinCount) / total;
+
+    if (kanaRatio >= 0.08f) return "ja";
+    if (hangulRatio >= 0.20f) return "ko";
+    if (cyrillicRatio >= 0.25f) return "ru";
+    if (hanRatio >= TranslationConstants::kAutoCjkThresholdRatio) return "zh-CN";
+    if (latinRatio >= 0.60f) return "en";
+    return {};
+}
+
 std::string TranslationService::toHumanLanguageName(std::string_view canonicalLang) {
     const std::string c = canonicalizeLanguageCode(canonicalLang);
     if (c == "zh-CN") return "Simplified Chinese";
@@ -2297,6 +2416,59 @@ bool TranslationService::parseOpenAiBatchResponse(
         outTranslations.clear();
         return trySinglePlainTextFallback(content);
     }
+}
+
+bool TranslationService::parseOpenAiSingleTextResponse(
+    std::string_view responseBody,
+    std::string& outTranslation) {
+    outTranslation.clear();
+    std::string content;
+    try {
+        const auto envelope = json::parse(responseBody.begin(), responseBody.end());
+        if (!envelope.is_object() || !envelope.contains("choices") ||
+            !envelope["choices"].is_array() || envelope["choices"].empty()) {
+            return false;
+        }
+        const auto& firstChoice = envelope["choices"][0];
+        if (!firstChoice.is_object() || !firstChoice.contains("message") ||
+            !firstChoice["message"].is_object()) {
+            return false;
+        }
+        const auto& msg = firstChoice["message"];
+        if (msg.contains("content") && msg["content"].is_string()) {
+            content = msg["content"].get<std::string>();
+        }
+    } catch (...) {
+        return false;
+    }
+
+    std::string plain = stripReasoningThinkBlocks(content);
+    if (plain.empty()) return false;
+
+    if (plain.rfind("```", 0) == 0) {
+        const size_t firstNewline = plain.find('\n');
+        if (firstNewline != std::string::npos) {
+            plain = plain.substr(firstNewline + 1);
+            const size_t closeFence = plain.rfind("```");
+            if (closeFence != std::string::npos) {
+                plain = plain.substr(0, closeFence);
+            }
+            plain = trimAscii(plain);
+        }
+    }
+    if (plain.empty()) return false;
+
+    // 兼容模型偶发自行包裹的 {"translations":[{"text":"..."}]} 响应，自动解包正文
+    if (plain.front() == '{' && plain.find("\"translations\"") != std::string::npos) {
+        std::vector<std::string> unwrapped;
+        if (parseOpenAiBatchResponse(responseBody, 1, unwrapped) && !unwrapped.empty() && !unwrapped[0].empty()) {
+            outTranslation = std::move(unwrapped[0]);
+            return true;
+        }
+    }
+
+    outTranslation = std::move(plain);
+    return true;
 }
 
 bool TranslationService::parseDeepLTranslateResponse(

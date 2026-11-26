@@ -106,6 +106,16 @@ bool configuredEnabled(const std::string& id) {
         if (config.has("/textExpander/enabled")) return config.get<bool>("/textExpander/enabled", true);
         return true;
     }
+    if (id == "window_manager" || id == "windowmanager") {
+        if (config.has("/plugins/window_manager/enabled")) return config.get<bool>("/plugins/window_manager/enabled", false);
+        if (config.has("/windowManager/enabled")) return config.get<bool>("/windowManager/enabled", false);
+        return false;
+    }
+    if (id == "caps_layer" || id == "capslayer") {
+        if (config.has("/plugins/caps_layer/enabled")) return config.get<bool>("/plugins/caps_layer/enabled", false);
+        if (config.has("/capsLayer/enabled")) return config.get<bool>("/capsLayer/enabled", false);
+        return false;
+    }
     const auto key = pluginConfigKey(id);
     if (config.has(key)) return config.get<bool>(key, true);
     return true;
@@ -229,6 +239,26 @@ void PluginManager::reconcilePluginConfigs() {
     }
     patch["textExpander"]["enabled"] = textExpanderEnabled;
     patch["plugins"]["text_expander"]["enabled"] = textExpanderEnabled;
+
+    // 11. window_manager: 纯 Rust 独立窗口管理套件 (Tools3000_WindowKit.exe)，默认关闭 0 进程 0 占用
+    bool windowManagerEnabled = false;
+    if (cfg.has("/plugins/window_manager/enabled")) {
+        windowManagerEnabled = cfg.get<bool>("/plugins/window_manager/enabled", false);
+    } else if (cfg.has("/windowManager/enabled")) {
+        windowManagerEnabled = cfg.get<bool>("/windowManager/enabled", false);
+    }
+    patch["windowManager"]["enabled"] = windowManagerEnabled;
+    patch["plugins"]["window_manager"]["enabled"] = windowManagerEnabled;
+
+    // 12. caps_layer: 纯 Rust CapsLock 引导键与分应用改键，默认关闭 0 线程 < 1ns 短路
+    bool capsLayerEnabled = false;
+    if (cfg.has("/plugins/caps_layer/enabled")) {
+        capsLayerEnabled = cfg.get<bool>("/plugins/caps_layer/enabled", false);
+    } else if (cfg.has("/capsLayer/enabled")) {
+        capsLayerEnabled = cfg.get<bool>("/capsLayer/enabled", false);
+    }
+    patch["capsLayer"]["enabled"] = capsLayerEnabled;
+    patch["plugins"]["caps_layer"]["enabled"] = capsLayerEnabled;
 
     cfg.mergePatch(patch, "/plugins");
 }

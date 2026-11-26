@@ -239,7 +239,15 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
     // 继承父级 TraceId（无则自动生成），保持整条手势/命令执行日志链路统一追踪
     tools3000::core::TraceId::Scope scope(tools3000::core::TraceId::current());
 
-    // 若注册了自定义 Handler (如应用级命令路由或测试 Mock 拦截)，优先通过 Handler 分发
+    // 若注册了自定义 Handler (如应用级命令路由或测试 Mock 拦截)，优先通过 Handler 分发；
+    // 针对划词翻译：先确保鼠标起手的目标窗口处于前台激活态，保证后续 Ctrl+C 选区捕获精准落向原窗口。
+    if (cmd == BuiltinCommand::QuickTranslate) {
+        if (HWND target = resolveTargetWindow(targetWindowPtr);
+            target && IsWindow(target) && target != GetForegroundWindow()) {
+            SetForegroundWindow(target);
+            Sleep(15);
+        }
+    }
     if (hasHandler(cmd)) {
         dispatchAppCommand(cmd);
         return;
@@ -339,6 +347,7 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::StartRecording:
         case BuiltinCommand::ToggleSearch:
         case BuiltinCommand::PasteAsPin:
+        case BuiltinCommand::QuickTranslate:
             dispatchAppCommand(cmd);
             break;
     }

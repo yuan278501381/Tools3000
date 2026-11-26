@@ -989,5 +989,7 @@
   "重点说明||Text": "Nota clave",
   "静音||Off": "Silencio",
   "高刷||Smooth": "Fluido",
-  "鼠标自动运镜||Auto Zoom": "Zoom auto ratón"
+  "鼠标自动运镜||Auto Zoom": "Zoom auto ratón",
+  "Quick Translate": "Traducción rápida",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "Dibuja una T (←→↓) para traducir el texto seleccionado o del portapapeles"
 }

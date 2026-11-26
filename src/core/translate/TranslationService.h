@@ -83,7 +83,11 @@ public:
     static std::string toEdgeLangCode(std::string_view canonicalLang);
     static std::string toGoogleLangCode(std::string_view canonicalLang);
     static std::string toDeepLLangCode(std::string_view canonicalLang);
+    static std::string toDeepLSourceLangCode(std::string_view canonicalLang);
     static std::string toHumanLanguageName(std::string_view canonicalLang);
+
+    /// 基于字符脚本分布的轻量本地源语种推测（当上游如 AI 模型未返回 detectedSourceLang 时作展示补充）
+    static std::string detectDominantSourceLang(const std::vector<std::string>& texts);
 
     /// 协议响应解析器（纯函数，支持单元测试精确验证各类边界响应）
     static bool parseEdgeTranslateResponse(
@@ -101,6 +105,11 @@ public:
         std::string_view responseBody,
         size_t expectedCount,
         std::vector<std::string>& outTranslations);
+
+    /// 解析单条纯文本直译响应（规避单段划词含大量引号/换行时的 JSON 转义崩溃）
+    static bool parseOpenAiSingleTextResponse(
+        std::string_view responseBody,
+        std::string& outTranslation);
 
     static bool parseDeepLTranslateResponse(
         std::string_view responseBody,

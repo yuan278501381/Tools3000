@@ -452,15 +452,20 @@ function Assert-PeMachineArchitecture {
 
 $ViewerProjectDir = Join-Path $ScriptDir "src\viewer"
 $ViewerExeName = "Tools3000_Picasa_Viewer.exe"
+$WindowKitProjectDir = Join-Path $ScriptDir "src\window_kit"
+$WindowKitExeName = "Tools3000_WindowKit.exe"
 $CliProjectDir = Join-Path $ScriptDir "src\cli"
 $CliExeName = "tools3000-cli.exe"
 $ViewerRustTarget = if ($Arch -eq "arm64") { "aarch64-pc-windows-msvc" } else { "x86_64-pc-windows-msvc" }
 $ViewerTargetBinPath = Join-Path $ViewerProjectDir "target\$ViewerRustTarget\release\$ViewerExeName"
 $ViewerBinCandidates = @($ViewerTargetBinPath)
+$WindowKitTargetBinPath = Join-Path $WindowKitProjectDir "target\$ViewerRustTarget\release\$WindowKitExeName"
+$WindowKitBinCandidates = @($WindowKitTargetBinPath)
 $CliTargetBinPath = Join-Path $CliProjectDir "target\$ViewerRustTarget\release\$CliExeName"
 $CliBinCandidates = @($CliTargetBinPath)
 if ($Arch -eq "x64" -and -not $RequireSigning -and -not $RequirePublicTrust) {
     $ViewerBinCandidates += (Join-Path $ViewerProjectDir "target\release\$ViewerExeName")
+    $WindowKitBinCandidates += (Join-Path $WindowKitProjectDir "target\release\$WindowKitExeName")
     $CliBinCandidates += (Join-Path $CliProjectDir "target\release\$CliExeName")
 }
 
@@ -493,6 +498,7 @@ try {
             "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $RustScript,
             "-ViewerProjectDir", $ViewerProjectDir,
             "-CliProjectDir", $CliProjectDir,
+            "-WindowKitProjectDir", $WindowKitProjectDir,
             "-Arch", $Arch,
             "-CargoPath", $CargoCmd.Source
         )
@@ -651,6 +657,15 @@ if (-not $BuiltCliExe) {
     throw "找不到编译后的 $CliExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
 }
 Assert-PeMachineArchitecture -FilePath $BuiltCliExe -ExpectedArch $Arch
+
+$BuiltWindowKitExe = $WindowKitBinCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $BuiltWindowKitExe) {
+    throw "找不到编译后的 $WindowKitExeName (架构: $Arch, 目标: $ViewerRustTarget)。请安装 Rust 工具链 (cargo) 后重试。"
+}
+Assert-PeMachineArchitecture -FilePath $BuiltWindowKitExe -ExpectedArch $Arch
+if (Test-Path -LiteralPath $BuiltExeCheck) {
+    Copy-Item -LiteralPath $BuiltWindowKitExe -Destination (Join-Path (Split-Path -Parent $BuiltExeCheck) $WindowKitExeName) -Force
+}
 
 # ------------------------------------------------------------------------------
 # 4.5 运行单元测试与代码覆盖率防回退分析 (失败则中断流水线)
@@ -848,6 +863,11 @@ if (Test-Path $ExePath) {
     Copy-Item -LiteralPath $BuiltCliExe -Destination $StagedCliExe -Force
     Assert-PeMachineArchitecture -FilePath $StagedCliExe -ExpectedArch $Arch
     Write-Log "已复制并校验 Rust CLI / MCP 工具: $CliExeName"
+
+    $StagedWindowKitExe = Join-Path $StagingDir $WindowKitExeName
+    Copy-Item -LiteralPath $BuiltWindowKitExe -Destination $StagedWindowKitExe -Force
+    Assert-PeMachineArchitecture -FilePath $StagedWindowKitExe -ExpectedArch $Arch
+    Write-Log "已复制并校验 Rust 窗口管理引擎: $WindowKitExeName"
 } else {
     throw "找不到编译后的 Tools3000.exe"
 }
@@ -959,9 +979,10 @@ if ($LASTEXITCODE -ne 0) { throw "第三方许可与 SBOM 生成失败" }
 $MainExeArtifact = "Tools3000.exe"
 $ServiceExeArtifact = "Tools3000_Service.exe"
 $ViewerExeArtifact = "Tools3000_Picasa_Viewer.exe"
+$WindowKitExeArtifact = "Tools3000_WindowKit.exe"
 
 $RequiredArtifacts = @(
-    $MainExeArtifact, $ServiceExeArtifact, $ViewerExeArtifact, $CliExeName, "Tools3000Core.dll",
+    $MainExeArtifact, $ServiceExeArtifact, $ViewerExeArtifact, $WindowKitExeArtifact, $CliExeName, "Tools3000Core.dll",
     "LICENSE", "LICENSE-EXCEPTION.md", "THIRD_PARTY_NOTICES.txt", "SBOM.spdx.json",
     "ui\index.html", "plugins\Plugin_Gesture.dll", "plugins\Plugin_Capture.dll",
     "plugins\Plugin_Keycast.dll", "plugins\Plugin_Search.dll",
@@ -1011,6 +1032,7 @@ $OwnedArtifacts = @(
     (Join-Path $StagingDir $MainExeArtifact),
     (Join-Path $StagingDir $ServiceExeArtifact),
     (Join-Path $StagingDir $ViewerExeArtifact),
+    (Join-Path $StagingDir $WindowKitExeArtifact),
     (Join-Path $StagingDir $CliExeName),
     (Join-Path $StagingDir "Tools3000Core.dll")
 ) + @(Get-ChildItem -LiteralPath (Join-Path $StagingDir "plugins") -Filter "Plugin_*.dll" -File |
@@ -1128,6 +1150,7 @@ if (Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyCo
     taskkill /F /T /IM Tools3000.exe 2>$null | Out-Null
     taskkill /F /T /IM Tools3000_Service.exe 2>$null | Out-Null
     taskkill /F /T /IM Tools3000_Picasa_Viewer.exe 2>$null | Out-Null
+    taskkill /F /T /IM Tools3000_WindowKit.exe 2>$null | Out-Null
     taskkill /F /T /IM tools3000-cli.exe 2>$null | Out-Null
     Get-Process -Name "Tools3000*", "Tools3000_Service*" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 250
@@ -1324,7 +1347,7 @@ if ((Test-Path -LiteralPath $MpCmdRun) -and $env:CI -ne 'true' -and $env:GITHUB_
     $AvGateDir = Join-Path ([System.IO.Path]::GetTempPath()) "tools3000_av_gate_$TraceID"
     New-Item -ItemType Directory -Path $AvGateDir -Force | Out-Null
     try {
-        foreach ($CoreBin in @("Tools3000.exe", "Tools3000_Service.exe", "Tools3000_Picasa_Viewer.exe", "Tools3000Core.dll")) {
+        foreach ($CoreBin in @("Tools3000.exe", "Tools3000_Service.exe", "Tools3000_Picasa_Viewer.exe", "Tools3000_WindowKit.exe", "Tools3000Core.dll")) {
             $SrcBin = Join-Path $DeployDir $CoreBin
             if (Test-Path -LiteralPath $SrcBin) {
                 Copy-Item -LiteralPath $SrcBin -Destination (Join-Path $AvGateDir $CoreBin) -Force

@@ -20,8 +20,9 @@
 #include <windowsx.h>
 
 #include <algorithm>
-#include <cmath>
+#include <array>
 #include <cctype>
+#include <cmath>
 #include <vector>
 
 #pragma comment(lib, "d2d1.lib")
@@ -36,16 +37,55 @@ constexpr const wchar_t* kPopupClassName = L"Tools3000_QuickTranslatePopup";
 constexpr UINT_PTR kTimerLoadingAnim = 1;
 constexpr UINT_PTR kTimerCopyReset = 2;
 
-constexpr float kCardWidthDip = 420.0f;
-constexpr float kMinCardHeightDip = 168.0f;
-constexpr float kMaxCardHeightDip = 480.0f;
+constexpr const char* kCfgQuickSourceLang = "/translate/quickSourceLang";
+constexpr const char* kCfgQuickTargetLang = "/translate/quickTargetLang";
+
+constexpr UINT kMenuIdAuto = 1000;
+constexpr UINT kMenuIdLangBase = 1100;
+constexpr UINT kMenuIdOpenSettings = 1200;
+
+constexpr float kCardWidthDip = 468.0f;
+constexpr float kMinCardHeightDip = 172.0f;
+constexpr float kMaxCardHeightDip = 500.0f;
 constexpr float kOuterPadDip = 16.0f;
-constexpr float kHeaderHeightDip = 42.0f;
+constexpr float kHeaderHeightDip = 44.0f;
 constexpr float kFooterHeightDip = 46.0f;
 constexpr float kSectionGapDip = 10.0f;
 constexpr float kCornerRadiusDip = 12.0f;
 constexpr int kCursorOffsetDip = 16;
 constexpr int kWorkAreaMarginDip = 12;
+
+struct LangMenuEntry {
+    const char* code;
+    const wchar_t* zhShort;
+    const wchar_t* zhMenu;
+    const wchar_t* enShort;
+    const wchar_t* enMenu;
+};
+
+// 全平台统一 10 语种目录（与 InPlaceTranslateCard.tsx 单一事实源对齐）
+constexpr std::array<LangMenuEntry, 10> kSupportedLanguages = {{
+    {"zh-CN", L"简中", L"简体中文",           L"ZH-CN", L"Chinese (Simplified)"},
+    {"zh-TW", L"繁中", L"繁體中文",           L"ZH-TW", L"Chinese (Traditional)"},
+    {"en",    L"英语", L"英语 (English)",     L"EN",    L"English"},
+    {"ja",    L"日语", L"日语 (日本語)",       L"JA",    L"Japanese (日本語)"},
+    {"ko",    L"韩语", L"韩语 (한국어)",       L"KO",    L"Korean (한국어)"},
+    {"fr",    L"法语", L"法语 (Français)",    L"FR",    L"French (Français)"},
+    {"de",    L"德语", L"德语 (Deutsch)",     L"DE",    L"German (Deutsch)"},
+    {"es",    L"西语", L"西班牙语 (Español)",  L"ES",    L"Spanish (Español)"},
+    {"ru",    L"俄语", L"俄语 (Русский)",     L"RU",    L"Russian (Русский)"},
+    {"pt-BR", L"葡语", L"葡萄牙语 (Português)", L"PT",   L"Portuguese (Português)"},
+}};
+
+const LangMenuEntry* findLangEntry(std::string_view raw) noexcept {
+    const std::string canon = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(raw);
+    for (const auto& entry : kSupportedLanguages) {
+        if (canon == entry.code) {
+            return &entry;
+        }
+    }
+    return nullptr;
+}
 
 constexpr bool pointInD2DRect(const D2D1_RECT_F& rc, float x, float y) noexcept {
     return x >= rc.left && x <= rc.right && y >= rc.top && y <= rc.bottom;
@@ -63,8 +103,8 @@ std::string toUpperAscii(std::string_view text) {
 std::string shortLangCode(std::string_view raw) {
     const std::string canon = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(raw);
     if (canon.empty() || canon == "auto") return "AUTO";
-    if (canon == "zh-Hans") return "ZH";
-    if (canon == "zh-Hant") return "ZH-TW";
+    if (canon == "zh-CN") return "ZH";
+    if (canon == "zh-TW") return "ZH-TW";
     if (canon == "pt-BR") return "PT";
     const size_t dash = canon.find('-');
     return toUpperAscii(dash == std::string::npos ? std::string_view(canon) : std::string_view(canon).substr(0, dash));
@@ -109,7 +149,10 @@ struct PopupPalette {
     D2D1_COLOR_F mutedText{};
     D2D1_COLOR_F errorText{};
     D2D1_COLOR_F badgeBg{};
+    D2D1_COLOR_F badgeBorder{};
     D2D1_COLOR_F badgeText{};
+    D2D1_COLOR_F pillBg{};
+    D2D1_COLOR_F pillBorder{};
     D2D1_COLOR_F btnBg{};
     D2D1_COLOR_F btnHoverBg{};
     D2D1_COLOR_F accent{};
@@ -140,13 +183,16 @@ struct PopupPalette {
             p.mutedText   = D2D1::ColorF(148.0f / 255.0f, 163.0f / 255.0f, 184.0f / 255.0f, 0.86f);
             p.errorText   = D2D1::ColorF(248.0f / 255.0f, 113.0f / 255.0f, 113.0f / 255.0f, 0.98f);
             p.badgeBg     = D2D1::ColorF(acc.r, acc.g, acc.b, 0.20f);
+            p.badgeBorder = D2D1::ColorF(acc.r, acc.g, acc.b, 0.42f);
             p.badgeText   = D2D1::ColorF(
                 (std::min)(1.0f, acc.r * 0.55f + 0.45f),
                 (std::min)(1.0f, acc.g * 0.55f + 0.45f),
                 (std::min)(1.0f, acc.b * 0.55f + 0.45f),
                 1.0f);
+            p.pillBg      = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.07f);
+            p.pillBorder  = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
             p.btnBg       = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.07f);
-            p.btnHoverBg  = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.14f);
+            p.btnHoverBg  = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.15f);
             p.scrollTrack = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.06f);
             p.scrollThumb = D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.26f);
         } else {
@@ -160,7 +206,10 @@ struct PopupPalette {
             p.mutedText   = D2D1::ColorF(100.0f / 255.0f, 116.0f / 255.0f, 139.0f / 255.0f, 0.90f);
             p.errorText   = D2D1::ColorF(220.0f / 255.0f, 38.0f / 255.0f, 38.0f / 255.0f, 0.96f);
             p.badgeBg     = D2D1::ColorF(acc.r, acc.g, acc.b, 0.12f);
+            p.badgeBorder = D2D1::ColorF(acc.r, acc.g, acc.b, 0.32f);
             p.badgeText   = D2D1::ColorF(acc.r * 0.85f, acc.g * 0.85f, acc.b * 0.85f, 1.0f);
+            p.pillBg      = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.05f);
+            p.pillBorder  = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.12f);
             p.btnBg       = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f);
             p.btnHoverBg  = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.12f);
             p.scrollTrack = D2D1::ColorF(15.0f / 255.0f, 23.0f / 255.0f, 42.0f / 255.0f, 0.06f);
@@ -251,7 +300,8 @@ std::string QuickTranslatePopupWindow::formatProviderDisplayLabel(
         if (providerUsed == "edge_free" || providerUsed == "edge") return "Edge Translate";
         if (providerUsed == "google_free" || providerUsed == "google") return "Google Translate";
         if (providerUsed == "deepl") return "DeepL";
-        if (providerUsed == "openai_compatible") {
+        if (providerUsed == "index_translate") return "Index-Translate";
+        if (providerUsed == "openai_compatible" || providerUsed == "openai_cache") {
             if (tools3000::core::translate::TranslationService::isKeylessPublicOpenAiUrl(settings.openaiBaseUrl)) {
                 return "Index-Translate";
             }
@@ -287,11 +337,112 @@ std::string QuickTranslatePopupWindow::formatDirectionBadge(
     return src + " -> " + dst;
 }
 
+std::string QuickTranslatePopupWindow::formatLanguagePillLabel(
+    std::string_view langCode,
+    bool isChineseUi,
+    bool isAutoTarget,
+    std::string_view detectedLang) {
+    const std::string canon = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(langCode);
+    if (canon.empty() || canon == "auto") {
+        if (!detectedLang.empty()) {
+            if (const auto* det = findLangEntry(detectedLang)) {
+                const std::wstring prefix = isChineseUi ? L"自动(" : L"Auto (";
+                const std::wstring name = isChineseUi ? det->zhShort : det->enShort;
+                return tools3000::core::WinUtils::wstringToUtf8(prefix + name + L")");
+            }
+        }
+        return tools3000::core::WinUtils::wstringToUtf8(isChineseUi ? L"自动检测" : L"Auto");
+    }
+    if (const auto* entry = findLangEntry(canon)) {
+        const std::wstring base = isChineseUi ? entry->zhShort : entry->enShort;
+        if (isAutoTarget) {
+            const std::wstring prefix = isChineseUi ? L"自动·" : L"Auto · ";
+            return tools3000::core::WinUtils::wstringToUtf8(prefix + base);
+        }
+        return tools3000::core::WinUtils::wstringToUtf8(base);
+    }
+    return shortLangCode(canon);
+}
+
+QuickTranslatePopupWindow::LanguagePair QuickTranslatePopupWindow::computeSwappedLanguagePair(
+    std::string_view currentSourcePref,
+    std::string_view currentEffectiveTarget,
+    std::string_view lastDistinctTarget,
+    std::string_view settingsTargetLang,
+    std::string_view settingsSecondaryLang,
+    std::string_view uiLanguageCode) {
+    using tools3000::core::translate::TranslationService;
+
+    const std::string srcCanon = TranslationService::canonicalizeLanguageCode(currentSourcePref);
+    std::string curTarget = TranslationService::canonicalizeLanguageCode(currentEffectiveTarget);
+    if (curTarget.empty() || curTarget == "auto") {
+        curTarget = "zh-CN";
+    }
+
+    // 情况 1：用户显式指定了源语种（如 日语 -> 简中），一键精准互换为 简中 -> 日语
+    if (!srcCanon.empty() && srcCanon != "auto") {
+        if (srcCanon == curTarget) {
+            std::string fallback = TranslationService::canonicalizeLanguageCode(settingsSecondaryLang);
+            if (fallback.empty() || fallback == "auto" || fallback == curTarget) {
+                fallback = (curTarget == "en") ? "zh-CN" : "en";
+            }
+            return LanguagePair{"auto", fallback};
+        }
+        return LanguagePair{curTarget, srcCanon};
+    }
+
+    // 情况 2：自动检测源语种模式下，一键在最近使用的对偶目标语种或设置的主/副互译对之间切换
+    const std::string lastTarget = TranslationService::canonicalizeLanguageCode(lastDistinctTarget);
+    if (!lastTarget.empty() && lastTarget != "auto" && lastTarget != curTarget) {
+        return LanguagePair{"auto", lastTarget};
+    }
+
+    std::string primary = TranslationService::canonicalizeLanguageCode(settingsTargetLang);
+    if (primary.empty() || primary == "auto") {
+        primary = TranslationService::canonicalizeLanguageCode(uiLanguageCode);
+    }
+    if (primary.empty() || primary == "auto") {
+        primary = "zh-CN";
+    }
+
+    std::string secondary = TranslationService::canonicalizeLanguageCode(settingsSecondaryLang);
+    if (secondary.empty() || secondary == "auto" || secondary == primary) {
+        secondary = (primary == "en") ? "zh-CN" : "en";
+    }
+
+    const std::string nextTarget = (curTarget == primary) ? secondary : primary;
+    return LanguagePair{"auto", nextTarget};
+}
+
 std::string QuickTranslatePopupWindow::nextQuickTargetLanguage(std::string_view currentOverride) noexcept {
     if (currentOverride.empty()) return "zh-CN";
     if (currentOverride == "zh-CN") return "en";
     if (currentOverride == "en") return "ja";
     return {};
+}
+
+void QuickTranslatePopupWindow::loadQuickLanguagePrefs(std::string& outSource, std::string& outTarget) const {
+    using tools3000::core::translate::TranslationService;
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string rawSrc = cfg.get<std::string>(kCfgQuickSourceLang, "auto");
+    const std::string rawDst = cfg.get<std::string>(kCfgQuickTargetLang, "auto");
+    const std::string canonSrc = TranslationService::canonicalizeLanguageCode(rawSrc);
+    const std::string canonDst = TranslationService::canonicalizeLanguageCode(rawDst);
+    outSource = (canonSrc.empty() || canonSrc == "auto" || !findLangEntry(canonSrc)) ? "auto" : canonSrc;
+    outTarget = (canonDst.empty() || canonDst == "auto" || !findLangEntry(canonDst)) ? "auto" : canonDst;
+}
+
+void QuickTranslatePopupWindow::saveQuickLanguagePrefs(
+    std::string_view sourcePref, std::string_view targetPref) const {
+    auto& cfg = tools3000::core::ConfigManager::instance();
+    const std::string srcVal = sourcePref.empty() ? std::string("auto") : std::string(sourcePref);
+    const std::string dstVal = targetPref.empty() ? std::string("auto") : std::string(targetPref);
+    cfg.mergePatch({
+        {"translate", {
+            {"quickSourceLang", srcVal},
+            {"quickTargetLang", dstVal}
+        }}
+    }, "/translate");
 }
 
 bool QuickTranslatePopupWindow::initialize(HINSTANCE hInstance) {
@@ -384,7 +535,7 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
                 return;
             }
 
-            // 1. 优先尝试抓取前台窗口当前选区（仅当非自身浮窗且未屏蔽热键时发 Ctrl+C）
+            // 1. 优先尝试抓取前台窗口当前选区（仅当非自身浮窗时发 Ctrl+C）
             bool fromClipboard = false;
             std::string rawText;
             const HWND selfHwnd = m_hwnd.load(std::memory_order_acquire);
@@ -396,8 +547,7 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
             }
 
             std::string cleaned = sanitizeAndTrimInput(rawText);
-            // 2. 若未捕获到新选区变化（例如用户先 Ctrl+C 复制了内容或当前控件不支持自动复制），
-            //    无缝回退读取剪贴板纯文本，兑现「划词与剪贴板翻译」双源承诺。
+            // 2. 未捕获到新选区变化时无缝回退读取剪贴板纯文本
             if (cleaned.empty()) {
                 const std::string clipText = tools3000::core::WinUtils::getClipboardText();
                 cleaned = sanitizeAndTrimInput(clipText);
@@ -423,28 +573,38 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
 
             auto& svc = tools3000::core::translate::TranslationService::instance();
             const auto settings = svc.loadSettings();
-            const std::string effectiveTarget =
-                tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
-                    {cleaned},
-                    settings.targetLang,
-                    settings.secondaryTargetLang,
-                    tools3000::core::UiI18n::getEffectiveLanguageTag());
-            const std::string providerLabel = formatProviderDisplayLabel(settings);
-            const std::string initialDir = formatDirectionBadge("auto", effectiveTarget);
+            std::string sourcePref = "auto";
+            std::string targetPref = "auto";
+            loadQuickLanguagePrefs(sourcePref, targetPref);
 
-            LOG_INFO("Global translate executing: reqId={}, source={}, chars={}, target={}, provider={}",
-                     reqId, fromClipboard ? "clipboard" : "selection", cleaned.size(), effectiveTarget, settings.provider);
+            const bool lockTarget = (targetPref != "auto");
+            const std::string effectiveTarget = lockTarget
+                ? targetPref
+                : tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
+                      {cleaned},
+                      settings.targetLang,
+                      settings.secondaryTargetLang,
+                      tools3000::core::UiI18n::getEffectiveLanguageTag());
+            const std::string providerLabel = formatProviderDisplayLabel(settings);
+
+            LOG_INFO("Global translate executing: reqId={}, source={}, chars={}, srcLang={}, target={}, locked={}, provider={}",
+                     reqId, fromClipboard ? "clipboard" : "selection", cleaned.size(),
+                     sourcePref, effectiveTarget, lockTarget, settings.provider);
 
             // 3. 1ms 内立即在 UI 线程弹出加载中轻量卡片
             tools3000::core::MainThreadDispatcher::instance().post(
-                [this, reqId, cleaned, fromClipboard, providerLabel, initialDir, cursorPt]() {
-                    presentLoadingOnUiThread(reqId, cleaned, fromClipboard, providerLabel, initialDir, cursorPt);
+                [this, reqId, cleaned, fromClipboard, providerLabel, sourcePref, targetPref, effectiveTarget, cursorPt]() {
+                    presentLoadingOnUiThread(
+                        reqId, cleaned, fromClipboard, providerLabel,
+                        sourcePref, targetPref, effectiveTarget, cursorPt);
                 });
 
-            // 4. 异步调用统一 TranslationService 单一事实源（默认 Bilibili Index-Translate + 免费双源容灾）
+            // 4. 异步调用统一 TranslationService 单一事实源
             tools3000::core::translate::TranslationBatchRequest req;
             req.texts = {cleaned};
+            req.sourceLangOverride = sourcePref;
             req.targetLangOverride = effectiveTarget;
+            req.lockTargetLanguage = lockTarget;
             req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
             const auto res = svc.translateBatch(req, cancelFlag.get());
 
@@ -456,13 +616,13 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
             if (res.success && !res.translations.empty() && !res.translations[0].empty()) {
                 const std::string finalProvider = formatProviderDisplayLabel(settings, res.providerUsed);
                 const std::string finalTarget = res.effectiveTargetLang.empty() ? effectiveTarget : res.effectiveTargetLang;
-                const std::string finalDir = formatDirectionBadge(res.detectedSourceLang, finalTarget);
+                const std::string finalDetected = res.detectedSourceLang;
                 const std::string translated = res.translations[0];
                 LOG_INFO("Global translate completed: reqId={}, providerUsed={}, outChars={}",
                          reqId, res.providerUsed, translated.size());
                 tools3000::core::MainThreadDispatcher::instance().post(
-                    [this, reqId, translated, finalDir, finalProvider]() {
-                        presentResultOnUiThread(reqId, translated, finalDir, finalProvider);
+                    [this, reqId, translated, finalDetected, finalTarget, finalProvider]() {
+                        presentResultOnUiThread(reqId, translated, finalDetected, finalTarget, finalProvider);
                     });
             } else {
                 const std::string errMsg = formatUserFacingError(res);
@@ -485,7 +645,8 @@ void QuickTranslatePopupWindow::translateTextAsync(
     bool fromClipboard,
     POINT anchorPt,
     bool bypassCache,
-    const std::string& targetLangOverride) {
+    const std::string& targetLangOverride,
+    const std::string& sourceLangOverride) {
     if (m_shuttingDown.load(std::memory_order_acquire)) {
         return;
     }
@@ -500,19 +661,27 @@ void QuickTranslatePopupWindow::translateTextAsync(
 
     auto& svc = tools3000::core::translate::TranslationService::instance();
     const auto settings = svc.loadSettings();
-    const std::string effectiveTarget = targetLangOverride.empty()
-        ? tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
+
+    const std::string canonSrc = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(sourceLangOverride);
+    const std::string sourcePref = (canonSrc.empty() || canonSrc == "auto") ? "auto" : canonSrc;
+    const std::string canonDst = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(targetLangOverride);
+    const std::string targetPref = (canonDst.empty() || canonDst == "auto") ? "auto" : canonDst;
+    const bool lockTarget = (targetPref != "auto");
+
+    const std::string effectiveTarget = lockTarget
+        ? targetPref
+        : tools3000::core::translate::TranslationService::resolveEffectiveTargetLanguage(
               {cleaned},
               settings.targetLang,
               settings.secondaryTargetLang,
-              tools3000::core::UiI18n::getEffectiveLanguageTag())
-        : targetLangOverride;
+              tools3000::core::UiI18n::getEffectiveLanguageTag());
     const std::string providerLabel = formatProviderDisplayLabel(settings);
-    const std::string initialDir = formatDirectionBadge("auto", effectiveTarget);
 
     tools3000::core::MainThreadDispatcher::instance().post(
-        [this, reqId, cleaned, fromClipboard, providerLabel, initialDir, anchorPt]() {
-            presentLoadingOnUiThread(reqId, cleaned, fromClipboard, providerLabel, initialDir, anchorPt);
+        [this, reqId, cleaned, fromClipboard, providerLabel, sourcePref, targetPref, effectiveTarget, anchorPt]() {
+            presentLoadingOnUiThread(
+                reqId, cleaned, fromClipboard, providerLabel,
+                sourcePref, targetPref, effectiveTarget, anchorPt);
         });
 
     std::jthread prevWorker;
@@ -521,13 +690,15 @@ void QuickTranslatePopupWindow::translateTextAsync(
         cancelActiveWorkerLocked();
         m_activeCancelFlag = cancelFlag;
         prevWorker = std::move(m_workerThread);
-        m_workerThread = std::jthread([this, reqId, cleaned, effectiveTarget, settings, providerLabel, bypassCache, cancelFlag, traceId]() {
+        m_workerThread = std::jthread([this, reqId, cleaned, sourcePref, effectiveTarget, lockTarget, settings, providerLabel, bypassCache, cancelFlag, traceId]() {
             tools3000::core::TraceId::setCurrent(traceId);
             if (cancelFlag->load(std::memory_order_acquire)) return;
 
             tools3000::core::translate::TranslationBatchRequest req;
             req.texts = {cleaned};
+            req.sourceLangOverride = sourcePref;
             req.targetLangOverride = effectiveTarget;
+            req.lockTargetLanguage = lockTarget;
             req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
             req.bypassCache = bypassCache;
             const auto res = tools3000::core::translate::TranslationService::instance().translateBatch(
@@ -540,11 +711,11 @@ void QuickTranslatePopupWindow::translateTextAsync(
             if (res.success && !res.translations.empty() && !res.translations[0].empty()) {
                 const std::string finalProvider = formatProviderDisplayLabel(settings, res.providerUsed);
                 const std::string finalTarget = res.effectiveTargetLang.empty() ? effectiveTarget : res.effectiveTargetLang;
-                const std::string finalDir = formatDirectionBadge(res.detectedSourceLang, finalTarget);
+                const std::string finalDetected = res.detectedSourceLang;
                 const std::string translated = res.translations[0];
                 tools3000::core::MainThreadDispatcher::instance().post(
-                    [this, reqId, translated, finalDir, finalProvider]() {
-                        presentResultOnUiThread(reqId, translated, finalDir, finalProvider);
+                    [this, reqId, translated, finalDetected, finalTarget, finalProvider]() {
+                        presentResultOnUiThread(reqId, translated, finalDetected, finalTarget, finalProvider);
                     });
             } else {
                 const std::string errMsg = formatUserFacingError(res);
@@ -580,7 +751,7 @@ void QuickTranslatePopupWindow::ensureWindowCreated() {
         kPopupClassName,
         L"Tools3000 Quick Translate",
         WS_POPUP | WS_CLIPCHILDREN | WS_CLIPSIBLINGS,
-        0, 0, 420, 200,
+        0, 0, 468, 220,
         m_helperOwnerHwnd,
         nullptr,
         m_hInstance,
@@ -680,6 +851,23 @@ void QuickTranslatePopupWindow::rebuildTextFormats() {
     }
 }
 
+float QuickTranslatePopupWindow::measureBadgeTextWidth(const std::wstring& text) const {
+    if (!m_dwriteFactory || !m_badgeFormat || text.empty()) {
+        return 42.0f;
+    }
+    Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+    if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+            text.c_str(), static_cast<UINT32>(text.size()),
+            m_badgeFormat.Get(), 260.0f, 24.0f, layout.GetAddressOf())) &&
+        layout) {
+        DWRITE_TEXT_METRICS tm{};
+        if (SUCCEEDED(layout->GetMetrics(&tm))) {
+            return tm.widthIncludingTrailingWhitespace;
+        }
+    }
+    return static_cast<float>(text.size()) * 11.0f;
+}
+
 void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor) {
     HWND hwnd = m_hwnd.load(std::memory_order_acquire);
     if (!hwnd || !IsWindow(hwnd) || !m_dwriteFactory) {
@@ -767,10 +955,28 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     m_maxScrollY = (std::max)(0.0f, m_bodyContentHeight - bodyViewportH);
     m_scrollY = std::clamp(m_scrollY, 0.0f, m_maxScrollY);
 
-    // 顶栏语种胶囊命中区、按钮与拖拽区
-    const std::wstring dirWide = tools3000::core::WinUtils::utf8ToWstring(m_directionLabelUtf8);
-    const float dirBadgeW = (std::max)(74.0f, static_cast<float>(dirWide.size()) * 7.4f + 18.0f);
-    m_dirBadgeRect = D2D1::RectF(kOuterPadDip, 10.0f, kOuterPadDip + dirBadgeW, 32.0f);
+    // 3. 顶栏交互式语种三件套（源语种下拉 + 一键互译交换 + 目标语种下拉）精确测宽布局
+    const std::string srcLabelUtf8 = formatLanguagePillLabel(m_sourceLangPref, zh, false, m_detectedSourceLang);
+    const std::string dstLabelUtf8 = formatLanguagePillLabel(
+        m_effectiveTargetLang, zh, m_targetLangPref == "auto");
+    const std::wstring srcLabelW = tools3000::core::WinUtils::utf8ToWstring(srcLabelUtf8);
+    const std::wstring dstLabelW = tools3000::core::WinUtils::utf8ToWstring(dstLabelUtf8);
+
+    constexpr float pillH = 26.0f;
+    const float pillTop = (kHeaderHeightDip - pillH) * 0.5f;
+    const float srcPillW = std::clamp(measureBadgeTextWidth(srcLabelW) + 26.0f, 62.0f, 118.0f);
+    const float dstPillW = std::clamp(measureBadgeTextWidth(dstLabelW) + 26.0f, 62.0f, 118.0f);
+    constexpr float swapW = 26.0f;
+    constexpr float langGap = 5.0f;
+
+    m_sourceLangRect = D2D1::RectF(kOuterPadDip, pillTop, kOuterPadDip + srcPillW, pillTop + pillH);
+    m_swapLangRect = D2D1::RectF(
+        m_sourceLangRect.right + langGap, pillTop,
+        m_sourceLangRect.right + langGap + swapW, pillTop + pillH);
+    m_targetLangRect = D2D1::RectF(
+        m_swapLangRect.right + langGap, pillTop,
+        m_swapLangRect.right + langGap + dstPillW, pillTop + pillH);
+
     constexpr float iconBtnSize = 26.0f;
     const float topBtnY = (kHeaderHeightDip - iconBtnSize) * 0.5f;
     m_closeBtnRect = D2D1::RectF(
@@ -779,14 +985,14 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     m_pinBtnRect = D2D1::RectF(
         m_closeBtnRect.left - 6.0f - iconBtnSize, topBtnY,
         m_closeBtnRect.left - 6.0f, topBtnY + iconBtnSize);
-    m_headerDragRect = D2D1::RectF(m_dirBadgeRect.right + 4.0f, 0.0f, m_pinBtnRect.left - 4.0f, kHeaderHeightDip);
+    m_headerDragRect = D2D1::RectF(m_targetLangRect.right + 4.0f, 0.0f, m_pinBtnRect.left - 4.0f, kHeaderHeightDip);
 
-    // 底栏按钮
+    // 4. 底栏按钮
     const float footerTopDip = desiredHeightDip - kFooterHeightDip;
     const float btnH = 28.0f;
     const float btnY = footerTopDip + (kFooterHeightDip - btnH) * 0.5f;
-    const float copyW = 112.0f;
-    const float retryW = 74.0f;
+    const float copyW = 104.0f;
+    const float retryW = 68.0f;
     m_copyBtnRect = D2D1::RectF(
         kCardWidthDip - kOuterPadDip - copyW, btnY,
         kCardWidthDip - kOuterPadDip, btnY + btnH);
@@ -805,8 +1011,6 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     } else {
         RECT curRect{};
         if (GetWindowRect(hwnd, &curRect)) {
-            targetRect = computePopupPlacement(POINT{curRect.left - kCursorOffsetDip, curRect.top - kCursorOffsetDip}, physW, physH, mi.rcWork);
-            // 保持原左上角不动，仅防底部/右侧溢出工作区
             const int x = std::clamp(static_cast<int>(curRect.left),
                                      static_cast<int>(mi.rcWork.left) + kWorkAreaMarginDip,
                                      (std::max)(static_cast<int>(mi.rcWork.left) + kWorkAreaMarginDip,
@@ -842,7 +1046,9 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
     const std::string& sourceText,
     bool fromClipboard,
     const std::string& providerLabel,
-    const std::string& directionLabel,
+    const std::string& sourcePref,
+    const std::string& targetPref,
+    const std::string& effectiveTarget,
     POINT anchorPt) {
     if (m_shuttingDown.load(std::memory_order_acquire)) return;
     if (requestId < m_activeUiRequestId) return;
@@ -857,7 +1063,13 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
     m_translatedTextUtf8.clear();
     m_errorTextUtf8.clear();
     m_providerLabelUtf8 = providerLabel;
-    m_directionLabelUtf8 = directionLabel;
+    m_sourceLangPref = sourcePref.empty() ? "auto" : sourcePref;
+    m_targetLangPref = targetPref.empty() ? "auto" : targetPref;
+    if (!effectiveTarget.empty() && effectiveTarget != m_effectiveTargetLang && !m_effectiveTargetLang.empty()) {
+        m_lastDistinctTarget = m_effectiveTargetLang;
+    }
+    m_effectiveTargetLang = effectiveTarget.empty() ? "zh-CN" : effectiveTarget;
+    m_detectedSourceLang = (m_sourceLangPref != "auto") ? m_sourceLangPref : std::string();
     m_fromClipboard = fromClipboard;
     m_copiedFeedbackActive = false;
     m_loadingFrame = 0;
@@ -865,7 +1077,8 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
     m_anchorPt = anchorPt;
     m_state.store(PopupState::Loading, std::memory_order_release);
 
-    const bool shouldReposition = !m_pinned || !wasVisible;
+    // 浮窗当前已可见（例如原地切换目标语种/互译/重试）时保持当前位置不跳动
+    const bool shouldReposition = !wasVisible;
     rebuildTextFormats();
     rebuildLayoutsAndResize(shouldReposition);
     SetForegroundWindow(hwnd);
@@ -876,7 +1089,8 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
 void QuickTranslatePopupWindow::presentResultOnUiThread(
     uint64_t requestId,
     const std::string& translatedText,
-    const std::string& directionLabel,
+    const std::string& detectedSourceLang,
+    const std::string& effectiveTargetLang,
     const std::string& providerLabel) {
     if (m_shuttingDown.load(std::memory_order_acquire)) return;
     if (requestId != m_activeUiRequestId) return;
@@ -888,7 +1102,12 @@ void QuickTranslatePopupWindow::presentResultOnUiThread(
     KillTimer(hwnd, kTimerLoadingAnim);
     m_translatedTextUtf8 = translatedText;
     m_errorTextUtf8.clear();
-    m_directionLabelUtf8 = directionLabel;
+    if (!detectedSourceLang.empty()) {
+        m_detectedSourceLang = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(detectedSourceLang);
+    }
+    if (!effectiveTargetLang.empty()) {
+        m_effectiveTargetLang = tools3000::core::translate::TranslationService::canonicalizeLanguageCode(effectiveTargetLang);
+    }
     m_providerLabelUtf8 = providerLabel;
     m_scrollY = 0.0f;
     m_state.store(PopupState::Ready, std::memory_order_release);
@@ -934,7 +1153,7 @@ void QuickTranslatePopupWindow::hide() {
     }
     m_state.store(PopupState::Hidden, std::memory_order_release);
     m_pinned = false;
-    m_targetLangOverride.clear();
+    m_menuOpen = false;
     m_copiedFeedbackActive = false;
     m_hoveredButton = HitButton::None;
     if (HWND hwnd = m_hwnd.load(std::memory_order_acquire); hwnd && IsWindow(hwnd)) {
@@ -955,7 +1174,9 @@ bool QuickTranslatePopupWindow::isVisible() const noexcept {
 QuickTranslatePopupWindow::HitButton QuickTranslatePopupWindow::hitTestButton(POINT clientPt) const noexcept {
     const float x = static_cast<float>(clientPt.x) / (std::max)(0.5f, m_dpiScale);
     const float y = static_cast<float>(clientPt.y) / (std::max)(0.5f, m_dpiScale);
-    if (pointInD2DRect(m_dirBadgeRect, x, y)) return HitButton::LangSwitch;
+    if (pointInD2DRect(m_sourceLangRect, x, y)) return HitButton::SourceLang;
+    if (pointInD2DRect(m_swapLangRect, x, y)) return HitButton::SwapLang;
+    if (pointInD2DRect(m_targetLangRect, x, y)) return HitButton::TargetLang;
     if (pointInD2DRect(m_closeBtnRect, x, y)) return HitButton::Close;
     if (pointInD2DRect(m_pinBtnRect, x, y)) return HitButton::Pin;
     if (m_state.load(std::memory_order_acquire) == PopupState::Ready && pointInD2DRect(m_copyBtnRect, x, y)) {
@@ -987,13 +1208,169 @@ void QuickTranslatePopupWindow::copyTranslationToClipboard() {
 
 void QuickTranslatePopupWindow::triggerRetry() {
     if (m_sourceTextUtf8.empty()) return;
-    translateTextAsync(m_sourceTextUtf8, m_fromClipboard, m_anchorPt, true, m_targetLangOverride);
+    translateTextAsync(
+        m_sourceTextUtf8, m_fromClipboard, m_anchorPt,
+        /*bypassCache=*/true, m_targetLangPref, m_sourceLangPref);
 }
 
-void QuickTranslatePopupWindow::cycleTargetLanguage() {
+void QuickTranslatePopupWindow::applyLanguageSelection(
+    const std::string& nextSourcePref,
+    const std::string& nextTargetPref,
+    bool swapTextWithResult) {
     if (m_sourceTextUtf8.empty()) return;
-    m_targetLangOverride = nextQuickTargetLanguage(m_targetLangOverride);
-    translateTextAsync(m_sourceTextUtf8, m_fromClipboard, m_anchorPt, false, m_targetLangOverride);
+
+    const std::string safeSrc = nextSourcePref.empty() ? "auto" : nextSourcePref;
+    const std::string safeDst = nextTargetPref.empty() ? "auto" : nextTargetPref;
+    saveQuickLanguagePrefs(safeSrc, safeDst);
+
+    std::string textToTranslate = m_sourceTextUtf8;
+    if (swapTextWithResult &&
+        m_state.load(std::memory_order_acquire) == PopupState::Ready &&
+        !m_translatedTextUtf8.empty() &&
+        m_translatedTextUtf8 != m_sourceTextUtf8) {
+        textToTranslate = m_translatedTextUtf8;
+    }
+
+    LOG_INFO("QuickTranslate language updated: src={} -> {}, dst={} -> {}, swapText={}",
+             m_sourceLangPref, safeSrc, m_targetLangPref, safeDst, swapTextWithResult);
+
+    translateTextAsync(
+        textToTranslate, m_fromClipboard, m_anchorPt,
+        /*bypassCache=*/false, safeDst, safeSrc);
+}
+
+void QuickTranslatePopupWindow::swapLanguages() {
+    if (m_sourceTextUtf8.empty()) return;
+    const auto settings = tools3000::core::translate::TranslationService::instance().loadSettings();
+    const bool explicitSourceBefore = (m_sourceLangPref != "auto");
+    const LanguagePair next = computeSwappedLanguagePair(
+        m_sourceLangPref,
+        m_effectiveTargetLang,
+        m_lastDistinctTarget,
+        settings.targetLang,
+        settings.secondaryTargetLang,
+        tools3000::core::UiI18n::getEffectiveLanguageTag());
+    applyLanguageSelection(next.sourceLang, next.targetLang, /*swapTextWithResult=*/explicitSourceBefore);
+}
+
+void QuickTranslatePopupWindow::showSourceLanguageMenu() {
+    HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (!hwnd || !IsWindow(hwnd)) return;
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    AppendMenuW(
+        menu,
+        MF_STRING | (m_sourceLangPref == "auto" ? MF_CHECKED : MF_UNCHECKED),
+        kMenuIdAuto,
+        zh ? L"自动检测语言" : L"Auto-detect language");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    for (size_t i = 0; i < kSupportedLanguages.size(); ++i) {
+        const auto& entry = kSupportedLanguages[i];
+        const bool checked = (m_sourceLangPref == entry.code);
+        AppendMenuW(
+            menu,
+            MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED),
+            static_cast<UINT>(kMenuIdLangBase + i),
+            zh ? entry.zhMenu : entry.enMenu);
+    }
+
+    POINT screenPt{
+        static_cast<LONG>(std::lround(m_sourceLangRect.left * m_dpiScale)),
+        static_cast<LONG>(std::lround((m_sourceLangRect.bottom + 3.0f) * m_dpiScale))};
+    ClientToScreen(hwnd, &screenPt);
+
+    m_menuOpen = true;
+    SetForegroundWindow(hwnd);
+    const UINT cmd = static_cast<UINT>(TrackPopupMenuEx(
+        menu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPt.x, screenPt.y, hwnd, nullptr));
+    DestroyMenu(menu);
+    m_menuOpen = false;
+    SetForegroundWindow(hwnd);
+
+    if (cmd == kMenuIdAuto) {
+        applyLanguageSelection("auto", m_targetLangPref);
+    } else if (cmd >= kMenuIdLangBase && cmd < kMenuIdLangBase + kSupportedLanguages.size()) {
+        const auto& chosen = kSupportedLanguages[cmd - kMenuIdLangBase];
+        // 若所选源语种恰与当前锁定的目标语种相同，自动把目标切换为对偶语种避免同语种空翻
+        std::string nextTarget = m_targetLangPref;
+        if (nextTarget == chosen.code) {
+            const auto settings = tools3000::core::translate::TranslationService::instance().loadSettings();
+            const LanguagePair swapped = computeSwappedLanguagePair(
+                "auto", chosen.code, m_lastDistinctTarget,
+                settings.targetLang, settings.secondaryTargetLang,
+                tools3000::core::UiI18n::getEffectiveLanguageTag());
+            nextTarget = swapped.targetLang;
+        }
+        applyLanguageSelection(chosen.code, nextTarget);
+    }
+}
+
+void QuickTranslatePopupWindow::showTargetLanguageMenu() {
+    HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (!hwnd || !IsWindow(hwnd)) return;
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    const bool zh = tools3000::core::isUiLanguageChinese();
+    AppendMenuW(
+        menu,
+        MF_STRING | (m_targetLangPref == "auto" ? MF_CHECKED : MF_UNCHECKED),
+        kMenuIdAuto,
+        zh ? L"智能自动（按设置双向互译）" : L"Smart Auto (Bidirectional)");
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+
+    for (size_t i = 0; i < kSupportedLanguages.size(); ++i) {
+        const auto& entry = kSupportedLanguages[i];
+        const bool checked = (m_targetLangPref != "auto" && m_targetLangPref == entry.code);
+        AppendMenuW(
+            menu,
+            MF_STRING | (checked ? MF_CHECKED : MF_UNCHECKED),
+            static_cast<UINT>(kMenuIdLangBase + i),
+            zh ? entry.zhMenu : entry.enMenu);
+    }
+
+    AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(
+        menu,
+        MF_STRING,
+        kMenuIdOpenSettings,
+        zh ? L"打开翻译引擎与互译设置..." : L"Open Translation Settings...");
+
+    POINT screenPt{
+        static_cast<LONG>(std::lround(m_targetLangRect.left * m_dpiScale)),
+        static_cast<LONG>(std::lround((m_targetLangRect.bottom + 3.0f) * m_dpiScale))};
+    ClientToScreen(hwnd, &screenPt);
+
+    m_menuOpen = true;
+    SetForegroundWindow(hwnd);
+    const UINT cmd = static_cast<UINT>(TrackPopupMenuEx(
+        menu,
+        TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        screenPt.x, screenPt.y, hwnd, nullptr));
+    DestroyMenu(menu);
+    m_menuOpen = false;
+    SetForegroundWindow(hwnd);
+
+    if (cmd == kMenuIdAuto) {
+        applyLanguageSelection(m_sourceLangPref, "auto");
+    } else if (cmd >= kMenuIdLangBase && cmd < kMenuIdLangBase + kSupportedLanguages.size()) {
+        const auto& chosen = kSupportedLanguages[cmd - kMenuIdLangBase];
+        // 若用户显式选了目标语种且与当前显式源语种撞车，自动把源切回自动检测避免空翻
+        const std::string nextSource = (m_sourceLangPref == chosen.code) ? std::string("auto") : m_sourceLangPref;
+        applyLanguageSelection(nextSource, chosen.code);
+    } else if (cmd == kMenuIdOpenSettings) {
+        if (!m_pinned) {
+            hide();
+        }
+        tools3000::core::EventBus::instance().publish(tools3000::core::ActionOpenTranslateSettingsEvent{});
+    }
 }
 
 void QuickTranslatePopupWindow::render() {
@@ -1026,34 +1403,87 @@ void QuickTranslatePopupWindow::render() {
         D2D1::RoundedRect(D2D1::RectF(0.5f, 0.5f, w - 0.5f, h - 0.5f), kCornerRadiusDip, kCornerRadiusDip),
         brush.Get(), 1.0f);
 
-    // 2. 顶栏徽章：可点击切换目标语种的方向胶囊 + 翻译引擎短名 + 来源标签
-    const std::wstring dirWide = tools3000::core::WinUtils::utf8ToWstring(m_directionLabelUtf8);
-    const D2D1_RECT_F dirBadgeRc = m_dirBadgeRect;
-    brush->SetColor(m_hoveredButton == HitButton::LangSwitch ? palette.accent : palette.badgeBg);
-    m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(dirBadgeRc, 6.0f, 6.0f), brush.Get());
-    if (m_badgeFormat) {
-        m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
-        brush->SetColor(m_hoveredButton == HitButton::LangSwitch ? palette.accentText : palette.badgeText);
-        m_renderTarget->DrawTextW(
-            dirWide.c_str(), static_cast<UINT32>(dirWide.size()),
-            m_badgeFormat.Get(), dirBadgeRc, brush.Get());
-        m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+    // 2. 顶栏交互式语言三件套：[源语种 ▾] [⇄] [目标语种 ▾]
+    auto drawLangPill = [&](const D2D1_RECT_F& rc, const std::wstring& label, bool accentStyle, bool hovered) {
+        if (hovered) {
+            brush->SetColor(palette.accent);
+        } else if (accentStyle) {
+            brush->SetColor(palette.badgeBg);
+        } else {
+            brush->SetColor(palette.pillBg);
+        }
+        m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(rc, 6.0f, 6.0f), brush.Get());
+
+        brush->SetColor(hovered ? palette.accent : (accentStyle ? palette.badgeBorder : palette.pillBorder));
+        m_renderTarget->DrawRoundedRectangle(D2D1::RoundedRect(rc, 6.0f, 6.0f), brush.Get(), 1.0f);
+
+        const D2D1_COLOR_F fg = hovered
+            ? palette.accentText
+            : (accentStyle ? palette.badgeText : palette.titleText);
+        if (m_badgeFormat) {
+            const D2D1_RECT_F textRc = D2D1::RectF(rc.left + 8.0f, rc.top, rc.right - 16.0f, rc.bottom);
+            m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+            brush->SetColor(fg);
+            m_renderTarget->DrawTextW(
+                label.c_str(), static_cast<UINT32>(label.size()),
+                m_badgeFormat.Get(), textRc, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+        }
+
+        // 矢量向下展开小三角 (chevron)
+        const float cx = rc.right - 9.5f;
+        const float cy = (rc.top + rc.bottom) * 0.5f + 0.5f;
+        brush->SetColor(fg);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 1.8f), D2D1::Point2F(cx, cy + 1.5f), brush.Get(), 1.4f);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx, cy + 1.5f), D2D1::Point2F(cx + 3.0f, cy - 1.8f), brush.Get(), 1.4f);
+    };
+
+    const std::wstring srcLabelW = tools3000::core::WinUtils::utf8ToWstring(
+        formatLanguagePillLabel(m_sourceLangPref, zh, false, m_detectedSourceLang));
+    const std::wstring dstLabelW = tools3000::core::WinUtils::utf8ToWstring(
+        formatLanguagePillLabel(m_effectiveTargetLang, zh, m_targetLangPref == "auto"));
+
+    drawLangPill(m_sourceLangRect, srcLabelW, m_sourceLangPref != "auto", m_hoveredButton == HitButton::SourceLang);
+
+    // 2a. 中间一键互译交换按钮（矢量双向水平箭头）
+    {
+        const bool hovered = (m_hoveredButton == HitButton::SwapLang);
+        if (hovered) {
+            brush->SetColor(palette.btnHoverBg);
+            m_renderTarget->FillRoundedRectangle(D2D1::RoundedRect(m_swapLangRect, 6.0f, 6.0f), brush.Get());
+        }
+        const float cx = (m_swapLangRect.left + m_swapLangRect.right) * 0.5f;
+        const float cy = (m_swapLangRect.top + m_swapLangRect.bottom) * 0.5f;
+        brush->SetColor(hovered ? palette.accent : palette.mutedText);
+        // 上箭头向右 (->)
+        m_renderTarget->DrawLine(D2D1::Point2F(cx - 5.5f, cy - 2.6f), D2D1::Point2F(cx + 5.5f, cy - 2.6f), brush.Get(), 1.4f);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx + 2.8f, cy - 5.0f), D2D1::Point2F(cx + 5.5f, cy - 2.6f), brush.Get(), 1.4f);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx + 2.8f, cy - 0.2f), D2D1::Point2F(cx + 5.5f, cy - 2.6f), brush.Get(), 1.4f);
+        // 下箭头向左 (<-)
+        m_renderTarget->DrawLine(D2D1::Point2F(cx + 5.5f, cy + 2.6f), D2D1::Point2F(cx - 5.5f, cy + 2.6f), brush.Get(), 1.4f);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx - 2.8f, cy + 0.2f), D2D1::Point2F(cx - 5.5f, cy + 2.6f), brush.Get(), 1.4f);
+        m_renderTarget->DrawLine(D2D1::Point2F(cx - 2.8f, cy + 5.0f), D2D1::Point2F(cx - 5.5f, cy + 2.6f), brush.Get(), 1.4f);
     }
 
+    drawLangPill(m_targetLangRect, dstLabelW, true, m_hoveredButton == HitButton::TargetLang);
+
+    // 2b. 顶栏中部：引擎短名 + 来源标签（兼拖拽区）
     const std::wstring sourceTag = m_fromClipboard
         ? tools3000::core::trW(L"剪贴板", L"Clipboard")
         : tools3000::core::trW(L"划词", L"Selection");
     const std::wstring providerWide = tools3000::core::WinUtils::utf8ToWstring(m_providerLabelUtf8) +
                                       L" · " + sourceTag;
-    const D2D1_RECT_F providerRc = D2D1::RectF(dirBadgeRc.right + 10.0f, 10.0f, m_pinBtnRect.left - 8.0f, 32.0f);
-    if (m_badgeFormat) {
+    const D2D1_RECT_F providerRc = D2D1::RectF(
+        m_targetLangRect.right + 10.0f, 10.0f,
+        (std::max)(m_targetLangRect.right + 10.0f, m_pinBtnRect.left - 8.0f), 34.0f);
+    if (m_badgeFormat && providerRc.right > providerRc.left + 20.0f) {
+        m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         brush->SetColor(palette.mutedText);
         m_renderTarget->DrawTextW(
             providerWide.c_str(), static_cast<UINT32>(providerWide.size()),
             m_badgeFormat.Get(), providerRc, brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
     }
 
-    // 2b. 顶栏纯矢量按钮：图钉固定 + 关闭 X
+    // 2c. 顶栏纯矢量按钮：图钉固定 + 关闭 X
     auto drawIconButtonBg = [&](const D2D1_RECT_F& rc, bool active, bool hovered) {
         if (active) {
             brush->SetColor(palette.badgeBg);
@@ -1069,7 +1499,6 @@ void QuickTranslatePopupWindow::render() {
         const float cx = (m_pinBtnRect.left + m_pinBtnRect.right) * 0.5f;
         const float cy = (m_pinBtnRect.top + m_pinBtnRect.bottom) * 0.5f;
         brush->SetColor(m_pinned ? palette.accent : palette.mutedText);
-        // 矢量图钉图标（帽 + 杆 + 针尖）
         m_renderTarget->DrawLine(D2D1::Point2F(cx - 4.0f, cy - 4.5f), D2D1::Point2F(cx + 4.0f, cy - 4.5f), brush.Get(), 1.5f);
         m_renderTarget->DrawLine(D2D1::Point2F(cx - 3.0f, cy - 4.5f), D2D1::Point2F(cx - 3.0f, cy + 0.5f), brush.Get(), 1.4f);
         m_renderTarget->DrawLine(D2D1::Point2F(cx + 3.0f, cy - 4.5f), D2D1::Point2F(cx + 3.0f, cy + 0.5f), brush.Get(), 1.4f);
@@ -1150,7 +1579,10 @@ void QuickTranslatePopupWindow::render() {
         brush.Get(), 1.0f);
 
     if (m_badgeFormat) {
-        const std::wstring hint = zh ? L"点语种切换 · Ctrl+C 复制 · Esc" : L"Click lang · Ctrl+C Copy · Esc";
+        const std::wstring hint = zh
+            ? L"点语种选互译 · Ctrl+C 复制 · Esc"
+            : L"Pick langs / Swap · Ctrl+C · Esc";
+        m_badgeFormat->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
         brush->SetColor(palette.mutedText);
         m_renderTarget->DrawTextW(
             hint.c_str(), static_cast<UINT32>(hint.size()),
@@ -1237,7 +1669,7 @@ LRESULT QuickTranslatePopupWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wPa
             break;
         }
         case WM_ACTIVATE: {
-            if (LOWORD(wParam) == WA_INACTIVE && !m_pinned) {
+            if (LOWORD(wParam) == WA_INACTIVE && !m_pinned && !m_menuOpen) {
                 hide();
             }
             return 0;
@@ -1297,8 +1729,16 @@ LRESULT QuickTranslatePopupWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wPa
         case WM_LBUTTONDOWN: {
             const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             const HitButton btn = hitTestButton(pt);
-            if (btn == HitButton::LangSwitch) {
-                cycleTargetLanguage();
+            if (btn == HitButton::SourceLang) {
+                showSourceLanguageMenu();
+                return 0;
+            }
+            if (btn == HitButton::SwapLang) {
+                swapLanguages();
+                return 0;
+            }
+            if (btn == HitButton::TargetLang) {
+                showTargetLanguageMenu();
                 return 0;
             }
             if (btn == HitButton::Close) {

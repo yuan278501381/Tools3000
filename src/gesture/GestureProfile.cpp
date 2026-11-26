@@ -261,6 +261,7 @@ GestureProfile GestureProfile::createDefaultGlobal() {
     addKeys("L-D",      tools3000::core::trUtf8CstrFor(zh, "显示桌面", "Show Desktop"),            "Win+D",            tools3000::core::trUtf8CstrFor(zh, "一键显示/隐藏桌面", "Show or hide desktop"));
     addKeys("R-U",      tools3000::core::trUtf8CstrFor(zh, "任务视图", "Task View"),               "Win+Tab",          tools3000::core::trUtf8CstrFor(zh, "打开 Windows 任务视图", "Open Windows Task View"));
     addBuiltin("D-R-D", tools3000::core::trUtf8CstrFor(zh, "屏幕截图", "Take Screenshot"),         BuiltinCommand::TakeScreenshot, tools3000::core::trUtf8CstrFor(zh, "唤起 Tools3000 屏幕截图", "Trigger Tools3000 screenshot"));
+    addBuiltin("L-R-D", tools3000::core::trUtf8CstrFor(zh, "划词翻译", "Quick Translate"),         BuiltinCommand::QuickTranslate, tools3000::core::trUtf8CstrFor(zh, "画 T 形（←→↓）翻译当前选中或剪贴板中的文字", "Draw T-shape (L-R-D) to translate selected or clipboard text"));
     addKeys("L-U",      tools3000::core::trUtf8CstrFor(zh, "剪切", "Cut"),                         "Ctrl+X",           tools3000::core::trUtf8CstrFor(zh, "剪切选中内容", "Cut selected content"));
     addKeys("R-L",      tools3000::core::trUtf8CstrFor(zh, "全选", "Select All"),                  "Ctrl+A",           tools3000::core::trUtf8CstrFor(zh, "全选当前内容", "Select all content"));
     addKeys("L-R",      tools3000::core::trUtf8CstrFor(zh, "撤销", "Undo"),                        "Ctrl+Z",           tools3000::core::trUtf8CstrFor(zh, "撤销上一步操作", "Undo last action"));

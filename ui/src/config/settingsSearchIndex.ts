@@ -4,12 +4,14 @@ export type SearchPageSubTab = 'settings' | 'syntax' | 'regex' | 'status' | 'ext
 export type CapturePageSubTab = 'screenshot' | 'pin_region' | 'recording' | 'studio';
 export type GesturePageSubTab = 'rules' | 'appearance' | 'algorithm';
 export type OcrPageSubTab = 'recognize' | 'translate' | 'models';
+export type WindowManagerPageSubTab = 'snap_zones' | 'workspaces' | 'quick_switch' | 'utilities';
 
 export type AnyPageSubTab =
   | SearchPageSubTab
   | CapturePageSubTab
   | GesturePageSubTab
   | OcrPageSubTab
+  | WindowManagerPageSubTab
   | (string & {});
 
 export interface DeepSettingEntry {
@@ -94,6 +96,17 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'te-rules', navId: 'text_expander', labelKey: 'textExpander.rulesGroup', descKey: 'textExpander.sandboxDisabledHint', keywords: 'snippet rules trigger immediate delimiter json import export guize chufaci' },
   { id: 'te-privacy', navId: 'text_expander', labelKey: 'textExpander.privacyGroup', descKey: 'textExpander.autoExcludeDesc', keywords: 'password keepass 1password bitwarden restore clipboard exclude process yinsi mima' },
 
+  // Window Manager
+  { id: 'wm-snapzones', navId: 'window_manager', tabId: 'snap_zones', labelKey: 'windowManager.tabSnapZones', descKey: 'windowManager.snapZonesDesc', keywords: 'window manager snapzones fancyzones powertoys grid layout split monitor fenping chuangkou buju' },
+  { id: 'wm-workspaces', navId: 'window_manager', tabId: 'workspaces', labelKey: 'windowManager.tabWorkspaces', descKey: 'windowManager.workspacesDesc', keywords: 'workspace capture launch desktop layout session apps gongzuoqu yijian qidong' },
+  { id: 'wm-quickswitch', navId: 'window_manager', tabId: 'quick_switch', labelKey: 'windowManager.tabQuickSwitch', descKey: 'windowManager.quickSwitchDesc', keywords: 'quick switch alt tab window switcher pinyin preview kuaisu qiehuan chuangkou' },
+  { id: 'wm-utilities', navId: 'window_manager', tabId: 'utilities', labelKey: 'windowManager.tabUtilities', descKey: 'windowManager.utilitiesDesc', keywords: 'always on top pin opacity transparency alt drag focus border multi monitor tray rescue zhiding toumingdu tuozhuai biankuang' },
+
+  // Caps Layer
+  { id: 'caps-enable', navId: 'caps_layer', labelKey: 'capsLayer.heroTitle', descKey: 'capsLayer.heroDesc', keywords: 'caps lock capslock layer remap hyper key ijkl vim hjkl esdf arrow gaigaijian fangxiangjian' },
+  { id: 'caps-presets', navId: 'caps_layer', labelKey: 'capsLayer.presetsTitle', descKey: 'capsLayer.presetsDesc', keywords: 'caps preset ijkl vim hjkl esdf arrows navigation yushe' },
+  { id: 'caps-profiles', navId: 'caps_layer', labelKey: 'capsLayer.appProfilesTitle', descKey: 'capsLayer.appProfilesDesc', keywords: 'caps per app profile scope process override yingyong guize' },
+
   // Gesture & HotCorner
   { id: 'gst-trigger', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.triggerButton', descKey: 'gesture.triggerButtonDesc', keywords: 'right middle button mouse trigger shoushi' },
   { id: 'gst-pro-bypass', navId: 'gesture', tabId: 'rules', labelKey: 'gesture.autoBypassProRightClickApps', descKey: 'gesture.autoBypassProRightClickAppsDesc', keywords: 'cad autocad ug nx solidworks catia creo rhino blender maya altium kicad eda 3d right click bypass zhuanye ruanjian youjian birang' },
@@ -134,5 +147,7 @@ export const DEEP_SETTINGS_INDEX: ReadonlyArray<DeepSettingEntry> = [
   { id: 'fl-inspect', navId: 'file_locksmith', labelKey: 'fileLocksmith.instantInspectGroup', descKey: 'fileLocksmith.instantInspectDesc', keywords: 'inspect locked file folder process kill unlock jiance zhanyong' },
   { id: 'plg-quicklook', navId: 'plugins', labelKey: 'plugins.items.quick_look.name', descKey: 'plugins.items.quick_look.description', keywords: 'quicklook space spacebar preview kongge yulan disable toggle switch' },
   { id: 'stt-heatmap', navId: 'stats', labelKey: 'stats.heatmapTitle', descKey: 'stats.dailyTitle', keywords: 'heatmap keystrokes clicks distance relitu tongji' },
-  { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory policy ram trim suspend unload destroy lifecycle idle schedule neicun celue huishou shijianbiao xingneng' },
+  { id: 'perf-lifecycle', navId: 'performance', labelKey: 'performancePage.lifecycleGroup', descKey: 'performancePage.lifecycleSubtitle', keywords: 'memory policy ram trim suspend unload destroy lifecycle idle schedule isolation budget cap 256mb 32mb watermark windowkit neicun celue huishou shijianbiao xingneng fengding lingzhuliu' },
+  { id: 'perf-media-budget', navId: 'performance', labelKey: 'performancePage.layerMediaBudget', descKey: 'performancePage.itemPinPixelPoolDesc', keywords: 'pin screenshot history clipboard 256mb 32mb 512kb lru lod compress ocr budget tietu jietu jiantieban neicun shangxian' },
+  { id: 'perf-watermark-guard', navId: 'performance', labelKey: 'performancePage.itemWatermarkGuardTitle', descKey: 'performancePage.itemWatermarkGuardDesc', keywords: 'watermark heap compact working set 14mb 24mb kernel guard trim shuiwei dui jinsuo huishou' },
 ];

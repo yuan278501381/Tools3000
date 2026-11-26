@@ -7,6 +7,7 @@ import { Sidebar } from '../components/Sidebar';
 import {
   APP_ROUTES,
   BUILTIN_PLUGIN_ORDER,
+  PLUGIN_DOMAIN_GROUPS,
   normalizeBuiltinPluginId,
 } from '../config/routes';
 import { TRAY_CONTROL_REGISTRY } from '../tray/trayRegistry';
@@ -172,9 +173,11 @@ describe('PluginsPage', () => {
     // 刻意打乱后端返回顺序，验证排序严格遵循 APP_ROUTES 单一事实源
     const shuffledIds = [
       'picasa_viewer',
+      'caps_layer',
       'spotlight',
       'file_locksmith',
       'capture',
+      'window_manager',
       'dialogenhancer',
       'remote_boost',
       'text_expander',
@@ -263,6 +266,8 @@ describe('PluginsPage', () => {
       'clipboard',
       'gesture',
       'text_expander',
+      'window_manager',
+      'caps_layer',
       'search',
       'dialog_enhancer',
       'file_locksmith',
@@ -274,7 +279,11 @@ describe('PluginsPage', () => {
     const trayPluginOrder = [...TRAY_CONTROL_REGISTRY]
       .sort((a, b) => a.order - b.order)
       .map((item) => normalizeBuiltinPluginId(item.pluginId));
-    expect(trayPluginOrder).toEqual(BUILTIN_PLUGIN_ORDER.filter((id) => id !== 'picasa_viewer'));
+    expect(trayPluginOrder).toEqual(
+      PLUGIN_DOMAIN_GROUPS.flatMap((group) =>
+        group.pluginIds.map((id) => normalizeBuiltinPluginId(id)),
+      ).filter((id) => id !== 'picasa_viewer'),
+    );
   });
 
   it('renders quick_look toggle in file_system domain and calls plugins.setEnabled when disabled (Issue #32)', async () => {

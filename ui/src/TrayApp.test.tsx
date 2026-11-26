@@ -73,6 +73,9 @@ describe('TrayApp Bento Control Center', () => {
             { id: 'search', active: true, enabled: true },
             { id: 'clipboard', active: true, enabled: true },
             { id: 'text_expander', active: true, enabled: true },
+            { id: 'window_manager', active: true, enabled: true },
+            { id: 'caps_layer', active: true, enabled: true },
+            { id: 'quick_look', active: true, enabled: true },
             { id: 'spotlight', active: true, enabled: true },
             { id: 'dialogenhancer', active: true, enabled: true },
             { id: 'file_locksmith', active: true, enabled: true },
@@ -107,9 +110,12 @@ describe('TrayApp Bento Control Center', () => {
     });
 
     expect(screen.getByText('Tools3000')).toBeDefined();
-    expect(screen.getByText('10/10 Active')).toBeDefined();
+    expect(screen.getByText('13/13 Active')).toBeDefined();
     expect(screen.getByRole('menuitemcheckbox', { name: /Clipboard/i })).toBeDefined();
     expect(screen.getByRole('menuitemcheckbox', { name: /Text Expander/i })).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /Window Manager/i })).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /CapsLayer/i })).toBeDefined();
+    expect(screen.getByRole('menuitemcheckbox', { name: /QuickLook/i })).toBeDefined();
     expect(screen.getByRole('menuitemcheckbox', { name: /File Locksmith/i })).toBeDefined();
     expect(screen.getByText('Remote Boost')).toBeDefined();
     expect(screen.getByText('Hotkey passthrough')).toBeDefined();

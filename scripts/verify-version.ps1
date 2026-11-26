@@ -113,4 +113,26 @@ if (Test-Path -LiteralPath $ViewerExePath) {
     Write-Output "[INFO] 未检测到预构建二进制 ($ViewerExePath)，已完成全部源码版本单一事实源校验。"
 }
 
+# 7. 校验 Rust WindowKit 源码与产物版本一致性
+$WindowKitCargoToml = Join-Path $ProjectRoot "src\window_kit\Cargo.toml"
+if (Test-Path -LiteralPath $WindowKitCargoToml) {
+    $WkCargoRaw = [System.IO.File]::ReadAllText($WindowKitCargoToml, [System.Text.Encoding]::UTF8)
+    $WkCargoMatch = [regex]::Match($WkCargoRaw, '(?ms)^\[package\][^\[]*?^version\s*=\s*"([^"]+)"')
+    if (-not $WkCargoMatch.Success -or $WkCargoMatch.Groups[1].Value -ne $Version) {
+        throw "src/window_kit/Cargo.toml 版本号与根目录 VERSION ($Version) 不一致"
+    }
+}
+$WindowKitExePath = Join-Path $ResolvedBinaryDir "Tools3000_WindowKit.exe"
+if (Test-Path -LiteralPath $WindowKitExePath) {
+    $WkVerInfo = (Get-Item -LiteralPath $WindowKitExePath).VersionInfo
+    $WkProdVer = [string]$WkVerInfo.ProductVersion
+    $WkSemVer = "$($WkVerInfo.ProductMajorPart).$($WkVerInfo.ProductMinorPart).$($WkVerInfo.ProductBuildPart)"
+    if ($WkProdVer -ne $Version -and $WkSemVer -ne $Version) {
+        throw "$WindowKitExePath 的 ProductVersion ($WkProdVer / $WkSemVer) 与根目录 VERSION ($Version) 不一致"
+    }
+    Write-Output "[OK] Tools3000_WindowKit.exe ProductVersion verified: $WkProdVer"
+} elseif ($RequireBinary) {
+    throw "已启用 -RequireBinary，但找不到待校验二进制: $WindowKitExePath"
+}
+
 Write-Output "[OK] Tools3000 product version verified across VERSION, ui/package.json, and Rust viewer manifests: $Version"

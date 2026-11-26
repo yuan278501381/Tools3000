@@ -10,6 +10,9 @@ import {
   Search,
   ClipboardList,
   TextCursorInput,
+  LayoutGrid,
+  KeyRound,
+  Eye,
   Sparkles,
   FolderSymlink,
   LockOpen,
@@ -76,7 +79,7 @@ export interface TrayControlItem {
 
 /**
  * 托盘快捷功能开关注册表
- * 顺序严格对齐 routes.ts 单一事实源（9 枚常规模块组成 3x3 黄金网格 + 满宽远控增强拨杆卡）。
+ * 顺序严格对齐 routes.ts 单一事实源（12 枚常规模块组成 3x4 对称满格网格 + 满宽远控增强拨杆卡）。
  * 未来无论扩展至多少模块，均由三段式滚动托盘控制舱自适应承载，绝不撑爆或截断底部退出栏。
  */
 export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
@@ -123,6 +126,28 @@ export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
     order: 40,
   },
   {
+    id: 'window_manager',
+    pluginId: 'window_manager',
+    aliasPluginIds: ['window_manager', 'windowmanager'],
+    labelKey: 'tray.pillWindowManager',
+    fallbackLabel: 'Windows',
+    descKey: 'tray.pillWindowManagerFullDesc',
+    fallbackDesc: 'Window Manager (SnapZones tiling, workspaces & quick switch)',
+    icon: LayoutGrid,
+    order: 45,
+  },
+  {
+    id: 'caps_layer',
+    pluginId: 'caps_layer',
+    aliasPluginIds: ['caps_layer', 'capslayer'],
+    labelKey: 'tray.pillCapsLayer',
+    fallbackLabel: 'Caps',
+    descKey: 'tray.pillCapsLayerFullDesc',
+    fallbackDesc: 'CapsLayer (CapsLock leader layer & per-app key remapping)',
+    icon: KeyRound,
+    order: 48,
+  },
+  {
     id: 'search',
     pluginId: 'search',
     labelKey: 'tray.pillSearch',
@@ -153,6 +178,17 @@ export const TRAY_CONTROL_REGISTRY: TrayControlItem[] = [
     fallbackDesc: 'File Locksmith (Zero-resident Explorer right-click file lock inspector)',
     icon: LockOpen,
     order: 70,
+  },
+  {
+    id: 'quick_look',
+    pluginId: 'quick_look',
+    aliasPluginIds: ['quick_look', 'quicklook'],
+    labelKey: 'tray.pillQuickLook',
+    fallbackLabel: 'Preview',
+    descKey: 'tray.pillQuickLookFullDesc',
+    fallbackDesc: 'QuickLook (Spacebar instant file preview in Explorer & Search)',
+    icon: Eye,
+    order: 75,
   },
   {
     id: 'keycast',

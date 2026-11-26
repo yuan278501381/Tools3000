@@ -989,5 +989,7 @@
   "重点说明||Text": "Destaque",
   "静音||Off": "Mudo",
   "高刷||Smooth": "Suave",
-  "鼠标自动运镜||Auto Zoom": "Zoom auto do mouse"
+  "鼠标自动运镜||Auto Zoom": "Zoom auto do mouse",
+  "Quick Translate": "Tradução rápida",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "Desenhe um T (←→↓) para traduzir o texto selecionado ou da área de transferência"
 }

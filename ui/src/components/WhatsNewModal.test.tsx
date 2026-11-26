@@ -3,8 +3,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { WhatsNewModal } from './WhatsNewModal';
-import { compareSemver, formatLocalDateTime } from './whatsNewUtils';
-import changelogData from '../generated/changelogData.json';
+import {
+  compareSemver,
+  formatLocalDate,
+  groupReleasesByLocalDate,
+  parseInlineMarkdownAst,
+  splitLeadInBullet,
+  computeBlockCategoryCounts,
+  type ChangelogBundle,
+} from './whatsNewUtils';
+import changelogDataRaw from '../generated/changelogData.json';
+
+const changelogData = changelogDataRaw as unknown as ChangelogBundle;
 
 const bridgeRequestMock = vi.fn();
 const openExternalUrlMock = vi.fn();
@@ -38,20 +48,62 @@ describe('WhatsNewModal', () => {
     openExternalUrlMock.mockResolvedValue(true);
   });
 
-  it('compares semantic versions and formats local date-time deterministically', () => {
+  it('compares semantic versions, formats local date-time, and parses nested bold+code AST cleanly', () => {
     expect(compareSemver('1.4.14', '1.4.11')).toBeGreaterThan(0);
     expect(compareSemver('1.4.2', '1.4.10')).toBeLessThan(0);
     expect(compareSemver('v1.4.0', '1.4.0')).toBe(0);
-    expect(formatLocalDateTime('2026-11-26T01:18:46+08:00')).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/);
-    expect(formatLocalDateTime('invalid-date')).toBe('');
+    expect(formatLocalDate('2026-11-26T01:18:46+08:00')).toBe('2026-11-26');
+    expect(formatLocalDate('invalid-date')).toBe('');
+
+    // 按自然日分组：同日多个版本应归入同一天且保持原顺序（不受跨日首版仅 1 条影响）
+    const grouped = groupReleasesByLocalDate(changelogData.releases.slice(0, 10));
+    expect(grouped.length).toBeLessThan(10);
+    expect(grouped.some((g) => g.releases.length > 1)).toBe(true);
+
+    // 防回退断言：彻底根治 `**SQL Server (`ssms.exe`)**` 中反引号裸露 Bug
+    const ast = parseInlineMarkdownAst('避让 **SQL Server (`ssms.exe`)** 与 **Emacs (`emacs.exe`)**');
+    expect(ast).toEqual([
+      { type: 'text', value: '避让 ' },
+      {
+        type: 'strong',
+        children: [
+          { type: 'text', value: 'SQL Server (' },
+          { type: 'code', value: 'ssms.exe' },
+          { type: 'text', value: ')' },
+        ],
+      },
+      { type: 'text', value: ' 与 ' },
+      {
+        type: 'strong',
+        children: [
+          { type: 'text', value: 'Emacs (' },
+          { type: 'code', value: 'emacs.exe' },
+          { type: 'text', value: ')' },
+        ],
+      },
+    ]);
+
+    expect(splitLeadInBullet('**三模式自由选择**：详细说明')).toEqual({
+      lead: '三模式自由选择',
+      body: '详细说明',
+    });
+    expect(splitLeadInBullet('无前缀说明正文')).toEqual({
+      body: '无前缀说明正文',
+    });
   });
 
-  it('renders manual archive mode with top 10 releases, pagination, and keyword search', async () => {
+  it('renders categorized counts, supports category filtering, compact/detailed view, and zero raw backticks', async () => {
     const onClose = vi.fn();
     const onToggle = vi.fn();
     const latest = changelogData.releases[0];
+    const v1416 = changelogData.releases.find((r) => r.version === '1.4.16');
+    expect(v1416).toBeTruthy();
+    const counts1416 = computeBlockCategoryCounts(v1416!.zh);
+    expect(counts1416.feature).toBeGreaterThan(0);
+    expect(counts1416.fix).toBeGreaterThan(0);
+    expect(counts1416.total).toBe(counts1416.feature + counts1416.improvement + counts1416.fix);
 
-    render(
+    const { container } = render(
       <WhatsNewModal
         open
         mode="manual"
@@ -62,27 +114,64 @@ describe('WhatsNewModal', () => {
       />,
     );
 
-    // 等待离线懒加载分块就绪：首屏展示最新 10 个版本，且默认展开最新版本
+    // 等待离线懒加载分块就绪：首屏展示最新 10 个版本，按自然日分组且不暴露 HH:mm 时刻
     const loadMoreBtn = await screen.findByRole('button', { name: /changelog\.loadMoreBtn/i });
     expect(screen.getAllByText(latest.tag).length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByRole('article').length).toBe(10);
+    expect(container.querySelectorAll('.wn-day-group').length).toBeGreaterThanOrEqual(1);
+    expect(container.querySelectorAll('.wn-day-group').length).toBeLessThan(10);
+    expect(container.textContent).not.toMatch(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}/);
+    expect(screen.getAllByText(/changelog\.dayReleaseCount/).length).toBeGreaterThanOrEqual(1);
 
-    const releaseButtons = screen.getAllByRole('button', { expanded: true });
-    expect(releaseButtons.length).toBe(1);
+    // 展开 v1.4.16 验证：无任何裸露反引号，且 GitHub Issue 徽章可直链打开
+    const v1416Header = screen.getByRole('button', { name: /v1\.4\.16/i });
+    fireEvent.click(v1416Header);
 
+    await waitFor(() => {
+      expect(container.textContent).not.toContain('`ssms.exe`');
+      expect(container.textContent).toContain('ssms.exe');
+    });
+
+    const issueChip = screen.getByRole('button', { name: /#34/i });
+    fireEvent.click(issueChip);
+    expect(openExternalUrlMock).toHaveBeenCalledWith('https://github.com/yuan278501381/Tools3000/issues/34');
+
+    // 切换至「简览」模式应折叠子要点列表
+    const compactBtn = screen.getByRole('button', { name: 'changelog.densityCompact' });
+    fireEvent.click(compactBtn);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.wn-entry__list').length).toBe(0);
+    });
+
+    // 切换至「仅看新功能」筛选：v1.4.17 仅有修复应被滤除，v1.4.16 保留且仅呈现 feature 组
+    const featureTab = screen.getByRole('tab', { name: /changelog\.categoryFeature/i });
+    fireEvent.click(featureTab);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.wn-group--fix').length).toBe(0);
+    });
+
+    // 重置回全部并测试分页与关键词搜索高亮
+    fireEvent.click(screen.getByRole('tab', { name: /changelog\.filterAll/i }));
     fireEvent.click(loadMoreBtn);
-
     await waitFor(() => {
       expect(screen.getAllByRole('article').length).toBeGreaterThanOrEqual(20);
     });
 
-    // 关键词即时搜索过滤并自动展开命中版本
     const searchInput = screen.getByPlaceholderText('changelog.searchPlaceholder');
+    const allTabBefore = screen.getByRole('tab', { name: /changelog\.filterAll/i }).textContent ?? '';
     fireEvent.change(searchInput, { target: { value: 'v1.3.0' } });
-
     await waitFor(() => {
       expect(screen.getAllByText('v1.3.0').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByRole('article').length).toBeGreaterThanOrEqual(1);
+    });
+    // 分面计数应随搜索词动态收敛而非停留在全局总数
+    const allTabAfter = screen.getByRole('tab', { name: /changelog\.filterAll/i }).textContent ?? '';
+    expect(allTabAfter).not.toBe(allTabBefore);
+
+    // 搜索态首次按 Escape 应优先清空搜索词而非直接关闭弹窗
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await waitFor(() => {
+      expect((searchInput as HTMLInputElement).value).toBe('');
+      expect(onClose).not.toHaveBeenCalled();
     });
 
     // 底部自动弹窗开关双向同步至 general.updateSettings
@@ -115,20 +204,18 @@ describe('WhatsNewModal', () => {
       />,
     );
 
-    // 跨 5 版迁移顶部展示迁移横幅
     expect(await screen.findByText(/changelog\.upgradeSpanBanner/)).toBeTruthy();
 
-    // 超过 3 个新版本时仅自动展开最新 3 版，防止长屏过载
     await waitFor(() => {
-      const expandedBtns = screen.getAllByRole('button', { expanded: true });
-      expect(expandedBtns.length).toBe(3);
+      const releaseHeaders = screen
+        .getAllByRole('button', { expanded: true })
+        .filter((el) => el.classList.contains('wn-release__header'));
+      expect(releaseHeaders.length).toBe(3);
     });
 
-    // 所有大于起点版本的记录均带 NEW 徽章
     const newBadges = screen.getAllByText('changelog.badgeNew');
     expect(newBadges.length).toBe(5);
 
-    // 按 Escape 关闭弹窗
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(1);
   });

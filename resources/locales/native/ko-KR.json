@@ -989,5 +989,7 @@
   "重点说明||Text": "핵심 설명",
   "静音||Off": "음소거",
   "高刷||Smooth": "고주사율",
-  "鼠标自动运镜||Auto Zoom": "마우스 자동 줌"
+  "鼠标自动运镜||Auto Zoom": "마우스 자동 줌",
+  "Quick Translate": "빠른 번역",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "T자(←→↓) 제스처로 선택한 텍스트 또는 클립보드 번역"
 }

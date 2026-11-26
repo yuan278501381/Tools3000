@@ -54,6 +54,17 @@ struct ClipboardSettings {
     bool hideOnPaste = true;
     bool keepOpenAfterDrag = true;
     bool singleClickPaste = false;
+    /// 窗口位置模式: "follow_mouse" (跟随光标所在显示器居中) | "remember_last" (记住上次位置与大小) | "fixed" (固定位置与大小)
+    std::string windowPositionMode = "follow_mouse";
+    int windowWidthDip = 760;
+    int windowHeightDip = 560;
+    bool hasFixedAnchor = false;
+    int fixedX = 0;
+    int fixedY = 0;
+    double fixedRelX = 0.5;
+    double fixedRelY = 0.38;
+    std::string fixedMonitorDevice;
+    bool lockWindowBounds = false;
     std::string excludedApps =
         "KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe";
 };

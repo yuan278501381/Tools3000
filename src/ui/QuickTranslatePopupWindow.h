@@ -3,13 +3,14 @@
 // QuickTranslatePopupWindow — 全局划词与剪贴板轻量原生翻译浮窗
 //
 // 职责:
-//   1. 响应全局「划词与剪贴板翻译」快捷键（默认 Alt+X），异步双源捕获：
-//      优先抓取当前选区文本，未命中新选区时无缝回退读取剪贴板文本；
+//   1. 响应全局「划词与剪贴板翻译」快捷键（默认 Alt+X）或鼠标手势内置命令，
+//      异步双源捕获：优先抓取当前选区文本，未命中新选区时无缝回退剪贴板文本；
 //   2. 100% 复用 core::translate::TranslationService 单一事实源（默认免密钥
 //      Bilibili Index-Translate + Edge/Google 双源自动容灾 + BYOK/Ollama/DeepL）；
 //   3. 零 WebView2 进程开销、毫秒级光标旁弹出、原生 Direct2D/DirectWrite ClearType
-//      渲染、Per-Monitor DPI V2 自适应、深浅主题 + 全局强调色联动、可固定/拖拽/滚轮/
-//      一键复制 (Ctrl+C) 与失焦收起后释放 D2D 资源。
+//      渲染、Per-Monitor DPI V2 自适应、深浅主题 + 全局强调色联动；
+//   4. 原生交互式语种工具栏：支持独立选择源语种（自动检测 + 10 语种）、一键互译交换、
+//      直选 10 种目标语种或切回智能自动双向互译，并持久化记忆用户选择。
 // ─────────────────────────────────────────────────────────────────────────────
 
 #ifndef TOOLS3000_UI_QUICKTRANSLATEPOPUPWINDOW_H
@@ -47,7 +48,14 @@ public:
         Close = 2,
         Copy = 3,
         Retry = 4,
-        LangSwitch = 5,
+        SourceLang = 5,
+        SwapLang = 6,
+        TargetLang = 7,
+    };
+
+    struct LanguagePair {
+        std::string sourceLang;  // "auto" 或规范语种代码
+        std::string targetLang;  // "auto" 或规范语种代码
     };
 
     static QuickTranslatePopupWindow& instance();
@@ -58,16 +66,14 @@ public:
     /// 触发一次全局划词/剪贴板快速翻译（异步捕获 + 1ms 立即弹出加载卡片 + 异步翻译）
     void triggerQuickTranslate(POINT cursorPt, HWND foregroundHwnd, const std::string& hotkeyDisplay);
 
-    /// 直接对给定文本执行翻译并展示浮窗（便于重试、快捷切换目标语种与测试）
+    /// 直接对给定文本执行翻译并展示浮窗（便于重试、快捷切换语种与测试）
     void translateTextAsync(
         const std::string& textUtf8,
         bool fromClipboard,
         POINT anchorPt,
         bool bypassCache = false,
-        const std::string& targetLangOverride = {});
-
-    /// 循环切换快捷目标语种（"" 自动 -> "zh-CN" -> "en" -> "ja" -> ""）
-    static std::string nextQuickTargetLanguage(std::string_view currentOverride) noexcept;
+        const std::string& targetLangOverride = {},
+        const std::string& sourceLangOverride = {});
 
     /// 显式切换深浅主题/强调色时同步刷新可见浮窗
     void reloadTheme();
@@ -87,13 +93,32 @@ public:
     /// 计算光标附近多屏工作区安全定位（避让任务栏与屏幕边缘，空间不足自动翻转）
     static RECT computePopupPlacement(POINT anchorPt, int popupW, int popupH, const RECT& workArea) noexcept;
 
-    /// 格式化当前引擎名称标签（用于顶栏胶囊）
+    /// 格式化当前引擎名称标签（用于顶栏显示）
     static std::string formatProviderDisplayLabel(
         const tools3000::core::translate::TranslationSettings& settings,
         std::string_view providerUsed = {});
 
-    /// 格式化源/目标语种方向胶囊（如 "EN -> ZH" / "AUTO -> ZH"）
+    /// 格式化源/目标语种方向短码（如 "EN -> ZH" / "AUTO -> JA" / "ZH -> ZH-TW"）
     static std::string formatDirectionBadge(std::string_view detectedLang, std::string_view targetLang);
+
+    /// 格式化顶栏语种下拉按钮的可读标签（适配中/英界面与自动检测括注）
+    static std::string formatLanguagePillLabel(
+        std::string_view langCode,
+        bool isChineseUi,
+        bool isAutoTarget = false,
+        std::string_view detectedLang = {});
+
+    /// 计算点击「互译交换」按钮后的下一组源/目标语种偏好
+    static LanguagePair computeSwappedLanguagePair(
+        std::string_view currentSourcePref,
+        std::string_view currentEffectiveTarget,
+        std::string_view lastDistinctTarget,
+        std::string_view settingsTargetLang,
+        std::string_view settingsSecondaryLang,
+        std::string_view uiLanguageCode);
+
+    /// 兼容旧契约：按序轮换快捷目标语种（"" 自动 -> "zh-CN" -> "en" -> "ja" -> ""）
+    static std::string nextQuickTargetLanguage(std::string_view currentOverride) noexcept;
 
 private:
     QuickTranslatePopupWindow() = default;
@@ -109,12 +134,15 @@ private:
         const std::string& sourceText,
         bool fromClipboard,
         const std::string& providerLabel,
-        const std::string& directionLabel,
+        const std::string& sourcePref,
+        const std::string& targetPref,
+        const std::string& effectiveTarget,
         POINT anchorPt);
     void presentResultOnUiThread(
         uint64_t requestId,
         const std::string& translatedText,
-        const std::string& directionLabel,
+        const std::string& detectedSourceLang,
+        const std::string& effectiveTargetLang,
         const std::string& providerLabel);
     void presentErrorOnUiThread(
         uint64_t requestId,
@@ -128,10 +156,16 @@ private:
     void rebuildTextFormats();
     void rebuildLayoutsAndResize(bool repositionAtAnchor);
     void render();
+    float measureBadgeTextWidth(const std::wstring& text) const;
     HitButton hitTestButton(POINT clientPt) const noexcept;
     void copyTranslationToClipboard();
     void triggerRetry();
-    void cycleTargetLanguage();
+    void loadQuickLanguagePrefs(std::string& outSource, std::string& outTarget) const;
+    void saveQuickLanguagePrefs(std::string_view sourcePref, std::string_view targetPref) const;
+    void showSourceLanguageMenu();
+    void showTargetLanguageMenu();
+    void applyLanguageSelection(const std::string& nextSourcePref, const std::string& nextTargetPref, bool swapTextWithResult = false);
+    void swapLanguages();
 
     HINSTANCE m_hInstance = nullptr;
     std::atomic<HWND> m_hwnd{nullptr};
@@ -151,15 +185,19 @@ private:
     std::string m_translatedTextUtf8;
     std::string m_errorTextUtf8;
     std::string m_providerLabelUtf8;
-    std::string m_directionLabelUtf8;
-    std::string m_targetLangOverride;
+    std::string m_sourceLangPref = "auto";
+    std::string m_targetLangPref = "auto";
+    std::string m_detectedSourceLang;
+    std::string m_effectiveTargetLang = "zh-CN";
+    std::string m_lastDistinctTarget;
     bool m_fromClipboard = false;
     bool m_pinned = false;
+    bool m_menuOpen = false;
     bool m_copiedFeedbackActive = false;
     int m_loadingFrame = 0;
     POINT m_anchorPt{0, 0};
     float m_dpiScale = 1.0f;
-    int m_clientW = 420;
+    int m_clientW = 460;
     int m_clientH = 220;
     float m_scrollY = 0.0f;
     float m_maxScrollY = 0.0f;
@@ -168,7 +206,9 @@ private:
 
     // 按钮命中区（DIP）
     D2D1_RECT_F m_headerDragRect{};
-    D2D1_RECT_F m_dirBadgeRect{};
+    D2D1_RECT_F m_sourceLangRect{};
+    D2D1_RECT_F m_swapLangRect{};
+    D2D1_RECT_F m_targetLangRect{};
     D2D1_RECT_F m_pinBtnRect{};
     D2D1_RECT_F m_closeBtnRect{};
     D2D1_RECT_F m_copyBtnRect{};

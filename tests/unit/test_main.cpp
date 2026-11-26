@@ -103,6 +103,8 @@
 #include "core/mouse/MouseViewportManager.h"
 #include "core/mouse/MouseFeedbackOverlayBase.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/ipc/WindowKitController.h"
+#include "caps_layer/CapsLayerManager.h"
 #include "core/ipc/FileInteractionHandlers.h"
 #include "core/ipc/SystemInteractionHandlers.h"
 #include "core/ipc/AutoStartPolicy.h"

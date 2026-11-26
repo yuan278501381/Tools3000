@@ -218,7 +218,15 @@
 
 .clip-popup--maximized .clip-popup__header,
 .clip-popup--maximized .clip-popup__drag-handle,
-.clip-popup--maximized .clip-popup__filters {
+.clip-popup--maximized .clip-popup__filters,
+.clip-popup--locked .clip-popup__header,
+.clip-popup--locked .clip-popup__drag-handle,
+.clip-popup--locked .clip-popup__filters {
+  cursor: default;
+}
+
+.clip-popup--locked .clip-popup__header:active,
+.clip-popup--locked .clip-popup__filters:active {
   cursor: default;
 }
 

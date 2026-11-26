@@ -364,6 +364,58 @@ if (Test-Path -LiteralPath $ViewerManifestPath) {
     Write-Host "[OK] src/viewer/viewer.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
 }
 
+# 同步更新 Rust WindowKit 窗口管理引擎版本号（Cargo.toml / Cargo.lock / window_kit.rc / window_kit.manifest）
+$WindowKitCargoTomlPath = Join-Path $ScriptDir "src\window_kit\Cargo.toml"
+if (Test-Path -LiteralPath $WindowKitCargoTomlPath) {
+    $wkCargoRaw = [System.IO.File]::ReadAllText($WindowKitCargoTomlPath, [System.Text.Encoding]::UTF8)
+    $wkCargoUpdated = [regex]::Replace(
+        $wkCargoRaw,
+        '(?ms)(^\[package\][^\[]*?^version\s*=\s*")[^"]+(")',
+        "`${1}$TargetVersion`${2}",
+        1
+    )
+    Write-TextIfChanged -Path $WindowKitCargoTomlPath -Original $wkCargoRaw -Updated $wkCargoUpdated -Encoding $Utf8NoBom
+    Write-Host "[OK] src/window_kit/Cargo.toml version 已同步为: $TargetVersion" -ForegroundColor Green
+}
+
+$WindowKitCargoLockPath = Join-Path $ScriptDir "src\window_kit\Cargo.lock"
+if (Test-Path -LiteralPath $WindowKitCargoLockPath) {
+    $wkLockRaw = [System.IO.File]::ReadAllText($WindowKitCargoLockPath, [System.Text.Encoding]::UTF8)
+    $wkLockUpdated = [regex]::Replace(
+        $wkLockRaw,
+        '(?ms)(name\s*=\s*"tools3000_window_kit"\r?\nversion\s*=\s*")[^"]+(")',
+        "`${1}$TargetVersion`${2}",
+        1
+    )
+    Write-TextIfChanged -Path $WindowKitCargoLockPath -Original $wkLockRaw -Updated $wkLockUpdated -Encoding $Utf8NoBom
+    Write-Host "[OK] src/window_kit/Cargo.lock 主包 version 已同步为: $TargetVersion" -ForegroundColor Green
+}
+
+$WindowKitRcPath = Join-Path $ScriptDir "src\window_kit\window_kit.rc"
+if (Test-Path -LiteralPath $WindowKitRcPath) {
+    $wkRcRaw = [System.IO.File]::ReadAllText($WindowKitRcPath, [System.Text.Encoding]::UTF8)
+    $wkRcUpdated = $wkRcRaw
+    $wkRcUpdated = [regex]::Replace($wkRcUpdated, '(?m)(^\s*FILEVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
+    $wkRcUpdated = [regex]::Replace($wkRcUpdated, '(?m)(^\s*PRODUCTVERSION\s+)\d+,\d+,\d+,\d+', "`${1}$TargetMajor,$TargetMinor,$TargetPatch,0")
+    $wkRcUpdated = [regex]::Replace($wkRcUpdated, '(VALUE\s+"FileVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion.0`${2}")
+    $wkRcUpdated = [regex]::Replace($wkRcUpdated, '(VALUE\s+"ProductVersion"\s*,\s*")[^"]+(")', "`${1}$TargetVersion`${2}")
+    Write-TextIfChanged -Path $WindowKitRcPath -Original $wkRcRaw -Updated $wkRcUpdated -Encoding $Utf8NoBom
+    Write-Host "[OK] src/window_kit/window_kit.rc 版本资源已同步为: $TargetVersion ($TargetVersion.0)" -ForegroundColor Green
+}
+
+$WindowKitManifestPath = Join-Path $ScriptDir "src\window_kit\window_kit.manifest"
+if (Test-Path -LiteralPath $WindowKitManifestPath) {
+    $wkManifestRaw = [System.IO.File]::ReadAllText($WindowKitManifestPath, [System.Text.Encoding]::UTF8)
+    $wkManifestUpdated = [regex]::Replace(
+        $wkManifestRaw,
+        '(<assemblyIdentity\s+version=")[^"]+("[^>]*name="Yy1\.Tools3000\.WindowKit")',
+        "`${1}$TargetVersion.0`${2}",
+        1
+    )
+    Write-TextIfChanged -Path $WindowKitManifestPath -Original $wkManifestRaw -Updated $wkManifestUpdated -Encoding $Utf8NoBom
+    Write-Host "[OK] src/window_kit/window_kit.manifest assemblyIdentity 版本已同步为: $TargetVersion.0" -ForegroundColor Green
+}
+
 $SiteIndexPath = Join-Path $ScriptDir "docs\site\index.html"
 if (Test-Path -LiteralPath $SiteIndexPath) {
     $siteRaw = [System.IO.File]::ReadAllText($SiteIndexPath, [System.Text.Encoding]::UTF8)
@@ -398,6 +450,10 @@ if (Test-Path -LiteralPath $ViewerCargoTomlPath) { $FilesToStage += "src/viewer/
 if (Test-Path -LiteralPath $ViewerCargoLockPath) { $FilesToStage += "src/viewer/Cargo.lock" }
 if (Test-Path -LiteralPath $ViewerRcPath) { $FilesToStage += "src/viewer/viewer.rc" }
 if (Test-Path -LiteralPath $ViewerManifestPath) { $FilesToStage += "src/viewer/viewer.manifest" }
+if (Test-Path -LiteralPath $WindowKitCargoTomlPath) { $FilesToStage += "src/window_kit/Cargo.toml" }
+if (Test-Path -LiteralPath $WindowKitCargoLockPath) { $FilesToStage += "src/window_kit/Cargo.lock" }
+if (Test-Path -LiteralPath $WindowKitRcPath) { $FilesToStage += "src/window_kit/window_kit.rc" }
+if (Test-Path -LiteralPath $WindowKitManifestPath) { $FilesToStage += "src/window_kit/window_kit.manifest" }
 git add -- @FilesToStage
 if ($LASTEXITCODE -ne 0) { throw "暂存版本与发布说明失败！" }
 $HasStaged = @(git diff --cached --name-only)
@@ -481,8 +537,8 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Host "[OK] deploy_dist 全部可执行文件/动态库及外层安装包 Authenticode 签名与时间戳批量验证通过" -ForegroundColor Green
 
-# 8. EXE 二进制版本强校验门禁（覆盖主程序与 Rust Picasa 看图器）
-foreach ($BuiltExe in @("deploy_dist\Tools3000.exe", "deploy_dist\Tools3000_Picasa_Viewer.exe")) {
+# 8. EXE 二进制版本强校验门禁（覆盖主程序、Rust Picasa 看图器与 Rust WindowKit 窗口管理引擎）
+foreach ($BuiltExe in @("deploy_dist\Tools3000.exe", "deploy_dist\Tools3000_Picasa_Viewer.exe", "deploy_dist\Tools3000_WindowKit.exe")) {
     if (-not (Test-Path -LiteralPath $BuiltExe)) { throw "未找到编译产物: $BuiltExe" }
     $VersionInfo = (Get-Item -LiteralPath $BuiltExe).VersionInfo
     $ExeVersion = $VersionInfo.ProductVersion

@@ -1,0 +1,502 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * ZoneLayoutEditor.css — 矢量 SnapZones 网格与自由画布布局编辑器样式
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.zone-editor {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+  font-family: var(--font-sans);
+}
+
+.zone-editor--disabled {
+  opacity: 0.65;
+  pointer-events: none;
+}
+
+/* ── 1. 布局缩略条 ──────────────────────────────────────────────────────── */
+
+.zone-editor__strip {
+  display: flex;
+  align-items: stretch;
+  gap: 0.65rem;
+  overflow-x: auto;
+  padding: 0.25rem 0.1rem 0.45rem;
+}
+
+.zone-editor__layout-card {
+  flex: 0 0 132px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.zone-editor__layout-card:hover:not(:disabled) {
+  border-color: var(--card-border-hover);
+  background: var(--card-hover);
+}
+
+.zone-editor__layout-card.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, var(--card-bg));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 35%, transparent);
+}
+
+.zone-editor__mini-preview {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 5px;
+  background: var(--bg-surface);
+  border: 1px solid var(--well-border);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zone-editor__mini-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.zone-editor__mini-rect {
+  fill: color-mix(in srgb, var(--primary) 24%, transparent);
+  stroke: color-mix(in srgb, var(--primary) 72%, transparent);
+  stroke-width: 1.5;
+}
+
+.zone-editor__layout-card-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.zone-editor__layout-card-name {
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.zone-editor__layout-card-kind {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.zone-editor__new-actions {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+  padding-left: 0.25rem;
+}
+
+/* ── 2. 快捷模板条 ──────────────────────────────────────────────────────── */
+
+.zone-editor__presets-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.zone-editor__presets-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.zone-editor__presets-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.zone-editor__preset-pill {
+  padding: 0.22rem 0.65rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.zone-editor__preset-pill:hover:not(:disabled) {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-dim);
+}
+
+/* ── 3. 工作区与工具栏 ──────────────────────────────────────────────────── */
+
+.zone-editor__workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.95rem;
+  border-radius: var(--radius-md);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.zone-editor__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.zone-editor__name-group {
+  flex: 1 1 200px;
+  min-width: 170px;
+  max-width: 280px;
+}
+
+.zone-editor__mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--bg-surface);
+  border: 1px solid var(--well-border);
+}
+
+.zone-editor__mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.72rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.zone-editor__mode-btn:hover:not(:disabled) {
+  color: var(--text-primary);
+  background: var(--ghost-hover-bg);
+}
+
+.zone-editor__mode-btn.is-active {
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
+}
+
+.zone-editor__toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* ── 4. 模式专属子栏 ────────────────────────────────────────────────────── */
+
+.zone-editor__subbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-sm);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+}
+
+.zone-editor__stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.zone-editor__stepper-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.zone-editor__step-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.zone-editor__step-btn:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+.zone-editor__step-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.zone-editor__subbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.zone-editor__canvas-coords {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.zone-editor__coord-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+/* ── 5. 16:9 交互式显示器预览画布 ──────────────────────────────────────── */
+
+.zone-editor__monitor-shell {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+.zone-editor__stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  min-height: 210px;
+  max-height: 360px;
+  background-image:
+    radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--primary) 10%, transparent), transparent 55%),
+    linear-gradient(180deg, var(--bg-surface) 0%, var(--bg-base) 100%);
+  user-select: none;
+  touch-action: none;
+}
+
+.zone-editor__zone {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--primary) 13%, var(--card-bg));
+  border: 1.5px solid color-mix(in srgb, var(--primary) 42%, var(--card-border));
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+  overflow: hidden;
+}
+
+.zone-editor__zone:hover {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 20%, var(--card-bg));
+}
+
+.zone-editor__zone.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 24%, var(--card-bg));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 35%, transparent);
+  z-index: 3;
+}
+
+.zone-editor__zone--draggable {
+  cursor: grab;
+}
+
+.zone-editor__zone--draggable:active {
+  cursor: grabbing;
+}
+
+.zone-editor__zone-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 0.45rem;
+  border-radius: var(--radius-full);
+  background: var(--primary);
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  font-weight: 700;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  box-shadow: var(--shadow-sm);
+}
+
+.zone-editor__zone-dim {
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--text-secondary);
+}
+
+.zone-editor__resize-handle {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  color: var(--primary);
+  cursor: nwse-resize;
+}
+
+.zone-editor__divider {
+  position: absolute;
+  z-index: 5;
+  background: transparent;
+  transition: background var(--transition-fast);
+}
+
+.zone-editor__divider--col {
+  top: 6px;
+  bottom: 6px;
+  width: 10px;
+  margin-left: -5px;
+  cursor: col-resize;
+}
+
+.zone-editor__divider--row {
+  left: 6px;
+  right: 6px;
+  height: 10px;
+  margin-top: -5px;
+  cursor: row-resize;
+}
+
+.zone-editor__divider::after {
+  content: '';
+  position: absolute;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--primary) 50%, transparent);
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.zone-editor__divider--col::after {
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 36px;
+  transform: translate(-50%, -50%);
+}
+
+.zone-editor__divider--row::after {
+  top: 50%;
+  left: 50%;
+  width: 36px;
+  height: 3px;
+  transform: translate(-50%, -50%);
+}
+
+.zone-editor__divider:hover::after {
+  background: var(--primary);
+}
+
+.zone-editor__taskbar-mock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  height: 20px;
+  background: var(--card-bg);
+  border-top: 1px solid var(--card-border);
+}
+
+.zone-editor__taskbar-pill {
+  width: 14px;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: var(--text-muted);
+  opacity: 0.4;
+}
+
+.zone-editor__hint {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+@container (max-width: 620px) {
+  .zone-editor__toolbar,
+  .zone-editor__subbar {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .zone-editor__name-group {
+    max-width: 100%;
+    width: 100%;
+  }
+}

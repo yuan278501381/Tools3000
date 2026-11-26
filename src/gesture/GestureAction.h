@@ -61,13 +61,14 @@ enum class BuiltinCommand {
     BackspaceKey,             // 28: 退格键 (Backspace)
     BrightnessUp,             // 29: 调高屏幕亮度 (光标所在显示器)
     BrightnessDown,           // 30: 调低屏幕亮度 (光标所在显示器)
+    QuickTranslate,           // 31: 划词与剪贴板快速翻译
     PrevDesktop = PrevVirtualDesktop,
     NextDesktop = NextVirtualDesktop,
     SwitchDesktopLeft = PrevVirtualDesktop,   // 上一个虚拟桌面别名
     SwitchDesktopRight = NextVirtualDesktop   // 下一个虚拟桌面别名
 };
 
-inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::BrightnessDown;
+inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::QuickTranslate;
 
 /// 统一校验 BuiltinCommand 整数索引是否合法 (0 ~ kMaxBuiltinCommand)
 inline constexpr bool isValidBuiltinCommandIndex(int index) noexcept {

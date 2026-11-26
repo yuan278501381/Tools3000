@@ -381,9 +381,10 @@ Source: "{#DeployDir}\plugins\*.plugin.json"; DestDir: "{app}\plugins"; Flags: i
 Source: "{#DeployDir}\Tools3000.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 Source: "{#DeployDir}\Tools3000_Service.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 Source: "{#DeployDir}\Tools3000_Picasa_Viewer.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
+Source: "{#DeployDir}\Tools3000_WindowKit.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 Source: "{#DeployDir}\tools3000-cli.exe"; DestDir: "{app}"; Flags: ignoreversion uninsrestartdelete
 ; 其余全量资源与依赖文件（排除已明确声明的 DLL/EXE/JSON 避免二次拷贝冲突，且绝不配置 ProgramData users-modify）
-Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe,Tools3000_Picasa_Viewer.exe,tools3000-cli.exe"
+Source: "{#DeployDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs uninsrestartdelete; Excludes: "*.pdb,Tools3000Tests.*,*Preview.*,*Integration.*,*.flag,debug.flag,*.dll,*.plugin.json,Tools3000.exe,Tools3000_Service.exe,Tools3000_Picasa_Viewer.exe,Tools3000_WindowKit.exe,tools3000-cli.exe"
 
 [InstallDelete]
 Type: files; Name: "{app}\*gtest*.dll"
@@ -670,7 +671,8 @@ begin
      IsFileLocked(AppDir + '\Tools3000Core.dll') or
      IsFileLocked(AppDir + '\Tools3000.exe') or
      IsFileLocked(AppDir + '\Tools3000_Service.exe') or
-     IsFileLocked(AppDir + '\Tools3000_Picasa_Viewer.exe') then
+     IsFileLocked(AppDir + '\Tools3000_Picasa_Viewer.exe') or
+     IsFileLocked(AppDir + '\Tools3000_WindowKit.exe') then
   begin
     Result := True;
     Exit;
@@ -1003,6 +1005,7 @@ begin
     Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   end;
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_WindowKit.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   StopSearchServiceNativeForDir(NormDir);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
@@ -1046,6 +1049,7 @@ begin
       Log('WaitForProcessesAndFilesReleasedInDir: Locks or processes still active, re-issuing taskkill...');
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_WindowKit.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, Dummy);
     end;
@@ -2622,6 +2626,7 @@ begin
       Log(Format('PrepareToInstall: Locks still detected at attempt %d, re-issuing taskkill...', [RetryCount]));
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /im Tools3000.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Picasa_Viewer.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+      Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_WindowKit.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im tools3000-cli.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
       Exec(ExpandConstant('{sys}\taskkill.exe'), '/f /t /im Tools3000_Service.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
     end;

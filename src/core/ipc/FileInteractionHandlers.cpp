@@ -1,6 +1,7 @@
 #include "core/ipc/FileInteractionHandlers.h"
 
 #include "core/ipc/MessageBridge.h"
+#include "core/ipc/WindowKitController.h"
 #include "core/utils/PathOperations.h"
 #include "core/utils/ShellContextMenuService.h"
 #include "core/utils/WinUtils.h"
@@ -52,6 +53,10 @@ void registerFileInteractionHandlers(MessageBridge& bridge,
     auto openFileHandler = [preferFilepathParameter, missingPath](const json& params) -> json {
         const auto path = requestPath(params, preferFilepathParameter);
         if (path.empty()) return missingPath();
+        if (path.size() > 5 && _strnicmp(path.c_str(), "ws://", 5) == 0) {
+            const std::string wsId = path.substr(5);
+            return WindowKitController::instance().execAction("launchWorkspace", {{"workspaceId", wsId}});
+        }
         return {{"success", WinUtils::openFile(WinUtils::utf8ToWstring(path))}};
     };
     auto openFolderHandler = [preferFilepathParameter, missingPath](const json& params) -> json {

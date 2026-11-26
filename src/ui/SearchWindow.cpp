@@ -307,14 +307,13 @@ void SearchWindow::presentWebViewSurface(bool forceCompositorKick) {
     if (m_webView) {
         m_suspendController.resume(m_webView.Get(), "search");
     }
-    const bool needKick = forceCompositorKick || m_wasSuspended || !m_everPresentedVisible;
+    const bool needKick = shouldTriggerCompositorSwapKick(forceCompositorKick, m_wasSuspended);
     m_wasSuspended = false;
 
     RECT rc{};
     const bool hasRect = (GetClientRect(m_hwnd, &rc) != FALSE) && (rc.right > rc.left) && (rc.bottom > rc.top);
     if (needKick) {
-        // Win10 LTSC / 核显 / TrySuspend 恢复后 Chromium DirectComposition 表面易卡在未提交帧导致黑屏：
-        // 执行 FALSE -> 1px 脏区脉冲 -> 真实 Bounds -> TRUE + NotifyParentWindowPositionChanged 强制提交新帧。
+        // 仅在 TrySuspend 挂起恢复或显式强刷时执行 1px 脏区脉冲，避免在崭新首帧上砸毁 SwapChain 产生纯黑闪帧
         m_controller->put_IsVisible(FALSE);
         if (hasRect && (rc.bottom - rc.top) > 2) {
             RECT pulseRc = rc;
@@ -363,7 +362,7 @@ void SearchWindow::markFirstPaintReady() {
     completeFirstPaintReady();
 }
 
-bool SearchWindow::setWindowCloaked(bool cloaked) {
+bool SearchWindow::setWindowCloaked(bool cloaked, bool startUncloakTimer) {
     if (!m_hwnd || !IsWindow(m_hwnd)) {
         m_cloakedForFirstPaint = false;
         return false;
@@ -380,22 +379,96 @@ bool SearchWindow::setWindowCloaked(bool cloaked) {
     const HRESULT hr = DwmSetWindowAttribute(m_hwnd, DWMWA_CLOAK, &val, sizeof(val));
     if (SUCCEEDED(hr)) {
         m_cloakedForFirstPaint = true;
-        SetTimer(m_hwnd, IDT_FIRST_PAINT_UNCLOAK, FIRST_PAINT_UNCLOAK_TIMEOUT_MS, nullptr);
+        if (startUncloakTimer) {
+            SetTimer(m_hwnd, IDT_FIRST_PAINT_UNCLOAK, FIRST_PAINT_UNCLOAK_TIMEOUT_MS, nullptr);
+        } else {
+            KillTimer(m_hwnd, IDT_FIRST_PAINT_UNCLOAK);
+        }
         return true;
     }
     m_cloakedForFirstPaint = false;
     return false;
 }
 
+void SearchWindow::startBackgroundFirstPaintWarmup() {
+    if (!m_hwnd || !IsWindow(m_hwnd) || !m_controller) return;
+    if (!shouldStartBackgroundFirstPaintWarmup(
+            m_visible.load(std::memory_order_acquire),
+            m_webViewReady.load(std::memory_order_acquire),
+            m_uiFirstPaintReady.load(std::memory_order_acquire),
+            m_preloadWarmingFrame)) {
+        return;
+    }
+    // 必须先成功开启 DWMWA_CLOAK 完全隐身才允许在后台推进真实 GPU 首帧，防止非 DWM 环境闪烁
+    if (!setWindowCloaked(true, /*startUncloakTimer=*/false)) {
+        LOG_DEBUG("SearchWindow: DWMWA_CLOAK unavailable, skipping silent background first-paint warmup");
+        return;
+    }
+    // 临时切换为 TOOLWINDOW + NOACTIVATE：任务栏与 Alt+Tab 零闪烁、绝不抢占当前前台焦点
+    const LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+    const LONG_PTR warmupEx = (exStyle & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW)) |
+                              static_cast<LONG_PTR>(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE);
+    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, warmupEx);
+    m_preloadWarmingFrame = true;
+
+    ShowWindow(m_hwnd, SW_SHOWNOACTIVATE);
+    RECT rc{};
+    if (GetClientRect(m_hwnd, &rc) && rc.right > rc.left && rc.bottom > rc.top) {
+        m_controller->put_Bounds(rc);
+    }
+    syncWebViewDpi(m_controller.Get(), m_hwnd);
+    m_controller->put_IsVisible(TRUE);
+    m_controller->NotifyParentWindowPositionChanged();
+    SetTimer(m_hwnd, IDT_PRELOAD_WARMUP_TIMEOUT, PRELOAD_WARMUP_TIMEOUT_MS, nullptr);
+    LOG_INFO("SearchWindow: silent background GPU first-paint warmup started (elapsedSinceInit={}ms)",
+             m_initStartTick > 0 ? (GetTickCount64() - m_initStartTick) : 0ULL);
+}
+
+void SearchWindow::finishBackgroundFirstPaintWarmup(bool reachedFirstPaint, const char* reason) {
+    if (!m_preloadWarmingFrame) return;
+    m_preloadWarmingFrame = false;
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    KillTimer(m_hwnd, IDT_PRELOAD_WARMUP_TIMEOUT);
+
+    // 趁 DWMWA_CLOAK 仍为 TRUE 时先 SW_HIDE 再还原 WS_EX_APPWINDOW，确保任务栏和屏幕全程零闪烁
+    ShowWindow(m_hwnd, SW_HIDE);
+    const LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+    const LONG_PTR restoredEx = (exStyle & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) |
+                                static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+    SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, restoredEx);
+    setWindowCloaked(false);
+
+    if (reachedFirstPaint) {
+        m_everPresentedVisible = true;
+        if (m_controller) {
+            m_controller->put_IsVisible(FALSE);
+        }
+        SetTimer(m_hwnd, IDT_DEFERRED_SUSPEND, DEFERRED_SUSPEND_DELAY_MS, nullptr);
+    } else if (m_controller) {
+        m_controller->put_IsVisible(FALSE);
+    }
+    LOG_INFO("SearchWindow: silent background GPU warmup finished (reachedFirstPaint={}, reason={}, elapsedSinceInit={}ms)",
+             reachedFirstPaint, reason ? reason : "unknown",
+             m_initStartTick > 0 ? (GetTickCount64() - m_initStartTick) : 0ULL);
+}
+
 void SearchWindow::completeFirstPaintReady() {
     if (!m_hwnd || !IsWindow(m_hwnd) || !m_controller) return;
     KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
     const bool wasCloaked = m_cloakedForFirstPaint;
+    const bool wasPreloadWarming = m_preloadWarmingFrame;
     m_uiFirstPaintReady.store(true, std::memory_order_release);
     setWebViewStatus(WebViewStatus::Ready, S_OK);
+    if (wasPreloadWarming && !m_visible.load(std::memory_order_acquire)) {
+        finishBackgroundFirstPaintWarmup(true, "firstPaintReady");
+        return;
+    }
     setWindowCloaked(false);
     if (m_visible.load(std::memory_order_acquire)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
+        const uint64_t showElapsed = (m_showTimeTick > 0) ? (GetTickCount64() - m_showTimeTick) : 0ULL;
+        LOG_INFO("SearchWindow: firstPaintReady committed (wasCloaked={}, showToPaintMs={})",
+                 wasCloaked, showElapsed);
         if (wasCloaked) {
             // 原子揭幕瞬间轻推一次焦点，确保从 Cloak 释放后输入框光标 100% 就位
             m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
@@ -468,6 +541,17 @@ void SearchWindow::show(HINSTANCE hInstance) {
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
         KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
+        // 若后台无感首帧预热正在进行中，用户恰好按快捷键唤起：立即无缝接管并恢复 WS_EX_APPWINDOW 任务栏样式
+        if (m_preloadWarmingFrame) {
+            KillTimer(m_hwnd, IDT_PRELOAD_WARMUP_TIMEOUT);
+            m_preloadWarmingFrame = false;
+            ShowWindow(m_hwnd, SW_HIDE);
+            const LONG_PTR exStyle = GetWindowLongPtrW(m_hwnd, GWL_EXSTYLE);
+            const LONG_PTR restoredEx = (exStyle & ~static_cast<LONG_PTR>(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE)) |
+                                        static_cast<LONG_PTR>(WS_EX_APPWINDOW);
+            SetWindowLongPtrW(m_hwnd, GWL_EXSTYLE, restoredEx);
+            LOG_INFO("SearchWindow: user show() seamlessly took over in-flight background warmup");
+        }
         // 若此前 WebView2 初始化曾失败或渲染器崩溃且当前未在初始化，立即自动重试恢复，杜绝永久黑屏死胡同
         if (!m_webView && !m_webViewInitializing.load(std::memory_order_acquire)) {
             m_autoRecoverAttempted.store(false, std::memory_order_release);
@@ -483,9 +567,9 @@ void SearchWindow::show(HINSTANCE hInstance) {
         const bool wasSuspendedBeforeShow = m_wasSuspended;
         const bool needCloak = shouldCloakOnShow(webReady, firstPaintDone, wasSuspendedBeforeShow, wasMinimized);
         if (needCloak) {
-            // 原生 DWMWA_CLOAK 隐身热身：在 ShowWindow 之前屏蔽窗口合成输出，
-            // 让 Chromium 在真实可见窗口下零节流提交首帧/唤醒帧，杜绝 Win10 LTSC/核显首次呼出短暂黑帧闪烁。
-            setWindowCloaked(true);
+            // 原生 DWMWA_CLOAK 隐身热身（配合 --disable-backgrounding-occluded-windows 不触发 Chromium 遮挡节流），
+            // 在 ShowWindow 之前屏蔽未提交帧输出，待前端双 rAF 确认首帧/唤醒帧完成后原子揭幕。
+            setWindowCloaked(true, /*startUncloakTimer=*/true);
         }
 
         if (wasMinimized) {
@@ -516,13 +600,16 @@ void SearchWindow::show(HINSTANCE hInstance) {
             if (m_controller) m_controller->put_IsVisible(FALSE);
             InvalidateRect(m_hwnd, nullptr, FALSE);
         } else {
-            presentWebViewSurface(wasHidden || wasMinimized || wasSuspendedBeforeShow);
+            // 仅在真正挂起或最小化恢复时触发合成器强制刷新脉冲，严禁砸毁刚预热好的崭新 SwapChain
+            presentWebViewSurface(wasSuspendedBeforeShow || wasMinimized);
             if (needCloak && firstPaintDone && m_webView) {
                 // 已完成首帧但经历过挂起/最小化：请求前端在重绘 1 帧 rAF 后触发原子揭幕
                 m_webView->ExecuteScript(
                     L"window.dispatchEvent(new CustomEvent('tools3000:searchResumeFrame'));", nullptr);
             }
         }
+        LOG_INFO("SearchWindow: show() completed (webReady={}, firstPaintDone={}, wasSuspended={}, needCloak={})",
+                 webReady, firstPaintDone, wasSuspendedBeforeShow, needCloak);
         focusSearchIfVisible();
         recordShown();
         return;
@@ -604,11 +691,13 @@ void SearchWindow::destroy() {
     ++m_generation;
     m_wasSuspended = false;
     m_everPresentedVisible = false;
+    m_preloadWarmingFrame = false;
     if (m_hwnd && IsWindow(m_hwnd)) {
         setWindowCloaked(false);
         KillTimer(m_hwnd, IDT_POST_SHOW_REPAINT_VERIFY);
         KillTimer(m_hwnd, IDT_DEFERRED_BLUR_HIDE);
         KillTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK);
+        KillTimer(m_hwnd, IDT_PRELOAD_WARMUP_TIMEOUT);
     }
     m_suspendController.abandon();
     if (m_controller) {
@@ -804,6 +893,31 @@ void SearchWindow::paintStatusBackdrop(HDC hdc, const RECT& clientRect) const {
     const COLORREF subColor = dark ? RGB(148, 163, 184) : RGB(71, 85, 105);
     const COLORREF accentColor = dark ? RGB(96, 165, 250) : RGB(37, 99, 235);
 
+    // Loading 状态绘制与真实搜索界面 1:1 同色系的原生圆角搜索框骨架轮廓，
+    // 即使在机械盘冷启瞬间用户手速极快抢先呼出，也绝对不会看到冷硬黑框。
+    if (status == WebViewStatus::Loading && width >= 260 && height >= 160) {
+        const int padTop = tools3000::core::dpi::scaleMetric(16, scale);
+        const int padSide = tools3000::core::dpi::scaleMetric(18, scale);
+        const int barH = tools3000::core::dpi::scaleMetric(44, scale);
+        const int corner = tools3000::core::dpi::scaleMetric(10, scale);
+        const COLORREF barBg = dark ? RGB(30, 41, 59) : RGB(255, 255, 255);
+        const COLORREF barBorder = dark ? RGB(51, 65, 85) : RGB(203, 213, 225);
+        HPEN borderPen = CreatePen(PS_SOLID, 1, barBorder);
+        HBRUSH barBrush = CreateSolidBrush(barBg);
+        HGDIOBJ oldPen = SelectObject(hdc, borderPen);
+        HGDIOBJ oldBrush = SelectObject(hdc, barBrush);
+        RoundRect(hdc,
+                  clientRect.left + padSide,
+                  clientRect.top + padTop,
+                  clientRect.right - padSide,
+                  clientRect.top + padTop + barH,
+                  corner, corner);
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        if (borderPen) DeleteObject(borderPen);
+        if (barBrush) DeleteObject(barBrush);
+    }
+
     std::wstring titleText;
     std::wstring descText;
     std::wstring actionText;
@@ -900,6 +1014,8 @@ void SearchWindow::handleStatusSurfaceAction() {
 
 void SearchWindow::initializeWebView2() {
     const uint64_t generation = ++m_generation;
+    m_initStartTick = GetTickCount64();
+    m_preloadWarmingFrame = false;
     m_webViewReady.store(false, std::memory_order_release);
     m_uiFirstPaintReady.store(false, std::memory_order_release);
     m_webViewInitializing.store(true, std::memory_order_release);
@@ -1115,25 +1231,31 @@ void SearchWindow::initializeWebView2() {
                                         }
                                         m_webViewReady = true;
                                         hookWebViewChildWindows(m_hwnd);
+                                        const uint64_t navElapsed =
+                                            (m_initStartTick > 0) ? (GetTickCount64() - m_initStartTick) : 0ULL;
+                                        LOG_INFO("SearchWindow: NavigationCompleted (navMs={}, visible={}, firstPaintReady={})",
+                                                 navElapsed,
+                                                 m_visible.load(std::memory_order_acquire),
+                                                 m_uiFirstPaintReady.load(std::memory_order_acquire));
                                         if (m_pendingServiceWarmup.exchange(false, std::memory_order_acq_rel)) {
                                             if (m_hwnd && IsWindow(m_hwnd)) {
                                                 KillTimer(m_hwnd, IDT_COLD_WARMUP_FALLBACK);
                                             }
                                             warmUpSearchService();
                                         }
-                                        // 与 SettingsWindow::smoothPresent / ClipboardWindow::revealWindowNow 对齐：
-                                        // 导航完成后若窗口当前可见，立即显露控制器并强制提交首帧，绝不在 put_IsVisible(FALSE)
-                                        // 状态下死等被 Chromium 节流挂起的 JS rAF；若处于后台 preload 隐藏态，则保持隐藏待命且不提前冻结。
                                         if (m_visible.load(std::memory_order_acquire)) {
+                                            // 用户已在冷启中途打开窗口：无需砸毁新建 SwapChain，直接平滑呈现并等待首帧握手
                                             setWebViewStatus(WebViewStatus::Ready, S_OK);
-                                            presentWebViewSurface(true);
+                                            presentWebViewSurface(false);
                                             focusSearchIfVisible();
                                             if (!m_uiFirstPaintReady.load(std::memory_order_acquire) &&
                                                 m_hwnd && IsWindow(m_hwnd)) {
                                                 SetTimer(m_hwnd, IDT_FIRST_PAINT_FALLBACK, FIRST_PAINT_FALLBACK_DELAY_MS, nullptr);
                                             }
                                         } else {
-                                            if (m_controller) m_controller->put_IsVisible(FALSE);
+                                            // 后台静默 preload 完成：触发无感 DWM Cloak 真实 GPU 首帧预热，
+                                            // 让显存在用户首次 Alt+Space 之前就持有真实完整画面，根除 Win10 LTSC/机械盘首次黑屏。
+                                            startBackgroundFirstPaintWarmup();
                                         }
                                         return S_OK;
                                     }).Get(), nullptr);
@@ -1441,10 +1563,17 @@ LRESULT CALLBACK SearchWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, L
             }
             if (wParam == IDT_FIRST_PAINT_UNCLOAK) {
                 KillTimer(hwnd, IDT_FIRST_PAINT_UNCLOAK);
+                LOG_WARN("SearchWindow: first-paint cloak timeout ({}ms) reached; forcing uncloak",
+                         FIRST_PAINT_UNCLOAK_TIMEOUT_MS);
                 inst.setWindowCloaked(false);
                 if (inst.isVisible() && inst.m_controller) {
                     inst.m_controller->MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC);
                 }
+                return 0;
+            }
+            if (wParam == IDT_PRELOAD_WARMUP_TIMEOUT) {
+                KillTimer(hwnd, IDT_PRELOAD_WARMUP_TIMEOUT);
+                inst.finishBackgroundFirstPaintWarmup(false, "timeout");
                 return 0;
             }
             if (wParam == IDT_FIRST_PAINT_FALLBACK) {

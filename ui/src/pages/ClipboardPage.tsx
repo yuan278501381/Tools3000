@@ -13,6 +13,9 @@ import {
   FolderOpen,
   Play,
   Save,
+  Monitor,
+  LocateFixed,
+  RotateCcw,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -34,6 +37,8 @@ import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusB
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import './ClipboardPage.css';
 
+type ClipboardWindowPositionMode = 'follow_mouse' | 'remember_last' | 'fixed';
+
 interface ClipboardSettings {
   enabled: boolean;
   hotkey: string;
@@ -50,6 +55,14 @@ interface ClipboardSettings {
   keepOpenAfterDrag: boolean;
   singleClickPaste: boolean;
   excludedApps: string;
+  windowPositionMode: ClipboardWindowPositionMode;
+  windowWidthDip: number;
+  windowHeightDip: number;
+  hasFixedAnchor: boolean;
+  fixedX: number;
+  fixedY: number;
+  fixedMonitorDevice: string;
+  lockWindowBounds: boolean;
 }
 
 interface ClipboardStats {
@@ -76,7 +89,25 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   keepOpenAfterDrag: true,
   singleClickPaste: false,
   excludedApps: 'KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe,Enpass.exe,LastPass.exe,RoboForm.exe',
+  windowPositionMode: 'follow_mouse',
+  windowWidthDip: 760,
+  windowHeightDip: 560,
+  hasFixedAnchor: false,
+  fixedX: 0,
+  fixedY: 0,
+  fixedMonitorDevice: '',
+  lockWindowBounds: false,
 };
+
+function formatMonitorDeviceLabel(device: string): string {
+  const trimmed = device.trim();
+  if (!trimmed) return '';
+  const match = trimmed.match(/DISPLAY(\d+)$/i);
+  if (match) {
+    return `Display ${match[1]}`;
+  }
+  return trimmed.replace(/^\\\\\.\\/, '');
+}
 
 function formatDiskSize(bytes: number): string {
   if (!bytes || bytes < 1024) return `${bytes || 0} B`;
@@ -170,8 +201,69 @@ export const ClipboardPage: FC = () => {
       ...(typeof data.hideOnPaste === 'boolean' ? { hideOnPaste: data.hideOnPaste } : {}),
       ...(typeof data.keepOpenAfterDrag === 'boolean' ? { keepOpenAfterDrag: data.keepOpenAfterDrag } : {}),
       ...(typeof data.singleClickPaste === 'boolean' ? { singleClickPaste: data.singleClickPaste } : {}),
+      ...(data.windowPositionMode === 'follow_mouse' ||
+      data.windowPositionMode === 'remember_last' ||
+      data.windowPositionMode === 'fixed'
+        ? { windowPositionMode: data.windowPositionMode }
+        : {}),
+      ...(typeof data.windowWidthDip === 'number' ? { windowWidthDip: data.windowWidthDip } : {}),
+      ...(typeof data.windowHeightDip === 'number' ? { windowHeightDip: data.windowHeightDip } : {}),
+      ...(typeof data.hasFixedAnchor === 'boolean' ? { hasFixedAnchor: data.hasFixedAnchor } : {}),
+      ...(typeof data.fixedX === 'number' ? { fixedX: data.fixedX } : {}),
+      ...(typeof data.fixedY === 'number' ? { fixedY: data.fixedY } : {}),
+      ...(typeof data.fixedMonitorDevice === 'string' ? { fixedMonitorDevice: data.fixedMonitorDevice } : {}),
+      ...(typeof data.lockWindowBounds === 'boolean' ? { lockWindowBounds: data.lockWindowBounds } : {}),
     }));
   });
+
+  const handleCaptureFixedPlacement = async () => {
+    try {
+      const res = await bridgeRequest<{ success?: boolean; captured?: boolean; settings?: Partial<ClipboardSettings> }>(
+        'clipboard.captureFixedPlacement',
+      );
+      if (res?.settings && typeof res.settings === 'object') {
+        setSettings((prev) => ({ ...prev, ...res.settings }));
+      }
+      if (res?.captured) {
+        toast.success(t('clipboardPage.placementCapturedToast', 'Current clipboard panel position and size saved'));
+      } else {
+        toast.error(
+          t(
+            'clipboardPage.placementCaptureNeedOpenToast',
+            'Open the clipboard panel and move it to the target position first, then capture again',
+          ),
+        );
+      }
+    } catch {
+      toast.error(t('clipboardPage.saveFailedToast', 'Failed to save clipboard settings'));
+    }
+  };
+
+  const handleResetPlacement = async () => {
+    try {
+      const res = await bridgeRequest<{ success?: boolean; settings?: Partial<ClipboardSettings> }>(
+        'clipboard.resetPlacement',
+      );
+      if (res?.settings && typeof res.settings === 'object') {
+        setSettings((prev) => ({ ...prev, ...res.settings }));
+      } else {
+        setSettings((prev) => ({
+          ...prev,
+          windowPositionMode: 'follow_mouse',
+          windowWidthDip: 760,
+          windowHeightDip: 560,
+          hasFixedAnchor: false,
+          fixedX: 0,
+          fixedY: 0,
+          fixedMonitorDevice: '',
+          lockWindowBounds: false,
+        }));
+      }
+      toast.success(t('clipboardPage.placementResetToast', 'Clipboard panel position and size reset to defaults'));
+    } catch {
+      toast.error(t('clipboardPage.saveFailedToast', 'Failed to save clipboard settings'));
+    }
+  };
 
   const patchSettings = async (patch: Partial<ClipboardSettings>) => {
     setSettings((prev) => ({ ...prev, ...patch }));
@@ -406,6 +498,193 @@ export const ClipboardPage: FC = () => {
                 onChange={(v) => void patchSettings({ hidePinnedInOtherCategories: v })}
               />
             </SettingRow>
+          </Card>
+        </SettingGroup>
+
+        <SettingGroup
+          title={t('clipboardPage.placementGroup', 'Window Position & Size (Multi-Monitor)')}
+          icon={<Monitor size={18} strokeWidth={2.2} aria-hidden="true" />}
+        >
+          <Card>
+            <SettingRow
+              layout="vertical"
+              label={t('clipboardPage.positionModeTitle', 'Panel Placement Mode')}
+              description={t(
+                'clipboardPage.positionModeDesc',
+                'Choose whether the clipboard panel follows your active monitor, remembers its last position, or stays pinned at fixed screen coordinates with automatic DPI scaling.',
+              )}
+            >
+              <div
+                className="clipboard-page__mode-group"
+                role="radiogroup"
+                aria-label={t('clipboardPage.positionModeTitle', 'Panel Placement Mode')}
+              >
+                {(
+                  [
+                    {
+                      id: 'follow_mouse' as const,
+                      title: t('clipboardPage.modeFollowMouse', 'Follow Active Monitor'),
+                      desc: t(
+                        'clipboardPage.modeFollowMouseDesc',
+                        'Centers on the monitor under your cursor and adapts cleanly to mixed DPI scales.',
+                      ),
+                    },
+                    {
+                      id: 'remember_last' as const,
+                      title: t('clipboardPage.modeRememberLast', 'Remember Last Position'),
+                      desc: t(
+                        'clipboardPage.modeRememberLastDesc',
+                        'Persists the last dragged location and size across restarts; falls back safely if a monitor disconnects.',
+                      ),
+                    },
+                    {
+                      id: 'fixed' as const,
+                      title: t('clipboardPage.modeFixed', 'Fixed Position & Size'),
+                      desc: t(
+                        'clipboardPage.modeFixedDesc',
+                        'Always opens at the exact pinned screen coordinates and logical DIP size.',
+                      ),
+                    },
+                  ] as const
+                ).map((mode) => {
+                  const active = settings.windowPositionMode === mode.id;
+                  return (
+                    <button
+                      key={mode.id}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      className={`clipboard-page__mode-card${active ? ' clipboard-page__mode-card--active' : ''}`}
+                      onClick={() => void patchSettings({ windowPositionMode: mode.id })}
+                    >
+                      <span className="clipboard-page__mode-title">{mode.title}</span>
+                      <span className="clipboard-page__mode-desc">{mode.desc}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </SettingRow>
+
+            <SettingRow
+              label={t('clipboardPage.windowSizeTitle', 'Panel Logical Size (DIP)')}
+              description={t(
+                'clipboardPage.windowSizeDesc',
+                'Stored in DPI-independent units (560-2400 x 420-1600) so the panel keeps a consistent visual size across 100%, 150%, and 200% displays.',
+              )}
+            >
+              <div className="clipboard-page__dims-row">
+                <label className="clipboard-page__dim-field" htmlFor="clipboard-window-width-dip">
+                  <span className="clipboard-page__dim-label">{t('clipboardPage.widthLabel', 'Width')}</span>
+                  <NumberInput
+                    id="clipboard-window-width-dip"
+                    value={settings.windowWidthDip}
+                    min={560}
+                    max={2400}
+                    step={20}
+                    onChange={(v) => void patchSettings({ windowWidthDip: v })}
+                  />
+                </label>
+                <label className="clipboard-page__dim-field" htmlFor="clipboard-window-height-dip">
+                  <span className="clipboard-page__dim-label">{t('clipboardPage.heightLabel', 'Height')}</span>
+                  <NumberInput
+                    id="clipboard-window-height-dip"
+                    value={settings.windowHeightDip}
+                    min={420}
+                    max={1600}
+                    step={20}
+                    onChange={(v) => void patchSettings({ windowHeightDip: v })}
+                  />
+                </label>
+              </div>
+            </SettingRow>
+
+            <SettingRow
+              layout="vertical"
+              label={t('clipboardPage.anchorActionsTitle', 'Quick Capture & Reset')}
+              description={t(
+                'clipboardPage.anchorActionsDesc',
+                'Drag and resize the clipboard panel to your preferred spot (or click the target icon in its title bar), then capture it as the fixed position.',
+              )}
+            >
+              <div className="clipboard-page__anchor-bar">
+                <span className="clipboard-page__anchor-status">
+                  {settings.hasFixedAnchor
+                    ? t('clipboardPage.anchorSavedSummary', {
+                        monitor: formatMonitorDeviceLabel(settings.fixedMonitorDevice) || t('clipboardPage.anchorPrimaryMonitor', 'Primary'),
+                        x: settings.fixedX,
+                        y: settings.fixedY,
+                        w: settings.windowWidthDip,
+                        h: settings.windowHeightDip,
+                        defaultValue: `Saved anchor: ${formatMonitorDeviceLabel(settings.fixedMonitorDevice) || 'Primary'} · (${settings.fixedX}, ${settings.fixedY}) · ${settings.windowWidthDip} x ${settings.windowHeightDip} DIP`,
+                      })
+                    : t(
+                        'clipboardPage.anchorNotSetSummary',
+                        'No custom anchor captured yet (centered automatically on target monitor).',
+                      )}
+                </span>
+                <div className="clipboard-page__actions-row">
+                  <Button variant="primary" onClick={() => void handleCaptureFixedPlacement()}>
+                    <LocateFixed size={14} aria-hidden="true" />
+                    <span>{t('clipboardPage.captureCurrentBtn', 'Capture Current Position')}</span>
+                  </Button>
+                  <Button variant="secondary" onClick={() => void handleResetPlacement()}>
+                    <RotateCcw size={14} aria-hidden="true" />
+                    <span>{t('clipboardPage.resetPlacementBtn', 'Reset to Default')}</span>
+                  </Button>
+                </div>
+              </div>
+            </SettingRow>
+
+            {settings.windowPositionMode === 'fixed' && (
+              <SubSettingGroup>
+                <SettingRow
+                  label={t('clipboardPage.fixedCoordsTitle', 'Fixed Screen Coordinates (px)')}
+                  description={t(
+                    'clipboardPage.fixedCoordsDesc',
+                    'Fine-tune the top-left desktop coordinates. Negative values are supported for left or upper secondary monitors.',
+                  )}
+                >
+                  <div className="clipboard-page__dims-row">
+                    <label className="clipboard-page__dim-field" htmlFor="clipboard-fixed-x">
+                      <span className="clipboard-page__dim-label">X</span>
+                      <NumberInput
+                        id="clipboard-fixed-x"
+                        value={settings.fixedX}
+                        min={-16000}
+                        max={16000}
+                        step={10}
+                        onChange={(v) => void patchSettings({ hasFixedAnchor: true, fixedX: v })}
+                      />
+                    </label>
+                    <label className="clipboard-page__dim-field" htmlFor="clipboard-fixed-y">
+                      <span className="clipboard-page__dim-label">Y</span>
+                      <NumberInput
+                        id="clipboard-fixed-y"
+                        value={settings.fixedY}
+                        min={-16000}
+                        max={16000}
+                        step={10}
+                        onChange={(v) => void patchSettings({ hasFixedAnchor: true, fixedY: v })}
+                      />
+                    </label>
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label={t('clipboardPage.lockBoundsTitle', 'Lock Panel Position & Size')}
+                  description={t(
+                    'clipboardPage.lockBoundsDesc',
+                    'Prevent accidental dragging, edge resizing, or title-bar double-click maximize while Fixed mode is active.',
+                  )}
+                >
+                  <Toggle
+                    id="clipboard-lock-bounds-toggle"
+                    checked={settings.lockWindowBounds}
+                    onChange={(v) => void patchSettings({ lockWindowBounds: v })}
+                  />
+                </SettingRow>
+              </SubSettingGroup>
+            )}
           </Card>
         </SettingGroup>
 

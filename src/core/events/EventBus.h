@@ -117,6 +117,15 @@ struct ActionToggleRecordingEvent {};
 /// 触发手势暂停切换事件
 struct ActionToggleGesturePauseEvent {};
 
+/// 触发全局划词与剪贴板翻译浮窗事件（供鼠标手势 / 触发角等低层模块无耦合调用）
+struct ActionTriggerQuickTranslateEvent {
+    POINT cursorPt{0, 0};
+    HWND targetHwnd = nullptr;
+};
+
+/// 请求打开主设置窗口并定位至「文本识别与翻译 -> 原位与划词翻译」页签
+struct ActionOpenTranslateSettingsEvent {};
+
 /// 取消正在进行的瞬时 UI（手势追踪、轮盘菜单）。Esc 发出，不吞掉按键。
 struct CancelTransientUiEvent {};
 

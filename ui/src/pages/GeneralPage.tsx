@@ -127,7 +127,8 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
     autoReleaseSettingsMemory: true,
     fullscreenMode: 'smart',
     language: 'auto',
-    logLevel: 'info',
+    // TODO(pre-release): 缺陷排查收敛后正式发版前，切回 'info'
+    logLevel: 'trace',
     logRetentionDays: 7,
     theme: readStoredTheme('dark'),
     accentColor: readStoredAccent('blue'),

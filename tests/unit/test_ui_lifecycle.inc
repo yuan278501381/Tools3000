@@ -198,6 +198,95 @@ TEST(ClipboardWindowAutoHideContractTest, RespectsHideOnBlurSettingAndPasteKeepO
         6250, 1000, 0, false, /*hideOnBlurEnabled=*/true, /*lastPasteKeepOpenTick=*/5000));
 }
 
+TEST(ClipboardWindowPlacementTest, FollowMouseCentersWithLogicalDipAcrossMixedDpiMonitors) {
+    using tools3000::ui::ClipboardWindow;
+
+    const std::vector<ClipboardWindow::MonitorLayoutTarget> monitors = {
+        {R"(\\.\DISPLAY1)", {0, 0, 3840, 2100}, 144, true},
+        {R"(\\.\DISPLAY2)", {3840, 0, 5760, 1040}, 96, false},
+    };
+
+    ClipboardWindow::PlacementInput input{};
+    input.mode = "follow_mouse";
+    input.widthDip = 800;
+    input.heightDip = 600;
+
+    // 1. 活动显示器为 150% DPI (144) 的 4K 主屏：800x600 DIP -> 1200x900 物理像素，居中于主屏工作区
+    const auto on4k = ClipboardWindow::resolveTargetPlacement(input, monitors, R"(\\.\DISPLAY1)");
+    EXPECT_EQ(on4k.targetMonitorDevice, R"(\\.\DISPLAY1)");
+    EXPECT_EQ(on4k.targetDpi, 144u);
+    EXPECT_FALSE(on4k.usedFallbackMonitor);
+    EXPECT_EQ(on4k.rect.right - on4k.rect.left, 1200);
+    EXPECT_EQ(on4k.rect.bottom - on4k.rect.top, 900);
+    EXPECT_EQ(on4k.rect.left, (3840 - 1200) / 2);
+
+    // 2. 切到右侧 100% DPI (96) 的 1080p 副屏：同一套 800x600 DIP -> 精确 800x600 物理像素且不粘旧屏
+    const auto on1080 = ClipboardWindow::resolveTargetPlacement(input, monitors, R"(\\.\DISPLAY2)");
+    EXPECT_EQ(on1080.targetMonitorDevice, R"(\\.\DISPLAY2)");
+    EXPECT_EQ(on1080.targetDpi, 96u);
+    EXPECT_FALSE(on1080.usedFallbackMonitor);
+    EXPECT_EQ(on1080.rect.right - on1080.rect.left, 800);
+    EXPECT_EQ(on1080.rect.bottom - on1080.rect.top, 600);
+    EXPECT_GE(on1080.rect.left, 3840);
+    EXPECT_LE(on1080.rect.right, 5760);
+}
+
+TEST(ClipboardWindowPlacementTest, FixedAndRememberLastHonorNegativeSecondaryCoordsAndFallbackWhenDisconnected) {
+    using tools3000::ui::ClipboardWindow;
+
+    const std::vector<ClipboardWindow::MonitorLayoutTarget> dualMonitors = {
+        {R"(\\.\DISPLAY2)", {-1920, 0, 0, 1040}, 96, false},
+        {R"(\\.\DISPLAY1)", {0, 0, 2560, 1400}, 120, true},
+    };
+
+    ClipboardWindow::PlacementInput fixedInput{};
+    fixedInput.mode = "fixed";
+    fixedInput.widthDip = 760;
+    fixedInput.heightDip = 560;
+    fixedInput.hasAnchor = true;
+    fixedInput.anchorX = -1680;
+    fixedInput.anchorY = 180;
+    fixedInput.anchorRelX = 0.25;
+    fixedInput.anchorRelY = 0.30;
+    fixedInput.anchorMonitorDevice = R"(\\.\DISPLAY2)";
+
+    // 1. 左侧负坐标副屏在线时：精确落回 (-1680, 180) 且按副屏 96 DPI 保持 760x560 px
+    const auto pinnedLeft = ClipboardWindow::resolveTargetPlacement(
+        fixedInput, dualMonitors, R"(\\.\DISPLAY1)");
+    EXPECT_EQ(pinnedLeft.targetMonitorDevice, R"(\\.\DISPLAY2)");
+    EXPECT_FALSE(pinnedLeft.usedFallbackMonitor);
+    EXPECT_EQ(pinnedLeft.rect.left, -1680);
+    EXPECT_EQ(pinnedLeft.rect.top, 180);
+    EXPECT_EQ(pinnedLeft.rect.right - pinnedLeft.rect.left, 760);
+    EXPECT_EQ(pinnedLeft.rect.bottom - pinnedLeft.rect.top, 560);
+
+    // 2. 拔掉外接副屏后仅剩主屏：按归一化相对锚点 (0.25, 0.30) 平滑回退主屏可视工作区内，绝不丢出屏幕
+    const std::vector<ClipboardWindow::MonitorLayoutTarget> primaryOnly = {
+        {R"(\\.\DISPLAY1)", {0, 0, 2560, 1400}, 120, true},
+    };
+    const auto fallback = ClipboardWindow::resolveTargetPlacement(
+        fixedInput, primaryOnly, R"(\\.\DISPLAY1)");
+    EXPECT_EQ(fallback.targetMonitorDevice, R"(\\.\DISPLAY1)");
+    EXPECT_TRUE(fallback.usedFallbackMonitor);
+    EXPECT_EQ(fallback.targetDpi, 120u);
+    EXPECT_EQ(fallback.rect.right - fallback.rect.left, 950);  // 760 * 120 / 96
+    EXPECT_EQ(fallback.rect.bottom - fallback.rect.top, 700);  // 560 * 120 / 96
+    EXPECT_GE(fallback.rect.left, 0);
+    EXPECT_GE(fallback.rect.top, 0);
+    EXPECT_LE(fallback.rect.right, 2560);
+    EXPECT_LE(fallback.rect.bottom, 1400);
+
+    // 3. 超大尺寸输入自动钳制到目标工作区上限内，杜绝遮满溢出
+    ClipboardWindow::PlacementInput oversized = fixedInput;
+    oversized.mode = "remember_last";
+    oversized.widthDip = 4000;
+    oversized.heightDip = 3000;
+    const auto clamped = ClipboardWindow::resolveTargetPlacement(
+        oversized, primaryOnly, R"(\\.\DISPLAY1)");
+    EXPECT_LE(clamped.rect.right - clamped.rect.left, 2560);
+    EXPECT_LE(clamped.rect.bottom - clamped.rect.top, 1400);
+}
+
 
 TEST(WebViewSuspendTest, DistinguishesRefusalFromFailure) {
     using tools3000::ui::WebViewSuspendOutcome;
@@ -1934,6 +2023,21 @@ TEST(SearchWindowNativeAppContractTest, ZeroFlashCloakPolicyOnShow) {
 
     // 5. 最小化还原唤醒：同样 cloak 等待一帧合成后再原子揭幕
     EXPECT_TRUE(SearchWindow::shouldCloakOnShow(true, true, false, true));
+
+    // 6. Issue #29 后台无感 GPU 首帧预热契约：仅当窗口不可见、WebView 导航就绪、尚未产出首帧且未在预热中时启动
+    EXPECT_TRUE(SearchWindow::shouldStartBackgroundFirstPaintWarmup(false, true, false, false));
+    EXPECT_FALSE(SearchWindow::shouldStartBackgroundFirstPaintWarmup(true, true, false, false));
+    EXPECT_FALSE(SearchWindow::shouldStartBackgroundFirstPaintWarmup(false, false, false, false));
+    EXPECT_FALSE(SearchWindow::shouldStartBackgroundFirstPaintWarmup(false, true, true, false));
+    EXPECT_FALSE(SearchWindow::shouldStartBackgroundFirstPaintWarmup(false, true, false, true));
+
+    // 7. 首次呈现绝不砸毁崭新 SwapChain：仅在挂起唤醒或显式强刷时才触发 1px 脉冲
+    EXPECT_FALSE(SearchWindow::shouldTriggerCompositorSwapKick(false, false));
+    EXPECT_TRUE(SearchWindow::shouldTriggerCompositorSwapKick(false, true));
+    EXPECT_TRUE(SearchWindow::shouldTriggerCompositorSwapKick(true, false));
+
+    // 8. 机械盘冷首帧 Cloak 宽容度 >= 1200ms，杜绝 450ms 过早揭幕暴露未渲染黑帧
+    EXPECT_GE(SearchWindow::FirstPaintUncloakTimeoutMs, 1200u);
 }
 
 TEST(QuickTranslatePopupContractTest, SanitizesInputAndPreservesUtf16SurrogatePairs) {
@@ -1982,11 +2086,52 @@ TEST(QuickTranslatePopupContractTest, FormatsProviderLabelAndDirectionBadge) {
     EXPECT_EQ(QuickTranslatePopupWindow::formatProviderDisplayLabel(settings, "google_free"), "Google Translate");
 
     EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("en", "zh-CN"), "EN -> ZH");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("zh-CN", "zh-TW"), "ZH -> ZH-TW");
     EXPECT_EQ(QuickTranslatePopupWindow::formatDirectionBadge("auto", "ja"), "AUTO -> JA");
     EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage(""), "zh-CN");
     EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("zh-CN"), "en");
     EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("en"), "ja");
     EXPECT_EQ(QuickTranslatePopupWindow::nextQuickTargetLanguage("ja"), "");
+
+    // 语种标签与一键互译交换契约（防回归：显式互换 + 自动模式对偶切换 + 简繁清晰区分）
+    EXPECT_EQ(QuickTranslatePopupWindow::formatLanguagePillLabel("zh-CN", true, false), "简中");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatLanguagePillLabel("zh-TW", true, false), "繁中");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatLanguagePillLabel("auto", true, false, "en"), "自动(英语)");
+    EXPECT_EQ(QuickTranslatePopupWindow::formatLanguagePillLabel("en", false, true), "Auto · EN");
+
+    const auto swappedExplicit = QuickTranslatePopupWindow::computeSwappedLanguagePair(
+        "ja", "zh-CN", "", "zh-CN", "en", "zh-CN");
+    EXPECT_EQ(swappedExplicit.sourceLang, "zh-CN");
+    EXPECT_EQ(swappedExplicit.targetLang, "ja");
+
+    const auto swappedAutoToSecondary = QuickTranslatePopupWindow::computeSwappedLanguagePair(
+        "auto", "zh-CN", "", "zh-CN", "en", "zh-CN");
+    EXPECT_EQ(swappedAutoToSecondary.sourceLang, "auto");
+    EXPECT_EQ(swappedAutoToSecondary.targetLang, "en");
+
+    const auto swappedAutoBack = QuickTranslatePopupWindow::computeSwappedLanguagePair(
+        "auto", "en", "ja", "zh-CN", "en", "zh-CN");
+    EXPECT_EQ(swappedAutoBack.sourceLang, "auto");
+    EXPECT_EQ(swappedAutoBack.targetLang, "ja");
+
+    // 单段纯文本直译解析器防回归：原文含双引号/换行/思考链/JSON 兜底均可无损提取
+    using tools3000::core::translate::TranslationService;
+    std::string plainOut;
+    EXPECT_TRUE(TranslationService::parseOpenAiSingleTextResponse(
+        R"({"choices":[{"message":{"content":"<think>reasoning</think>\nLine 1 with \"quotes\"\nLine 2"}}]})",
+        plainOut));
+    EXPECT_EQ(plainOut, "Line 1 with \"quotes\"\nLine 2");
+
+    EXPECT_TRUE(TranslationService::parseOpenAiSingleTextResponse(
+        R"({"choices":[{"message":{"content":"{\"translations\":[{\"id\":0,\"text\":\"Unwrapped text\"}]}"}}]})",
+        plainOut));
+    EXPECT_EQ(plainOut, "Unwrapped text");
+
+    EXPECT_EQ(TranslationService::toDeepLSourceLangCode("zh-CN"), "ZH");
+    EXPECT_EQ(TranslationService::toDeepLSourceLangCode("pt-BR"), "PT");
+    EXPECT_EQ(TranslationService::detectDominantSourceLang({"こんにちは世界"}), "ja");
+    EXPECT_EQ(TranslationService::detectDominantSourceLang({"Hello Tools3000"}), "en");
+    EXPECT_EQ(TranslationService::detectDominantSourceLang({"简体中文测试"}), "zh-CN");
 }
 
 TEST(CinemaZoomEngineContractTest, CriticallyDampedSpringConvergesWithoutOvershoot) {
@@ -2048,4 +2193,91 @@ TEST(CinemaZoomEngineContractTest, ZoomLevelClampingAndWheelStep) {
     EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(2.0f, -WHEEL_DELTA), 1.75f);
     EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(4.0f, WHEEL_DELTA), 4.0f);
     EXPECT_FLOAT_EQ(CinemaZoomEngine::stepZoomWheel(1.25f, -WHEEL_DELTA), 1.25f);
+}
+
+TEST(CapsLayerManagerTest, DefaultOffAndKeyComboParsing) {
+    using namespace tools3000::caps_layer;
+
+    // 1. 默认设置必须关闭，防止未经授权劫持用户 CapsLock
+    const auto defaults = CapsLayerManager::buildDefaultSettingsJson();
+    EXPECT_FALSE(defaults.value("enabled", true));
+    EXPECT_EQ(defaults.value("tapAction", ""), "toggle_caps");
+    EXPECT_TRUE(defaults.value("shiftCapsTogglesNative", false));
+    ASSERT_TRUE(defaults.contains("globalMappings"));
+    EXPECT_GE(defaults["globalMappings"].size(), 8u);
+
+    // 2. 键名与组合键解析验证
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk("I"), static_cast<uint32_t>('I'));
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk("Up"), static_cast<uint32_t>(VK_UP));
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk("Backspace"), static_cast<uint32_t>(VK_BACK));
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk("Delete"), static_cast<uint32_t>(VK_DELETE));
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk(";"), static_cast<uint32_t>(VK_OEM_1));
+    EXPECT_EQ(CapsLayerManager::parseKeyNameToVk("F2"), static_cast<uint32_t>(VK_F2));
+
+    uint8_t mods = 0;
+    uint32_t vk = 0;
+    ASSERT_TRUE(CapsLayerManager::parseComboString("Ctrl+Shift+F", mods, vk));
+    EXPECT_EQ(mods, static_cast<uint8_t>(CAPS_MOD_CTRL | CAPS_MOD_SHIFT));
+    EXPECT_EQ(vk, static_cast<uint32_t>('F'));
+
+    // 3. 预设构建验证
+    const auto vimPreset = CapsLayerManager::buildPresetGlobalMappings("arrows_vim");
+    EXPECT_GE(vimPreset.size(), 8u);
+    const auto esdfPreset = CapsLayerManager::buildPresetGlobalMappings("arrows_esdf");
+    EXPECT_GE(esdfPreset.size(), 6u);
+}
+
+TEST(CapsLayerManagerTest, DisabledShortCircuitAndSelfInjectionGuard) {
+    using namespace tools3000::caps_layer;
+    auto& mgr = CapsLayerManager::instance();
+    mgr.setEnabled(false);
+    EXPECT_FALSE(mgr.isEnabled());
+
+    KBDLLHOOKSTRUCT kbd{};
+    kbd.vkCode = VK_CAPITAL;
+    // 关闭状态下必须零开销放行
+    EXPECT_FALSE(mgr.handleLowLevelKey(kbd, WM_KEYDOWN));
+
+    // 开启状态下带自身注入标签的事件必须放行，严防递归死循环
+    mgr.setEnabled(true);
+    EXPECT_TRUE(mgr.isEnabled());
+    kbd.dwExtraInfo = kCapsLayerInjectedTag;
+    EXPECT_FALSE(mgr.handleLowLevelKey(kbd, WM_KEYDOWN));
+
+    // 恢复默认关闭状态
+    mgr.setEnabled(false);
+    EXPECT_FALSE(mgr.isEnabled());
+}
+
+TEST(WindowKitControllerTest, DefaultOffZeroFootprintAndFeatureGating) {
+    using namespace tools3000::core;
+
+    const auto defaults = WindowKitController::buildDefaultSettingsJson();
+    EXPECT_FALSE(WindowKitController::hasAnyActiveFeature(false, defaults));
+
+    // 仅开总开关但 8 项子功能全关 -> 依然保持 0 进程不拉起
+    EXPECT_FALSE(WindowKitController::hasAnyActiveFeature(true, defaults));
+
+    // 总开关 + 任一子功能开启 -> 才进入需运行状态
+    auto oneFeature = defaults;
+    oneFeature["features"]["alwaysOnTop"] = true;
+    EXPECT_TRUE(WindowKitController::hasAnyActiveFeature(true, oneFeature));
+
+    // 动作码与 Rust constants.rs 1:1 映射完整性校验（支持 snake_case 与 camelCase）
+    EXPECT_EQ(WindowKitController::resolveActionCode("toggle_always_on_top"), kWindowKitActionToggleAlwaysOnTop);
+    EXPECT_EQ(WindowKitController::resolveActionCode("move_next_zone"), kWindowKitActionMoveNextZone);
+    EXPECT_EQ(WindowKitController::resolveActionCode("rescue_offscreen"), kWindowKitActionRescueOffscreen);
+    EXPECT_EQ(WindowKitController::resolveActionCode("move_next_monitor"), kWindowKitActionMoveNextMonitor);
+    EXPECT_EQ(WindowKitController::resolveActionCode("minimize_to_tray"), kWindowKitActionMinimizeToTray);
+    EXPECT_EQ(WindowKitController::resolveActionCode("restore_all_tray"), kWindowKitActionRestoreAllTray);
+    EXPECT_EQ(WindowKitController::resolveActionCode("open_quick_switch"), kWindowKitActionOpenQuickSwitch);
+    EXPECT_EQ(WindowKitController::resolveActionCode("launch_workspace"), kWindowKitActionLaunchWorkspace);
+    EXPECT_EQ(WindowKitController::resolveActionCode("show_zones_preview"), kWindowKitActionShowZonesPreview);
+    EXPECT_EQ(WindowKitController::resolveActionCode("unknownAction"), 0u);
+
+    // 默认关状态下运行统计必须报告 running=false / 0 内存 / 0 句柄
+    const auto stats = WindowKitController::instance().getRuntimeStatsJson();
+    EXPECT_FALSE(stats.value("running", true));
+    EXPECT_EQ(stats.value("workingSetBytes", 1u), 0u);
+    EXPECT_EQ(stats.value("handleCount", 1u), 0u);
 }

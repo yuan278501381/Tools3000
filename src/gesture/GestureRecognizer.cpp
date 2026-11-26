@@ -327,6 +327,40 @@ std::vector<DirectionSegment> simplifySegmentsDetailed(std::vector<DirectionSegm
                     continue;
                 }
             }
+            // 1b. 180° 急折发卡弯吸收（专治 L-R-D / R-L-D 等折返接正交第三笔的微弯毛刺）：
+            //     人手做 L -> R 180° 折返时难以走出 0px 尖角，常在折点产生极短的 UR/DR/U/D 过渡段，
+            //     形成 4 段序列 a -> b(极短) -> opp(a) -> d(垂直于 opp(a))。
+            //     仅在明确存在第 4 段正交笔 d 且 b 明显为微小发卡弯时吸收 b，对 3 段 L-U-R / R-D-L 零影响。
+            if (i + 3 < current.size()) {
+                const Direction a = current[i].dir;
+                const Direction b = current[i + 1].dir;
+                const Direction c = current[i + 2].dir;
+                const Direction d = current[i + 3].dir;
+                const Direction oppA = oppositeCardinal(a);
+                if (oppA != Direction::None && c == oppA && d != a && d != c) {
+                    const bool bIsMinorBend =
+                        (isDiagonalDirection(b) &&
+                         (completeIncompleteFillet(a, b).has_value() ||
+                          completeIncompleteFillet(c, b).has_value())) ||
+                        (!isDiagonalDirection(b) && b != a && b != c);
+                    const double armMin = (std::min)(current[i].length, current[i + 2].length);
+                    const double dLen = current[i + 3].length;
+                    const bool dIsSubstantialOrtho =
+                        (!isDiagonalDirection(d)) ||
+                        (completeIncompleteFillet(c, d).has_value() && dLen >= 22.0);
+                    if (bIsMinorBend && dIsSubstantialOrtho &&
+                        current[i + 1].length <= 36.0 &&
+                        current[i + 1].length < armMin * 0.42 &&
+                        current[i + 1].length < dLen * 0.50) {
+                        next.push_back(current[i]);
+                        next.push_back(current[i + 2]);
+                        next.push_back(current[i + 3]);
+                        i += 4;
+                        modified = true;
+                        continue;
+                    }
+                }
+            }
             if (i + 2 < current.size()) {
                 const Direction a = current[i].dir;
                 const Direction b = current[i + 1].dir;
@@ -346,6 +380,25 @@ std::vector<DirectionSegment> simplifySegmentsDetailed(std::vector<DirectionSegm
                     i += 3;
                     modified = true;
                     continue;
+                }
+                // 回中点锐角对角过渡吸收（实机 T 形 L-R-D 典型轨迹 L-R-DL-D）：
+                // 例如 R -> DL -> D：DL 由 opp(R)=L 与 D 合成，属于横杠画完向左下折回中点再竖下的自然过渡，
+                // 吸收 DL 并入 D 化简为 R -> D（绝不影响第三段仍为 R 的 Z 形 R-DL-R）。
+                {
+                    const Direction oppA = oppositeCardinal(a);
+                    if (oppA != Direction::None &&
+                        !isDiagonalDirection(c) && c != a && c != oppA &&
+                        isDiagonalDirection(b) &&
+                        isCornerFillet(oppA, b, c)) {
+                        next.push_back(current[i]);
+                        next.push_back({c,
+                                        current[i + 1].length + current[i + 2].length,
+                                        current[i + 1].dx + current[i + 2].dx,
+                                        current[i + 1].dy + current[i + 2].dy});
+                        i += 3;
+                        modified = true;
+                        continue;
+                    }
                 }
                 // 反向夹心单对角圆弧：如 R-DR-L 或 R-DL-L -> R-D-L
                 const Direction oppA = oppositeCardinal(a);
@@ -413,6 +466,14 @@ std::vector<DirectionSegment> simplifySegmentsDetailed(std::vector<DirectionSegm
                 // 同象限收笔惯性微垂（如 D-R-DR -> D-R），必须丢弃以防误触 D-R-D 截图。
                 current.pop_back();
                 filletModified = true;
+            } else if (oppPrevPrev != Direction::None &&
+                       current[current.size() - 2].dir == oppPrevPrev &&
+                       current.back().length >= 22.0 &&
+                       current.back().length >= current[current.size() - 2].length * 0.25) {
+                // 180° 折返后拐出的明确第三笔（如 L-R-DR -> L-R-D），放宽末笔比例门槛，
+                // 防止用户画 T 形 L-R-D 手快偏斜时被截断降级为 L-R 误触 Ctrl+Z 撤销。
+                current.back().dir = *completed;
+                filletModified = true;
             } else if (current.back().length >= 24.0 &&
                        current.back().length >= current[current.size() - 2].length * 0.45) {
                 current.back().dir = *completed;
@@ -435,6 +496,18 @@ std::vector<DirectionSegment> simplifySegmentsDetailed(std::vector<DirectionSegm
                     current[0].dir = *invented;
                 }
                 filletModified = true;
+            } else if (current.size() == 3 &&
+                       isDiagonalDirection(current[0].dir) &&
+                       !isDiagonalDirection(current[1].dir) &&
+                       !isDiagonalDirection(current[2].dir)) {
+                // 首段微斜折返归一（实机轨迹 DL-R-D -> L-R-D）：
+                // 首笔向左略偏下进入 DL，紧接 135° 反向水平 R 与正交垂直 D 时，将首笔还原为 opp(R)=L。
+                const Direction oppSecond = oppositeCardinal(current[1].dir);
+                if (oppSecond != Direction::None &&
+                    isCornerFillet(oppSecond, current[0].dir, current[2].dir)) {
+                    current[0].dir = oppSecond;
+                    filletModified = true;
+                }
             }
         }
         compressSegments(current);
@@ -652,6 +725,13 @@ int computeShapeSimilarityFromNormalized(const std::array<ShapePt, kShapeSampleC
     // 针对 2 段折线手势（如高速连划的「长竖+短横 D-R」），仅评估「长起笔+短拐角」折线原型
     if (dirs.size() == 2) {
         bestScore = (std::max)(bestScore, evalPrototype({1.0, 0.45}, false));
+    }
+    // 针对 3 段 180° 折返象形手势（如 T 形 L-R-D / R-L-D），追加「左画横 -> 回中点 -> 向下竖」半回折原型
+    if (dirs.size() == 3 &&
+        oppositeCardinal(dirs[0]) != Direction::None &&
+        dirs[1] == oppositeCardinal(dirs[0]) &&
+        dirs[2] != dirs[0] && dirs[2] != dirs[1]) {
+        bestScore = (std::max)(bestScore, evalPrototype({1.0, 0.5, 1.0}, false));
     }
 
     return static_cast<int>((std::clamp)(std::lround(bestScore), 0L, 100L));

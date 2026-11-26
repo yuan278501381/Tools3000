@@ -77,8 +77,10 @@ struct OpenAiBatchPolicy {
 /// 批量翻译请求载荷
 struct TranslationBatchRequest {
     std::vector<std::string> texts;
+    std::string sourceLangOverride; // 空或 "auto" 时自动检测源语种；非空时显式传给底层引擎
     std::string targetLangOverride; // 非空时覆盖配置中的 targetLang
     std::string uiLanguageCode;     // 当前界面语种（如 "zh-CN" / "en" / "ja"），用于 auto 智能判定
+    bool lockTargetLanguage = false; // 为 true 时锁定显式 targetLangOverride，不触发副目标语种反向互译与同语种免译跳过
     bool bypassCache = false;       // 连通性实测探针置 true，强制绕过会话缓存与同语种跳过
 };
 

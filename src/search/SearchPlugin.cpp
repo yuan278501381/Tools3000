@@ -12,6 +12,7 @@
 #include "search/SearchPropertyExtractor.h"
 #include "search/SearchQueryConfigUtils.h"
 #include "search/SystemCommandCatalog.h"
+#include "core/ipc/WindowKitController.h"
 #include "service/PipeProtocol.h"
 #include "service/PipeEndpoint.h"
 #include "service/SearchRequestLimits.h"
@@ -1445,6 +1446,41 @@ public:
                         query, 8u, /*allowEmptyQuery=*/false, isPreferChineseLanguageFromConfig());
                     mixedApps = tools3000::search::InstalledAppIndex::instance().searchLocalApps(
                         query, 10u, /*allowEmptyQuery=*/false);
+
+                    // 直通 WindowKit 场景工作区：仅当 Workspaces 开启且存在已保存工作区时零开销混排
+                    const auto workspaces = tools3000::core::WindowKitController::instance().listSearchableWorkspacesJson();
+                    if (workspaces.is_array() && !workspaces.empty()) {
+                        const std::string qLower = tools3000::core::WinUtils::toLower(query);
+                        const bool explicitWs = (qLower.rfind("ws:", 0) == 0 || qLower.rfind("workspace:", 0) == 0);
+                        std::string needle = qLower;
+                        if (qLower.rfind("ws:", 0) == 0) needle = qLower.substr(3);
+                        else if (qLower.rfind("workspace:", 0) == 0) needle = qLower.substr(10);
+                        while (!needle.empty() && needle.front() == ' ') needle.erase(needle.begin());
+
+                        for (const auto& ws : workspaces) {
+                            if (!ws.is_object()) continue;
+                            const std::string wsId = ws.value("id", std::string{});
+                            const std::string wsName = ws.value("name", std::string{});
+                            if (wsId.empty() || wsName.empty()) continue;
+                            const std::string nameLower = tools3000::core::WinUtils::toLower(wsName);
+                            const std::string idLower = tools3000::core::WinUtils::toLower(wsId);
+                            if ((explicitWs && needle.empty()) ||
+                                (!needle.empty() && (nameLower.find(needle) != std::string::npos ||
+                                                     idLower.find(needle) != std::string::npos))) {
+                                mixedCommands.push_back({
+                                    {"name", wsName},
+                                    {"path", "ws://" + wsId},
+                                    {"directory", "Tools3000 Workspaces"},
+                                    {"extension", ""},
+                                    {"isDirectory", false},
+                                    {"size", 0},
+                                    {"resultType", "command"},
+                                    {"iconHint", "layout"},
+                                    {"score", explicitWs ? 1600 : 1120}
+                                });
+                            }
+                        }
+                    }
                 }
 
                 if (mixedBookmarks.empty() && mixedCommands.empty() && mixedApps.empty()) {

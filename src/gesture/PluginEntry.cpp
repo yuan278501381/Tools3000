@@ -46,6 +46,7 @@ int hotCornerCommandIndex(const std::string& value) {
     if (value.empty()) return -1;
     if (value == "capture") return static_cast<int>(BuiltinCommand::TakeScreenshot);
     if (value == "search") return static_cast<int>(BuiltinCommand::ToggleSearch);
+    if (value == "translate" || value == "quick_translate") return static_cast<int>(BuiltinCommand::QuickTranslate);
     const auto index = parseCommandIndex(value);
     return index.value_or(-1);
 }
@@ -217,6 +218,15 @@ public:
         dispatcher.registerHandler(BuiltinCommand::PasteAsPin, []() {
             tools3000::core::MainThreadDispatcher::instance().post([]() {
                 tools3000::core::MessageBridge::instance().handleMessage(R"({"method":"capture.pasteAsPin"})");
+            });
+        });
+        dispatcher.registerHandler(BuiltinCommand::QuickTranslate, []() {
+            POINT cursorPt{};
+            GetCursorPos(&cursorPt);
+            HWND fg = GetForegroundWindow();
+            tools3000::core::MainThreadDispatcher::instance().post([cursorPt, fg]() {
+                tools3000::core::EventBus::instance().publish(
+                    tools3000::core::ActionTriggerQuickTranslateEvent{cursorPt, fg});
             });
         });
 

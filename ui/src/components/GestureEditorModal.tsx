@@ -265,6 +265,7 @@ export const GestureEditorModal: FC<Props> = ({
         'D-L': { nameKey: 'gesture.actions.closeWindow.name', name: 'Close Window', type: 0, keyStroke: 'Alt+F4', descKey: 'gesture.actions.closeWindow.desc', desc: 'Exit active application window' },
         'L-U-R': { nameKey: 'gesture.actions.refresh.name', name: 'Reload Page', type: 0, keyStroke: 'F5', descKey: 'gesture.actions.refresh.desc', desc: 'Reload current web page' },
         'D-U': { nameKey: 'gesture.actions.refresh.name', name: 'Reload Page', type: 0, keyStroke: 'F5', descKey: 'gesture.actions.refresh.desc', desc: 'Reload current web page' },
+        'L-R-D': { nameKey: 'gesture.actions.quickTranslate.name', name: 'Quick Translate', type: 2, builtinCmd: 31, descKey: 'gesture.actions.quickTranslate.desc', desc: 'Translate selected or clipboard text' },
         'L-D': { nameKey: 'gesture.actions.showDesktop.name', name: 'Show Desktop', type: 2, builtinCmd: 5, descKey: 'gesture.actions.showDesktop.desc', desc: 'Minimize all and show desktop' },
         'D-R-D': { nameKey: 'gesture.actions.screenshot.name', name: 'Quick Screenshot', type: 2, builtinCmd: 10, descKey: 'gesture.actions.screenshot.desc', desc: 'Launch Tools3000 screenshot' },
         WHEELUP: { nameKey: 'gesture.actions.prevVirtualDesktop.name', name: 'Previous Virtual Desktop', type: 2, builtinCmd: 25, descKey: 'gesture.actions.prevVirtualDesktop.desc', desc: 'Switch to previous virtual desktop' },

@@ -6,6 +6,102 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [TODO(pre-release) 发版前必查清单] 日志默认级别临时切至 `trace`（2026-11-26）
+- **当前状态**：应项目负责人要求，为便于近期实机排错，初始默认日志级别已统一设为最详细档位 **`trace`**（SSOT 位于以下 5 处）：
+  1. `src/core/logger/Logger.h`: `Logger::kDefaultLogLevel = "trace"` 与 `LoggerConfig::fileLevel = spdlog::level::trace`（`main.cpp`、`MessageBridge.cpp`、`WindowKitController.cpp` 均统一引用此常量）；
+  2. `src/window_kit/src/core/logger.rs`: `MIN_LEVEL = LogLevel::Trace`；
+  3. `src/window_kit/src/core/config.rs`: `WindowKitConfig::default().log_level = "trace"`；
+  4. `ui/src/pages/GeneralPage.tsx` & `ui/src/hooks/useBridge.ts`: `logLevel: 'trace'`；
+  5. `tests/unit/test_core.inc`: `DefaultLogLevelIsTraceAndActionCodeResolvesFullscreenEditor` 断言。
+- **正式发版前动作**：待 bug 收敛准备正式对外发版时，将以上 5 处统一回切为 `"info"`（`LoggerConfig::fileLevel = spdlog::level::debug`、`LogLevel::Info`）。
+
+### [2026-11-26] GitHub Issue #36 剪贴板多屏定位错乱根治与位置/尺寸固定体系 (`feat/rust-window-kit`)
+- **多屏错乱根因**：旧 `ClipboardWindow.cpp` 仅把 `m_customBounds` 存在进程内物理像素 `RECT` 中（未持久化），且只要拖动过一次便跳过 `activeMonitor()` 永远粘在旧屏；跨混合 DPI（如 100%/150%/200%）单次 `SetWindowPos` 还会被 `WM_DPICHANGED` 二次放大漂移。
+- **世界级多屏零错乱方案 (`ClipboardManager.{h,cpp}`, `ClipboardWindow.{h,cpp}`, `main.cpp`, `ClipboardApp.{tsx,css}`, `ClipboardPage.{tsx,css}`, 8 套词典)**：
+  1. **逻辑 DIP 尺寸 + 显示器锚点 + 归一化相对坐标持久化**：统一以 `windowWidthDip` / `windowHeightDip`（DPI 无关）和 `fixedMonitorDevice` + `(fixedX, fixedY)` + `(fixedRelX, fixedRelY)` 持久化；提供 3 种模式：`follow_mouse`（默认跟随光标所在显示器居中且跨 DPI 保持视觉一致宽高）、`remember_last`（跨重启记住上次位置与大小）、`fixed`（严格固定屏幕坐标与尺寸，支持 `lockWindowBounds` 锁定防误拖/误缩放）；
+  2. **纯数学无 HWND 求解器 + 两阶段跨 DPI 防漂移落位**：`ClipboardWindow::resolveTargetPlacement()` 自动适配负坐标副屏与混合 DPI，拔掉外接副屏按 `(fixedRelX, fixedRelY)` 平滑回退主屏可视工作区（绝不掉出屏幕外），插回后自动恢复；真实 `SetWindowPos` 采用「定位切屏 -> 二次校正尺寸」+ `m_applyingProgrammaticPlacement` 守卫彻底免疫 `WM_DPICHANGED` 二次拉伸；
+  3. **双入口无缝联动**：剪贴板浮窗标题栏新增 `LocateFixed` 一键固定/解除固定按钮 + 设置页新增「窗口位置与尺寸（多屏自适应）」卡片（3 模式切换、DIP 宽高微调、一键捕获当前位置、重置默认、正负坐标微调与防误触锁定），并通过 `clipboard:settingsChanged` / `clipboard:windowState` 双端实时同步。
+
+### [2026-11-27] GitHub Issue #29 Win10 LTSC 1809 / 机械盘首次呼出搜索框黑屏四层根治 (`feat/rust-window-kit`)
+- **五重根因实证**：
+  1. `ui/src/i18n/config.ts` 将 8 国全量词典静态打包进公共入口 `index-*.js`（1.94 MB），导致机械盘单次冷启 `NavigationCompleted` 达 `2903 ms`，叠加热点表面 `React.lazy` 串行二次瀑布读盘；
+  2. 旧 `SearchWindow::preload()` 全程 `put_IsVisible(FALSE)` 从未为 GPU 分配过任何 DirectComposition SwapChain，属于「假预热」；
+  3. Win10 Build 17763 下 `DWMWA_CLOAK = TRUE` 触发 Chromium `NativeWindowOcclusionTrackerWin` 遮挡节流停帧；
+  4. 前端 `SearchApp.tsx` 存在 120ms 假就绪抢跑定时器 + 宿主 `450ms` 过短强拆 Cloak 超时，提前掀开幕布暴露纯黑未提交 D3D 表面；
+  5. `presentWebViewSurface()` 对首次呈现执行了 `put_IsVisible(FALSE) -> bottom-1 -> TRUE` 破坏性脉冲，砸毁崭新 SwapChain 重建空白黑帧。
+- **四层世界级根治 (`ui/index.html`, `ui/src/i18n/config.ts`, `ui/src/main.tsx`, `ui/src/SearchApp.tsx`, `WebViewEnvironmentManager.cpp`, `SearchWindow.{h,cpp}`, `test_ui_lifecycle.inc`)**：
+  1. **体积瘦身与并行读盘**：8 套语言 JSON 全部拆为独立按需 `BackendModule` 懒加载 chunk（首屏砍掉 ~1.65 MB 冗余词典），`main.tsx` 将单语言包与当前目标表面 chunk 改为**单轮并行加载**，并在 `index.html` 内联 `#0f172a` / `#f8fafc` 首屏主题底色；
+  2. **无遮挡后台真实 GPU 首帧预热**：`WebViewEnvironmentManager.cpp` 追加 `--disable-backgrounding-occluded-windows`（严格保留既有 sandbox 标志不动）；`SearchWindow::startBackgroundFirstPaintWarmup()` 在后台 `preload` 导航完成后临时切 `WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` + `DWMWA_CLOAK = TRUE`（任务栏/焦点/视觉全零感知），让 Chromium 真正把 GPU SwapChain 首帧画完后再隐身待命（用户中途按快捷键可无缝接管恢复 `WS_EX_APPWINDOW`）；
+  3. **封死提前露黑帧**：移除 `SearchApp.tsx` 120ms 假就绪定时器，改为验证搜索框 DOM 已真实布局占位 + 双 `rAF`；`FIRST_PAINT_UNCLOAK_TIMEOUT_MS` 放宽至 1500ms 兜底；禁止对首次呈现触发破坏性 1px SwapChain 脉冲；升级原生 `Loading` 底衬为圆角搜索栏骨架；
+  4. **全链路毫秒级观测日志**：记录 `navMs` / `showToPaintMs` / 后台预热耗时与超时原因。
+
+### [2026-11-26] 方案 A：纯 Rust Direct2D 1:1 全屏原生 WYSIWYG 布局编辑器 + 窗口管理全量断链修复与虚拟桌面绑定闭环 (`feat/rust-window-kit`)
+- **1. 纯 Rust Direct2D 1:1 全屏原生布局编辑器 (`src/window_kit/src/features/layout_editor.rs`, `WindowKitController.{h,cpp}`, `src/main.cpp`, `WindowManagerPage.{tsx,css}`)**：
+  - *架构选型（方案 A）*：彻底告别在狭窄 WebView 小盒子里盲调比例，支持全局热键 **`Win + Shift + ~`** 或设置页主按钮一键唤起（从设置页启动时自动隐藏设置窗，保存/取消后经 `Tools3000_WindowKit_EditorResult` 异步消息自动回写并恢复设置窗）；
+  - *高性能零残留渲染 (`EditorSurface`)*：编辑期间复用单份 32bpp Top-Down DIB + `ID2D1DCRenderTarget`（拖拽期 0 DIB 重分配、144Hz 丝滑重绘），退出/保存瞬间立即释放全部 DIB/DC/RenderTarget 并触发 2000ms 冷路径内存修剪；
+  - *超越原版 PowerToys FancyZones 的两大核心增强*：
+    1. **一键「从当前桌面真实窗口生成布局」（`Capture Windows`, 快捷键 `C`）**：采集目标显示器真实可见窗口可视外框，自动去重重叠窗口（IoU >= 0.85）并归一化转为 1:1 Canvas 分区；
+    2. **底层真实软件窗口边缘智能磁吸 + 青色穿透参考线**：支持屏幕黄金分割线 + 相邻分区 `zone_gap` 贴缝 + 底层真实软件窗口四边精确磁吸（附 `磁吸: Code.exe` 来源标签，按住 `Alt` 临时禁用磁吸自由微调），并实时展示每分区真实物理像素 `W x H px` 与百分比；
+  - *完整编辑生态*：Grid（单击纵切/`Shift` 横切、拖分割线、拖框跨区合并、删除自动折叠、换模板）与 Canvas（8 向边角缩放、双击新增、`Ctrl+D` 复制、方向键 1% 微调、`Del` 删除）双范式 + 60 步 `Ctrl+Z` 撤销栈 + 可拖动顶部玻璃悬浮控制舱 + 内置模板修改自动克隆保护。
+- **2. 虚拟桌面独立布局绑定 & 5 处全量审计断链根治**：
+  - *按虚拟桌面独立绑定闭环*：C++ `WindowKitController::getVirtualDesktopsJson()` 直接从 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops` 读取本机全部桌面 GUID、自定义名与活跃桌面；前端展示虚拟桌面切换控制条并按 `<monitorId>@<desktopGuid>` 读写；Rust 全部 4 处统一走 `resolve_window_or_current_desktop_id()`（COM 回退注册表当前桌面）；
+  - *窗口速切器光标转圈与切窗焦点修复*：全引擎所有原生窗口类（`quick_switch` / `snap_zones` / `focus_border` / `always_on_top` / `layout_editor` / `control_window`）补齐 `hCursor = IDC_ARROW` 与 `WM_SETCURSOR` 动态托管；`quick_switch.rs` 修正 `commit_selected_and_close` 先交接前台焦点再隐藏卡片；
+  - *补齐 4 项半截子开关与噪音*：`rememberLastZone` 与 `centerNewWindows` 经按需挂载 `EVENT_OBJECT_SHOW` 完整闭环；`snapZones.excludedApps` 与 `altDrag.excludedApps` 物理隔离下发不再污染全局；`allowMultiZoneSpan` 严格门控关闭后禁用 Ctrl 跨区；`WindowKitController::syncHotkeysLocked` 增加快照 diff 去重消除滑块 600 行日志刷屏；修复 `ZoneLayoutEditor.tsx` 自由画布 `x + w > 100%` 越界溢出与裸露 `\\.\DISPLAY1` 友好显示名美化。
+
+### [2026-11-26] 「内存策略」全景透明治理看板升级 + 修复「窗口管理」开启死锁与托盘控制舱缺失 (`feat/rust-window-kit`)
+- **1. 「内存策略」全景透明看板重构 (`PerformancePage.{tsx,css,test.tsx}`, `settingsSearchIndex.ts`, 8 套 `locales/*.json`)**：
+  - *痛点*：旧页仅展示 10 条「带定时器的闲置回收时间表」，未披露无定时器但决定内存上限与回落预期的关键治理机制（贴图 `256 MB` 热像素封顶、截图历史 `32 MB` 封顶与已落盘 0 原图常驻、短命隔离子进程用完即退、纯 Rust `WindowKit` 默认 0 进程与 2s 释放 D2D、主进程 `>=14 MB` 静默水位守卫等），且部分非定时器项无法让关心内存的用户建立完整心理预期；
+  - *升级*：坚守纯只读、零后台轮询基线（单次并行拉取 `general.getSettings` / `search.getSettings` / `windowManager.getSettings`），新增顶部 3 项核心预期摘要（按需零驻留 / 峰值硬封顶 / 冷路径防卡顿）、6 枚机制筛选药丸（`全部 / 按需零驻留 / 预算硬封顶 / 关闭即释放 / 定时自动回收 / 内核防抖护栏`，带 `tabular-nums` 精确计数），完整覆盖 6 大 MECE 架构层级共 **20 项 100% 源自真实 C++/Rust 源码的内存控制策略**，同步 8 语种词典与深搜索引。
+- **2. 修复「窗口管理」开启总开关却隐藏侧边栏与「进入配置」按钮死锁缺陷 (`src/core/ipc/MessageBridge.cpp`, `ui/src/App.tsx`, `tests/unit/test_core.inc`)**：
+  - *实机根因*：`MessageBridge.cpp` 在 `plugins.getAll` 中将 `window_manager` 的 `"active"` 字段写成了 `wkEnabled && wkRunning`（其中 `wkRunning = WindowKitController::isRunningDesired()` 仅在至少开启 1 个子功能时为真）；由于 8 个子功能默认全关（按需零进程），用户开启总开关后后端返回 `enabled=true, state="running", active=false`，导致 `App.tsx` 与 `PluginsPage.tsx`（均按 `enabled && active` 门控）把侧边栏导航项与「进入配置」按钮同时隐藏，形成「不进配置页开不了子功能，不开子功能进不去配置页」的死锁；
+  - *根治*：将 `plugins.getAll` 中 `window_manager` 的 `"active"` 修正为 `wkEnabled`（与 `caps_layer` / `quick_look` / `file_locksmith` 100% 语义同构，`running` 子进程状态仍由 `windowManager.getSettings()` 独立表达），并在 `App.tsx` 补齐 `window_manager`/`caps_layer`/`quick_look` 别名映射与 `test_core.inc` 防回退回归测试。
+- **3. 托盘控制舱 (`TrayApp`) 补齐「窗口管理」「Caps 改键」「空格预览」与消除截断 (`ui/src/tray/trayRegistry.ts`, `ui/src/TrayApp.{tsx,test.tsx}`, `ui/src/pages/PluginsPage.test.tsx`, 8 套 `locales/*.json`)**：
+  - 将托盘 Bento 控制中心从 9+1 升级为严格对齐 `routes.ts` 四大业务域序的 **12 格 `3x4` 满格对称网格 + 满宽远控增强（共 13 项）**，正式纳入 `window_manager`（窗口）、`caps_layer`（改键）、`quick_look`（预览），补齐对应状态广播事件监听与拒绝切换时的乐观回滚；同时将原过长溢出成 `文本…`/`文件…` 的中文短标精炼为 `短语`/`解锁`（悬浮提示与无障碍标签保留完整全称），实现全 12 格零截断。
+
+### [2026-11-26] `Alt+X` 原生划词翻译全链路根治与交互升维 + 鼠标手势原生内置命令 `BuiltinCommand::QuickTranslate` (`L-R-D`)
+- **四大实机痛点根因取证**：
+  1. **显式目标语种被反客为主覆盖**：`TranslationService::translateBatchWithSettings` 对显式 `targetLangOverride` 仍送入 `resolveEffectiveTargetLanguage()` 按 `secondaryTargetLang` 翻面，导致用户手动点选目标语种被强行改回副语种；且旧浮窗 `nextQuickTargetLanguage("")` 首步返回 `"zh-CN"` 与英文译中默认结果一致，表现为「点了没反应」；
+  2. **简繁短路与短码失配**：`textAlreadyInTargetLanguage()` 对 `zh-TW` 误按汉字直接原样返回阻断简繁互译；`shortLangCode()` 匹配 `zh-Hans`/`zh-Hant` 而规范码为 `zh-CN`/`zh-TW`，简繁全错显为 `ZH`；
+  3. **单段长技术文卡顿 24s+ 真凶（实机日志 `reqId=12` 实证）**：898 字节含大量双引号与换行的技术段落套进 JSON 批量协议后，9B 模型输出畸形 JSON 耗时 `7.65s` 报 `openai_parse_failed`，随后回退免费通道时 Bing 凭据拉取与 Google 回退各套 15s 超时再叠加卡死 `16.7s+`；改用单段纯文本直译同段实测仅 **`3.09s`** 直出零报错；
+  4. **缺少完整语种互译与记忆**：旧浮窗无源/目标下拉选择器、无一键互译交换且关闭即失忆。
+- **世界级根治与增强方案 (`TranslationTypes.h`, `TranslationService.{h,cpp}`, `QuickTranslatePopupWindow.{h,cpp}`, `EventBus.h`, `GestureAction.h`, `BuiltinCommands.cpp`, `GestureProfile.cpp`, `GestureEngine.cpp`, `gesture/PluginEntry.cpp`, `main.cpp`, `App.tsx`, `gestureModel.ts`, `GestureDrawCanvas.tsx`, `GestureEditorModal.tsx`, 8 语种词典)**：
+  1. **底层引擎全面升级**：`TranslationBatchRequest` 新增 `sourceLangOverride`（全 4 大通道透传，DeepL 同步新增 `toDeepLSourceLangCode` 剥离 `-US/-HANS/-BR` 后缀）与 `lockTargetLanguage`（显式锁定目标语种绝不反向翻面，且关闭会误伤的同语种免译短路）；修复 `textAlreadyInTargetLanguage` 绝不对 `zh-TW` 跳过汉字；新增 `detectDominantSourceLang()` 为无检测字段的 AI 通道补充源语种展示；
+  2. **单段纯文本直译快车道 + 快速容灾止损**：`OpenAiCompatibleProvider` 在 `count == 1` 时自动免去 JSON 包装直传原文并用 `parseOpenAiSingleTextResponse()` 兼容剥离 `<think>`、代码围栏与偶发 JSON 外壳；单条免 Key 公网超时收敛至 `<= 12s` 不盲等双倍重试，Bing 凭据预热收紧至 `<= 4.5s`，Google 回退收紧至 `<= 6s`；
+  3. **原生 Direct2D 交互式语种工具栏**：顶栏重塑为 `[源语种 ▾] [⇄] [目标语种 ▾]`（DirectWrite 精确测宽 + 矢量 chevron / 双箭头 + `m_menuOpen` 护栏防弹出菜单误关浮窗），支持自动检测 + 10 语种独立直选、一键智能互译交换、`/translate/quickSourceLang` & `/translate/quickTargetLang` 持久化记忆及「打开翻译设置...」直达 `ocr -> translate` 页签；
+  4. **鼠标手势原生内置命令 + 象形 `T` (`L-R-D`) 180° 折返算法加固**：新增 `BuiltinCommand::QuickTranslate`（索引 `31`，同步扩展 `kMaxBuiltinCommand = 31`，热角自动继承），经 `ActionTriggerQuickTranslateEvent` 无耦合直调浮窗（零依赖热键模拟、免疫改键与软件避让）；采用 **`L-R-D`（`←→↓` 象形字母 `T` = Translate）** 作为全局默认预设并为未占用 `L-R-D` 的存量老用户无损平滑迁移；并在 `GestureRecognizer.cpp` 同步完成 3 项算法加固（180° 发卡弯微过渡吸收、折返末笔斜角放宽防误触 `L-R` 撤销、半回折 `{1.0, 0.5, 1.0}` `T` 形相似度原型），全套 21 项手势回归单测 100% 通过。
+
+### [2026-11-26] 离线分页更新日志弹窗 (`WhatsNewModal`) 结构化分类与世界级排版重构 (`feat/rust-window-kit`)
+- **痛点诊断与暗坑实证**：
+  1. 旧版更新日志把新功能、优化与 Bug 修复全部混排在同一张纯白长文字墙中，用户无法一眼辨别“新增了什么 / 修了什么 / 各有几项”；
+  2. 旧版 `renderInlineMarkdown` 采用扁平正则 `/(\`[^\`]+\`|\*\*[^*]+\*\*)/g`，遇到 `**SQL Server Management Studio (\`ssms.exe\`)**` 粗体嵌套反引号时会直接把原始反引号裸露渲染到界面上；
+  3. 历史 34 版更新日志中存在 8 个 `items.length === 0` 的空壳速查标题节，以及 `v1.4.2 / v1.4.5 / v1.4.6` 中把多条独立 Bug 修复塞进单个 `### 重要问题修复` 容器节导致计数严重失真。
+- **架构与交互终局方案 (`ui/scripts/generate-changelog-bundle.mjs`, `ui/src/components/whatsNewUtils.ts`, `ui/src/components/WhatsNewModal.{tsx,css,test.tsx}`, 全 8 语种词典)**：
+  1. **构建期 Schema v2 语义单一事实源**：构建脚本自动清理 8 个空壳节、自动拆解纯修复聚合容器内的 `**子标题**：正文` 为独立 `fix` 条目、通过 MECE 三元分类器为全部 34 版中英文条目预标注 `category: 'feature' | 'improvement' | 'fix'` 与 `counts: { feature, improvement, fix, total }`，并结构化提取标题末尾的 GitHub Issue (`#34`) 与社区致谢徽章；
+  2. **递归 AST 行内解析与双层低噪排版**：`parseInlineMarkdownAst()` 彻底根治粗体嵌套反引号裸露 Bug；`splitLeadInBullet()` 将 `**领起短标题**：正文说明` 拆分为 `lead · desc` 低噪视觉层级；降噪柔和行内代码芯片替代满屏厚边框胶囊；
+  3. **渐进式阅读、按自然日分组时间轴与分面筛选工作台**：弹窗舒展至 `min(840px, 94vw)`，时间轴按本地自然日（纯 `YYYY-MM-DD` + 相对天数，界面与一键复制日志均不暴露 `HH:mm` 时刻）分组，单日多版自动归入同一日期头（带 `N 次发布` 与左侧 2px 时间轴轨道）并由版本号降序自然定序，彻底消灭同日重复日期噪音；双层工具栏提供 `Ctrl+F` 快捷搜索 + 实时 `<mark>` 荧光高亮 + 搜索联动的分面分类筛选药丸（`全部 / 新增功能 / 优化改进 / 问题修复` 实时统计命中项数）+ 「详览 / 简览」密度切换 + 「全部展开 / 收起」+ `Escape` 防中文 IME 误关且先清搜索词再关窗；每版头部展示 `+N 新功能 / N 优化 / N 修复` 彩色语义胶囊与一键复制本版纯文本日志、直达 GitHub 对应 Tag 及 Issue 原帖入口。
+
+### [2026-11-26] 纯 Rust 独立原生窗口管理套件 (`Tools3000_WindowKit.exe`) 与纯 Rust `CapsLayer` 状态机落地 (`feat/rust-window-kit`)
+- **核心架构与零连坐/零占用设计（全部默认出厂关闭）**：
+  1. **`WindowKit` 独立进程微内核 (`src/window_kit/**` -> `Tools3000_WindowKit.exe`, Release 仅 `577.5 KB` / `0.56 MB`, 0 WebView2)**：
+     - 8 项独立子特性开关（`snapZones`、`workspaces`、`quickSwitch`、`alwaysOnTop`、`opacity`、`altDrag`、`focusBorder`、`multiMonitor`）全部默认 `false`；主开关或全特性关闭时宿主 **0 进程 / 0 线程 / 0 钩子 / 0 热键 / 0 MB**；
+     - 宿主薄控制层 `WindowKitController` (`src/core/ipc/WindowKitController.{h,cpp}`) 严格遵守 **零阻塞异步 `PostMessageW`**（0 `SendMessageW`）、`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` 绑定防孤儿、**30s 内 >2 次异常崩溃自动退避熔断**（1000ms -> 3000ms -> 降级停启保护宿主零连坐）、以及提权已签名宿主下的 Authenticode 签名校验；
+     - 运行时按启用特性精确对账低级钩子与 `WinEvent`（例如仅开 `snapZones` 时 `kbd=false mouse=false movesize=true borders=false`）；内置无锁静态托盘/透明度崩溃恢复阵列 + SEH/panic 兜底 + `TaskbarCreated` 监听自动重建托盘图标 + 无 `Shell_TrayWnd` 桌面安全拒绝隐藏门禁；
+  2. **对标开源原版的纯 Rust Direct2D/DirectWrite/DWM 交互与 144Hz 动效**：
+     - **`Quick Switch`（对标 AltTab / AltTabio）**：卡片 115ms 缓入 + DWM 零拷贝缩略图 95ms 交叉柔显 + 选中高亮胶囊 144Hz 指数阻尼滑行（收敛即 `KillTimer` 静止 0% CPU）+ DirectWrite `IDWriteTextLayout` 原生拼音首字母/关键词局部着重与省略号截断 + 矢量绘制最小化/关闭/强杀三键 + 两段式 `Esc` / `Shift+Tab` / `Home` / `End` / `PgUp` / `PgDn` / `Delete`/`Ctrl+W` 原地关窗 / 非搜索态 `M` 最小化 / 输入字符自动锁浏览态防松 `Alt` 误关；
+     - **`SnapZones`（对标 PowerToys FancyZones）**：6 套内置预设 + PowerToys Grid/Canvas 一键导入 + **拖出分区超过 18 DIP 自动恢复原始尺寸并跟手锚定** + **按住 `Ctrl` 锚定多区框选跨区合并** + 接缝自动跨区 + 右键切换同步吞掉配对 `WM_RBUTTONUP` 防弹系统菜单 + 每分区独立悬停权重平滑过渡；
+     - **`Always on Top` & `Focus Border`（对标 PowerToys AlwaysOnTop）**：补齐 `DWMWA_CLOAKED` 虚拟桌面自动隐藏、`IsZoomed` 最大化切 0px 直角贴内缘防溢副屏、独占全屏避让、置顶 230ms 柔和光晕脉冲与切窗 115ms 柔滑淡入；
+     - **`Alt+Drag`**：支持 `alt` / `ctrl_alt` 双修饰键、最大化窗起拖按横向占比原地锚定还原、并与 `SnapZones` 无缝联动吸附；
+  3. **世界级 4K 内存治理突破 (`render/d2d.rs`, `snap_zones.rs`, `focus_border.rs`, `main.rs`)**：
+     - 实机 4K (`3456x2160 @ 144 DPI`) 验收中捕获预览淡入逐帧重建 30MB DIB 造成峰值 `106.36 MB` / `Priv 54.11 MB` 问题；
+     - 升级为 **零重绘硬件淡入（`UpdateLayeredWindow` 仅更新 `ULW_ALPHA` `SourceConstantAlpha`，0 DIB 分配、0 重绘）** + **冷路径 2000ms 惰性释放 `SharedGraphics` 工厂 + `HeapCompact` + `SetProcessWorkingSetSize(-1, -1)`**；
+     - 优化后真机 4K 实测：`SnapZones` 峰值直降 `-26%`（`106.36 -> 78.59 MB`），20 轮高频压测后冷态物理工作集降至 **`0.47 MB`**（`480 KB`），内核句柄释放回 `212`，`dGDI = 0`、`dUSR = 0`（绝对零 GDI/USER 泄漏），优雅退场 `23.2 ms` 且所有改透明度/托盘窗口 100% 自动还原；
+  4. **纯 Rust `CapsLayer` 静态库 (`src/caps_layer/rust_caps/src/lib.rs`, `CapsLayerManager.{h,cpp}`)**：
+     - 零第三方依赖 Rust 静态库（`tools3000_caps_rs.lib`）接入主程序既有 `WH_KEYBOARD_LL`：默认关闭 `<1ns` 原子短路、0 额外进程、`try_lock` 防钩子阻塞、5 次连续异常熔断、滚键完整配对释放且拦截松 `Caps` 后残余按键连发防漏字（如多出 `iiii`）、`Shift+Caps` 恒定原生大小写逃生门、支持全局+分应用覆写与黑名单；
+  5. **全链路实测与自动化验收基线 (`scripts/verify_window_kit_live.ps1`)**：
+     - Rust 单测：`rust_caps` **5/5 PASS**、`Tools3000_WindowKit` **20/20 PASS**（0 warnings）；
+     - C++ 单测：`CapsLayerManagerTest` + `WindowKitControllerTest` **3/3 PASS**；前端 Vitest **20/20 PASS** + ESLint + 7 重并发门禁全绿；
+     - 宿主机隔离真机实测：`Case A` 默认全关 `0` 子进程、`Case B` 连续强杀 `WindowKit` 3 次验证 `1000ms -> 3000ms` 自动自愈与 30s 熔断降级，宿主 `Tools3000.exe` 全程 100% 存活零连坐，退出后 0 孤儿残留。
+
 ### [2026-11-26] 修复 Windows 快速启动（混合关机）导致搜索服务下次开机被原样复活 (`fix/search-service-fast-startup-exit`)
 - **实机现象与内核根因**：
   - Windows 10/11 默认开启「快速启动（Fast Startup）」，用户点「关机」时系统注销交互式用户会话（退出 `Tools3000.exe`），但将 Session 0 内核及当时仍在运行的 Windows 服务（如前次用过搜索而按需启动的 `Tools3000_Service.exe`）整体冻结进 `hiberfil.sys`；下次按电源键开机（`Resume from Hibernate`）后旧服务进程被原封不动恢复，导致用户误以为未搜文件即自启。
