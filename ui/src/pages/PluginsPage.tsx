@@ -8,7 +8,9 @@ import {
   FileSearch,
   FolderSymlink,
   Image as ImageIcon,
+  KeyRound,
   Keyboard,
+  LayoutGrid,
   LockOpen,
   Mouse,
   Puzzle,
@@ -84,6 +86,10 @@ const ICONS = {
   textexpander: TextCursorInput,
   quick_look: Eye,
   quicklook: Eye,
+  window_manager: LayoutGrid,
+  windowmanager: LayoutGrid,
+  caps_layer: KeyRound,
+  capslayer: KeyRound,
 } as const;
 
 const ALL_BUILTIN_DOMAIN_IDS = new Set<string>(
@@ -218,6 +224,34 @@ export const PluginsPage: FC<PluginsPageProps> = ({ initialPlugins = [], onNavig
     const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
     if (payload && typeof payload.enabled === 'boolean') {
       updatePluginState('quick_look', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('windowManager:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('window_manager', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('window_manager:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('window_manager', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('capsLayer:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('caps_layer', payload.enabled);
+    }
+  });
+
+  useBridgeEvent('caps_layer:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      updatePluginState('caps_layer', payload.enabled);
     }
   });
 

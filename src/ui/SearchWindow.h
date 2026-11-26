@@ -115,6 +115,26 @@ public:
         return webViewReady && (!uiFirstPaintReady || wasSuspended || wasMinimized);
     }
 
+    /// 后台 preload 导航完成后是否应执行 DWM Cloak 无感真实首帧预热（真正完成 GPU SwapChain 首帧提交后再隐身待命）
+    static constexpr bool shouldStartBackgroundFirstPaintWarmup(
+        bool visible,
+        bool webViewReady,
+        bool uiFirstPaintReady,
+        bool alreadyWarming) noexcept {
+        return !visible && webViewReady && !uiFirstPaintReady && !alreadyWarming;
+    }
+
+    /// 仅在从 TrySuspend 挂起恢复或显式请求强制重置合成器时才执行 1px 刷新脉冲，
+    /// 严禁在首次正常提交崭新首帧时砸毁 SwapChain 导致 Win10 1809 闪出纯黑帧。
+    static constexpr bool shouldTriggerCompositorSwapKick(
+        bool explicitForceKick,
+        bool wasSuspended) noexcept {
+        return explicitForceKick || wasSuspended;
+    }
+
+    /// 机械盘冷首帧宽容揭幕超时（ms）：正常由前端双 rAF 实绘完成后 ~20-600ms 立即原子揭幕，此值仅作极端防死等保底
+    static constexpr UINT FirstPaintUncloakTimeoutMs = 1500;
+
     /// 计算窗口非客户区命中测试结果（支持按 DPI 比例校准，全高放行边缘拉伸）
     static LRESULT calculateHitTest(const RECT& rc, POINT pt, float scale) {
         const int corner = tools3000::core::dpi::scaleMetric(8, scale);
@@ -156,7 +176,9 @@ private:
     static constexpr UINT_PTR IDT_POST_SHOW_REPAINT_VERIFY = 2114;
     static constexpr UINT POST_SHOW_REPAINT_VERIFY_MS = 160;
     static constexpr UINT_PTR IDT_FIRST_PAINT_UNCLOAK = 2115;
-    static constexpr UINT FIRST_PAINT_UNCLOAK_TIMEOUT_MS = 450;
+    static constexpr UINT FIRST_PAINT_UNCLOAK_TIMEOUT_MS = FirstPaintUncloakTimeoutMs;
+    static constexpr UINT_PTR IDT_PRELOAD_WARMUP_TIMEOUT = 2116;
+    static constexpr UINT PRELOAD_WARMUP_TIMEOUT_MS = 6000;
 
     enum class WebViewStatus : uint8_t {
         Loading = 0,
@@ -167,7 +189,9 @@ private:
     };
 
     void setWebViewStatus(WebViewStatus status, HRESULT hr = S_OK);
-    bool setWindowCloaked(bool cloaked);
+    bool setWindowCloaked(bool cloaked, bool startUncloakTimer = true);
+    void startBackgroundFirstPaintWarmup();
+    void finishBackgroundFirstPaintWarmup(bool reachedFirstPaint, const char* reason);
     void completeFirstPaintReady();
     void presentWebViewSurface(bool forceCompositorKick);
     void paintStatusBackdrop(HDC hdc, const RECT& clientRect) const;
@@ -197,6 +221,8 @@ private:
     bool m_wasSuspended = false;
     bool m_everPresentedVisible = false;
     bool m_cloakedForFirstPaint = false;
+    bool m_preloadWarmingFrame = false;
+    uint64_t m_initStartTick{0};
     uint64_t m_showTimeTick{0};
     std::atomic<uint64_t> m_generation{0};
 };

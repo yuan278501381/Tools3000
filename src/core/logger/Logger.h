@@ -42,7 +42,8 @@ struct LoggerConfig {
     std::filesystem::path logDir;              // 日志文件目录（Windows 原生宽字符路径）
     std::string logFileName = "tools3000";     // 日志文件名前缀
     spdlog::level::level_enum consoleLevel = spdlog::level::info;   // 控制台日志级别
-    spdlog::level::level_enum fileLevel    = spdlog::level::debug;  // 文件日志级别
+    // TODO(pre-release): 缺陷排查收敛后正式发版前，将默认日志级别切回 "info" / debug
+    spdlog::level::level_enum fileLevel    = spdlog::level::trace;  // 文件日志级别
     size_t maxFileSize  = 10 * 1024 * 1024;    // 单文件最大 10MB
     size_t maxFileCount = 5;                   // 保留最多 5 个文件（向后兼容）
     uint32_t retentionDays = 7;                // 历史归档保留天数（默认 7 天，0 为永久保留）
@@ -55,6 +56,10 @@ struct LoggerConfig {
 
 class TOOLS3000CORE_API Logger {
 public:
+    /// 全局初始默认日志级别单一事实源 (SSOT)
+    /// TODO(pre-release): 缺陷排查收敛后正式发版前，切回 "info"
+    static constexpr const char* kDefaultLogLevel = "trace";
+
     /// 初始化日志系统（应在 main 入口处调用一次）
     static void initialize(const LoggerConfig& config);
 

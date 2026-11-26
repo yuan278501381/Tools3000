@@ -1,0 +1,33 @@
+#pragma code_page(65001)
+
+// ID = 1: Tools3000 主程序共享图标（复用根目录 resources/app.ico，避免冗余拷贝）
+1 ICON "../../resources/app.ico"
+
+1 VERSIONINFO
+ FILEVERSION 1,4,17,0
+ PRODUCTVERSION 1,4,17,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x00040004L
+ FILETYPE 0x00000001L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Yy1 (yuan278501381)"
+            VALUE "FileDescription",  "Tools3000 Window Kit"
+            VALUE "FileVersion",      "1.4.17.0"
+            VALUE "InternalName",     "Tools3000_WindowKit"
+            VALUE "LegalCopyright",   "Copyright (c) 2026 Yy1 (yuan278501381) & Tools3000 contributors"
+            VALUE "OriginalFilename", "Tools3000_WindowKit.exe"
+            VALUE "ProductName",      "Tools3000 Window Kit"
+            VALUE "ProductVersion",   "1.4.17"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

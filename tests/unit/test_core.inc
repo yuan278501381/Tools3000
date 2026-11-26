@@ -7140,3 +7140,113 @@ TEST(ScopedHotkeyAndPluginSwitchContractTest, QuickLookPluginTogglePersistsAndPu
     cfg.set<bool>("/plugins/quick_look/enabled", hadPluginKey ? prevPluginVal : true);
     cfg.set<bool>("/quicklook/enabled", hadLegacyKey ? prevLegacyVal : true);
 }
+
+TEST(MessageBridgeTest, WindowManagerEnabledRemainsActiveInPluginsGetAllEvenWhenAllSubFeaturesOff) {
+    auto& cfg = ConfigManager::instance();
+    auto& bridge = MessageBridge::instance();
+    bridge.registerBuiltinHandlers();
+
+    const bool hadPluginKey = cfg.has("/plugins/window_manager/enabled");
+    const bool prevPluginVal = cfg.get<bool>("/plugins/window_manager/enabled", false);
+    const bool hadLegacyKey = cfg.has("/windowManager/enabled");
+    const bool prevLegacyVal = cfg.get<bool>("/windowManager/enabled", false);
+
+    cfg.set<bool>("/plugins/window_manager/enabled", true);
+    cfg.set<bool>("/windowManager/enabled", true);
+
+    const auto listResp = nlohmann::json::parse(
+        bridge.handleMessage(R"({"id":9415,"method":"plugins.getAll","params":{}})"));
+    ASSERT_TRUE(listResp.contains("result"));
+    ASSERT_TRUE(listResp["result"].is_array());
+
+    bool foundWindowManager = false;
+    for (const auto& item : listResp["result"]) {
+        if (item.value("id", "") == "window_manager") {
+            foundWindowManager = true;
+            const bool installed = WindowKitController::instance().isBinaryInstalled();
+            if (installed) {
+                // 总开关启用但 8 个子功能默认全关（0 进程待命）时，active 必须为 true，
+                // 确保侧边栏与「进入配置」按钮可见，杜绝无法进入配置页开启子功能的死锁。
+                EXPECT_TRUE(item.value("enabled", false));
+                EXPECT_TRUE(item.value("active", false));
+                EXPECT_EQ(item.value("state", ""), "running");
+            } else {
+                EXPECT_FALSE(item.value("enabled", true));
+                EXPECT_FALSE(item.value("active", true));
+                EXPECT_EQ(item.value("state", ""), "unavailable");
+            }
+        }
+    }
+    EXPECT_TRUE(foundWindowManager);
+
+    cfg.set<bool>("/plugins/window_manager/enabled", hadPluginKey ? prevPluginVal : false);
+    cfg.set<bool>("/windowManager/enabled", hadLegacyKey ? prevLegacyVal : false);
+}
+
+TEST(WindowKitControllerTest, DefaultLogLevelIsTraceAndActionCodeResolvesFullscreenEditor) {
+    EXPECT_STREQ(Logger::kDefaultLogLevel, "trace");
+    EXPECT_EQ(WindowKitController::resolveActionCode("open_layout_editor"), kWindowKitActionOpenLayoutEditor);
+    EXPECT_EQ(WindowKitController::resolveActionCode("openLayoutEditor"), kWindowKitActionOpenLayoutEditor);
+
+    const auto vd = WindowKitController::instance().getVirtualDesktopsJson();
+    EXPECT_TRUE(vd.value("success", false));
+    EXPECT_TRUE(vd.contains("desktops") && vd["desktops"].is_array());
+    EXPECT_TRUE(vd.contains("currentDesktopId") && vd["currentDesktopId"].is_string());
+}
+
+TEST(WindowKitControllerTest, HandleLayoutEditorResultPersistsLayoutAndPerDesktopBinding) {
+    auto& cfg = ConfigManager::instance();
+    auto& ctrl = WindowKitController::instance();
+
+    const bool hadWm = cfg.has("/windowManager");
+    const nlohmann::json prevWm = cfg.get<nlohmann::json>("/windowManager", nlohmann::json::object());
+
+    const auto resultPath = WinUtils::getConfigDirectory() / L"window_kit_layout_editor_result.json";
+    const nlohmann::json mockEditorResult = {
+        {"saved", true},
+        {"monitorId", "TEST-MON-EDID"},
+        {"desktopId", "11111111-2222-3333-4444-555555555555"},
+        {"perVirtualDesktop", true},
+        {"zoneGap", 12},
+        {"layout", {
+            {"id", "custom-e2e-editor-layout"},
+            {"name", "Captured Desktop Layout"},
+            {"type", "canvas"},
+            {"builtIn", false},
+            {"zones", {
+                {{"index", 0}, {"x", 0.0}, {"y", 0.0}, {"width", 0.6}, {"height", 1.0}},
+                {{"index", 1}, {"x", 0.6}, {"y", 0.0}, {"width", 0.4}, {"height", 1.0}}
+            }}
+        }}
+    };
+    ASSERT_TRUE(WinUtils::atomicWriteFileWithFlush(resultPath.wstring(), mockEditorResult.dump(2)));
+
+    EXPECT_TRUE(ctrl.handleLayoutEditorResult(true));
+    std::error_code ec;
+    EXPECT_FALSE(std::filesystem::exists(resultPath, ec));
+
+    const auto after = ctrl.getSettingsJson();
+    ASSERT_TRUE(after.contains("settings"));
+    const auto& sz = after["settings"]["snapZones"];
+    EXPECT_EQ(sz.value("zoneGap", -1), 12);
+    ASSERT_TRUE(sz.contains("monitorBindings") && sz["monitorBindings"].is_object());
+    EXPECT_EQ(
+        sz["monitorBindings"].value("TEST-MON-EDID@11111111-2222-3333-4444-555555555555", std::string{}),
+        "custom-e2e-editor-layout");
+
+    bool foundLayout = false;
+    for (const auto& l : sz["layouts"]) {
+        if (l.value("id", "") == "custom-e2e-editor-layout") {
+            foundLayout = true;
+            EXPECT_EQ(l.value("type", ""), "canvas");
+            ASSERT_TRUE(l.contains("zones") && l["zones"].size() == 2);
+            EXPECT_NEAR(l["zones"][0].value("w", 0.0), 60.0, 0.1);
+        }
+    }
+    EXPECT_TRUE(foundLayout);
+
+    // 还原测试前配置，避免污染本机状态
+    if (hadWm) {
+        cfg.set<nlohmann::json>("/windowManager", prevWm);
+    }
+}

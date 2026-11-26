@@ -126,7 +126,7 @@ export default function TrayApp() {
   const sizeFrameRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
   const [activePlugins, setActivePlugins] = useState<Set<string>>(() => new Set([
-    'capture', 'search', 'clipboard', 'text_expander', 'textexpander', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'file_locksmith', 'filelocksmith', 'remote_boost',
+    'capture', 'search', 'clipboard', 'text_expander', 'textexpander', 'gesture', 'keycast', 'spotlight', 'dialogenhancer', 'dialog_enhancer', 'file_locksmith', 'filelocksmith', 'quick_look', 'quicklook', 'remote_boost',
   ]));
 
   // 零形变精准测高引擎：严格使用不受 CSS transform 缩放污染的 offsetHeight / scrollHeight 求和，
@@ -260,6 +260,15 @@ export default function TrayApp() {
               if (plugin.id === 'text_expander' || plugin.id === 'textexpander') {
                 return ['text_expander', 'textexpander'];
               }
+              if (plugin.id === 'window_manager' || plugin.id === 'windowmanager') {
+                return ['window_manager', 'windowmanager'];
+              }
+              if (plugin.id === 'caps_layer' || plugin.id === 'capslayer') {
+                return ['caps_layer', 'capslayer'];
+              }
+              if (plugin.id === 'quick_look' || plugin.id === 'quicklook') {
+                return ['quick_look', 'quicklook'];
+              }
               return [plugin.id];
             })
         );
@@ -317,7 +326,13 @@ export default function TrayApp() {
           ? ['remote_boost', 'remote']
           : (id === 'text_expander' || id === 'textexpander')
             ? ['text_expander', 'textexpander']
-            : [id];
+            : (id === 'window_manager' || id === 'windowmanager')
+              ? ['window_manager', 'windowmanager']
+              : (id === 'caps_layer' || id === 'capslayer')
+                ? ['caps_layer', 'capslayer']
+                : (id === 'quick_look' || id === 'quicklook')
+                  ? ['quick_look', 'quicklook']
+                  : [id];
     setActivePlugins((prev) => {
       const next = new Set(prev);
       if (enabled) {
@@ -413,6 +428,91 @@ export default function TrayApp() {
         } else {
           next.delete('file_locksmith');
           next.delete('filelocksmith');
+        }
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('quicklook:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('quick_look');
+          next.add('quicklook');
+        } else {
+          next.delete('quick_look');
+          next.delete('quicklook');
+        }
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('windowManager:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('window_manager');
+          next.add('windowmanager');
+        } else {
+          next.delete('window_manager');
+          next.delete('windowmanager');
+        }
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('window_manager:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('window_manager');
+          next.add('windowmanager');
+        } else {
+          next.delete('window_manager');
+          next.delete('windowmanager');
+        }
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('capsLayer:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('caps_layer');
+          next.add('capslayer');
+        } else {
+          next.delete('caps_layer');
+          next.delete('capslayer');
+        }
+        return next;
+      });
+    }
+  });
+
+  useBridgeEvent('caps_layer:stateChanged', (data: unknown) => {
+    const payload = data && typeof data === 'object' ? (data as { enabled?: boolean }) : null;
+    if (payload && typeof payload.enabled === 'boolean') {
+      setActivePlugins((prev) => {
+        const next = new Set(prev);
+        if (payload.enabled) {
+          next.add('caps_layer');
+          next.add('capslayer');
+        } else {
+          next.delete('caps_layer');
+          next.delete('capslayer');
         }
         return next;
       });
@@ -576,7 +676,10 @@ export default function TrayApp() {
     });
 
     try {
-      const res = await bridgeRequest<{ success: boolean; restartRequired?: boolean }>('plugins.setEnabled', { id, enabled: willEnable });
+      const res = await bridgeRequest<{ success?: boolean; restartRequired?: boolean }>('plugins.setEnabled', { id, enabled: willEnable });
+      if (res && res.success === false) {
+        throw new Error('Plugin toggle rejected');
+      }
       if (res?.restartRequired) {
         setPendingRestart(true);
         pendingRestartRef.current = true;

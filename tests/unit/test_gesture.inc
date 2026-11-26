@@ -3617,17 +3617,17 @@ TEST(GestureAuditRegressionTest, B1_KeyStrokeOemPunctuationRoundTripAndModifierO
     EXPECT_EQ(invalidChar.virtualKey, 0);
 }
 
-TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To30) {
-    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 30);
+TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To31) {
+    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 31);
     EXPECT_EQ(BuiltinCommand::PrevDesktop, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_EQ(BuiltinCommand::NextDesktop, BuiltinCommand::NextVirtualDesktop);
 
-    for (int idx = 0; idx <= 30; ++idx) {
+    for (int idx = 0; idx <= 31; ++idx) {
         EXPECT_TRUE(isValidBuiltinCommandIndex(idx)) << "Expected valid index: " << idx;
         EXPECT_TRUE(isValidBuiltinCommandValue(idx)) << "Expected valid value: " << idx;
     }
     EXPECT_FALSE(isValidBuiltinCommandIndex(-1));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(31));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(32));
     EXPECT_FALSE(isValidBuiltinCommandValue(100));
 }
 
@@ -3941,16 +3941,25 @@ TEST(GestureAuditRegressionTest, EdgeWheelTriggersAndDefaultGlobalScreenshotMapp
 }
 
 TEST(GestureAuditRegressionTest, TrailFadeActionHintAndNewBuiltinCommands) {
-    // 1. 验证新增 4 项内置命令枚举索引与上下界校验 (DeleteKey / BackspaceKey / BrightnessUp / BrightnessDown)
+    // 1. 验证新增 5 项内置命令枚举索引与上下界校验 (DeleteKey / BackspaceKey / BrightnessUp / BrightnessDown / QuickTranslate)
     EXPECT_EQ(static_cast<int>(BuiltinCommand::DeleteKey), 27);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::BackspaceKey), 28);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::BrightnessUp), 29);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::BrightnessDown), 30);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::QuickTranslate), 31);
     EXPECT_TRUE(isValidBuiltinCommandIndex(27));
     EXPECT_TRUE(isValidBuiltinCommandIndex(28));
     EXPECT_TRUE(isValidBuiltinCommandIndex(29));
     EXPECT_TRUE(isValidBuiltinCommandIndex(30));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(31));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(31));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(32));
+
+    // 默认全局手势集应预置 L-R-D (象形 T) -> 划词翻译内置命令
+    const GestureProfile defaultWithTranslate = GestureProfile::createDefaultGlobal();
+    const auto translateAction = defaultWithTranslate.findAction("L-R-D");
+    ASSERT_TRUE(translateAction.has_value());
+    EXPECT_EQ(translateAction->type, ActionType::BuiltinCommand);
+    EXPECT_EQ(translateAction->builtinCmd, BuiltinCommand::QuickTranslate);
 
     // 2. 验证 Delete / Backspace 单键字符串往返解析无损
     const KeyStroke delStroke = KeyStroke::fromString("Delete");
@@ -5126,3 +5135,66 @@ TEST(GestureAuditRegressionTest, ActionAndBuiltinPreserveParentTraceId) {
 
 
 
+
+TEST(GestureAuditRegressionTest, TranslateTShape180ReversalRecognitionAndNoFalseUndo) {
+    RecognizerConfig cfg{};
+    cfg.minSegmentDistance = 24;
+    cfg.samplingInterval = 2;
+    cfg.angleToleranceDeg = 22.5;
+    cfg.enableScribbleCancel = true;
+
+    auto recognizePolyline = [&](const std::vector<TrackPoint>& corners) -> std::string {
+        GestureRecognizer rec(cfg);
+        if (corners.empty()) return {};
+        rec.addPoint(corners[0].x, corners[0].y);
+        for (size_t i = 1; i < corners.size(); ++i) {
+            const int x0 = corners[i - 1].x;
+            const int y0 = corners[i - 1].y;
+            const int x1 = corners[i].x;
+            const int y1 = corners[i].y;
+            const int steps = (std::max)(4, static_cast<int>(std::hypot(x1 - x0, y1 - y0) / 4.0));
+            for (int s = 1; s <= steps; ++s) {
+                const int px = x0 + (x1 - x0) * s / steps;
+                const int py = y0 + (y1 - y0) * s / steps;
+                rec.addPoint(px, py);
+            }
+        }
+        auto res = rec.finalize();
+        return res ? res->code : std::string{};
+    };
+
+    // 1. 标准折线与中点回折手写 T 形（左 140px -> 回到中点 70px -> 垂直向下 120px）
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {400, 300}, {400, 420}}), "L-R-D");
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {330, 300}, {330, 420}}), "L-R-D");
+
+    // 2. 带 180° 发卡弯圆角过渡（上偏 UR / 下偏 DR / 短竖发卡弯）均须稳定识别为 L-R-D
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {275, 282}, {390, 282}, {390, 410}}), "L-R-D");
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {275, 318}, {390, 318}, {390, 430}}), "L-R-D");
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {260, 322}, {390, 322}, {390, 440}}), "L-R-D");
+
+    // 3. 实机日志捕获的真实人手 T 形轨迹：横杠画完向左下折回中点再竖下（L-R-DL-D / L-D-R-DL-D / DL-R-DL-D）
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {420, 300}, {360, 355}, {360, 470}}), "L-R-D");
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {260, 320}, {420, 320}, {360, 375}, {360, 480}}), "L-R-D");
+    EXPECT_EQ(recognizePolyline({{400, 260}, {280, 345}, {430, 345}, {375, 395}, {375, 500}}), "L-R-D");
+
+    // 4. 末笔偏斜收尾（L-R-DR）不得被误砍成 L-R 撤销，须完整补全为 L-R-D
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {390, 300}, {424, 336}}), "L-R-D");
+
+    // 5. 负向安全验证：既有纯水平 L-R、3 段刷新 L-U-R、3 段反 C 圆弧 R-D-L、4 段正方形均零回归
+    EXPECT_EQ(recognizePolyline({{400, 300}, {260, 300}, {400, 304}}), "L-R");
+    EXPECT_EQ(recognizePolyline({{400, 400}, {280, 400}, {280, 280}, {400, 280}}), "L-U-R");
+    EXPECT_EQ(recognizePolyline({{300, 260}, {420, 260}, {420, 380}, {300, 380}}), "R-D-L");
+    EXPECT_EQ(recognizePolyline({{300, 260}, {420, 260}, {420, 380}, {300, 380}, {300, 260}}), "R-D-L-U");
+
+    // 6. 半回折标准 T 形状相似度兜底验证（应高分胜过 L-R 与 L-U-R）
+    std::vector<TrackPoint> tShapePts;
+    for (int x = 400; x >= 260; x -= 4) tShapePts.push_back({x, 300});
+    for (int x = 264; x <= 330; x += 4) tShapePts.push_back({x, 304});
+    for (int y = 308; y <= 430; y += 4) tShapePts.push_back({330, y});
+    const int scoreLrd = computeGestureShapeSimilarity(tShapePts, "L-R-D");
+    const int scoreLr = computeGestureShapeSimilarity(tShapePts, "L-R");
+    const int scoreLur = computeGestureShapeSimilarity(tShapePts, "L-U-R");
+    EXPECT_GE(scoreLrd, 85);
+    EXPECT_GT(scoreLrd, scoreLr);
+    EXPECT_GT(scoreLrd, scoreLur);
+}

@@ -51,6 +51,7 @@ import {
   Sparkles,
   GripVertical,
   AppWindow,
+  LocateFixed,
 } from 'lucide-react';
 import { CodeBadge } from './components/UIKit';
 import {
@@ -116,6 +117,8 @@ interface ClipboardSettingsSnippet {
   hideOnPaste?: boolean;
   keepOpenAfterDrag?: boolean;
   singleClickPaste?: boolean;
+  windowPositionMode?: 'follow_mouse' | 'remember_last' | 'fixed';
+  lockWindowBounds?: boolean;
 }
 
 interface ClipboardGroupsResponse {
@@ -166,6 +169,8 @@ export const ClipboardApp: FC = () => {
   const [loading, setLoading] = useState(false);
   const [windowPinned, setWindowPinned] = useState(false);
   const [windowMaximized, setWindowMaximized] = useState(false);
+  const [fixedPlacementLocked, setFixedPlacementLocked] = useState(false);
+  const [boundsLocked, setBoundsLocked] = useState(false);
   const [hidePinnedInOtherCategories, setHidePinnedInOtherCategories] = useState(false);
   const [autoPasteEnabled, setAutoPasteEnabled] = useState(true);
   const [plainTextByDefault, setPlainTextByDefault] = useState(false);
@@ -491,21 +496,78 @@ export const ClipboardApp: FC = () => {
     if (typeof data.singleClickPaste === 'boolean') {
       setSingleClickPaste(data.singleClickPaste);
     }
+    if (typeof data.windowPositionMode === 'string') {
+      const isFixed = data.windowPositionMode === 'fixed';
+      setFixedPlacementLocked(isFixed);
+      if (typeof data.lockWindowBounds === 'boolean') {
+        setBoundsLocked(isFixed && data.lockWindowBounds);
+      } else if (!isFixed) {
+        setBoundsLocked(false);
+      }
+    } else if (typeof data.lockWindowBounds === 'boolean') {
+      setBoundsLocked(fixedPlacementLocked && data.lockWindowBounds);
+    }
   });
 
   useBridgeEvent('clipboard:windowState', (rawState) => {
-    const state = rawState as { pinned?: boolean; maximized?: boolean } | undefined;
+    const state = rawState as {
+      pinned?: boolean;
+      maximized?: boolean;
+      fixedLocked?: boolean;
+      lockBounds?: boolean;
+      positionMode?: string;
+    } | undefined;
     if (typeof state?.pinned === 'boolean') setWindowPinned(state.pinned);
     if (typeof state?.maximized === 'boolean') setWindowMaximized(state.maximized);
+    if (typeof state?.fixedLocked === 'boolean') {
+      setFixedPlacementLocked(state.fixedLocked);
+    } else if (typeof state?.positionMode === 'string') {
+      setFixedPlacementLocked(state.positionMode === 'fixed');
+    }
+    if (typeof state?.lockBounds === 'boolean') setBoundsLocked(state.lockBounds);
   });
 
   useEffect(() => {
-    bridgeRequest<{ pinned?: boolean; maximized?: boolean }>('clipboard.getWindowState', undefined, { silent: true })
+    bridgeRequest<{
+      pinned?: boolean;
+      maximized?: boolean;
+      fixedLocked?: boolean;
+      lockBounds?: boolean;
+      positionMode?: string;
+    }>('clipboard.getWindowState', undefined, { silent: true })
       .then((res) => {
         if (typeof res?.pinned === 'boolean') setWindowPinned(res.pinned);
         if (typeof res?.maximized === 'boolean') setWindowMaximized(res.maximized);
+        if (typeof res?.fixedLocked === 'boolean') {
+          setFixedPlacementLocked(res.fixedLocked);
+        } else if (typeof res?.positionMode === 'string') {
+          setFixedPlacementLocked(res.positionMode === 'fixed');
+        }
+        if (typeof res?.lockBounds === 'boolean') setBoundsLocked(res.lockBounds);
       })
       .catch(() => {});
+  }, []);
+
+  const handleToggleFixedPlacement = useCallback(async () => {
+    try {
+      const res = await bridgeRequest<{
+        fixedLocked?: boolean;
+        lockBounds?: boolean;
+        positionMode?: string;
+      }>('clipboard.toggleFixedPlacement', undefined, { silent: true });
+      if (typeof res?.fixedLocked === 'boolean') {
+        setFixedPlacementLocked(res.fixedLocked);
+      } else if (typeof res?.positionMode === 'string') {
+        setFixedPlacementLocked(res.positionMode === 'fixed');
+      } else {
+        setFixedPlacementLocked((prev) => !prev);
+      }
+      if (typeof res?.lockBounds === 'boolean') {
+        setBoundsLocked(res.lockBounds);
+      }
+    } catch {
+      setFixedPlacementLocked((prev) => !prev);
+    }
   }, []);
 
   const handleToggleWindowPin = useCallback(async () => {
@@ -551,7 +613,7 @@ export const ClipboardApp: FC = () => {
   }, []);
 
   const handleHeaderMouseDown = useCallback((e: ReactMouseEvent<HTMLElement>) => {
-    if (e.button !== 0 || e.detail >= 2) return;
+    if (boundsLocked || e.button !== 0 || e.detail >= 2) return;
     const target = e.target as HTMLElement | null;
     if (target?.closest('input, button, a, textarea, select, [data-no-drag="true"]')) return;
     // 4px 拖动启动阈值：避免首次按下立刻进入 Win32 SC_MOVE 模态循环而吞掉双击最大化事件
@@ -575,25 +637,26 @@ export const ClipboardApp: FC = () => {
     window.addEventListener('mousemove', onMove);
     window.addEventListener('mouseup', cleanup);
     window.addEventListener('blur', cleanup);
-  }, []);
+  }, [boundsLocked]);
 
   const handleHeaderDoubleClick = useCallback(
     (e: ReactMouseEvent<HTMLElement>) => {
+      if (boundsLocked) return;
       const target = e.target as HTMLElement | null;
       if (target?.closest('input, button, a, textarea, select, [data-no-drag="true"]')) return;
       void handleToggleWindowMaximize();
     },
-    [handleToggleWindowMaximize],
+    [boundsLocked, handleToggleWindowMaximize],
   );
 
   const handleStartResize = useCallback(
     (edge: 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw') => (e: ReactMouseEvent<HTMLDivElement>) => {
-      if (e.button !== 0 || windowMaximized) return;
+      if (boundsLocked || e.button !== 0 || windowMaximized) return;
       e.preventDefault();
       e.stopPropagation();
       void bridgeRequest('clipboard.startResize', { edge }, { silent: true });
     },
-    [windowMaximized],
+    [boundsLocked, windowMaximized],
   );
 
   const handleActivate = useCallback(
@@ -1081,10 +1144,10 @@ export const ClipboardApp: FC = () => {
 
   return (
     <div
-      className={`clip-popup${windowMaximized ? ' clip-popup--maximized' : ''}`}
+      className={`clip-popup${windowMaximized ? ' clip-popup--maximized' : ''}${boundsLocked ? ' clip-popup--locked' : ''}`}
       onKeyDown={handleKeyDown}
     >
-      {!windowMaximized && (
+      {!windowMaximized && !boundsLocked && (
         <>
           <div className="clip-popup__resize-edge clip-popup__resize-edge--n" onMouseDown={handleStartResize('n')} aria-hidden="true" />
           <div className="clip-popup__resize-edge clip-popup__resize-edge--s" onMouseDown={handleStartResize('s')} aria-hidden="true" />
@@ -1132,6 +1195,25 @@ export const ClipboardApp: FC = () => {
         </div>
 
         <div className="clip-popup__win-controls">
+          <button
+            type="button"
+            className={`clip-popup__win-btn${fixedPlacementLocked ? ' clip-popup__win-btn--pinned' : ''}`}
+            onClick={() => void handleToggleFixedPlacement()}
+            aria-pressed={fixedPlacementLocked}
+            title={
+              fixedPlacementLocked
+                ? t('clipboard.unfixPlacement', 'Unfix panel position (follow active monitor)')
+                : t('clipboard.fixPlacement', 'Fix current position and size')
+            }
+            aria-label={
+              fixedPlacementLocked
+                ? t('clipboard.unfixPlacement', 'Unfix panel position (follow active monitor)')
+                : t('clipboard.fixPlacement', 'Fix current position and size')
+            }
+          >
+            <LocateFixed size={15} strokeWidth={fixedPlacementLocked ? 2.3 : 2} aria-hidden="true" />
+          </button>
+
           <button
             type="button"
             className={`clip-popup__win-btn${windowPinned ? ' clip-popup__win-btn--pinned' : ''}`}

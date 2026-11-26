@@ -25,6 +25,7 @@
 #include <wrl/event.h>
 
 #include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <utility>
 
@@ -46,6 +47,40 @@ namespace {
 
 constexpr const wchar_t* kClipboardWindowClass = L"Tools3000_ClipboardWindow";
 constexpr const wchar_t* kClipboardBlobsHost = L"clipboard-blobs.tools3000.local";
+
+std::string queryMonitorDeviceName(HMONITOR mon) {
+    if (!mon) return {};
+    MONITORINFOEXW mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(mon, &mi)) return {};
+    return tools3000::core::WinUtils::wstringToUtf8(mi.szDevice);
+}
+
+std::vector<ClipboardWindow::MonitorLayoutTarget> enumerateClipboardMonitors() {
+    std::vector<ClipboardWindow::MonitorLayoutTarget> out;
+    struct EnumCtx {
+        std::vector<ClipboardWindow::MonitorLayoutTarget>* list;
+    } ctx{&out};
+
+    EnumDisplayMonitors(
+        nullptr,
+        nullptr,
+        [](HMONITOR hMon, HDC, LPRECT, LPARAM lp) -> BOOL {
+            auto* c = reinterpret_cast<EnumCtx*>(lp);
+            MONITORINFOEXW mi{};
+            mi.cbSize = sizeof(mi);
+            if (!GetMonitorInfoW(hMon, &mi)) return TRUE;
+            ClipboardWindow::MonitorLayoutTarget item;
+            item.deviceName = tools3000::core::WinUtils::wstringToUtf8(mi.szDevice);
+            item.workArea = mi.rcWork;
+            item.dpi = tools3000::core::dpi::effectiveDpiForMonitor(hMon);
+            item.isPrimary = (mi.dwFlags & MONITORINFOF_PRIMARY) != 0;
+            c->list->push_back(std::move(item));
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&ctx));
+    return out;
+}
 
 void syncClipboardBackdropColor(ICoreWebView2Controller* controller) {
     if (!controller) return;
@@ -338,10 +373,19 @@ void ClipboardWindow::notifyShownToWeb() {
 
 void ClipboardWindow::notifyWindowStateToWeb() {
     if (!m_webView || !m_webViewReady) return;
+    const auto cfg = tools3000::clipboard::ClipboardManager::instance().getSettings();
+    const bool fixedMode = (cfg.windowPositionMode == "fixed");
+    const bool boundsLocked = fixedMode && cfg.lockWindowBounds;
     json payload = {
         {"type", "event"},
         {"event", "clipboard:windowState"},
-        {"data", {{"pinned", m_pinned}, {"maximized", m_maximized}}}
+        {"data", {
+            {"pinned", m_pinned},
+            {"maximized", m_maximized},
+            {"positionMode", cfg.windowPositionMode},
+            {"fixedLocked", fixedMode},
+            {"lockBounds", boundsLocked}
+        }}
     };
     const std::wstring wMsg = tools3000::core::WinUtils::utf8ToWstring(payload.dump());
     m_webView->PostWebMessageAsString(wMsg.c_str());
@@ -416,6 +460,95 @@ void ClipboardWindow::applyThemeChrome() {
     syncClipboardBackdropColor(m_controller.Get());
 }
 
+bool ClipboardWindow::captureCurrentBoundsAsFixed() {
+    auto& mgr = tools3000::clipboard::ClipboardManager::instance();
+    auto s = mgr.getSettings();
+    if (!m_hwnd || !IsWindow(m_hwnd) || IsIconic(m_hwnd)) {
+        return false;
+    }
+    RECT rc{};
+    if (!GetWindowRect(m_hwnd, &rc)) return false;
+    const int physW = rc.right - rc.left;
+    const int physH = rc.bottom - rc.top;
+    if (physW < 200 || physH < 200) return false;
+
+    HMONITOR mon = MonitorFromWindow(m_hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!mon) mon = tools3000::core::dpi::activeMonitor();
+    const RECT work = tools3000::core::dpi::workArea(mon);
+    const unsigned dpi = tools3000::core::dpi::effectiveDpiForMonitor(mon);
+    const float scale = tools3000::core::dpi::scaleForDpi(dpi);
+
+    const int dipW = std::clamp(static_cast<int>(std::lround(physW / scale)), 560, 2400);
+    const int dipH = std::clamp(static_cast<int>(std::lround(physH / scale)), 420, 1600);
+    const int availW = (std::max)(1, static_cast<int>(work.right - work.left) - physW);
+    const int availH = (std::max)(1, static_cast<int>(work.bottom - work.top) - physH);
+    const double relX = std::clamp(static_cast<double>(rc.left - work.left) / static_cast<double>(availW), 0.0, 1.0);
+    const double relY = std::clamp(static_cast<double>(rc.top - work.top) / static_cast<double>(availH), 0.0, 1.0);
+
+    s.windowPositionMode = "fixed";
+    s.windowWidthDip = dipW;
+    s.windowHeightDip = dipH;
+    s.hasFixedAnchor = true;
+    s.fixedX = rc.left;
+    s.fixedY = rc.top;
+    s.fixedRelX = relX;
+    s.fixedRelY = relY;
+    s.fixedMonitorDevice = queryMonitorDeviceName(mon);
+
+    m_customBounds = rc;
+    m_hasCustomBounds = true;
+    const bool saved = mgr.updateSettings(s);
+    notifyWindowStateToWeb();
+    LOG_INFO("ClipboardWindow: captured fixed bounds x={}, y={}, {}x{} DIP on {}",
+             s.fixedX, s.fixedY, s.windowWidthDip, s.windowHeightDip, s.fixedMonitorDevice);
+    return saved;
+}
+
+bool ClipboardWindow::toggleFixedPlacement() {
+    auto& mgr = tools3000::clipboard::ClipboardManager::instance();
+    auto s = mgr.getSettings();
+    if (s.windowPositionMode == "fixed") {
+        s.windowPositionMode = "follow_mouse";
+        const bool saved = mgr.updateSettings(s);
+        notifyWindowStateToWeb();
+        LOG_INFO("ClipboardWindow: switched placement mode back to follow_mouse");
+        return saved;
+    }
+    return captureCurrentBoundsAsFixed();
+}
+
+void ClipboardWindow::resetPlacementToDefault() {
+    auto& mgr = tools3000::clipboard::ClipboardManager::instance();
+    auto s = mgr.getSettings();
+    s.windowPositionMode = "follow_mouse";
+    s.windowWidthDip = 760;
+    s.windowHeightDip = 560;
+    s.hasFixedAnchor = false;
+    s.fixedX = 0;
+    s.fixedY = 0;
+    s.fixedRelX = 0.5;
+    s.fixedRelY = 0.38;
+    s.fixedMonitorDevice.clear();
+    s.lockWindowBounds = false;
+    m_hasCustomBounds = false;
+    mgr.updateSettings(s);
+    if (isVisible()) {
+        if (IsZoomed(m_hwnd)) {
+            ShowWindow(m_hwnd, SW_RESTORE);
+        }
+        updatePlacement();
+    }
+    notifyWindowStateToWeb();
+}
+
+void ClipboardWindow::applyPlacementSettingsNow() {
+    if (!m_hwnd || !IsWindow(m_hwnd)) return;
+    if (isVisible()) {
+        updatePlacement();
+    }
+    notifyWindowStateToWeb();
+}
+
 void ClipboardWindow::updatePlacement() {
     if (!m_hwnd || !IsWindow(m_hwnd)) return;
     const HWND zInsertAfter = m_pinned ? HWND_TOPMOST : HWND_TOP;
@@ -424,51 +557,51 @@ void ClipboardWindow::updatePlacement() {
         return;
     }
 
-    if (m_hasCustomBounds) {
-        const POINT center{
-            (m_customBounds.left + m_customBounds.right) / 2,
-            (m_customBounds.top + m_customBounds.bottom) / 2
-        };
-        HMONITOR mon = MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST);
-        if (!mon) mon = tools3000::core::dpi::activeMonitor();
-        const RECT work = tools3000::core::dpi::workArea(mon);
-        const unsigned dpi = tools3000::core::dpi::effectiveDpiForMonitor(mon);
-        const float scale = tools3000::core::dpi::scaleForDpi(dpi);
-        const int minW = tools3000::core::dpi::scaleMetric(560, scale);
-        const int minH = tools3000::core::dpi::scaleMetric(420, scale);
-        const int workW = (std::max)(minW, static_cast<int>(work.right - work.left));
-        const int workH = (std::max)(minH, static_cast<int>(work.bottom - work.top));
+    const auto cfg = tools3000::clipboard::ClipboardManager::instance().getSettings();
+    PlacementInput input;
+    input.mode = cfg.windowPositionMode;
+    input.widthDip = cfg.windowWidthDip;
+    input.heightDip = cfg.windowHeightDip;
+    input.hasAnchor = cfg.hasFixedAnchor;
+    input.anchorX = cfg.fixedX;
+    input.anchorY = cfg.fixedY;
+    input.anchorRelX = cfg.fixedRelX;
+    input.anchorRelY = cfg.fixedRelY;
+    input.anchorMonitorDevice = cfg.fixedMonitorDevice;
 
-        const int targetW = std::clamp(static_cast<int>(m_customBounds.right - m_customBounds.left), minW, workW);
-        const int targetH = std::clamp(static_cast<int>(m_customBounds.bottom - m_customBounds.top), minH, workH);
-        const int x = std::clamp(static_cast<int>(m_customBounds.left), static_cast<int>(work.left), static_cast<int>(work.right - targetW));
-        const int y = std::clamp(static_cast<int>(m_customBounds.top), static_cast<int>(work.top), static_cast<int>(work.bottom - targetH));
+    const auto monitors = enumerateClipboardMonitors();
+    const HMONITOR activeMon = tools3000::core::dpi::activeMonitor();
+    const std::string activeDev = queryMonitorDeviceName(activeMon);
+    const ResolvedPlacement target = resolveTargetPlacement(input, monitors, activeDev);
 
-        SetWindowPos(m_hwnd, zInsertAfter, x, y, targetW, targetH, SWP_NOACTIVATE);
-        const int radius = tools3000::core::dpi::scaleMetric(12, scale);
-        tools3000::core::WinUtils::applyUniversalRoundedCorners(m_hwnd, targetW, targetH, radius);
-        return;
+    const int targetW = target.rect.right - target.rect.left;
+    const int targetH = target.rect.bottom - target.rect.top;
+    const float scale = tools3000::core::dpi::scaleForDpi(target.targetDpi);
+
+    // 两阶段跨 DPI 零漂移落位：第 1 步迁至目标显示器触发 DPI 切换，第 2 步复核精确物理坐标尺寸，
+    // 期间抑制 WM_DPICHANGED 默认 suggested 矩形反客为主拉伸窗口。
+    struct ProgrammaticPlacementGuard {
+        bool& flag;
+        explicit ProgrammaticPlacementGuard(bool& f) : flag(f) { flag = true; }
+        ~ProgrammaticPlacementGuard() { flag = false; }
+    } guard(m_applyingProgrammaticPlacement);
+
+    SetWindowPos(m_hwnd, zInsertAfter, target.rect.left, target.rect.top, targetW, targetH, SWP_NOACTIVATE);
+    RECT actual{};
+    if (GetWindowRect(m_hwnd, &actual) &&
+        (actual.left != target.rect.left || actual.top != target.rect.top ||
+         (actual.right - actual.left) != targetW || (actual.bottom - actual.top) != targetH)) {
+        SetWindowPos(m_hwnd, zInsertAfter, target.rect.left, target.rect.top, targetW, targetH, SWP_NOACTIVATE);
     }
 
-    const HMONITOR monitor = tools3000::core::dpi::activeMonitor();
-    const RECT work = tools3000::core::dpi::workArea(monitor);
-    const unsigned dpi = tools3000::core::dpi::effectiveDpiForMonitor(monitor);
-    const float scale = tools3000::core::dpi::scaleForDpi(dpi);
-
-    int targetW = tools3000::core::dpi::scaleMetric(760, scale);
-    int targetH = tools3000::core::dpi::scaleMetric(560, scale);
-    const int maxW = static_cast<int>(work.right - work.left) - 32;
-    const int maxH = static_cast<int>(work.bottom - work.top) - 32;
-    targetW = (std::min)(targetW, maxW);
-    targetH = (std::min)(targetH, maxH);
-
-    // 居中略偏上黄金视区，兼顾多屏与混合 DPI 工作区边界
-    const int x = work.left + (work.right - work.left - targetW) / 2;
-    const int y = work.top + static_cast<int>((work.bottom - work.top - targetH) * 0.38);
-
-    SetWindowPos(m_hwnd, zInsertAfter, x, y, targetW, targetH, SWP_NOACTIVATE);
     const int radius = tools3000::core::dpi::scaleMetric(12, scale);
     tools3000::core::WinUtils::applyUniversalRoundedCorners(m_hwnd, targetW, targetH, radius);
+    if (m_controller) {
+        RECT clientRc{};
+        GetClientRect(m_hwnd, &clientRc);
+        m_controller->put_Bounds(clientRc);
+        syncWebViewDpi(m_controller.Get(), m_hwnd);
+    }
 }
 
 bool ClipboardWindow::createWindow(HINSTANCE hInstance) {
@@ -680,6 +813,11 @@ void ClipboardWindow::initializeWebView2() {
                                                 return S_OK;
                                             }
                                             if (method == "clipboard.startDrag") {
+                                                const auto cfg = tools3000::clipboard::ClipboardManager::instance().getSettings();
+                                                if (cfg.windowPositionMode == "fixed" && cfg.lockWindowBounds) {
+                                                    sendReply({{"success", false}, {"locked", true}});
+                                                    return S_OK;
+                                                }
                                                 if (generation == m_generation.load() && m_hwnd && IsWindow(m_hwnd)) {
                                                     ReleaseCapture();
                                                     // 异步投递 SC_MOVE (0xF012)：避免在 WebMessage 回调中阻塞重入，并原生支持最大化 Aero Tear-Off 脱离还原
@@ -689,6 +827,11 @@ void ClipboardWindow::initializeWebView2() {
                                                 return S_OK;
                                             }
                                             if (method == "clipboard.startResize") {
+                                                const auto cfg = tools3000::clipboard::ClipboardManager::instance().getSettings();
+                                                if (cfg.windowPositionMode == "fixed" && cfg.lockWindowBounds) {
+                                                    sendReply({{"success", false}, {"locked", true}});
+                                                    return S_OK;
+                                                }
                                                 if (generation == m_generation.load() && m_hwnd && IsWindow(m_hwnd) && !IsZoomed(m_hwnd)) {
                                                     const auto params = parsed.value("params", json::object());
                                                     const std::string edge = params.value("edge", "");
@@ -738,8 +881,32 @@ void ClipboardWindow::initializeWebView2() {
                                                 }
                                                 return S_OK;
                                             }
+                                            if (method == "clipboard.toggleFixedPlacement") {
+                                                bool ok = false;
+                                                if (generation == m_generation.load()) {
+                                                    ok = toggleFixedPlacement();
+                                                }
+                                                const auto cfgNow = tools3000::clipboard::ClipboardManager::instance().getSettings();
+                                                sendReply({
+                                                    {"success", ok},
+                                                    {"pinned", m_pinned},
+                                                    {"maximized", m_maximized},
+                                                    {"positionMode", cfgNow.windowPositionMode},
+                                                    {"fixedLocked", cfgNow.windowPositionMode == "fixed"},
+                                                    {"lockBounds", cfgNow.windowPositionMode == "fixed" && cfgNow.lockWindowBounds}
+                                                });
+                                                return S_OK;
+                                            }
                                             if (method == "clipboard.getWindowState") {
-                                                sendReply({{"success", true}, {"pinned", m_pinned}, {"maximized", m_maximized}});
+                                                const auto cfgNow = tools3000::clipboard::ClipboardManager::instance().getSettings();
+                                                sendReply({
+                                                    {"success", true},
+                                                    {"pinned", m_pinned},
+                                                    {"maximized", m_maximized},
+                                                    {"positionMode", cfgNow.windowPositionMode},
+                                                    {"fixedLocked", cfgNow.windowPositionMode == "fixed"},
+                                                    {"lockBounds", cfgNow.windowPositionMode == "fixed" && cfgNow.lockWindowBounds}
+                                                });
                                                 return S_OK;
                                             }
                                             if (method == "clipboard.frameReady") {
@@ -895,6 +1062,41 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                     if (GetWindowRect(hwnd, &rc) && (rc.right - rc.left) > 200 && (rc.bottom - rc.top) > 200) {
                         self->m_customBounds = rc;
                         self->m_hasCustomBounds = true;
+
+                        auto& mgr = tools3000::clipboard::ClipboardManager::instance();
+                        auto s = mgr.getSettings();
+                        HMONITOR mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+                        if (!mon) mon = tools3000::core::dpi::activeMonitor();
+                        const RECT work = tools3000::core::dpi::workArea(mon);
+                        const unsigned dpi = tools3000::core::dpi::effectiveDpiForMonitor(mon);
+                        const float scale = tools3000::core::dpi::scaleForDpi(dpi);
+                        const int physW = rc.right - rc.left;
+                        const int physH = rc.bottom - rc.top;
+                        const int dipW = std::clamp(static_cast<int>(std::lround(physW / scale)), 560, 2400);
+                        const int dipH = std::clamp(static_cast<int>(std::lround(physH / scale)), 420, 1600);
+
+                        if (s.windowPositionMode == "remember_last") {
+                            // 记住上次模式：完整持久化逻辑 DIP 尺寸 + 锚定显示器 + 坐标 + 归一化相对锚点
+                            const int availW = (std::max)(1, static_cast<int>(work.right - work.left) - physW);
+                            const int availH = (std::max)(1, static_cast<int>(work.bottom - work.top) - physH);
+                            s.windowWidthDip = dipW;
+                            s.windowHeightDip = dipH;
+                            s.hasFixedAnchor = true;
+                            s.fixedX = rc.left;
+                            s.fixedY = rc.top;
+                            s.fixedRelX = std::clamp(static_cast<double>(rc.left - work.left) / static_cast<double>(availW), 0.0, 1.0);
+                            s.fixedRelY = std::clamp(static_cast<double>(rc.top - work.top) / static_cast<double>(availH), 0.0, 1.0);
+                            s.fixedMonitorDevice = queryMonitorDeviceName(mon);
+                            mgr.updateSettings(s);
+                        } else if (s.windowPositionMode == "follow_mouse") {
+                            // 跟随当前显示器模式：仅记住用户调好的逻辑 DIP 宽高，绝不粘死旧屏幕坐标
+                            if (s.windowWidthDip != dipW || s.windowHeightDip != dipH) {
+                                s.windowWidthDip = dipW;
+                                s.windowHeightDip = dipH;
+                                mgr.updateSettings(s);
+                            }
+                        }
+                        // fixed 模式下保留既有固定坐标不被临时拖离覆盖（需显式点固定按钮或设置页更新）
                     }
                 }
                 return 0;
@@ -925,11 +1127,13 @@ LRESULT CALLBACK ClipboardWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
                 return 0;
             }
             case WM_DPICHANGED: {
-                const auto* suggested = reinterpret_cast<const RECT*>(lParam);
-                if (suggested) {
-                    SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
-                                 suggested->right - suggested->left, suggested->bottom - suggested->top,
-                                 SWP_NOZORDER | SWP_NOACTIVATE);
+                if (!self->m_applyingProgrammaticPlacement) {
+                    const auto* suggested = reinterpret_cast<const RECT*>(lParam);
+                    if (suggested) {
+                        SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+                                     suggested->right - suggested->left, suggested->bottom - suggested->top,
+                                     SWP_NOZORDER | SWP_NOACTIVATE);
+                    }
                 }
                 if (self->m_controller) {
                     syncWebViewDpi(self->m_controller.Get(), hwnd);

@@ -82,6 +82,7 @@ const RIGHT_PRESET_GESTURES: PresetGestureItem[] = [
   { code: 'L-U-R', labelKey: 'gesture.actions.refresh.name', defaultLabel: 'Reload' },
   { code: 'L-D', labelKey: 'gesture.actions.showDesktop.name', defaultLabel: 'Show Desktop' },
   { code: 'D-R-D', labelKey: 'gesture.actions.screenshot.name', defaultLabel: 'Screenshot' },
+  { code: 'L-R-D', labelKey: 'gesture.actions.quickTranslate.name', defaultLabel: 'Quick Translate' },
   { code: 'R-D-L', labelKey: 'gesture.presetReverseC', defaultLabel: 'Reverse C' },
   { code: 'DR-UR', labelKey: 'gesture.presetVShape', defaultLabel: 'V Shape' },
 ];

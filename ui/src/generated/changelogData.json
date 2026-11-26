@@ -1,18 +1,179 @@
 {
-  "schemaVersion": 1,
-  "totalKnownReleases": 34,
-  "bundledCount": 34,
+  "schemaVersion": 2,
+  "totalKnownReleases": 35,
+  "bundledCount": 35,
   "releases": [
+    {
+      "version": "1.5.0",
+      "tag": "v1.5.0",
+      "kind": "minor",
+      "publishedAt": "2026-11-26T16:44:56.942Z",
+      "zh": {
+        "summary": "欢迎升级至 **Tools3000 v1.5.0**。本版本以已正式发布的 **v1.4.17** 为对比基线，新增「窗口管理（第一版）」「Caps 引导改键」两大可选效率套件，解决剪贴板多屏定位与固定需求、深度根治 Win10 LTSC / 机械硬盘首次呼出搜索框黑屏，并带来划词翻译、内存策略与更新日志的多项核心升级：",
+        "counts": {
+          "feature": 2,
+          "improvement": 3,
+          "fix": 1,
+          "total": 6
+        },
+        "sections": [
+          {
+            "title": "新增「窗口管理」套件（第一版尝鲜）",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 33,
+              "label": "#33 · @LiangDongXing-cn"
+            },
+            "items": [
+              "**全项默认关闭，不用即零占用**：独立原生轻量引擎，8 项子能力出厂默认全部关闭（不开启即 0 进程、0 钩子、0 MB 占用），按需开启；",
+              "**自定义分屏吸附（SnapZones）**：内置多套经典网格/画布模板，支持多显示器与**按 Windows 虚拟桌面独立绑定不同布局**、按住 `Ctrl` 跨多区合并吸附、拖出分区自动还原原尺寸，并支持一键导入 PowerToys FancyZones 布局；",
+              "**1:1 全屏原生可视化布局编辑器**：按 **`Win + Shift + ~`** 或在设置页一键唤起，直接在真实桌面 1:1 拖拽编辑网格与自由画布，支持**一键从当前桌面真实窗口生成布局（快捷键 `C`）**、拖拽自动磁吸底层真实软件窗口边缘与辅助参考线、60 步撤销及退出后冷路径自动释放内存；",
+              "**全套窗口效率辅助**：同时提供工作区一键恢复（Workspaces）、窗口速切器（Quick Switch）、窗口置顶与聚焦边框、滚轮调节窗口透明度、`Alt` 任意位置拖动/缩放、多屏离屏救援与窗口收纳至系统托盘。"
+            ]
+          },
+          {
+            "title": "新增「Caps 引导改键（CapsLayer）」模块",
+            "category": "feature",
+            "items": [
+              "**键盘双手不离主位**：按住 `CapsLock` 即可将常用键位映射为方向键、Home/End、翻页、删除或媒体控制；轻按可按偏好保持或切换大小写，随时按 `Shift + CapsLock` 原生切换大小写；",
+              "**灵活定制与默认零开销**：内置多套高效预设，支持全局与分应用独立改键方案、运行窗口快速拾取排除，默认关闭零钩子零负担。"
+            ]
+          },
+          {
+            "title": "剪贴板历史：彻底修复多屏错乱，新增位置与尺寸固定",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 36,
+              "label": "#36 · @HitomiXz"
+            },
+            "items": [
+              "**3 种多屏自适应定位模式**：支持「跟随当前显示器」（默认，自动在光标所在显示器居中弹出）、「记住上次位置与大小」、「固定屏幕位置与尺寸」（原生支持左侧/上方副屏负坐标）；",
+              "**跨混合缩放零漂移**：按与 DPI 无关的逻辑尺寸保存宽高，在 100% / 150% / 200% 多屏间自动保持视觉大小一致；拔掉外接副屏时自动按相对位置安全回退至主屏可视区，插回副屏后自动恢复原固定位；",
+              "**双入口便捷控制**：剪贴板浮窗标题栏新增一键「固定当前位置与大小」定位图标；设置页新增「窗口位置与尺寸（多屏自适应）」配置卡片，支持一键捕获当前面板位置、微调坐标与宽高、重置默认及开启「锁定位置与尺寸（防误拖动/缩放）」。"
+            ]
+          },
+          {
+            "title": "深度根治 Win10 LTSC / 机械硬盘首次呼出搜索框黑屏问题",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
+            "items": [
+              "**首屏资源瘦身 99%+**：8 国语言词典改为按当前语种按需懒加载，入口主脚本从约 1.94 MB 缩减至约 11 KB，并与目标界面并行加载，大幅削减机械硬盘首次冷启动的磁盘读取与解析耗时；",
+              "**后台无感真实首帧预热**：后台预载阶段现会隐身无感完成真实的 GPU 首帧渲染（任务栏与屏幕全程零闪烁、不抢焦点），用户首次按下 `Alt + Space` 即可直接呈现已就绪画面；",
+              "**消除提前露黑框与原生骨架兜底**：移除过短的假就绪抢跑定时器与首次破坏性重绘刷新，同步内联首屏同主题底色并升级原生圆角搜索框骨架底衬。"
+            ]
+          },
+          {
+            "title": "`Alt + X` 原生划词翻译升级与「划词翻译」鼠标手势",
+            "category": "improvement",
+            "items": [
+              "**交互式双语工具栏与记忆偏好**：浮窗顶栏升级为 `[源语种] [一键互译交换] [目标语种]`，支持自动检测与 10 语种独立直选并持久化记忆；修复手动切换目标语种被覆盖、简繁中文互译被跳过及单段长技术文本 AI 翻译偶发超时卡顿问题；",
+              "**新增原生「划词翻译」手势与热角命令**：鼠标手势与触发角内置命令新增「划词翻译」，默认采用象形字母 `T` 轨迹（`←→↓`），同时加强 180 度折返手势识别准确度。"
+            ]
+          },
+          {
+            "title": "「内存策略」全景透明看板、更新日志升级与托盘控制舱扩展",
+            "category": "improvement",
+            "items": [
+              "**「内存策略」全景透明治理看板**：原性能监控页升级为纯只读、零后台轮询的「内存策略」看板，按 6 大层级透明展示全部 20 项内存上限封顶、按需零驻留与自动回收规则，支持按机制标签快速筛选；",
+              "**离线更新日志弹窗体验重构**：升级为按自然日分组时间轴，清晰区分「新增功能 / 优化改进 / 问题修复」计数徽章与分面筛选，支持关键词搜索荧光高亮与简洁/详览切换；",
+              "**托盘控制舱全面补齐**：系统托盘快捷开关升级为 12 格 `3x4` 对称布局 + 远控增强（正式纳入「窗口」「改键」「预览」三大模块），精炼短标消除文字截断。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "summary": "Welcome to **Tools3000 v1.5.0** (compared against **v1.4.17**). This feature milestone introduces two new opt-in productivity suites (Window Manager v1 and CapsLayer), multi-monitor fixed placement for Clipboard History, a four-layer fix for first-open Search black screens on Windows 10 LTSC / HDDs, upgraded Quick Translate with a native gesture command, and a redesigned Memory Policy overview and Changelog viewer:",
+        "counts": {
+          "feature": 2,
+          "improvement": 4,
+          "fix": 0,
+          "total": 6
+        },
+        "sections": [
+          {
+            "title": "**New Module: Window Manager Suite (v1 Initial Release — Preview Quality)**",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 33,
+              "label": "#33 · @LiangDongXing-cn"
+            },
+            "items": [
+              "*Honest note from the author*: **Window Manager is currently v1 (first playable release)**. Even the author is not fully satisfied with all the rough edges yet — it is usable enough for everyday window tiling and helpers today, and will be steadily refined and improved in future updates. All 8 sub-features default to **OFF** with zero background processes, hooks, or memory footprint until enabled.",
+              "Includes customizable **SnapZones** (with multi-monitor & per-Windows-virtual-desktop layout bindings, multi-zone spanning, and 1-click PowerToys FancyZones import), a **1:1 Fullscreen Native Visual Layout Editor** (`Win + Shift + ~`, supporting 1-click capture from real desktop windows and magnetic edge snapping to underlying apps), **Workspaces** launcher, **Quick Switch** window switcher, **Always on Top** & **Focus Border**, scroll-wheel **Opacity**, **Alt + Drag / Resize**, and **Multi-Monitor Rescue & Minimize to Tray**."
+            ]
+          },
+          {
+            "title": "New Module: CapsLayer Key Remapper (Opt-In, Zero Idle Overhead)",
+            "category": "feature",
+            "items": [
+              "Hold `CapsLock` to turn home-row keys into an instant navigation/editing layer (arrows, Home/End, PageUp/PageDown, Delete, media) while keeping quick tap and `Shift + CapsLock` native escape. Supports built-in presets, global & per-app profiles, and process exclusions."
+            ]
+          },
+          {
+            "title": "**Clipboard History: Multi-Monitor Adaptive Placement & Fixed Position/Size**",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 36,
+              "label": "#36 · @HitomiXz"
+            },
+            "items": [
+              "Added 3 placement modes: **Follow Active Monitor** (default, centers cleanly on the monitor under your cursor), **Remember Last Position**, and **Fixed Position & Size** (supports negative coordinates for left/upper secondary monitors and an optional drag/resize lock).",
+              "Dimensions are persisted in DPI-independent logical units (DIP) so panel size stays visually consistent across 100% / 150% / 200% mixed-DPI setups, with automatic safe fallback to the primary monitor when an external display disconnects.",
+              "Added a 1-click **Fix Position & Size** target button directly on the clipboard title bar, synced live with `Settings -> Clipboard History -> Window Position & Size`."
+            ]
+          },
+          {
+            "title": "**Search Window First-Open Black Screen Fix for Win10 LTSC / HDD**",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
+            "items": [
+              "Split all 8 locale dictionaries into on-demand single-language chunks, shrinking the main UI startup bundle by over **99%** (~1.94 MB -> ~11 KB) and loading the active surface in parallel to dramatically cut cold-start disk I/O on HDDs.",
+              "Upgraded background preload to silently warm up a real GPU first frame before first summon, removed premature ready timers and destructive first-frame SwapChain resets, and added a matching native search skeleton backdrop."
+            ]
+          },
+          {
+            "title": "Quick Translate (`Alt + X`) Interactive Language Bar & Native Translate Gesture",
+            "category": "improvement",
+            "items": [
+              "Upgraded the popup header to `[Source] [Swap] [Target]` with auto-detect, 10 direct target languages, and persistent language memory; fixed manual target overrides, Simplified/Traditional Chinese conversion, and long-paragraph AI timeouts.",
+              "Added a native **Quick Translate** built-in command to Mouse Gestures and Hot Corners (default gesture: `L-R-D` / `←→↓` shaped like the letter `T`) with improved 180-degree turn recognition."
+            ]
+          },
+          {
+            "title": "Memory Policy Transparency Dashboard, Categorized Changelog & Expanded Tray Control Center",
+            "category": "improvement",
+            "items": [
+              "Rebuilt the memory view into a pure read-only, zero-polling **Memory Policy** dashboard transparently documenting 20 built-in memory caps and reclamation strategies across 6 layers with interactive category filters.",
+              "Redesigned the offline **What's New** modal with natural-day timeline grouping, Feature / Improvement / Fix count pills and facet filtering, keyword highlighting, and compact/detailed density toggle.",
+              "Expanded the System Tray control grid to a balanced 12-tile (`3x4`) layout now including **Window Manager**, **CapsLayer**, and **QuickLook**, with crisp non-truncated labels."
+            ]
+          }
+        ]
+      }
+    },
     {
       "version": "1.4.17",
       "tag": "v1.4.17",
       "kind": "patch",
-      "publishedAt": "2026-11-26T18:17:59+08:00",
+      "publishedAt": "2026-11-26T18:24:32+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.17**。本版本以已正式发布的 **v1.4.16** 为对比基线，带来针对 Windows 快速启动场景的专项内存与生命周期加固修复：",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 1,
+          "total": 1
+        },
         "sections": [
           {
             "title": "修复 Windows 快速启动「关机再开机」后搜索索引服务未按需清零的问题",
+            "category": "fix",
             "items": [
               "**彻底解决关机重启后“未搜文件却见服务常驻”**：Windows 10/11 默认开启「快速启动（混合关机）」，点击「关机」时会注销用户会话，但会把 Session 0 中前一次搜索留下的索引服务进程连同内存一并冻结进休眠镜像，导致下次按电源键开机时旧服务被原样复活；",
               "**全用户注销与系统关机前自动落盘停服**：索引服务现已接入用户会话注销与系统关机事件。当本机所有登录用户均注销（含快速启动关机前自动注销）或系统关机时，服务会先将最新增量文件索引快照安全落盘，再优雅退出，确保**每次关机后再开机都是彻底的 0 索引服务进程、0 MB 占用**，直到您显式按下 `Alt+Space` 搜文件时才会按需启动，且能秒级加载关机前保存的最新快照免重扫全盘；",
@@ -23,9 +184,16 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.17** (compared against **v1.4.16**). This targeted reliability release ensures the on-demand file search service starts completely clean (0 processes, 0 MB) after every Windows shutdown and boot — even when **Windows Fast Startup (Hybrid Shutdown)** is enabled:",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 1,
+          "total": 1
+        },
         "sections": [
           {
             "title": "Clean Search Service Exit on Windows Fast Startup & User Logoff",
+            "category": "fix",
             "items": [
               "Fixed a Windows Fast Startup edge case where clicking **Shut down** logged off the user session while Windows hibernated Session 0 along with a previously launched File Index Service, causing the old service process to reappear on the next boot before you ever opened Search.",
               "The search service now listens for user session logoff and system shutdown notifications: once all interactive user sessions have logged off (including during Windows Fast Startup shutdown) or the system shuts down, it flushes the latest incremental file index snapshot to disk and stops cleanly.",
@@ -43,9 +211,20 @@
       "publishedAt": "2026-11-26T16:07:19+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.16**。本版本以已正式发布的 **v1.4.15** 为对比基线，带来 7 项重点功能进化与高频体验修复：",
+        "counts": {
+          "feature": 2,
+          "improvement": 2,
+          "fix": 3,
+          "total": 7
+        },
         "sections": [
           {
-            "title": "双击 Ctrl 电影级交互平滑放大 (#34, @cainiaoNO1)",
+            "title": "双击 Ctrl 电影级交互平滑放大",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 34,
+              "label": "#34 · @cainiaoNO1"
+            },
             "items": [
               "**三模式自由选择**：在 `设置 -> 鼠标演示与特效` 中，除保留经典「**聚光灯高亮**」外，全新推出「**电影级平滑放大**」与「**电影级平滑放大 + 光环定位**」两种双击 `Ctrl` 模式（老用户升级后默认保持既有聚光灯习惯，可随时一键切换）。",
               "**电影推拉感与全程可操作兼得**：基于硬件全屏合成与临界阻尼平滑推拉曲线，放大期间**全程支持真实鼠标点击、拖拽、滚动与键盘打字**，告别传统静帧截屏放大无法操作的痛点；内置中心柔和死区跟焦，小范围点击选按钮时画面稳如泰山，光标移近边缘时镜头丝滑平移。",
@@ -54,6 +233,7 @@
           },
           {
             "title": "热键级「按前台应用自动让位」（专业软件零冲突）",
+            "category": "feature",
             "items": [
               "**单热键精准避让，绝不误伤其他功能**：新增「**单条快捷键按前台应用自动让位**」与「**全局热键免打扰应用名单**」（均支持一键从当前运行窗口拾取），当焦点切入指定专业软件时仅交还对应单条热键给目标程序原生响应，其余快捷键（如 `F1` 截图、`Alt+Space` 搜索）照常生效，切离窗口毫秒级自动恢复。",
               "**开箱自动避让 SSMS / Emacs**：全局划词翻译（默认 `Alt+X`）开箱默认避让 **SQL Server Management Studio (`ssms.exe`)** 与 **Emacs (`emacs.exe` / `runemacs.exe`)**，在 SSMS 中按 `Alt+X` 直接原生执行 SQL 零干扰；用户可随时在 `设置 -> 文本识别与翻译` 或 `设置 -> 通用设置 -> 快捷键总览` 增删避让列表。"
@@ -61,6 +241,7 @@
           },
           {
             "title": "修复 `Alt+X` 划词翻译浮窗透明空框与点穿，新增一键切换语种",
+            "category": "fix",
             "items": [
               "彻底修复部分环境下按下 `Alt+X` 弹出纯原生翻译浮窗时内容透明不可见、鼠标点击穿透的问题，恢复高对比清晰的即点即译体验；",
               "浮窗顶栏新增**可点击语种方向胶囊**，点击即可在 `自动 -> 中文 -> 英文 -> 日文` 之间循环切换目标语种并就地重新翻译，无需切回设置页。"
@@ -68,6 +249,7 @@
           },
           {
             "title": "搜索框 `Ctrl+C` 直接复制文件本体、`Ctrl+Shift+C` 复制路径",
+            "category": "improvement",
             "items": [
               "对齐系统资源管理器日常肌肉记忆：在 `Alt+Space` 搜索结果中按 `Ctrl+C` 直接将文件/文件夹本体复制到剪贴板（可直接粘贴到任意文件夹或应用），按 `Ctrl+Shift+C` 复制完整路径；",
               "当搜索输入框内拖选了文字时，`Ctrl+C` 仍优先复制所选文字；书签与系统命令等非磁盘项自动降级复制文本。"
@@ -75,6 +257,7 @@
           },
           {
             "title": "清除侧边栏「空格快速预览」异常菜单并解耦独立启动",
+            "category": "fix",
             "items": [
               "修复 `设置` 侧边栏底部「扩展」区误出现「空格快速预览」幽灵入口且点击落入通用设置页的问题；",
               "解耦「空格快速预览」与「文件搜索」模块的启动依赖，关闭文件搜索时空格快速预览开关依然独立生效。"
@@ -82,6 +265,7 @@
           },
           {
             "title": "全软件 8 语种国际化文案润色、新手引导补全与官网双端升级",
+            "category": "improvement",
             "items": [
               "**去地域割裂化**：统一清扫全库 8 国语言提示、右键菜单与演播室导出预设中的特定地域软件与竞品表述，搜索复制统一简洁提示「已复制文件到剪贴板」；",
               "**全触点亮点与加密云同步补齐**：新手引导（Step 0/1/3）、侧边栏副标题、功能模块列表、托盘提示与关于页同步补齐文件/全文/应用/书签/命令全能秒搜、多语离线识字与原位/划词翻译、文件对话框 `Ctrl+G` 快跳即搜、电影级自动运镜录屏、双击 `Ctrl` 交互平滑放大、专业软件自动避让及端到端加密配置云同步亮点；",
@@ -90,6 +274,7 @@
           },
           {
             "title": "全链路诊断日志准确性与信噪比加固",
+            "category": "fix",
             "items": [
               "修复手势后台执行与电影放大工作线程的 `TraceId` 断链问题，实现单次操作从触发到执行全程单链可追；",
               "消除程序正常退出时连刷无害热键注销告警与设置窗关闭重复日志，收敛日常手势高频中间态日志至 `DEBUG` 级，同时为搜索管道与放大失败补齐系统错误码与多屏边界上下文，大幅提升排障效率。"
@@ -99,9 +284,20 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.16** (compared against **v1.4.15**). This release introduces cinema-grade interactive smooth zoom on Double-Ctrl, per-hotkey foreground app auto-yield (defaulting `Alt+X` to yield to SSMS & Emacs), fixes the `Alt+X` quick-translate popup visibility & adds inline target-language switching, aligns Search `Ctrl+C` to copy real files, removes the stray Spacebar Quick Preview sidebar entry, polishes global 8-language copy & modular website experience, and hardens end-to-end diagnostic logging:",
+        "counts": {
+          "feature": 2,
+          "improvement": 2,
+          "fix": 3,
+          "total": 7
+        },
         "sections": [
           {
-            "title": "Double-Ctrl Cinema Interactive Smooth Zoom (#34, @cainiaoNO1)",
+            "title": "Double-Ctrl Cinema Interactive Smooth Zoom",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 34,
+              "label": "#34 · @cainiaoNO1"
+            },
             "items": [
               "Added two new **Double-Ctrl Trigger Modes** alongside the classic spotlight under `Settings -> Mouse FX & Highlights`: **Cinema Smooth Zoom** and **Cinema Smooth Zoom + Halo Ring**.",
               "Delivers video-editor-grade smooth push/pull hardware zoom (zero overshoot, cursor-follow deadzone so clicking stays steady) while keeping native clicking, dragging, and typing 100% functional throughout the zoomed session.",
@@ -110,6 +306,7 @@
           },
           {
             "title": "Per-Hotkey Foreground App Auto-Yield (Zero Conflict in Pro Apps)",
+            "category": "feature",
             "items": [
               "Added fine-grained **Per-Hotkey App Auto-Yield** and a **Global Hotkey Do-Not-Disturb App List** under `Settings -> OCR & Translation` and `Settings -> General -> Keyboard Shortcuts`, with a one-click picker for currently running windows.",
               "**Global Quick Translate (`Alt+X`)** now yields automatically out of the box when **SQL Server Management Studio (`ssms.exe`)** or **Emacs (`emacs.exe` / `runemacs.exe`)** is focused, letting `Alt+X` execute SQL or run `M-x` natively while keeping all other Tools3000 shortcuts active and restoring `Alt+X` instantly when you switch away."
@@ -117,6 +314,7 @@
           },
           {
             "title": "Fixed `Alt+X` Quick-Translate Popup Visibility & Added One-Click Language Switch",
+            "category": "fix",
             "items": [
               "Fixed the native `Alt+X` quick-translate popup appearing as an empty translucent frame and passing mouse clicks through on some Windows setups.",
               "Added a clickable target-language direction badge right on the popup header so you can cycle translation targets (`AUTO -> ZH -> EN -> JA -> AUTO`) and re-translate in place without leaving your app."
@@ -124,6 +322,7 @@
           },
           {
             "title": "Search `Ctrl+C` Copies Files Directly & `Ctrl+Shift+C` Copies Full Paths",
+            "category": "improvement",
             "items": [
               "Aligned `Alt+Space` Search shortcuts with Windows Explorer muscle memory: press `Ctrl+C` on any file or folder result to copy the file itself (ready to paste directly into folders or apps), and `Ctrl+Shift+C` to copy its full path.",
               "Selecting text inside the search input still copies text normally, and non-file results (bookmarks / system commands) gracefully fall back to copying text."
@@ -131,6 +330,7 @@
           },
           {
             "title": "Cleaned Up Sidebar & Decoupled Spacebar Quick Preview Initialization",
+            "category": "fix",
             "items": [
               "Fixed the built-in **Spacebar Quick Preview** module erroneously appearing at the bottom of the Settings sidebar under Extensions (and falling back to General Settings when clicked).",
               "Decoupled Spacebar Quick Preview startup from the File Search module so Spacebar Quick Preview works reliably even when File Search is disabled."
@@ -138,6 +338,7 @@
           },
           {
             "title": "Global 8-Language Copy Polish, Upgraded Onboarding & Modular Website",
+            "category": "improvement",
             "items": [
               "Removed region-specific app mentions across all 8 UI languages, native dialogs, and Studio export presets for a clean international experience.",
               "Updated the welcome onboarding wizard, sidebar subtitles, module descriptions, and official website to clearly highlight omni file/full-text/app/bookmark/command search, in-place & quick translation, `Ctrl+G` file dialog jump, cinema auto-zoom screen recording, Double-Ctrl smooth zoom, pro-app auto-bypass, E2E-encrypted cloud config sync, and independent per-module toggling."
@@ -145,6 +346,7 @@
           },
           {
             "title": "Cleaner End-to-End Diagnostic Logs",
+            "category": "fix",
             "items": [
               "Fixed cross-thread TraceID breaks in gesture execution and cinema zoom sessions, eliminated harmless shutdown/duplicate warnings, reduced routine gesture log noise while keeping full failure context, and added missing OS error codes for faster troubleshooting."
             ]
@@ -159,9 +361,20 @@
       "publishedAt": "2026-11-26T12:16:01+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.15**。本版本以已正式发布的 **v1.4.14** 为对比基线，带来 10 项重点体验升级与社区反馈修复：",
+        "counts": {
+          "feature": 4,
+          "improvement": 3,
+          "fix": 3,
+          "total": 10
+        },
         "sections": [
           {
-            "title": "新增离线分页更新日志弹窗与版本历史浏览 (#31, @HitomiXz)",
+            "title": "新增离线分页更新日志弹窗与版本历史浏览",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 31,
+              "label": "#31 · @HitomiXz"
+            },
             "items": [
               "**升级后自动聚焦展示亮点**：升级至新版本后首次打开设置，自动弹出纯离线「已更新至新版本」对话框；支持跨多版迁移聚合横幅、`本次新增` 微晶徽章、每版精确到分钟的本地发布时间（`YYYY-MM-DD HH:mm`）与相对时间标签；跨越超过 3 个版本时自动仅展开最新 3 版防止长屏过载。",
               "**关于页常驻归档检索与分页**：在 `设置 -> 洞察与关于 -> 关于` 顶部新增「更新日志」常驻入口，默认首屏展示最新 10 个版本，支持按版本号或关键词即时检索全部内置历史版本，并可按 `+10` 逐页加载更早记录或一键跳转 GitHub Releases。",
@@ -169,13 +382,22 @@
             ]
           },
           {
-            "title": "消除搜索框首次呼出与休眠恢复瞬间的短暂黑屏闪烁 (#29, @xwshan)",
+            "title": "消除搜索框首次呼出与休眠恢复瞬间的短暂黑屏闪烁",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "升级为窗口级原子隐身热身与前端真实首帧就绪握手机制：等待界面完整绘制就绪后再瞬间显形（附超时兜底保护），常规二次呼出仍保持零等待秒开，显著改善 Win10 LTSC 及机械硬盘环境下的打开观感。"
             ]
           },
           {
-            "title": "修复运行后 Windows 任务栏右键控制菜单失效（感谢 LINUX DO @kidcode）",
+            "title": "修复运行后 Windows 任务栏右键控制菜单失效",
+            "category": "fix",
+            "attribution": {
+              "label": "感谢 LINUX DO @kidcode"
+            },
             "items": [
               "**任务栏与托盘右键零延迟原生直通**：默认不再于任务栏区域拦截鼠标右键，确保在 Windows 10 / Windows 11 底部主任务栏、副屏任务栏、应用图标控制菜单（关闭窗口/固定/跳转列表）、系统托盘图标、隐藏托盘溢出区及任务栏悬停缩略图上右键点击 100% 稳定弹出原生菜单；",
               "**老用户升级自动生效 & 支持按需手开**：老版本升级后自动平滑迁移生效；如希望在任务栏使用右键手势，仍可随时在 `设置 -> 鼠标手势 -> 作用目标 -> 任务栏` 点亮「右键」触发药丸手动开启；",
@@ -184,6 +406,7 @@
           },
           {
             "title": "专业 CAD / UG / EDA / 3D 软件右键自动避让（0ms 原生直通）",
+            "category": "feature",
             "items": [
               "新增默认开启的 **「专业 CAD / 3D / EDA 软件右键自动避让」** 保护机制，内置涵盖 33 款高置信度右键密集专业软件清单（包括 AutoCAD、中望 CAD、浩辰 CAD、CAXA、Siemens NX / UG、SolidWorks、CATIA、Creo、Inventor、Fusion、Rhino、Revit、SketchUp、Altium Designer、立创 EDA 专业版、KiCad、Blender、Maya、3ds Max、Cinema 4D、Houdini、ZBrush、Unreal Engine、Unity 等）；",
               "仅在对应专业软件窗口内对**右键**实施 0ms 原生放行（彻底消除拖转视角、平移画布与右键确认卡顿），中键、侧键以及光标移到副屏浏览器时的手势照常可用；在 `设置 -> 鼠标手势` 可随时展开查看完整清单、关闭总开关，或在「应用作用域」对任意单款软件单独覆盖开启。"
@@ -191,13 +414,19 @@
           },
           {
             "title": "全新原生轻量划词与剪贴板翻译浮窗（修复 `Alt+X` 不生效）",
+            "category": "feature",
             "items": [
               "彻底修复「全局划词与剪贴板翻译快捷键（默认 `Alt+X`）」触发无反应或误跳转不可达外部网页的问题；",
               "全新打造零额外浏览器进程的纯原生轻量翻译浮窗：按下快捷键后优先抓取当前选区文字，未选中时无缝回退翻译剪贴板内容，1ms 在光标旁弹出加载卡片并直接复用内置翻译引擎（默认免密钥 Bilibili Index-Translate + Edge/Google 双源自动容灾），支持图钉固定、拖拽、长译文滚轮、`Ctrl+C` 一键复制译文、失败重试、高分屏缩放与深浅主题色实时同步。"
             ]
           },
           {
-            "title": "功能模块新增「空格快速预览」独立开关 (#32, @powersee)",
+            "title": "功能模块新增「空格快速预览」独立开关",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 32,
+              "label": "#32 · @powersee"
+            },
             "items": [
               "在 `设置 -> 功能模块 -> 文件检索与系统增强` 中新增独立的 **「空格快速预览」** 开关（支持全局设置搜索直达）；",
               "关闭后立即在底层键盘钩子 0ms 原生放行空格键并同步释放预览窗口内存，方便偏好使用第三方 QuickLook 等预览工具的用户零冲突共存，无需重启即可实时切换。"
@@ -205,18 +434,21 @@
           },
           {
             "title": "文件对话框双快捷键纳入全局快捷键总览（单一事实源）",
+            "category": "improvement",
             "items": [
               "将文件对话框增强的 **「一键跳转当前目录 (`Ctrl+G`)」** 与 **「文件对话框内快捷搜索 (`Ctrl+Shift+G`)」** 统一纳入 `设置 -> 通用设置 -> 快捷键总览` 独立分组，标注「仅对话框生效」场景徽章，与文件对话框设置页双向实时同步，且在普通软件中绝不抢占全局 `Ctrl+G`。"
             ]
           },
           {
             "title": "截图原位翻译默认切换为免密钥 Bilibili Index-Translate",
+            "category": "improvement",
             "items": [
               "截图与贴图原位翻译现已开箱默认启用免密钥 **Bilibili Index-Translate (`Index-Translate-9B`)** 大模型通道；日常翻译如遇公网高峰限流或短暂网络波动，将自动无缝容灾回退至 Edge / Google 免费双源保障不中断，设置页「测试连通性」直报所选通道真实状态。"
             ]
           },
           {
             "title": "标注截图缩放跟手度重塑与高分屏矢量缩放光标",
+            "category": "fix",
             "items": [
               "彻底修复截图文本框拖拽四角或四边缩放时框体不跟手、字号阶跃跳动及边界死区问题，同步消除画笔、荧光笔、矩形圆角、弯曲箭头、步骤序号及截图选区反复缩放时的累积漂移；",
               "针对 150%+ 高分屏缩放下系统默认缩放光标偏小的问题，全面升级为 4 轴高清矢量双向缩放光标，同步按 DPI 放大标注控制点与命中区。"
@@ -224,6 +456,7 @@
           },
           {
             "title": "手机拍屏暗色报错条离线 OCR 增强与「关于 -> 技术栈」实证刷新",
+            "category": "improvement",
             "items": [
               "增强手机拍摄显示器时底部倾斜、强色偏暗底小字报错条的离线 OCR 完整识别能力，经全量 148 图基准验证清晰数字截图零开销、零回退；",
               "对照当前真实架构与依赖全面刷新 8 国语言「关于 -> 技术栈」卡片（新增 Rust CLI & MCP Server、Rust 剪贴板零依赖内核、MI-GAN 512 离线修复、WinHTTP & DPAPI 翻译网关、quirc 二维码解码、`i18next` 与 `Vite 8.3`，修正系统只读 `WinSQLite3 & zlib`）。"
@@ -233,9 +466,20 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.15** (compared against **v1.4.14**). This release introduces an offline in-app changelog modal after updates, fixes Windows taskbar right-click menus, adds zero-latency right-click auto-bypass for CAD / UG / EDA / 3D apps, launches a native quick-translate popup for `Alt+X`, adds an independent Spacebar Quick Preview toggle, unifies file dialog shortcuts into the Shortcuts overview, eliminates the brief Search black flash, defaults in-place translation to keyless Bilibili Index-Translate, upgrades markup resizing & High-DPI cursors, and enhances dark-bar screen-photo OCR:",
+        "counts": {
+          "feature": 3,
+          "improvement": 3,
+          "fix": 4,
+          "total": 10
+        },
         "sections": [
           {
-            "title": "Offline \"What's New\" Changelog Dialog & Release History Browser (#31, @HitomiXz)",
+            "title": "Offline \"What's New\" Changelog Dialog & Release History Browser",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 31,
+              "label": "#31 · @HitomiXz"
+            },
             "items": [
               "Automatically displays a curated offline highlights dialog the first time Settings opens after an upgrade, showing a multi-version upgrade banner (e.g., `v1.4.11 -> v1.4.15`), `NEW` badges, exact local release dates and times, and relative time pills.",
               "Fresh installs silently record the current version and never pop up an intrusive modal; upgrading across more than 3 versions automatically expands the latest 3 releases while collapsing earlier new entries.",
@@ -244,13 +488,22 @@
             ]
           },
           {
-            "title": "Eliminated Brief Black Flash on First Search Open & Idle Resume (#29, @xwshan)",
+            "title": "Eliminated Brief Black Flash on First Search Open & Idle Resume",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "Refined Search window presentation so the window stays atomically cloaked until the first visible UI frame is ready (both on first open after preload and when resuming from background suspend or minimize), removing the brief black frame reported on Windows 10 LTSC / HDD setups while keeping warm reopen instantaneous."
             ]
           },
           {
-            "title": "Fixed Windows Taskbar Right-Click Control Menus Not Opening (thanks LINUX DO @kidcode)",
+            "title": "Fixed Windows Taskbar Right-Click Control Menus Not Opening",
+            "category": "fix",
+            "attribution": {
+              "label": "thanks LINUX DO @kidcode"
+            },
             "items": [
               "Right-clicking app icons, system tray icons, the tray overflow flyout, or taskbar window thumbnails now passes through natively with zero interception by default, ensuring Jump Lists and window close/pin menus always open reliably on Windows 10 and Windows 11 (including standard non-admin sessions).",
               "Existing users are automatically migrated on upgrade while keeping full flexibility: power users who want right-click gestures on the taskbar can still re-enable the **Right** trigger pill under `Settings -> Mouse Gestures -> Taskbar` at any time.",
@@ -259,6 +512,7 @@
           },
           {
             "title": "Auto-Bypass Right-Click in CAD / UG / EDA / 3D Apps (Zero-Latency Passthrough)",
+            "category": "feature",
             "items": [
               "Added a built-in **Auto-Bypass Right-Click in CAD / 3D / EDA Apps** protection (enabled by default) covering 33 high-confidence right-click-intensive tools including AutoCAD, ZWCAD, GstarCAD, CAXA, Siemens NX (UG), SolidWorks, CATIA, Creo, Inventor, Fusion, Rhino, Revit, SketchUp, Altium Designer, EasyEDA Pro, KiCad, Blender, Maya, 3ds Max, Cinema 4D, Houdini, ZBrush, Unreal Engine, and Unity.",
               "Only right-click inside the active CAD/3D window rectangle passes through natively with 0ms latency — middle-button, side-button, and secondary-monitor browser gestures continue working smoothly. The built-in list is transparently viewable under `Settings -> Mouse Gestures` and can be toggled off or overridden per app in Scope Targets."
@@ -266,13 +520,19 @@
           },
           {
             "title": "Native Quick-Translate Popup for Global Selection & Clipboard Translation (`Alt+X`)",
+            "category": "fix",
             "items": [
               "Fixed the global **Selection & Clipboard Translation** shortcut (`Alt+X`) failing to respond or opening an unreachable external web page.",
               "Replaced it with a lightweight native Direct2D popup next to the cursor (zero extra browser process) that captures the current selection first and seamlessly falls back to clipboard text, powered by the unified translation engine (keyless Bilibili Index-Translate by default with Edge/Google failover), complete with pinning, dragging, scrolling, one-click `Ctrl+C` copy, retry, High-DPI scaling, and dark/light theme sync."
             ]
           },
           {
-            "title": "Independent Toggle for Spacebar Quick Preview (#32, @powersee)",
+            "title": "Independent Toggle for Spacebar Quick Preview",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 32,
+              "label": "#32 · @powersee"
+            },
             "items": [
               "Added a dedicated **Spacebar Quick Preview** module switch under `Settings -> Plugins -> File Search & System Utilities`.",
               "Turning it off immediately passes Spacebar through at 0ms in the low-level keyboard hook and releases preview window memory, enabling seamless conflict-free coexistence with third-party preview tools such as QuickLook."
@@ -280,24 +540,28 @@
           },
           {
             "title": "Unified File Dialog Shortcuts (`Ctrl+G` / `Ctrl+Shift+G`) in General Shortcuts Overview",
+            "category": "improvement",
             "items": [
               "Integrated **Quick Jump to Folder (`Ctrl+G`)** and **File Dialog Quick Search (`Ctrl+Shift+G`)** into `Settings -> General -> Keyboard Shortcuts` under a dedicated **Dialog Enhancer** section with a context badge (`Active in file dialogs`), two-way real-time sync with the Dialog Enhancer page, and zero global hotkey hijacking outside file dialogs."
             ]
           },
           {
             "title": "Default In-Place Screenshot Translation to Keyless Bilibili Index-Translate",
+            "category": "improvement",
             "items": [
               "In-place screenshot and pin translation now defaults out of the box to keyless **Bilibili Index-Translate (`Index-Translate-9B`)** with automatic failover to the free Edge / Google channels if the public endpoint encounters temporary rate limiting or network disruption."
             ]
           },
           {
             "title": "1:1 Responsive Screenshot Markup Resizing & High-DPI Vector Resize Cursors",
+            "category": "fix",
             "items": [
               "Fixed screenshot text boxes lagging, jumping, or detaching from the cursor while resizing, eliminated cumulative drift across all sibling markup tools (pen, highlighter, rounded rectangles, curved arrows, step numbers, and selection edges), and replaced undersized legacy cursors on 150%+ High-DPI displays with crisp 4-axis vector resize cursors."
             ]
           },
           {
             "title": "Improved Screen-Photo Dark Error Bar OCR & Refreshed About Page Tech Stack",
+            "category": "improvement",
             "items": [
               "Enhanced offline OCR to recover full text from small, tilted, color-cast dark status/error bars photographed from monitors without regressing clean digital screenshots or benchmark speed.",
               "Updated the **About -> Tech Stack** matrix across all 8 languages to accurately reflect the current architecture (Rust CLI & MCP Server, Rust Clipboard Kernel, MI-GAN 512, WinHTTP/DPAPI gateway, `i18next`, `Vite 8.3`, and system read-only `WinSQLite3`)."
@@ -313,9 +577,16 @@
       "publishedAt": "2026-11-26T01:18:46+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.14**。本版本以已正式发布的 **v1.4.13** 为对比基线，重点解决 Bilibili Index-Translate 翻译技术文档长图报错问题、全面增强 AI 原位翻译容错能力，并完成「内存策略」页面的全库命名与多语言一致性打磨：",
+        "counts": {
+          "feature": 0,
+          "improvement": 3,
+          "fix": 1,
+          "total": 4
+        },
         "sections": [
           {
             "title": "修复 Bilibili Index-Translate 翻译报错并全面加固 AI 翻译链路",
+            "category": "fix",
             "items": [
               "**彻底修复技术文档/长图触发上游拦截报错**：修复使用内置免密钥 **Bilibili Index-Translate** 翻译整页英文技术文档或含查询代码截图时偶发响应异常的问题。",
               "**按模型档位自适应分批与超时保护**：针对 `Index-Translate-2B / 9B / 35B`、本机 Ollama/vLLM（自动单路防显存排队超时）及通用云端 OpenAI 兼容接口自动匹配最优批次大小与超时下限，整页多段翻译更稳更快。",
@@ -325,18 +596,21 @@
           },
           {
             "title": "技术文档截图原位翻译自动保护纯 SQL 语句",
+            "category": "improvement",
             "items": [
               "在翻译技术文档、运维手册或数据库故障排查截图时，自动识别并原样保留可执行 SQL 查询语句及跨行条件续行，既避免代码被翻坏，又减少无效请求；同时确保普通英文句子正常翻译不被误拦。"
             ]
           },
           {
             "title": "翻译失败提示更准确（8 国语言全覆盖）",
+            "category": "improvement",
             "items": [
               "细化免密钥通道临时异常、频率限制与 API 密钥鉴权失败三类提示文案；使用免密钥引擎遇到临时波动时不再误提示「检查密钥额度」，而是清晰引导稍后重试或切换其他翻译引擎。"
             ]
           },
           {
             "title": "「内存策略」全库命名、图标与 8 语种一致性收口",
+            "category": "improvement",
             "items": [
               "配合上个版本已精简为只读回收时间表的页面定位，将侧边栏菜单、页面主副标题、「关于 / 通用设置」快捷入口、设置全文搜索及 8 套语言包和 README 文档统一对齐为 **「内存策略」** 与内存条图标，同步清理冗余旧文案并补齐多语种入口翻译。"
             ]
@@ -345,9 +619,16 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.14** (compared against **v1.4.13**). This maintenance release hardens in-place AI screenshot translation across technical documents and large pages, fixes the Bilibili Index-Translate rejection on SQL-heavy pages, and aligns the streamlined Memory Policy UI and documentation across all 8 languages:",
+        "counts": {
+          "feature": 0,
+          "improvement": 3,
+          "fix": 1,
+          "total": 4
+        },
         "sections": [
           {
             "title": "Fixed Bilibili Index-Translate Rejection & End-to-End AI Translation Hardening",
+            "category": "fix",
             "items": [
               "Resolved the issue where translating long or technical screenshots with the built-in keyless **Bilibili Index-Translate** preset could fail with an upstream request rejection.",
               "Added model-aware batch sizing, smarter timeout floors, and safe concurrency across `Index-Translate-2B / 9B / 35B`, local Ollama/vLLM servers (single-stream protection against GPU queue timeouts), and cloud OpenAI-compatible APIs.",
@@ -357,18 +638,21 @@
           },
           {
             "title": "Preserve Raw SQL Queries in Technical Document Screenshots",
+            "category": "improvement",
             "items": [
               "Pure SQL queries (`SELECT / UPDATE / DELETE / INSERT` and wrapped multi-line `WHERE / AND` clauses) inside technical notes or database screenshots are now kept verbatim during in-place translation so runnable statements stay intact, while normal English sentences (such as `\"Select an item from the list.\"`) continue translating naturally."
             ]
           },
           {
             "title": "Clearer Translation Error Messages (8 Languages)",
+            "category": "improvement",
             "items": [
               "Keyless engines (Bilibili Index-Translate, Edge, Google) and rate-limited requests now show accurate retry/switch-engine guidance instead of misleadingly asking you to check API key quota."
             ]
           },
           {
             "title": "Aligned \"Memory Policy\" Naming, Iconography & 8-Language Polish",
+            "category": "improvement",
             "items": [
               "Renamed the streamlined read-only schedule page from **Performance & Memory** to **Memory Policy** with a dedicated memory icon across the sidebar, page header, **About** / **General** shortcuts, settings search, and all 8 language packs and README guides."
             ]
@@ -383,9 +667,20 @@
       "publishedAt": "2026-11-26T00:21:32+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.13**。本版本以已正式发布的 **v1.4.12** 为对比基线，集中回应多项高频社区与 Issue 反馈，围绕 **文件对话框一键直达、截图/贴图/演播室输入法防吞键、搜索框黑屏根治、免密钥 AI 翻译预设与搜索/性能页体验打磨** 带来全面升级：",
+        "counts": {
+          "feature": 3,
+          "improvement": 2,
+          "fix": 1,
+          "total": 6
+        },
         "sections": [
           {
-            "title": "文件对话框：一键直达活跃文件管理器目录 + 全可配置双快捷键（`#30`, `@baowuji`；感谢 Linux.do `@sounder`）",
+            "title": "文件对话框：一键直达活跃文件管理器目录 + 全可配置双快捷键",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 30,
+              "label": "#30 · @baowuji · 感谢 Linux.do @sounder"
+            },
             "items": [
               "**一键直达当前目录（默认 `Ctrl+G`）**：在系统的「打开 / 保存」文件对话框内按下快捷键，立即跳转至你最近使用的文件管理器当前激活标签页所在路径，省去层层翻找目录的麻烦；原有「按应用记住上次打开/保存目录」完整保留。",
               "**双快捷键全可自由配置，彻底脱离悬浮条限制**：内嵌快速搜索快捷键默认调整为 `Ctrl+Shift+G`；两项快捷键均可在 `设置 -> 文件对话框智能助手` 中独立自定义改键或清空禁用，即使关闭悬浮工具条也照常生效，且仅在文件对话框前台激活时生效，绝不干扰其他软件。",
@@ -397,19 +692,26 @@
           },
           {
             "title": "截图 / 桌面贴图 / 录屏演播室：非文字输入态彻底免疫输入法吞快捷键",
+            "category": "improvement",
             "items": [
               "**杜绝中/日/韩输入法拦截单键快捷键**：现在处于中文/日文/韩文输入法状态下，在截图选区、桌面贴图或录屏演播室里按 `R`、`Shift+R` 切换历史选区，或按 `C`、`E`、`S`、`Space`、`1~9` 等快捷键时，不再被输入法吞键，也不会弹出孤立的拼音候选框或把系统输入法中英文切乱。",
               "**严守窗口级隔离，零全局污染**：绝不篡改你的系统全局输入法状态，退出截图切回微信、浏览器或编辑器后输入法 100% 保持原样；点击文字标注、贴图原位改字或演播室文字输入框时瞬间自动恢复输入法并精准跟随光标。"
             ]
           },
           {
-            "title": "修复快捷键唤起文件搜索偶现黑屏的问题（`#29`, `@xwshan`）",
+            "title": "修复快捷键唤起文件搜索偶现黑屏的问题",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "彻底解决在后台预载与长时间闲置休眠恢复边界下，按快捷键呼出文件搜索框偶现黑屏无界面的问题，确保每次呼出均清晰稳定渲染。"
             ]
           },
           {
             "title": "截图与划词翻译：新增 Bilibili Index-Translate（免费免密钥）一键预设",
+            "category": "feature",
             "items": [
               "**默认极速双源保持不变**：开箱默认仍为低延迟的免费双源（Edge / Google），兼顾高频截图瞬译速度。",
               "**一键免费体验高质量 AI 翻译**：在 `设置 -> 文字识别 -> 原位与划词翻译 -> OpenAI 兼容接口` 中新增 **Bilibili Index-Translate（免费免密钥）** 一键预设，无需登录与 API Key 即可使用，并支持快捷切换 `Index-Translate-2B`（极速）、`Index-Translate-9B`（均衡推荐）、`Index-Translate-35B-A3B`（旗舰）三档模型；切换至该免密钥预设时自动隔离你历史保存的私有密钥，绝不对外透传。",
@@ -417,14 +719,23 @@
             ]
           },
           {
-            "title": "文件搜索：纯离线默认分类零服务唤醒 & 「文档内容」自由拖拽排序（`#24`, `@clollipop`）",
+            "title": "文件搜索：纯离线默认分类零服务唤醒 & 「文档内容」自由拖拽排序",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 24,
+              "label": "#24 · @clollipop"
+            },
             "items": [
               "**应用/书签默认分类零唤醒**：将搜索默认分类设为「应用启动」或「浏览器书签」后，呼出搜索框不会再提前拉起后台全盘索引服务，日常使用更轻更快。",
               "**分类栏更自由**：解除「文档内容」的默认固定位置限制，仅保留「全部」固定在首位，你可以将「文档内容」及其他分类自由拖拽排序（右键分类栏可随时恢复默认顺序）。"
             ]
           },
           {
-            "title": "性能与内存页：极简聚焦回收时间表（感谢 Linux.do `@zg2qxy`）",
+            "title": "性能与内存页：极简聚焦回收时间表",
+            "category": "improvement",
+            "attribution": {
+              "label": "感谢 Linux.do @zg2qxy"
+            },
             "items": [
               "移除性能页顶部的实时资源监控面板与定时轮询，仅保留干净直观的「全链路内存生命周期与自动回收时间表」，界面更清爽、无额外观测负担。"
             ]
@@ -433,9 +744,20 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.13** (compared against **v1.4.12**). This release focuses on real-world daily friction reported by the community — delivering Listary-style configurable file dialog quick-jump across Explorer tabs and third-party file managers, IME-proof single-key shortcuts during capture/pin/studio editing, a root-cause fix for search window black-screen wakeups, a built-in keyless AI translation preset, and cleaner search & performance ergonomics:",
+        "counts": {
+          "feature": 0,
+          "improvement": 5,
+          "fix": 1,
+          "total": 6
+        },
         "sections": [
           {
-            "title": "**File Dialog Quick-Jump to Active File Manager & Configurable Dual Shortcuts** (`#30`, `@baowuji`; thanks to Linux.do `@sounder`)",
+            "title": "**File Dialog Quick-Jump to Active File Manager & Configurable Dual Shortcuts**",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 30,
+              "label": "#30 · @baowuji; thanks to Linux.do @sounder"
+            },
             "items": [
               "Press `Ctrl+G` inside any standard Open/Save file dialog to jump straight to the active folder of your most recently used file manager tab (works even across multiple Windows 11 multi-tab Explorer windows or when the manager was just minimized).",
               "Inline quick search inside file dialogs now uses `Ctrl+Shift+G` by default. Both shortcuts can be freely customized or cleared to disable under `Settings -> File Dialog Enhancer`, and both work even when the floating ribbon is turned off.",
@@ -444,33 +766,49 @@
           },
           {
             "title": "IME-Safe Single-Key Shortcuts Across Capture, Pin & Studio Canvases",
+            "category": "improvement",
             "items": [
               "Prevents Chinese/Japanese/Korean IMEs from hijacking non-text single-key shortcuts (`R`, `Shift+R`, `C`, `E`, `S`, `Space`, `1-9`, etc.) or popping up stray candidate boxes during screenshot selection, screen pinning, and recording studio editing.",
               "Strictly window-scoped: your global system IME language and Chinese/English state are never altered when leaving capture. Switching into text annotations, in-place pin text editing, or studio text fields restores IME smoothly at the caret."
             ]
           },
           {
-            "title": "**Fixed Search Window Black-Screen Reappearance on Hotkey Wakeup** (`#29`, `@xwshan`)",
+            "title": "**Fixed Search Window Black-Screen Reappearance on Hotkey Wakeup**",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "Resolved the race where hidden preloading and idle suspend could freeze the search surface before its first real visible frame, ensuring the search bar always renders crisply on hotkey summon."
             ]
           },
           {
             "title": "Built-In Keyless Bilibili Index-Translate Preset & Reasoning-Model Compatibility",
+            "category": "improvement",
             "items": [
               "Keeps the default Zero-Key Dual Free channel (Edge / Google) untouched for instant low-latency translation.",
               "Added a one-click **Bilibili Index-Translate (Free · Keyless)** preset under `Settings -> OCR & Translate -> In-Place & Quick Translate -> OpenAI-Compatible API`, with quick model switching between `Index-Translate-2B` (Fast), `Index-Translate-9B` (Balanced), and `Index-Translate-35B-A3B` (Flagship). Saved private API keys are automatically isolated and never sent to this public endpoint. Also strips `<think>` blocks globally for reasoning models."
             ]
           },
           {
-            "title": "**Zero-Warmup Offline Default Search Categories & Free Drag-to-Reorder for Document Content** (`#24`, `@clollipop`)",
+            "title": "**Zero-Warmup Offline Default Search Categories & Free Drag-to-Reorder for Document Content**",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 24,
+              "label": "#24 · @clollipop"
+            },
             "items": [
               "Summoning File Search when the default category is set to **Apps** or **Bookmarks** no longer wakes the background full-disk indexing service.",
               "Unpinned **Document Content** on the search category bar (only **All** remains fixed in slot 1), allowing you to drag and reorder it anywhere freely (right-click the bar to restore default order)."
             ]
           },
           {
-            "title": "**Streamlined Performance & Memory Page** (thanks to Linux.do `@zg2qxy`)",
+            "title": "**Streamlined Performance & Memory Page**",
+            "category": "improvement",
+            "attribution": {
+              "label": "thanks to Linux.do @zg2qxy"
+            },
             "items": [
               "Removed the top live telemetry monitor and periodic polling card from `Settings -> Performance & Memory`, leaving a clean, read-only overview of the full-chain memory lifecycle and auto-recycle schedule."
             ]
@@ -485,9 +823,19 @@
       "publishedAt": "2026-11-25T19:21:22+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.12**。本版本以已正式发布的 **v1.4.11** 为对比基线，围绕高频效率场景中因人而异的操作习惯，为 **文件搜索、剪贴板历史、桌面贴图** 补齐 **9 项可自由定制的交互偏好**（默认 100% 沿用现有行为，老用户无任何学习成本），并修复了一处剪贴板自动粘贴设置未生效的问题：",
+        "counts": {
+          "feature": 1,
+          "improvement": 3,
+          "fix": 0,
+          "total": 4
+        },
         "sections": [
           {
-            "title": "文件搜索 (`Alt+Space`)：自由切换「工具窗常驻」或「Launcher 即用即走」（感谢 Linux.do `@zg2qxy`）",
+            "title": "文件搜索 (`Alt+Space`)：自由切换「工具窗常驻」或「Launcher 即用即走」",
+            "category": "feature",
+            "attribution": {
+              "label": "感谢 Linux.do @zg2qxy"
+            },
             "items": [
               "**失焦时自动隐藏**：开启后点击窗口外部即自动收起；内置智能避让，置顶状态、按空格呼出 QuickLook 预览、弹出右键/系统菜单或子对话框期间绝不误关；",
               "**打开结果后自动隐藏**：开启后双击或按 `Enter` 打开文件、文件夹、应用、系统命令或书签成功后自动收起（置顶态或打开失败报错时保持展开）；",
@@ -496,6 +844,7 @@
           },
           {
             "title": "剪贴板历史 (`Alt+V`)：全套窗口驻留与单击直贴定制 + 修复自动粘贴设置缺陷",
+            "category": "improvement",
             "items": [
               "**失焦时自动隐藏**（默认开启）：关闭后可像独立工作窗一样常驻桌面，且自动持续记住最近使用的外部目标窗口；",
               "**粘贴或复制后自动隐藏**（默认开启）：关闭后支持连续多次粘贴不关窗，即便同时开启「自动粘贴」与「失焦自动隐藏」，在向目标窗发送 `Ctrl+V` 期间也会智能浮顶保护，避免被失焦隐藏误关；",
@@ -506,6 +855,7 @@
           },
           {
             "title": "桌面贴图 (`F3`)：双击与鼠标中键动作随心定制，无缝兼容 Snipaste 肌肉记忆",
+            "category": "improvement",
             "items": [
               "**双击贴图空白处**：默认 `进入编辑 / 标注`，可选 `折叠 / 展开贴图` 或 `关闭贴图`；",
               "**鼠标中键单击贴图**：默认 `恢复 1:1 原始大小`，可选 `关闭贴图` 或 `折叠 / 展开贴图`；",
@@ -514,6 +864,7 @@
           },
           {
             "title": "设置搜索与 8 国语言全面同步",
+            "category": "improvement",
             "items": [
               "以上 9 项新设置均已接入顶部全局设置搜索与简体中文、繁体中文、English、日本語、한국어、Русский、Português (Brasil)、Español 共 8 套语言界面。"
             ]
@@ -522,9 +873,19 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.12** (compared against **v1.4.11**). This release introduces **9 customizable workflow behavior preferences** across File Search, Clipboard History, and Screen Pinning — keeping all existing defaults untouched while letting every user tune window dismissal and click actions to their own muscle memory:",
+        "counts": {
+          "feature": 3,
+          "improvement": 0,
+          "fix": 0,
+          "total": 3
+        },
         "sections": [
           {
-            "title": "**Customizable File Search (`Alt+Space`) Window Behavior** (thanks to Linux.do `@zg2qxy`)",
+            "title": "**Customizable File Search (`Alt+Space`) Window Behavior**",
+            "category": "feature",
+            "attribution": {
+              "label": "thanks to Linux.do @zg2qxy"
+            },
             "items": [
               "Added 3 independent toggles under `Settings -> File Search` (all off by default to preserve current behavior):",
               "**Auto-hide when focus is lost**: Turns File Search into a launcher-style pop-up that hides when you click outside, while intelligently staying open for pinned mode, QuickLook previews, context/system menus, and child dialogs.",
@@ -534,6 +895,7 @@
           },
           {
             "title": "Customizable Clipboard History (`Alt+V`) Behavior & Auto-Paste Fix",
+            "category": "feature",
             "items": [
               "Added 4 toggles under `Settings -> Clipboard` (preserving existing behavior by default):",
               "**Auto-hide when focus is lost** (default: On)",
@@ -545,6 +907,7 @@
           },
           {
             "title": "Customizable Screen Pinning (`F3`) Double-Click & Middle-Click Actions",
+            "category": "feature",
             "items": [
               "Added 2 action selectors under `Settings -> Capture & Pin` for users coming from Snipaste or other pinning tools:",
               "**Double-click blank area**: Default `Annotate / Edit`, optional `Fold / Unfold` or `Close Pin`.",
@@ -562,9 +925,16 @@
       "publishedAt": "2026-11-25T16:52:25+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.11**。本版本以已正式发布的 **v1.4.10** 为对比基线，专项根治应用内一键覆盖更新时偶发弹出「安装程序无法自动关闭所有应用程序」报错框的问题：",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 2,
+          "total": 2
+        },
         "sections": [
           {
             "title": "彻底消除应用内一键更新「无法自动关闭所有应用程序」报错弹窗",
+            "category": "fix",
             "items": [
               "**向下兼容所有存量旧版本一键升级**：安装包在进入准备阶段（Windows Restart Manager 扫描）之前，即抢先等待旧进程优雅保存退出并自动清理残留文件锁，确保从 `v1.4.10` 及更早版本点击软件内一键升级也能全程零报错弹窗、自动平滑覆盖并拉起新版；",
               "**关闭冗余 Restart Manager 覆盖参数**：应用内更新与 CLI 静默安装统一改由安装器原生清场与拉起逻辑接管，不再因命令行覆盖配置而误弹 Restart Manager 警告框。"
@@ -572,6 +942,7 @@
           },
           {
             "title": "加固主程序退出阶段防僵死守护",
+            "category": "fix",
             "items": [
               "将退出防僵死看门狗前置至 `CoUninitialize()` 之前（在全部配置落盘、自动备份、热键注销、单实例互斥体释放及日志刷盘完成后启动），并补齐顶层退出熔断保护，彻底杜绝 WebView2/COM 卸载阻塞导致后台残留无窗口进程锁住安装目录。"
             ]
@@ -580,9 +951,16 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.11** (compared against **v1.4.10**). This hotfix release eliminates the \"Setup was unable to automatically close all applications\" prompt during in-app updates and hardens clean process exit:",
+        "counts": {
+          "feature": 0,
+          "improvement": 1,
+          "fix": 1,
+          "total": 2
+        },
         "sections": [
           {
             "title": "Zero-Prompt In-App Auto-Updates (Including Upgrades from Older Versions)",
+            "category": "fix",
             "items": [
               "Fixed an issue where clicking **Install Update** in Settings could trigger Windows Restart Manager's *\"Setup was unable to automatically close all applications\"* dialog before the installer's built-in process cleanup ran.",
               "Installer silent/auto-update mode now cleanly waits for and clears any lingering old `Tools3000.exe` processes **before** entering the preparing phase, so even users upgrading from `v1.4.10` or earlier experience a completely smooth, prompt-free in-place update.",
@@ -591,6 +969,7 @@
           },
           {
             "title": "Zombie-Proof Process Exit Guard",
+            "category": "improvement",
             "items": [
               "Moved the exit watchdog ahead of `CoUninitialize()` (after all settings, backups, hotkeys, and logs are safely flushed and the single-instance mutex is released) and added an 8-second outer shutdown fuse, preventing WebView2/COM teardown stalls from ever leaving a windowless process locking files in the install directory."
             ]
@@ -605,9 +984,16 @@
       "publishedAt": "2026-11-25T16:17:53+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.10**。本版本以已正式发布的 **v1.4.9** 为对比基线，带来**录屏演播室全格式高压缩与运镜重构**、**截图文本框 8 方向独立拉伸**、**机械硬盘搜索全链路提速与内存直降 37%**、**性能与内存页真实工作集修复**及**剪贴板批量删除根治**五大核心升级（感谢 Linux.do `@zg2qxy`；`#29`, `@xwshan`）：",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 3,
+          "total": 5
+        },
         "sections": [
           {
             "title": "录屏演播室：全 6 格式稳定导出、画质保真体积直降 92%+、智能运镜不再裁切输入框",
+            "category": "improvement",
             "items": [
               "**彻底修复 WebM (VP9) 导出失败并完善全格式错误提示**：内置 `libx264`、`libvpx (VP9/VP8)` 与 `libopus` 编码器，实现 **WebM (VP9 + Opus)**、**MP4 (H.264 / HEVC)**、**WebP 动图**、**微信直发 GIF** 与 **高清 GIF** 全 6 格式开箱即用；目标文件被其他程序占用时自动顺延新文件名救援，失败时明确提示具体原因而非笼统报错；",
               "**桌面专属高压缩算法（清晰小字 + 超小体积）**：引入桌面文字锐利度保护的 CRF/CQ 编码、5 秒长 GOP、静止画面 VFR 智能抽帧以及 GIF/WebP 静止帧时长合并。实测 55 秒 `3456x2086`（`51.5 MB`）原片导出 `1080P` 推荐档后：**WebM (VP9) 仅 `3.66 MB`（省 92.9%）**、**MP4 (H.264) 仅 `3.75 MB`（省 92.7%）**、**紧凑 MP4 仅 `2.94 MB`（省 94.3%）**，文字边缘清晰锐利；",
@@ -616,6 +1002,7 @@
           },
           {
             "title": "截图文本框标注：支持 8 方向独立拉宽、拉长与实时流式换行",
+            "category": "feature",
             "items": [
               "文本框控制手柄全面升级为**四边独立胶囊手柄 + 四角等比缩放圆点手柄**：",
               "拖动**左右边中点手柄**可独立拉宽或收窄文本框，文字按新宽度实时自动折行重排且**字号保持不变**；",
@@ -625,7 +1012,12 @@
             ]
           },
           {
-            "title": "全盘搜索与机械硬盘专项突破：内存直降 37%、消除首次打开黑屏与 90% 磁盘飙升（感谢 Linux.do `@zg2qxy`；`#29`, `@xwshan`）",
+            "title": "全盘搜索与机械硬盘专项突破：内存直降 37%、消除首次打开黑屏与 90% 磁盘飙升",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "感谢 Linux.do @zg2qxy · #29 · @xwshan"
+            },
             "items": [
               "**搜索服务内存直降 37.4% 与机械盘平滑快照**：采用紧凑 40 字节索引记录与 ASCII / 原生 UTF-16 双轨存储，近 300 万真实全盘文件专用内存由 **315 MB 降至 197 MB**（28 类全语法结果数量 100% 守恒）；索引快照改为 2 MB 流式分块写出并针对机械盘平滑节流（每 4 MB 让出 12 ms），彻底消除 150–250 MB 临时内存峰值与后台写盘导致的机械盘 90% 磁盘飙升；",
               "**根治机械盘每次新搜索卡顿数秒与偶发闪现「未找到」**：回收站与历史路径过滤 100% 改为纯内存执行，磁盘属性实时校验严格收敛至首屏视口（机械盘 50 ms 硬预算），大结果集提速 5x–100x；本地应用清单升级为 10 分钟后台无感热更新，搜索框唤起即先呈本地应用与命令，彻底消除“先闪未找到几秒后才出结果”；",
@@ -634,7 +1026,12 @@
             ]
           },
           {
-            "title": "修复「性能与内存」页数据偏差与静默回收按钮反馈（`#29`, `@xwshan`）",
+            "title": "修复「性能与内存」页数据偏差与静默回收按钮反馈",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "**「专用工作集内存」与任务管理器 1:1 对齐**：修复此前误将进程虚拟提交量（`PrivateUsage`）展示为「专用工作集内存」导致数值高于总物理工作集、且回收后数字纹丝不动的缺陷，现统一采集系统真实 `PrivateWorkingSetSize`；",
               "**「立即执行静默回收」立竿见影**：点击后不再受异步延迟与旧采样缓存影响，立即执行堆紧缩与工作集修剪并实时刷新回落后的内存读数；若全盘搜索服务当前已在线，也会同步执行一次轻度瘦身（未运行时绝不拉起服务）。"
@@ -642,6 +1039,7 @@
           },
           {
             "title": "彻底修复 `Alt+V` 剪贴板批量删除「实际只删了一条」",
+            "category": "fix",
             "items": [
               "**复选框独立勾选不清空选区**：多选后直接点击左侧任意条目的复选框区域即可独立加选或取消，不再因松开 `Ctrl` 键而清空已有选区；",
               "**右侧详情底栏「删除」按钮多选联动**：勾选多条记录时，详情区底部的「删除」按钮自动切换为红色高亮的「删除 (N)」并触发批量删除，避免误触只删当前焦点单条；",
@@ -652,9 +1050,16 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.10** (compared against **v1.4.9**). This feature and performance release brings major upgrades across **Screen Recording Studio**, **Screenshot Text Markup**, **Clipboard Batch Operations**, **Performance Telemetry**, and **Mechanical HDD / Windows 10 LTSC Search Performance** (thanks to Linux.do `@zg2qxy` and `#29`, `@xwshan`):",
+        "counts": {
+          "feature": 0,
+          "improvement": 3,
+          "fix": 2,
+          "total": 5
+        },
         "sections": [
           {
             "title": "Screen Recording Studio: All-Format Export Reliability, ~92% Smaller Files & Smart Auto-Zoom",
+            "category": "improvement",
             "items": [
               "**Full Native 6-Format Export**: Shipped built-in `libx264`, `libvpx (VP9/VP8)`, and `libopus` encoders so **WebM (VP9 + Opus)**, **MP4 (H.264 / HEVC)**, **Animated WebP**, **Discord / Slack / WeChat Compact GIF**, and **HD GIF** all export reliably out of the box with clear localized diagnostics and automatic filename rescue if the target file is locked.",
               "**High-Efficiency Desktop Compression**: Adopted CRF/CQ desktop-text-preserving encoding, 5-second GOPs, static-frame VFR decimation, and GIF/WebP duplicate-frame duration merging. On a real 55-second 3456x2086 (51.5 MB) desktop recording, exports shrink by **92–94%** (`WebM VP9 1080p24`: **3.66 MB**, `MP4 H.264 1080p30`: **3.75 MB**, `Compact MP4`: **2.94 MB**) while keeping crisp UI text.",
@@ -663,12 +1068,14 @@
           },
           {
             "title": "Screenshot Text Box: 8-Way Independent Resizing & Live Reflow",
+            "category": "improvement",
             "items": [
               "Text markup boxes now feature distinct capsule handles on all four edges alongside corner scale handles: drag **left/right** to widen or narrow the box with live word-wrap reflow (font size unchanged), drag **top/bottom** to adjust box height independently, drag **corners** to scale font size and dimensions proportionally, or **double-click** any edge handle to snap back to auto-fit. Full Undo/Redo fidelity preserved."
             ]
           },
           {
             "title": "Mechanical HDD & Search Engine Overhaul (`-37%` RAM, 5x–100x Faster Queries, Zero First-Open Black Screen)",
+            "category": "improvement",
             "items": [
               "**-37.4% Search Index RAM & Smooth HDD Snapshots**: Compact 40-byte records and dual-track ASCII / native UTF-16 storage drop real-world index memory on ~3M files from **315 MB to 197 MB** with 100% identical results across all 28 syntax categories; streaming 2 MiB snapshot persistence with smooth HDD pacing (`4 MiB / 12 ms` yield) eliminates memory spikes and disk-queue saturation.",
               "**Instant HDD Searches & Zero Stale \"No Files Found\"**: Moved Recycle Bin/Recent filtering 100% in-memory and bounded disk attribute hydration to the visible top viewport (50 ms HDD budget); upgraded local app/command catalogs to 10-minute background SWR caching so local apps appear immediately without flashing empty states.",
@@ -677,7 +1084,12 @@
             ]
           },
           {
-            "title": "Performance & Memory Page: Accurate Private Working Set & Instant Quiet Trim (`#29`, `@xwshan`)",
+            "title": "Performance & Memory Page: Accurate Private Working Set & Instant Quiet Trim",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 29,
+              "label": "#29 · @xwshan"
+            },
             "items": [
               "Fixed the \"Private Working Set\" metric reading virtual commit size (`PrivateUsage`) instead of true `PrivateWorkingSetSize`, now matching Windows Task Manager 1:1.",
               "Clicking **Run Quiet Trim Now** now trims immediately, refreshes real-time telemetry right away, and gently trims the search service if it is already running (without ever starting a stopped service)."
@@ -685,6 +1097,7 @@
           },
           {
             "title": "Clipboard (`Alt+V`) Batch Delete Fix",
+            "category": "fix",
             "items": [
               "Fixed three interaction issues that caused batch delete to remove only a single item: clicking item checkboxes now toggles selection independently without clearing existing selections; the detail panel's **Delete** button automatically switches to batch delete (`Delete (N)`) whenever multiple entries are checked; and pressing `Delete` after `Ctrl+A` with an empty search box deletes all selected entries directly."
             ]
@@ -699,9 +1112,16 @@
       "publishedAt": "2026-11-25T12:35:05+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.9**。本版本以已正式发布的 **v1.4.8** 为对比基线，紧急修复 PP-OCRv6 离线模型包下载校验失败问题，加固全部 4 类离线 AI 模型下载完整性，并从内核 I/O 层消除搜索服务触发安全软件「浏览器密码保护盾」误报：",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 2,
+          "total": 2
+        },
         "sections": [
           {
             "title": "彻底修复 `PP-OCRv6` 离线模型下载校验失败并加固全部 4 类模型包下载",
+            "category": "fix",
             "items": [
               "**修复 `PP-OCRv6_rec_small.onnx` / `PP-OCRv6_rec_medium.onnx` 下载后误判损坏**：根治 `v1.4.8` 下载完成识别模型后误调用旧版 OpenCV DNN 试解析导致报错 `Failed to download or verify PP-OCRv6_rec_small.onnx` 的问题，全新安装、从旧版 `v4` 一键升级至 `PP-OCRv6` 以及下载高精度增强包均可在国内直连秒速稳定完成；",
               "**全 4 类模型包完整防截断校验**：为 **PP-OCRv6 核心包**、**+73 MB 高精度增强包**、**韩/俄/阿/泰 4 国扩展包** 与 **MI-GAN 512 原位改字修复模型** 全面补齐 HTTP `Content-Length` 精确字节防截断断言与完整 ONNX `ModelProto` 结构校验（同时消除校验瞬间约 200 MB 内存峰值）；",
@@ -710,7 +1130,12 @@
             ]
           },
           {
-            "title": "搜索服务对浏览器敏感凭据文件零句柄触碰（`#28`, `@aungkokomm`）",
+            "title": "搜索服务对浏览器敏感凭据文件零句柄触碰",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 28,
+              "label": "#28 · @aungkokomm"
+            },
             "items": [
               "在本地 NTFS 索引服务 `Tools3000_Service.exe` 的 USN 实时属性刷新、后台目录水合、搜索结果属性查询与全文内容搜索 4 条全链路中，显式跳过主流浏览器（Chrome / Edge / Brave / Opera / Vivaldi / Firefox 等）的密码、Cookie、密钥库文件（`Login Data`、`Web Data`、`Cookies`、`Local State`、`logins.json`、`key4.db`、`cookies.sqlite` 等）及 Windows 凭据目录；",
               "从系统文件句柄层面彻底做到“连属性都不触碰”，消除部分安全软件「浏览器密码保护盾」误报弹窗，同时不影响正常工作目录与文档搜索。"
@@ -720,9 +1145,16 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.9** (compared against **v1.4.8**). This rapid maintenance release fixes PP-OCRv6 offline model download verification, hardens integrity checks across all four downloadable AI model packs, and prevents security software false positives on browser profile folders:",
+        "counts": {
+          "feature": 0,
+          "improvement": 1,
+          "fix": 1,
+          "total": 2
+        },
         "sections": [
           {
             "title": "PP-OCRv6 & AI Model Pack Download Verification Fix",
+            "category": "fix",
             "items": [
               "Fixed a verification bug in `v1.4.8` where `PP-OCRv6_rec_small.onnx` and `PP-OCRv6_rec_medium.onnx` failed integrity checks right after downloading (`Failed to download or verify PP-OCRv6_rec_small.onnx`).",
               "Replaced the legacy OpenCV DNN probe with full ONNX `ModelProto` structural validation, embedded dictionary verification, and exact HTTP `Content-Length` truncation checks across all four downloadable packs (**PP-OCRv6 Small**, **PP-OCRv6 Rec Medium**, **4 Multilingual Extension Packs**, and **MI-GAN 512 AI Inpaint**).",
@@ -731,7 +1163,12 @@
             ]
           },
           {
-            "title": "Zero Handle Touch on Browser Credential Files (`#28`, `@aungkokomm`)",
+            "title": "Zero Handle Touch on Browser Credential Files",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 28,
+              "label": "#28 · @aungkokomm"
+            },
             "items": [
               "Hardened `Tools3000_Service.exe` (local NTFS filename indexing service) to explicitly skip metadata handles (`OpenFileById` / `GetFileAttributesExW`) and full-text content scanning for browser credential/session files (`Login Data`, `Web Data`, `Cookies`, `Local State`, `logins.json`, `key4.db`, `cookies.sqlite`, etc.) and browser profile / Windows credential directories across Chrome, Edge, Brave, Opera, Vivaldi, Firefox, and derivatives.",
               "Completely eliminates antivirus \"browser password shield\" false-positive alerts while keeping normal file search unaffected."
@@ -747,9 +1184,20 @@
       "publishedAt": "2026-11-25T11:37:33+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.8**。本版本以已正式发布的 **v1.4.7** 为对比基线，带来离线文字识别引擎跨代升级至 PP-OCRv6、截图文字标注自动换行、文件搜索多路径排除、Win10 LTSC 与机械硬盘深度适配，以及更克制的剪贴板策略与图片文件快捷贴图：",
+        "counts": {
+          "feature": 3,
+          "improvement": 1,
+          "fix": 1,
+          "total": 5
+        },
         "sections": [
           {
-            "title": "离线文字识别跨代升级至 `PP-OCRv6` 与 65+ 语种生态（`#26`, `@NotAsea`）",
+            "title": "离线文字识别跨代升级至 `PP-OCRv6` 与 65+ 语种生态",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 26,
+              "label": "#26 · @NotAsea"
+            },
             "items": [
               "**默认核心引擎升级为 `PP-OCRv6 Small`（约 30.3 MB）**：内置词表原生覆盖简/繁中文、英文、日文、法/德/西/葡等 50 种语言，复杂表格、多栏文档与高密截图识别准确度显著跃升，同时识别速度反而更快；已安装旧版 `PP-OCRv4` 的用户可在 `设置 -> 文本识别与翻译 -> 离线引擎与模型包` 一键无痛升级，升级完成后自动清理历史冗余模型文件；",
               "**可选高精度精修包同步升级为 `PP-OCRv6 Rec Medium`（73.1 MB）**：体积较旧版 v4 精修包更小，配合全新通用信噪比与几何保真双重护栏，常规清晰截图零额外耗时，仅对疑难低置信度行按需触发二阶精修；当触发精修或自动切换语种时，会在结果窗标题栏与提示条展示轻量进度反馈，快速识别全程静默零打扰；",
@@ -757,21 +1205,33 @@
             ]
           },
           {
-            "title": "截图文字标注遇边界自动换行（感谢 Linux.do `@zcx233`）",
+            "title": "截图文字标注遇边界自动换行",
+            "category": "feature",
+            "attribution": {
+              "label": "感谢 Linux.do @zcx233"
+            },
             "items": [
               "在截图内输入或粘贴长段文字时，触达选区右边界自动按词软换行（英文与数字单词不断腰、超长网址自动折断、中文避头标点保护），且**绝不在原文中注入假换行符**；",
               "拖动文本框或拉宽/收窄选区时文字自动流式重排，靠近右/下边缘点击或放大字号触底时自动温和礼让上抬，中文输入法候选框、方向键换行与鼠标划词高亮全面对齐。"
             ]
           },
           {
-            "title": "文件搜索（`Alt + Space`）：自定义多路径排除文件夹（感谢 Linux.do `@sandxyz`）",
+            "title": "文件搜索（`Alt + Space`）：自定义多路径排除文件夹",
+            "category": "feature",
+            "attribution": {
+              "label": "感谢 Linux.do @sandxyz"
+            },
             "items": [
               "支持在 `设置 -> 文件搜索` 与搜索框右上角「视图设置」中自由管理多个排除目录，提供原生系统文件夹选择器与多行/分号批量粘贴；",
               "在搜索结果列表右键新增一键 **「排除此文件夹 / 排除所在文件夹」**，立即隐藏并支持 Toast 一键撤销；严格按目录边界精准屏蔽（例如排除 `D:\\视频` 绝不误伤 `D:\\视频素材`），同时覆盖文件名搜索、全文内容搜索与 CLI / MCP 接口。"
             ]
           },
           {
-            "title": "修复 Windows 10 LTSC 搜索黑屏与机械硬盘 100% 占用卡顿（感谢 Linux.do `@zg2qxy`）",
+            "title": "修复 Windows 10 LTSC 搜索黑屏与机械硬盘 100% 占用卡顿",
+            "category": "fix",
+            "attribution": {
+              "label": "感谢 Linux.do @zg2qxy"
+            },
             "items": [
               "**机械硬盘物理拓扑感知与温和低优扫描**：自动识别物理磁盘与机械盘（HDD），同一块物理机械盘上的多个分区改为低优先级后台串行扫描（杜绝多分区并发寻道撕裂磁头），跳过机械盘全盘随机寻道预热并优化快照写入，彻底根治机械盘搜索卡死与磁盘占满问题；",
               "**消除冷启动搜索黑屏**：为搜索窗口补齐原生加载/状态界面与异常自动重载自愈能力，并将冷启动阶段的后台索引服务预热错峰延后至界面渲染就绪后执行，弹出更跟手、不再出现空白黑屏。"
@@ -779,6 +1239,7 @@
           },
           {
             "title": "更克制的截图剪贴板策略与「复制图片文件按 `F3` 直接贴图」",
+            "category": "improvement",
             "items": [
               "**双关零污染剪贴板**：关闭「自动复制到剪贴板」后，无论「自动保存到文件」是否开启，点选完成、保存、贴图或原位翻译均 **绝不擅自覆写用户原有剪贴板**（仅主动按 `Ctrl + C` 或点击复制按钮时写入），看完翻译即走不再破坏原有剪贴板工作流；",
               "**图片文件 `Ctrl + C` -> `F3` 直接贴图**：在 Windows 资源管理器、桌面、Tools3000 搜索框、Everything、微信/QQ 或任意第三方文件管理器中 `Ctrl + C` 复制图片文件（支持 PNG / JPG / WebP / BMP / TIFF / GIF 首帧 / ICO / HEIC / AVIF，保留透明通道与照片正确方向），随时按下 `F3` 即可直接贴图到桌面；一次多选多张图片文件后，连续按 `F3` 可依次逐张贴出。"
@@ -788,9 +1249,20 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.8** (compared against **v1.4.7**). This release delivers a major offline OCR upgrade to **PP-OCRv6** with expanded multilingual support, smart auto-wrapping for screenshot text annotations, multi-path custom folder exclusions for File Search, a complete fix for Windows 10 LTSC black-screen and HDD indexing stalls, a non-intrusive clipboard delivery policy, and direct `Ctrl + C` -> `F3` image file pinning:",
+        "counts": {
+          "feature": 0,
+          "improvement": 5,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
-            "title": "**Next-Gen Offline OCR (`PP-OCRv6`) & 65+ Language Ecosystem** (`#26`, `@NotAsea`)",
+            "title": "**Next-Gen Offline OCR (`PP-OCRv6`) & 65+ Language Ecosystem**",
+            "category": "improvement",
+            "attribution": {
+              "issueNumber": 26,
+              "label": "#26 · @NotAsea"
+            },
             "items": [
               "**Faster & More Accurate Default Engine (`PP-OCRv6 Small`, ~30.3 MB)**: Covers 50 languages out of the box (Simplified/Traditional Chinese, English, Japanese, French, German, Spanish, Portuguese, and more) with noticeably higher accuracy and faster speed than the previous v4 pack. Existing users can upgrade in one click under `Settings -> OCR & Translate -> Offline Engine & Model Packs` with automatic cleanup of legacy model files.",
               "**Optional High-Precision Refinement Pack (`PP-OCRv6 Rec Medium`, 73.1 MB)**: Smaller than the previous v4 refinement pack while delivering stronger recognition on complex/dense tables and code. Dual quality guardrails ensure everyday crisp screenshots stay instant with zero extra overhead; when slow-path refinement or auto language switching kicks in, a subtle live status indicator appears without interrupting your workflow.",
@@ -798,19 +1270,31 @@
             ]
           },
           {
-            "title": "**Smart Auto-Wrap for Screenshot Text Annotations** (Thanks to Linux.do `@zcx233`)",
+            "title": "**Smart Auto-Wrap for Screenshot Text Annotations**",
+            "category": "improvement",
+            "attribution": {
+              "label": "Thanks to Linux.do @zcx233"
+            },
             "items": [
               "Typing or pasting text inside a screenshot now wraps cleanly at the selection boundary without inserting fake line breaks into your text—keeping English words intact, gracefully breaking long URLs, protecting CJK leading punctuation, and reflowing smoothly when you drag the text box or resize the selection. Smart edge nudging and bottom-edge lift prevent clipped text while keeping IME candidate windows and cursor selection aligned."
             ]
           },
           {
-            "title": "**File Search (`Alt + Space`): Multi-Path Custom Folder Exclusions** (Thanks to Linux.do `@sandxyz`)",
+            "title": "**File Search (`Alt + Space`): Multi-Path Custom Folder Exclusions**",
+            "category": "improvement",
+            "attribution": {
+              "label": "Thanks to Linux.do @sandxyz"
+            },
             "items": [
               "Exclude one or many folders via the native folder picker, batch paste, or right-clicking any search result (`Exclude this folder` / `Exclude parent folder` with instant undo). Strict path-boundary matching (excluding `D:\\Movies` never hides `D:\\Movies2`) applies consistently across filename search, full-text content search, and the CLI / MCP interfaces."
             ]
           },
           {
-            "title": "**Windows 10 LTSC Search Black-Screen & Mechanical HDD High-I/O Fix** (Thanks to Linux.do `@zg2qxy`)",
+            "title": "**Windows 10 LTSC Search Black-Screen & Mechanical HDD High-I/O Fix**",
+            "category": "improvement",
+            "attribution": {
+              "label": "Thanks to Linux.do @zg2qxy"
+            },
             "items": [
               "Automatically detects physical disk topology and rotational HDDs: partitions sharing the same mechanical drive are scanned sequentially at very-low background I/O priority, full-disk random-seek metadata pre-hydration is skipped on HDDs, and snapshot writes avoid per-chunk blocking flushes—eliminating 100% disk freezes.",
               "Added a native state backdrop and automatic recovery for the Search window so cold startup or WebView2 issues never leave a blank black screen, while staggering service warmup until the UI finishes rendering."
@@ -818,6 +1302,7 @@
           },
           {
             "title": "Non-Intrusive Clipboard Policy & `Ctrl + C` -> `F3` Image File Pinning",
+            "category": "improvement",
             "items": [
               "**Zero Unwanted Clipboard Overwrites**: When **Auto-copy to clipboard** is turned off (even if **Auto-save to file** is also off), completing, saving, pinning, or translating a screenshot will never silently overwrite your existing clipboard—only explicit `Ctrl + C` / Copy writes to the clipboard.",
               "**Copy Any Image File -> Press `F3` to Pin**: Press `Ctrl + C` on one or more image files in Windows File Explorer, Desktop, Tools3000 Search, Everything, or any file manager (supports PNG, JPG, WebP, BMP, TIFF, GIF first frame, ICO, HEIC, AVIF with transparency and EXIF orientation preserved), then press `F3` anywhere to pin them directly to your screen. Press `F3` repeatedly to step through multi-selected image files."
@@ -833,9 +1318,16 @@
       "publishedAt": "2026-11-24T23:49:50+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.7**。本版本以已正式发布的 **v1.4.6** 为对比基线，聚焦系统兼容性稳定性、长时静置内存曲线治理与剪贴板拖拽体验打磨：",
+        "counts": {
+          "feature": 0,
+          "improvement": 2,
+          "fix": 2,
+          "total": 4
+        },
         "sections": [
           {
             "title": "彻底修复 Windows Server 2019 启动约 5 秒托盘闪退",
+            "category": "fix",
             "items": [
               "修复在 Windows Server 2019（Build 17763）安装 WebView2 后启动 Tools3000，出现「启动成功」提示约 5 秒后托盘图标意外闪退的问题；",
               "启动后的静默内存整理改为在 WebView2 初始化完成前自动顺延，并收敛堆整理范围仅作用于自身进程堆，确保服务器系统与慢速虚拟机同样稳定常驻。"
@@ -843,6 +1335,7 @@
           },
           {
             "title": "长时静置内存稳态治理（告别 `3 MB <-> 40+ MB` 锯齿波动）",
+            "category": "improvement",
             "items": [
               "**手势全屏画布零预占 + 30 秒闲置自动回收**：冷启动不再提前占用高分屏/4K 全屏手势显存表面，改为首次划动手势时按需瞬时分配，闲置满 30 秒自动释放并回收显存缓存；跟手速度零损耗，同时消除冷态与用后常驻的数十 MB 显存占用；",
               "**后台静默降噪与温和水位巡检**：未打开「性能与内存」页面时自动放缓后台监控采样频率（由 2 秒降至 30 秒），同步降低前台全屏状态检查频率，大幅削减无操作期间的后台软缺页增长；主循环增加温和的闲置内存水位巡检，长时后台挂机内存曲线更加平稳（实机冷态稳态工作集约 `2.7–5.5 MB`）。"
@@ -850,6 +1343,7 @@
           },
           {
             "title": "修复剪贴板（`Alt + V`）拖入图片或文件至 Antigravity / 浏览器出现双图重复",
+            "category": "fix",
             "items": [
               "修复从剪贴板面板拖拽图片或文件到 Antigravity 对话框、Cursor 或现代浏览器（Chrome / Edge / Firefox）时，因系统原生拖放成功后又重复触发一次回退粘贴、导致同一张图片被插入两份的问题；",
               "纯文本绕过网页文件上传遮罩层、单条 `http(s)://` 网址生成 `@Link` 卡片以及跨权限窗口兜底直贴体验均完整保留。"
@@ -857,6 +1351,7 @@
           },
           {
             "title": "安全依赖升级与 8 国语言文档精修",
+            "category": "improvement",
             "items": [
               "升级前端多语言核心依赖 `i18next` 至 `26.7.2`，消除 Dependabot `#42` 告警（当前仓库开放安全告警归零）；",
               "同步完成全 8 语种说明文档与 13 核功能总览海报的跨地域本地化精修。"
@@ -866,15 +1361,23 @@
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.7** (compared against **v1.4.6**). This focused stability and memory-hygiene release fixes a startup crash on **Windows Server 2019**, eliminates background idle working-set oscillation, resolves duplicate image insertion when dragging from Clipboard History into AI IDEs or browsers, and clears all open security advisories:",
+        "counts": {
+          "feature": 0,
+          "improvement": 2,
+          "fix": 2,
+          "total": 4
+        },
         "sections": [
           {
             "title": "Windows Server 2019 Startup Crash Fix",
+            "category": "fix",
             "items": [
               "Resolved a crash occurring roughly 5 seconds after launch on Windows Server 2019 (Build 17763) systems when post-startup memory cleanup overlapped with slower WebView2 tray initialization. Startup cleanup now defers automatically while WebView2 is initializing and strictly compacts only the application's own heap."
             ]
           },
           {
             "title": "Rock-Solid Idle Memory Stability (No More 3 MB <-> 40+ MB Swings)",
+            "category": "improvement",
             "items": [
               "**On-Demand Gesture Surface Allocation & 30s Idle Reclaim**: Full-screen 4K gesture trail surfaces are no longer allocated at cold startup; they are created on demand on your first gesture and automatically reclaimed with GPU memory trim after 30 seconds of inactivity, keeping gesture response instantaneous while saving ~30 MB of idle footprint.",
               "**Quiet Background Standby**: Reduced unnecessary background wakeups when the Performance & Memory page is closed (2s -> 30s adaptive sampling) and relaxed foreground fullscreen checks, eliminating millions of idle page faults. Added a gentle idle memory watermark guard that keeps steady-state standby calm without causing thrashing."
@@ -882,12 +1385,14 @@
           },
           {
             "title": "Clipboard History (`Alt + V`): Single-Copy Image & File Drag-to-Paste",
+            "category": "fix",
             "items": [
               "Fixed an issue where dragging an image or file from Clipboard History into **Antigravity**, **Cursor**, or modern browsers (**Chrome / Edge / Firefox**) inserted two identical copies instead of one. Native drag-and-drop consumption is now tracked accurately for image/file payloads while keeping single-paste plain-text drag and native `@Link` URL cards intact."
             ]
           },
           {
             "title": "Security Dependency Update & 8-Language Documentation Polish",
+            "category": "improvement",
             "items": [
               "Upgraded UI internationalization library `i18next` to `26.7.2` (resolving Dependabot alert `#42`, leaving **0 open security alerts**).",
               "Completed cross-regional localization polish across all 8 language READMEs and the 13-module visual overview posters."
@@ -903,9 +1408,20 @@
       "publishedAt": "2026-11-24T20:17:14+08:00",
       "zh": {
         "summary": "",
+        "counts": {
+          "feature": 2,
+          "improvement": 4,
+          "fix": 3,
+          "total": 9
+        },
         "sections": [
           {
-            "title": "配置云端与同步盘备份（支持端到端加密）+ 绿色便携版原地热更新 (#4, @Yafeiml)",
+            "title": "配置云端与同步盘备份（支持端到端加密）+ 绿色便携版原地热更新",
+            "category": "feature",
+            "attribution": {
+              "issueNumber": 4,
+              "label": "#4 · @Yafeiml"
+            },
             "items": [
               "**多通道配置安全备份与恢复**：新增配置备份工作台，自动识别本机已安装的 **OneDrive、Google Drive、Dropbox、iCloud Drive、坚果云** 同步目录，同时原生支持 **WebDAV** 与 **S3 兼容对象存储**（Cloudflare R2、阿里云 OSS、AWS S3、MinIO 等）。支持设置口令开启 **端到端加密**、自定义历史备份保留份数与退出软件时自动静默备份；每次恢复配置前均自动在本地生成一份恢复前保险副本，防止误覆盖。",
               "**使用路径**：`设置 -> 系统总控 -> 通用设置 -> 配置云端与同步盘备份`",
@@ -913,7 +1429,11 @@
             ]
           },
           {
-            "title": "剪贴板历史（`Alt + V`）：彩色来源软件图标 + 浏览器/终端/AI 工具全场景拖拽直贴（感谢 LINUX DO @yue_bro、@宫灵紫凝）",
+            "title": "剪贴板历史（`Alt + V`）：彩色来源软件图标 + 浏览器/终端/AI 工具全场景拖拽直贴",
+            "category": "improvement",
+            "attribution": {
+              "label": "感谢 LINUX DO @yue_bro、@宫灵紫凝"
+            },
             "items": [
               "**直观展示复制来源的彩色软件图标与名称**（感谢 LINUX DO @yue_bro）：每条剪贴板卡片顶部现直接显示来源软件的真实彩色图标与友好名称（悬停可查看完整 `.exe` 进程名），顶部搜索框同时支持按软件名称或进程名快速筛选。",
               "**打通全桌面复杂窗口的拖拽直贴体验**（感谢 Linux.do @宫灵紫凝）：",
@@ -923,7 +1443,11 @@
             ]
           },
           {
-            "title": "桌面贴图与截图（`F1` / `F3`）：海量 4K 大图无损内存封顶、「贴图时自动识别文字」开关与截图完成动作解耦（感谢 LINUX DO @longqiuyu、@宫灵紫凝）",
+            "title": "桌面贴图与截图（`F1` / `F3`）：海量 4K 大图无损内存封顶、「贴图时自动识别文字」开关与截图完成动作解耦",
+            "category": "improvement",
+            "attribution": {
+              "label": "感谢 LINUX DO @longqiuyu、@宫灵紫凝"
+            },
             "items": [
               "**贴出十几张 4K 超大图或万像素长截图也不再暴涨内存**：",
               "**智能队列与悬停优先识字**：常规尺寸贴图继续保持贴出即静默预热文字，划词零等待；面对多张 4K 全屏大图或超长滚动截图时，后台自动排队单张有序处理并在鼠标移入悬停或点击时立即优先秒级识别，彻底告别多图同时贴出时的瞬时卡顿与内存飙升；",
@@ -935,6 +1459,7 @@
           },
           {
             "title": "文本扩展器全面进化：中日韩全半角自动兼容、保留触发键与 15 项动态宏",
+            "category": "feature",
             "items": [
               "**中文输入法全角符号无感触发**：默认自动兼容全角标点与字母（例如在中文输入法未切英文时直接敲 `；sig` 与 `;sig` 同样顺畅触发；若有特殊需求可在单条规则编辑窗单独勾选「区分全角与半角」）。",
               "**新增「保留输入的触发键」与 15 项动态变量胶囊**：按空格/回车/标点触发模式下可自由选择是否保留敲下的空格或标点；动态变量扩充至 **3 大类 15 项**——新增跨月/闰年精确计算的任意天数偏移（如 `{{date+1d}}`、`{{date-7d}}`）、跟随界面语言的本地化星期 `{{weekday}}`、紧凑/斜杠日期、去首尾空白剪贴板 `{{clipboard_trim}}`、随机 `{{uuid}}`、秒级时间戳 `{{timestamp}}` 与当前系统用户名 `{{user}}`，并在编辑弹窗底部内置带光标落点标记的**实时展开预览**。",
@@ -943,6 +1468,7 @@
           },
           {
             "title": "全站 19 页设置中心重整、全新「性能与内存」看板与 ~2–6 MB 极限轻量待机",
+            "category": "improvement",
             "items": [
               "**主程序常驻待机压降至约 2–6 MB + 系统文件弹窗隔离**：在 100% 保持 1000Hz 跟手鼠标手势与 `Alt + Space` 瞬开速度的前提下，进一步回收冷启动、高分屏截图与剪贴板大图处理后的闲置堆空间；并将软件内全部「打开 / 另存为」系统文件选择框放入独立短命助手进程执行，彻底阻止第三方网盘右键图标扩展常驻寄生在主程序内吃掉数十 MB 内存。",
               "**新增专门一级页面「性能与内存」**：实时展示专用工作集、总工作集、CPU 及截图/手势/界面响应延迟，提供「立即静默回收」按钮与清晰的 **4 层 10 项全链路内存自动回收时间表**（可直接点击关联项跳转调整内存策略）。",
@@ -955,30 +1481,54 @@
           },
           {
             "title": "搜索窗口小手拖动与「问题反馈」一键 `Ctrl + V` 上传诊断包",
+            "category": "improvement",
             "items": [
               "**搜索界面空白处抓手拖动**：按 `Alt + Space` 呼出搜索窗后，鼠标移至顶部搜索栏空白处、分类筛选栏空白处或底部状态栏即呈现清晰的小手图标，按住即可顺滑拖动窗口位置（双击顶栏空白处可切换最大化）。",
               "**问题反馈完整保留最新报错并支持一键 `Ctrl + V` 上传 `.zip`**：点击 `设置侧边栏左下角 -> 问题反馈` 跳转 GitHub 时，预填正文自动锚定最后发病时刻的最新运行轨迹与告警摘要，同时自动将本地脱敏 `.zip` 诊断包预置到系统剪贴板——在浏览器打开的 GitHub 输入框里直接按一次 `Ctrl + V` 即可上传附件。"
             ]
           },
           {
-            "title": "重要问题修复",
+            "title": "彻底修复文本扩展器新增/编辑短语弹窗每敲一个字自动失焦的问题",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 25,
+              "label": "#25 · @fxzou"
+            },
             "items": [
-              "**彻底修复文本扩展器新增/编辑短语弹窗每敲一个字自动失焦的问题** (#25, @fxzou)：修复在新增或编辑规则弹窗输入内容时每输入 1 个字符焦点就跳到右上角关闭按钮的问题，同时修复中文输入法候选词状态下按 `Esc` 误关闭整个弹窗的问题。",
-              "**彻底修复长时间运行数天后屏幕截图框选掉帧卡顿及退出偶发残留进程**（感谢 Linux.do @宫灵紫凝）：精简后台冗余鼠标与窗口监听开销，优化截图遮罩高刷新率移动合成，并加固软件退出与升级重启清理流程。",
-              "**修复从搜索界面打开文件或定位文件夹偶发不弹到最前面的问题**：解决打开已运行的单实例软件（如记事本、代码编辑器、资源管理器窗口）时偶发仅在任务栏闪烁橙色而不切至前台的痛点。"
+              "修复在新增或编辑规则弹窗输入内容时每输入 1 个字符焦点就跳到右上角关闭按钮的问题，同时修复中文输入法候选词状态下按 `Esc` 误关闭整个弹窗的问题。"
             ]
           },
           {
-            "title": "新功能入口与操作路径速查",
-            "items": []
+            "title": "彻底修复长时间运行数天后屏幕截图框选掉帧卡顿及退出偶发残留进程",
+            "category": "fix",
+            "attribution": {
+              "label": "感谢 Linux.do @宫灵紫凝"
+            },
+            "items": [
+              "精简后台冗余鼠标与窗口监听开销，优化截图遮罩高刷新率移动合成，并加固软件退出与升级重启清理流程。"
+            ]
+          },
+          {
+            "title": "修复从搜索界面打开文件或定位文件夹偶发不弹到最前面的问题",
+            "category": "fix",
+            "items": [
+              "解决打开已运行的单实例软件（如记事本、代码编辑器、资源管理器窗口）时偶发仅在任务栏闪烁橙色而不切至前台的痛点。"
+            ]
           }
         ]
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.6** (compared against **v1.4.5**). Shaped by community feedback across GitHub Issues, LINUX DO, and V2EX, this release brings **end-to-end encrypted configuration backup & portable in-place hot updates**, **lossless memory capping for dozens of 4K / scrolling desktop pins**, **color source app icons & universal drag-to-paste** across browsers, terminals, and AI IDEs, **15 dynamic macros & CJK fullwidth compatibility** in Text Expander, and a **re-organized 19-page Settings interface** with a dedicated **Performance & Memory** dashboard while trimming the idle main host down to **~2–6 MB** of private working set:",
+        "counts": {
+          "feature": 2,
+          "improvement": 4,
+          "fix": 0,
+          "total": 6
+        },
         "sections": [
           {
             "title": "**Cloud & Sync-Folder Configuration Backup (Optional E2E Encryption) + Portable In-Place Hot Updates** *(#4, @Yafeiml)*",
+            "category": "improvement",
             "items": [
               "**Multi-Channel Config Backup**: Automatically detects local sync folders (OneDrive, Google Drive, Dropbox, iCloud Drive, Nutstore) and natively supports **WebDAV** and **S3-compatible object storage** (Cloudflare R2, AWS S3, Alibaba Cloud OSS, MinIO). Supports optional passphrase-based **AES-256-GCM end-to-end encryption**, automatic snapshot retention limits, optional silent backup on exit, and automatic local safety backups before any restore (`Settings -> System -> General -> Cloud & Sync Folder Backup`).",
               "**Portable In-Place Hot Update**: Portable `.zip` users clicking `Settings -> Insights & About -> About -> Check for Updates` now update in place automatically while preserving `data/`, `config/`, `clipboard/`, and `models/` — never downloading `Setup.exe` or creating duplicate folders."
@@ -986,6 +1536,7 @@
           },
           {
             "title": "**Clipboard History (`Alt + V`): Real Color Source App Icons & Universal Smart Drag-Paste** *(thanks to LINUX DO @yue_bro, @宫灵紫凝)*",
+            "category": "improvement",
             "items": [
               "**Color Source App Icons**: Each clipboard card now displays the real color icon and friendly name of the source app (searchable by both friendly app name and `.exe` process name) *(thanks to LINUX DO @yue_bro)*.",
               "**Universal Drag-to-Paste**: Smoothly drag text or rich snippets directly into **Chrome / Edge / Firefox web search inputs** (without triggering full-page \"Drop files here\" overlays, while still preserving native image/file drag-upload), **Windows Terminal / PowerShell / CLI TUIs / Git Bash**, **borderless Electron apps**, and **AI IDEs** (preserving `@Link` pills for single HTTP URLs while pasting plain text cleanly) *(thanks to Linux.do @宫灵紫凝)*."
@@ -993,6 +1544,7 @@
           },
           {
             "title": "**Desktop Pins & Capture (`F1` / `F3`): 4K / Long-Pin Memory Cap, Auto-OCR Toggle & Decoupled Finish Actions** *(thanks to LINUX DO @longqiuyu, @宫灵紫凝)*",
+            "category": "feature",
             "items": [
               "**Lossless Memory Cap for Many 4K & Scrolling Pins**: Pinning a dozen 4K screenshots or tall scrolling captures no longer causes background OCR thread spikes or multi-GB RAM growth. Standard pins warm up Live Text silently, while 4K/scrolling pins prioritize instant recognition when hovered; idle, folded (`M` / double-click), or hidden (`Ctrl + Alt + Shift + H`) pins automatically enter **bit-exact lossless cold compression** (~33 MB 4K image compressed to ~1.8 MB in RAM, restored with zero quality loss when needed).",
               "**New \"Auto-Recognize Text When Pinning\" Toggle**: Enabled by default in `Settings -> Productivity -> Capture & Record -> Pin & Fixed Regions` (synced with `OCR & Translation -> OCR & Interaction`). Turn off if you prefer strictly manual `T` / right-click OCR on pins.",
@@ -1001,6 +1553,7 @@
           },
           {
             "title": "**Text Expander Upgrade: CJK Fullwidth Compatibility, 15 Dynamic Macros & Modal Focus Fix** *(#25, @fxzou)*",
+            "category": "feature",
             "items": [
               "**8-Language Input Ergonomics & 15 Macros**: Automatically treats CJK fullwidth characters and punctuation as equivalent to ASCII triggers by default (e.g. `；sig` matches `;sig`, configurable per snippet), adds a **Keep Trigger Key** toggle for boundary-triggered snippets, and expands dynamic macros to **15 variables** (`{{date+1d}}`/`{{date-7d}}` day offsets, localized `{{weekday}}`, compact/slash dates, `{{clipboard_trim}}`, `{{uuid}}`, `{{timestamp}}`, `{{user}}`, and `{{cursor}}`) with live cursor-aware preview (`Settings -> Productivity -> Text Expander`).",
               "**Modal Input Focus Fix**: Fixed an issue where typing inside the New/Edit Snippet modal moved focus away after a single character, and prevented pressing `Esc` during CJK IME composition from closing modals *(#25, @fxzou)*."
@@ -1008,6 +1561,7 @@
           },
           {
             "title": "Re-Organized 19-Page Settings, Dedicated \"Performance & Memory\" Page & ~2–6 MB Idle Footprint",
+            "category": "improvement",
             "items": [
               "**Ultra-Light Idle & Isolated File Dialogs**: Main host steady-state private working set is now down to **~2–6 MB** with zero hot-path latency trade-offs; system Open/Save file dialogs now run in short-lived isolated helper processes so third-party cloud-drive shell extensions never bloat the main app.",
               "**Clearer Navigation & Transparency**: Top-level tabs on heavy pages (`Capture & Record`, `Mouse Gestures`, `OCR & Translation`, `File Search`), a compact searchable single-row `System -> Modules` list, a 4-domain `Global Shortcuts` overview in `General`, and a new **`Insights & About -> Performance & Memory`** page showing live metrics, one-click memory trim, and a transparent 10-rule automatic reclaim schedule."
@@ -1015,6 +1569,7 @@
           },
           {
             "title": "Search Window Grab-Drag, Reliable Foreground Open & 1-Paste Feedback Bundle",
+            "category": "improvement",
             "items": [
               "Drag the `Alt + Space` Search window from any blank space on the top bar, category bar, or bottom status bar with a clear grab-hand cursor, and open files/folders reliably in front of other windows without taskbar flashing.",
               "Clicking **Give Feedback** (`bottom-left of Settings sidebar`) now preserves the latest error/runtime log lines in pre-filled GitHub Issues and pre-loads the redacted `.zip` diagnostic bundle onto your clipboard so a single `Ctrl + V` in GitHub attaches it immediately."
@@ -1030,9 +1585,19 @@
       "publishedAt": "2026-11-24T02:29:57+08:00",
       "zh": {
         "summary": "",
+        "counts": {
+          "feature": 2,
+          "improvement": 3,
+          "fix": 3,
+          "total": 8
+        },
         "sections": [
           {
-            "title": "全新功能模块：文本扩展器（Text Expander）开箱即用（感谢 Reddit r/windowsapps @redchrism、@iquizuanswer）",
+            "title": "全新功能模块：文本扩展器（Text Expander）开箱即用",
+            "category": "feature",
+            "attribution": {
+              "label": "感谢 Reddit r/windowsapps @redchrism、@iquizuanswer"
+            },
             "items": [
               "**输入短词秒出完整内容**：在浏览器、聊天软件、代码编辑器或办公文档的任意输入框中，敲下自定义的缩写触发词（如 `;mail`、`;sig`、`;date`），即可自动展开为常用长文本、邮件签名、地址信息或回复模板。模块默认开箱即用，不需要时可在「功能模块」或托盘面板一键关闭（关闭即释放全部钩子、零后台占用）。",
               "**静态短语与动态宏兼顾**：除最轻快的纯文本展开外，还支持自动填入当前日期/时间、引用当前剪贴板内容以及展开后将光标自动定位到指定位置；每条规则可自由选择「立即展开」或「敲空格/回车/标点触发」、是否区分大小写，并支持命中次数统计与 JSON 规则导入/导出。",
@@ -1040,7 +1605,11 @@
             ]
           },
           {
-            "title": "剪贴板历史（`Alt + V`）交互全面进化：拖拽直贴、分类净化与跨窗跟随（感谢 Linux.do @宫灵紫凝）",
+            "title": "剪贴板历史（`Alt + V`）交互全面进化：拖拽直贴、分类净化与跨窗跟随",
+            "category": "improvement",
+            "attribution": {
+              "label": "感谢 Linux.do @宫灵紫凝"
+            },
             "items": [
               "**拖拽直贴 + 连续多条拖放不关闭**：按住任意剪贴板条目卡片，可直接拖进外部软件输入框、代码编辑器、AI 聊天窗口或浏览器地址栏完成粘贴；拖放过程中及松手后剪贴板面板保持驻留不自动消失，方便连续拖入多条内容（全面适配常规软件、跨权限 Electron/AI 聊天窗、Sublime 选中后继续尾随拖入与 Chrome 地址栏）。",
               "**置顶条目支持从其他分类剥离（「隐藏置顶」开关）**：剪贴板工具栏与设置页同步新增「隐藏置顶」开关；开启后，已置顶的常用内容仅显示在「置顶」分类中，不再占据「全部 / 文本 / 图片 / 文件 / 颜色」等分类列表顶部空间。",
@@ -1048,7 +1617,11 @@
             ]
           },
           {
-            "title": "截图历史选区记忆与「固定选区管理工作台」（感谢 Linux.do @宫灵紫凝）",
+            "title": "截图历史选区记忆与「固定选区管理工作台」",
+            "category": "feature",
+            "attribution": {
+              "label": "感谢 Linux.do @宫灵紫凝"
+            },
             "items": [
               "**截图内一键复用历史框选范围**：进入截图后，按 `R` / `Shift + R` 即可快速调出并循环翻阅最近使用过的截图区域，写教程、做改版对比图或反复截取同一区域不再需要每次手动对齐。可在设置页自由调整历史保存数量（`0–50` 条，默认 `10` 条，关机重启持久保留）以及循环快捷键（`R`、`` ` ``、`F2`、`F4` 或关闭）。",
               "**新增全局快捷键「重复上次选区截图」（默认 `Shift + F1`）**：无需先开截图再按切换键，随时按下 `Shift + F1` 直接带着上一次的选区进入截图；该快捷键已在设置页与「全局快捷键」一览完整暴露，可自由改键。",
@@ -1057,12 +1630,14 @@
           },
           {
             "title": "桌面贴图（`F3`）升级 120Hz+ 电影级顺滑滚轮缩放",
+            "category": "improvement",
             "items": [
               "全面升级桌面贴图滚轮缩放体验，彻底消除缩放时的窗口抖动、边缘闪烁与掉帧卡顿，提供如 Picasa 看图器般自然跟手的高刷新率顺滑缩放手感（兼容多屏高分屏缩放与超长截图）。"
             ]
           },
           {
             "title": "更新红点三端联动、托盘防截断与三端菜单有序重排",
+            "category": "improvement",
             "items": [
               "**软件更新红点全链路直观可见**：检测到新版本时，系统托盘图标、托盘快捷面板顶部更新条与设置页侧边栏「关于」三处同步提示，点击即可直达更新详情、实时下载进度与一键安装；暂不想升级时可点击「忽略此版本」消除红点，下个新版本发布时再提醒。",
               "**系统托盘控制中心升级三段式防截断架构**：全新顶部吸顶标题栏 + 中部 3 列快捷磁贴独立滚动区 + 底部「管理员 / 退出」常驻吸底栏布局，兼顾美观紧凑与任意多模块扩展。",
@@ -1071,24 +1646,43 @@
             ]
           },
           {
-            "title": "重要问题修复",
+            "title": "彻底修复剪贴板偶发连按多次才呼出、新复制内容未顶置与点击粘贴无响应",
+            "category": "fix",
+            "attribution": {
+              "label": "感谢 Linux.do @宫灵紫凝"
+            },
             "items": [
-              "**彻底修复剪贴板偶发连按多次才呼出、新复制内容未顶置与点击粘贴无响应**（感谢 Linux.do @宫灵紫凝）：修复焦点状态异常导致需要连按 2~3 次 `Alt + V` 才能唤出剪贴板、新复制内容未及时刷新置顶，以及刚截完图或按过 `Ctrl + A` 全选后点击粘贴毫无反应的问题；现在在剪贴板内按 `Esc` 按层级依次退出（退出编辑 -> 取消多选 -> 关闭窗口），交互更清晰可靠。",
-              "**彻底修复托盘右键菜单偶发截断底部「退出」按钮**：消除弹出动画导致的高度误测问题，在各类分辨率与 DPI 缩放比例下均完整展示全部菜单与底栏操作。",
-              "**修复全局快捷键列表个别词条漏译**：补齐「呼出/隐藏剪贴板」「重复上次选区截图」等快捷键在全部 8 国语言下的完整本地化显示。"
+              "修复焦点状态异常导致需要连按 2~3 次 `Alt + V` 才能唤出剪贴板、新复制内容未及时刷新置顶，以及刚截完图或按过 `Ctrl + A` 全选后点击粘贴毫无反应的问题；现在在剪贴板内按 `Esc` 按层级依次退出（退出编辑 -> 取消多选 -> 关闭窗口），交互更清晰可靠。"
             ]
           },
           {
-            "title": "新功能入口与快捷键速查",
-            "items": []
+            "title": "彻底修复托盘右键菜单偶发截断底部「退出」按钮",
+            "category": "fix",
+            "items": [
+              "消除弹出动画导致的高度误测问题，在各类分辨率与 DPI 缩放比例下均完整展示全部菜单与底栏操作。"
+            ]
+          },
+          {
+            "title": "修复全局快捷键列表个别词条漏译",
+            "category": "fix",
+            "items": [
+              "补齐「呼出/隐藏剪贴板」「重复上次选区截图」等快捷键在全部 8 国语言下的完整本地化显示。"
+            ]
           }
         ]
       },
       "en": {
         "summary": "Welcome to **Tools3000 v1.4.5** (compared against **v1.4.4**). Shaped directly by community feedback, this release introduces a brand-new native **Text Expander** module, **drag-and-drop direct paste** in Clipboard History, a **Saved & Historical Capture Region Manager**, **120Hz+ hardware-composited pin zoom**, and unified navigation across Settings and Tray:",
+        "counts": {
+          "feature": 1,
+          "improvement": 4,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "**New First-Class Module: Text Expander** *(thanks to Reddit r/windowsapps @redchrism, @iquizuanswer)*",
+            "category": "feature",
             "items": [
               "Type short triggers (e.g. `;mail`, `;sig`, `;date`) in any app to expand static snippets or dynamic macros (date/time, clipboard reference, cursor placement) instantly.",
               "Enabled out of the box with zero idle bloat (unhooks completely when disabled), automatic exclusion of password managers (KeePass, 1Password, Bitwarden, Enpass, LastPass, RoboForm, Dashlane) and RDP windows, zero clipboard history pollution, JSON import/export, and a live test sandbox in Settings."
@@ -1096,6 +1690,7 @@
           },
           {
             "title": "**Clipboard History (`Alt + V`) Drag-Paste, Category Cleanliness & Active-App Tracking** *(thanks to Linux.do @宫灵紫凝)*",
+            "category": "improvement",
             "items": [
               "**Drag-to-Paste Without Closing**: Drag any clipboard card directly into editors, AI chat inputs, or browser address bars while keeping the clipboard panel open for consecutive drops.",
               "**Hide Pinned Items in Other Tabs**: Optional toggle to keep pinned items exclusively inside the `Pinned` tab so they don't crowd `All / Text / Images / Files / Colors`.",
@@ -1105,6 +1700,7 @@
           },
           {
             "title": "**Historical & Fixed Capture Region Manager** *(thanks to Linux.do @宫灵紫凝)*",
+            "category": "improvement",
             "items": [
               "Press `R` / `Shift + R` inside capture mode to cycle recent capture regions (configurable `0–50` persistent history & customizable cycle key), or press the new global shortcut **`Shift + F1` (`Repeat Last Capture`)** to jump straight into your previous region.",
               "New **Region Manager** in `Settings -> Capture & Record`: pin fixed regions (never evicted), rename, fine-tune `X / Y / W / H` pixels, add centered presets (`1280×720`, `1920×1080`, `1080×1080`, `800×600`), or trigger a capture directly from any saved region."
@@ -1112,12 +1708,14 @@
           },
           {
             "title": "120Hz+ Silky-Smooth Desktop Pin Wheel Zoom (`F3`)",
+            "category": "improvement",
             "items": [
               "Re-engineered wheel zoom with a GPU hardware-composited zoom stage, eliminating window resize jitter and edge flicker across high-DPI multi-monitor setups."
             ]
           },
           {
             "title": "Unified Update Badges, Non-Truncated 3-Section Tray & Consistent Menu Order",
+            "category": "improvement",
             "items": [
               "Update notification dot now syncs across the system tray icon, tray top banner, and Settings `About` tab (with one-click `Ignore this version`); upgraded Tray Control Center to a rigid 3-section layout so bottom actions are never clipped; unified module ordering across Sidebar, Modules page, and Tray."
             ]
@@ -1132,15 +1730,23 @@
       "publishedAt": "2026-11-23T21:02:50+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.4.4**。本版本基于 **v1.4.2** 紧急修复了应用内检查更新无响应、问题反馈附带截图提交无反应、Windows 10 安装高精度离线识字包后贴图卡死退出等三项关键稳定性问题，并同步提升了问题反馈弹窗的日志完整度与 `Ctrl + V` 贴图体验。",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 3,
+          "total": 3
+        },
         "sections": [
           {
             "title": "彻底修复「关于」页点击「检查更新」毫无反应",
+            "category": "fix",
             "items": [
               "修复发布说明包含长段中文内容时在 600 字节边界处被误切半个汉字、导致更新状态序列化失败并卡住无响应的问题；现在在「关于」页与托盘均可顺畅检测更新、实时展示下载进度并一键升级。"
             ]
           },
           {
             "title": "彻底修复「问题反馈」附带截图提交无反应并升级体验",
+            "category": "fix",
             "items": [
               "**大图提交不再静默失灵**：修复附带高清截图时因消息体积上限过小导致提交与预览无反应的问题（现支持完整附带 6 MB 以内截图），并补齐清晰直观的错误与成功提示。",
               "**直接 `Ctrl + V` 贴图稳定可用**：修复打开反馈弹窗后按 `Ctrl + V` 粘贴截图没反应的问题；无论焦点在弹窗任意位置，复制的截图或文件管理器里复制的图片文件都能一键贴入，同时不影响在输入框里正常粘贴文字。",
@@ -1148,7 +1754,12 @@
             ]
           },
           {
-            "title": "彻底修复 Windows 10 安装高精度离线识字包后贴图卡死并后台退出（#7, @NuomiSeek）",
+            "title": "彻底修复 Windows 10 安装高精度离线识字包后贴图卡死并后台退出",
+            "category": "fix",
+            "attribution": {
+              "issueNumber": 7,
+              "label": "#7 · @NuomiSeek"
+            },
             "items": [
               "**Windows 10 与核显/低显存防卡死**：90 MB 高精度离线识别增强包在 Windows 10 或显存不足 2 GB 的设备上自动改用更稳定的 CPU 推理会话，避免旧版显卡驱动超时卡顿；",
               "**子进程隔离防带崩主程序**：当独立 OCR 子进程遇到驱动异常或超时时，立即自动切换纯 CPU 安全模式隔离重试；即使极端环境下仍无法执行，也会平滑回退至系统自带文字识别，**绝不再拖垮 Tools3000 主程序**；",
@@ -1166,9 +1777,16 @@
       "publishedAt": "2026-11-23T17:52:26+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.4.2** 官方正式版。本版本基于 **v1.4.1** 围绕社区高频反馈与实机体验进行了全面升级：让文件搜索一步直达软件、系统工具与带原站图标的书签，新增对话框内嵌搜索、右键一键解锁被占用文件、全 8 语种自动离线识字与无痕原位翻译、手势停顿自动取消与多开切窗、空格直看压缩包/字体/音视频，并彻底修复剪贴板白屏、管理员模式下打开浏览器卡死以及含中文等非英文安装目录无法加载插件的问题。",
+        "counts": {
+          "feature": 4,
+          "improvement": 1,
+          "fix": 4,
+          "total": 9
+        },
         "sections": [
           {
             "title": "文件搜索（`Alt + Space`）更像你的桌面万能启动器",
+            "category": "feature",
             "items": [
               "**统一搜软件、系统工具与原站图标书签**：除秒搜全盘文件外，现在也能直接搜出已安装的桌面/商店应用（支持 `app:` 前缀）以及 37 个常用 Windows 系统工具（如输入 `cmd:env` 直达环境变量），并支持 `b:` / `bm:` 前缀直搜 Edge / Chrome / Brave / Vivaldi 浏览器书签（感谢 Linux.do @wei_gao、@thinkhard）。",
               "**「Windows 图标」模式下真实原图标全覆盖**：开启「Windows 图标」风格后，搜索结果里的软件、系统命令和浏览器书签都会直接显示原本的真实图标（例如 Chrome、知乎等网站原本的图标直接读取本地浏览器缓存，全程离线不联网）。",
@@ -1178,6 +1796,7 @@
           },
           {
             "title": "打开 / 保存文件弹窗也能像 Listary 一样直接搜目录",
+            "category": "feature",
             "items": [
               "**弹窗内嵌即搜即跳**：在 Windows 的「打开 / 另存为 / 选择文件夹」弹窗上方快捷栏里，直接输入关键词就能秒搜文件夹并一键跳转过去，告别一层层手动翻目录（感谢 Linux.do @wei_gao）。",
               "**另存为文件名绝对安全**：在「另存为」窗口里跳转目录时，底部已经填好的文件名会被严格保护、绝不被覆盖。",
@@ -1186,6 +1805,7 @@
           },
           {
             "title": "新增「文件占用解锁」：删不掉文件时一键找出谁在占用",
+            "category": "feature",
             "items": [
               "**三种顺手入口、平时零内存常驻**：在文件或文件夹上右键点击「查看文件占用 / 解锁」（支持设置为按住 `Shift + 右键` 才显示，保持右键菜单清爽）、在搜索结果上右键、或在设置中心专门的「文件占用解锁」页面直接选择文件/文件夹，都能秒查占用进程并一键安全释放文件锁（感谢 Linux.do @ckcat）。",
               "**托盘控制中心一键开关**：在系统托盘右键弹出的快捷面板里，同步补齐了 **「剪贴板」** 与 **「文件解锁」** 的一键启停开关，常用工具抬手就能控制。"
@@ -1193,6 +1813,7 @@
           },
           {
             "title": "8 国语言截图自动离线识字 & 原位翻译观感全面升级",
+            "category": "improvement",
             "items": [
               "**截取外语图不用手动切语言**：无论界面是什么语言，截取日语、韩语、俄语、西班牙语或葡萄牙语图片时，离线 OCR 都会自动识别语种并顺畅衔接原位翻译；16 MB 基础中/英包保持极速零负担，日/韩/俄/西葡 4 套轻量语言包可在设置页按需一键下载；贴图右键「文字划选与翻译 -> 识字语种」也支持对单张图直接指定语言重识。",
               "**原位翻译更干净、排版更贴合原图**：大幅优化深色界面、新闻网页与密集表格的擦除和排版效果，消除原文字残留毛边、居中跑偏、大标题变细以及深色小字发白刺眼的问题。"
@@ -1200,6 +1821,7 @@
           },
           {
             "title": "鼠标手势更好用：防误触、切已有窗口不重复多开",
+            "category": "fix",
             "items": [
               "**划动中途停顿自动取消默认开启**：按住右键划了一半后悔时，稍微停顿一下（默认 0.7 秒，可自行调整）手势就会自动取消，大幅减少误触发（感谢 Linux.do @sakura_yae）。",
               "**运行程序智能切回已有窗口**：手势动作「运行程序」新增运行模式，默认优先切回已经打开的窗口而不是傻傻重复多开；即使像 Chrome 一样带了不同 `--user-data-dir` 参数开了多个独立窗口，也能精准切回对应的那一个。老手势只需点开编辑弹窗下方的「高级执行特性」确认一下运行模式即可（感谢 Linux.do @sakura_yae）。",
@@ -1208,22 +1830,32 @@
           },
           {
             "title": "空格快速预览（QuickLook）支持更多格式 + 内置隐私脱敏反馈",
+            "category": "feature",
             "items": [
               "**Win11 预览修复与新格式直看**：全面修复 Windows 11 资源管理器多标签、桌面和图库下按空格无法预览图片/视频的问题，并新增直接按空格查看 **压缩包（ZIP / TAR / 7Z / RAR）目录内容**、**字体文件（TTF / OTF / WOFF / TTC）样张** 以及 **音视频信息与画面预览**（感谢 GitHub #6 @HedioKojima）。",
               "**侧边栏左下角一键反馈与隐私自动打码**：点击设置窗左下角「问题反馈」（或「关于 -> 问题反馈」）可导出诊断包或直接提交问题，导出前会在本机自动抹除用户名路径、邮箱、IP、密钥令牌等隐私信息，放心发日志。"
             ]
           },
           {
-            "title": "重要问题修复",
+            "title": "彻底解决 `Alt + V` 剪贴板历史白屏 / 黑屏问题",
+            "category": "fix",
             "items": [
-              "**彻底解决 `Alt + V` 剪贴板历史白屏 / 黑屏问题**：修复冷启动或长时间闲置后唤出剪贴板窗口只剩空白底色、看不到内容的问题，连续呼出瞬开且实时跟随深浅主题。",
-              "**彻底解决管理员模式下打开 Chrome 等浏览器卡死**：修复 Tools3000 以管理员身份运行时，从搜索或手势打开 Chrome 导致窗口无响应的问题，现在以普通权限顺畅启动且不会阻塞软件本身。",
-              "**彻底解决中文及多语言路径下功能/插件消失**：修复软件安装目录或 Windows 用户名包含中文、日文、韩文、俄文、西葡等非英文字符时，部分模块或插件无法正常加载的问题（感谢 Linux.do @sakura_yae）。"
+              "修复冷启动或长时间闲置后唤出剪贴板窗口只剩空白底色、看不到内容的问题，连续呼出瞬开且实时跟随深浅主题。"
             ]
           },
           {
-            "title": "新功能入口与文件位置速查",
-            "items": []
+            "title": "彻底解决管理员模式下打开 Chrome 等浏览器卡死",
+            "category": "fix",
+            "items": [
+              "修复 Tools3000 以管理员身份运行时，从搜索或手势打开 Chrome 导致窗口无响应的问题，现在以普通权限顺畅启动且不会阻塞软件本身。"
+            ]
+          },
+          {
+            "title": "彻底解决中文及多语言路径下功能/插件消失",
+            "category": "fix",
+            "items": [
+              "修复软件安装目录或 Windows 用户名包含中文、日文、韩文、俄文、西葡等非英文字符时，部分模块或插件无法正常加载的问题（感谢 Linux.do @sakura_yae）。"
+            ]
           }
         ]
       },
@@ -1236,9 +1868,16 @@
       "publishedAt": "2026-11-23T08:11:02+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.4.1** 热修复正式版。本版本聚焦于相较 **v1.4.0** 的关键热修，彻底解决管理员模式下应用内点击「检查更新 -> 立即安装」闪退且未完成升级的问题，实现一键静默更新完成后自动重启新版。",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 1,
+          "total": 1
+        },
         "sections": [
           {
             "title": "彻底修复应用内一键更新闪退与未生效问题",
+            "category": "fix",
             "items": [
               "**消除静默升级安装程序误杀自身**：此前当 Tools3000 以管理员身份运行时，点击「立即安装」直接派生安装包进程，安装器在关闭旧主程序阶段仅等待 30 ms 即执行进程树强杀（`taskkill /f /t`），导致安装器沿父子进程树终止自身、覆盖安装中止。现改为先等待最长 2500 ms 让旧版主程序优雅退场，且兜底终止严格不再递归终止进程树，确保升级 100% 稳定落地。",
               "**静默更新完成后自动重拉新版**：新增专用于应用内静默更新的完成拉起规则，安装完成后自动在原用户桌面上下文中无缝重新启动新版 Tools3000（普通运维静默批量部署仍保持不自动弹窗）。",
@@ -1256,9 +1895,16 @@
       "publishedAt": "2026-11-23T04:41:14+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.4.0** 官方正式版。本版本为相较 **v1.3.2** 的重磅功能演进版本，全面落地社区高票呼声的**截图原位翻译**、**纯 Rust 持久化剪贴板管理**、**全盘文件/正文搜索 CLI 与 MCP Server**、**全局搜索浏览器书签直达**、**文件搜索体验升级**以及 **Windows 10 兼容加固与版本自动更新**。",
+        "counts": {
+          "feature": 3,
+          "improvement": 2,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "微信级截图原位翻译（免 Key 开箱即用 + 自定义大模型 / BYOK）",
+            "category": "feature",
             "items": [
               "**截图即译、原位覆盖、0ms 原/译瞬切**：在 `F1` 截图工具栏与 `F3` 贴图新增「翻译」入口，复用离线 OCR 版面分析自动合并自然段落，在原图文字位置以 1:1 原生字形无拉伸渲染译文，非破坏保留原图底稿支持原/译瞬间切换（感谢 Linux.do @wei_gao、@kkv、@calg）。",
               "**免 Key 双通道 + 灵活 BYOK**：默认提供零配置免费双通道（优先国内直连，并发批量翻译配会话缓存与超时熔断），同时支持接入 OpenAI 兼容接口 / DeepSeek / Gemini / 本地 Ollama / DeepL，API Key 经 Windows DPAPI 本机加密存储。",
@@ -1267,6 +1913,7 @@
           },
           {
             "title": "纯 Rust 内核持久化剪贴板历史管理 (`Alt + V`)",
+            "category": "feature",
             "items": [
               "**关机重启持久保留与托盘一键直达**：自研零外部依赖纯 Rust 原子二进制持久化引擎（`history.t3k` + 校验和与自动备份回退 + 孤儿文件 GC），彻底解决系统自带 `Win + V` 关机即清空历史的痛点；支持 `Alt + V` 全局秒呼与系统托盘右键菜单一键打开，并内置图片优先捕获、哈希去重、隐私格式与密码管理器进程自动避让（感谢 Linux.do @wei_gao、@calg）。",
               "**桌面级批量多选与进阶效率**：",
@@ -1278,6 +1925,7 @@
           },
           {
             "title": "全盘文件与正文搜索 CLI + MCP Server（赋能 AI Agent 接入）",
+            "category": "feature",
             "items": [
               "**单文件极简零依赖 (`tools3000-cli.exe`)**：纯标准库 Rust 编译（约 `350 KB`），零额外运行库依赖，毫秒级直连本机 Tools3000 搜索索引执行文件名与文档正文检索，并内置标准 **MCP (`stdio`) Server** 供各类 AI Coding / Desktop Agent 一键接入（感谢 Linux.do @windmill）。",
               "**默认关闭与零侵入安全边界**：严格遵循 `DEMAND_START`（查询状态与 MCP 握手绝不唤醒后台服务）、默认关闭外部接口总开关（需在设置中心手动启用）、强制只读并内置双层敏感凭证路径黑名单（`.ssh`、`.aws`、`.env`、私钥与浏览器凭据库）。"
@@ -1285,6 +1933,7 @@
           },
           {
             "title": "全局极速搜索 (`Alt + Space`) 体验跃升",
+            "category": "improvement",
             "items": [
               "**零冲突直搜浏览器书签 (`bm:`)**：支持自动索引本机 Edge / Chrome / Brave / Vivaldi / Chromium 书签（零常驻线程、按文件变更节流懒加载），提供 `bm:` 专用前缀、独立「书签」分类胶囊及可开关的常规搜索混排，回车直开默认浏览器（感谢 Linux.do @thinkhard）。",
               "**默认新增「打开次数」列**：表格视图按对象标识、量化指标、时间维度升级为默认 6 列（`名称 / 路径 / 大小 / 打开次数 / 修改时间 / 创建时间`），打开文件后计数即时 `+1`，且老用户配置无损平滑迁移（独立列开启时自动去重文件名内重复徽标）。",
@@ -1293,6 +1942,7 @@
           },
           {
             "title": "贴图、截图、自动更新与平台安全加固",
+            "category": "improvement",
             "items": [
               "**贴图 120Hz 无级丝滑缩放**：`F3` 贴图滚轮升级为对数空间指数阻尼动画与光标锚点无级缩放，动态缩放零掉帧、落定自动锐化高清采样。",
               "**F1 智能捕获窗口稳态升级**：大幅降低同窗口微移时的选框抖动，屏蔽隐形阴影与窗外幽灵层，显著减少交叉控件误框。",
@@ -1311,9 +1961,16 @@
       "publishedAt": "2026-11-22T22:33:54+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.3.2** 官方正式版。以下为相较上一个正式发行版 **v1.3.1** 的窗口渲染修复摘要。",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 1,
+          "total": 1
+        },
         "sections": [
           {
             "title": "彻底修复无边框窗口最大化闪现 Win98 / 切前台滞留 Win7 旧式标题栏问题",
+            "category": "fix",
             "items": [
               "**Windows 11 原生 DWM 硬件圆角零降级**：重构跨系统通用圆角策略（`WinUtils::applyUniversalRoundedCorners`），在 Windows 11 启用 DWM 合成环境下，对搜索窗口、设置窗口及录屏演播室等标准无边框应用窗口不再叠加 `SetWindowRgn`，完整保留系统原生平滑圆角与高斯阴影，彻底消除最大化瞬间闪现经典 Win98 窗框以及还原后被系统附加 Win7 Basic 顶角裁剪区的问题（感谢 V2EX @lzrainchen）。",
               "**全链路非客户区重绘防护（全兼容 Win11 / Win10 / Server / RDP）**：统一拦截 `WM_NCACTIVATE` 并完善 `WM_NCCALCSIZE` 全分支处理，在非 DWM 或 Windows 10 / Server RGN 兜底模式下自动接管 `WM_NCPAINT`，同时在 Windows 11 DWM 合成启用态严格保持 `DWMWA_NCRENDERING_ENABLED` 不降级，杜绝窗口最大化、取消最大化与前后台切换时系统 GDI 补绘旧式标题栏（感谢 V2EX @lzrainchen）。",
@@ -1331,9 +1988,16 @@
       "publishedAt": "2026-11-22T20:20:29+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.3.1** 官方正式版。以下为相较上一个正式发行版 **v1.3.0** 的鼠标手势核心体验升级、社区反馈落地与稳定性修复摘要。",
+        "counts": {
+          "feature": 2,
+          "improvement": 1,
+          "fix": 2,
+          "total": 5
+        },
         "sections": [
           {
             "title": "新增「手势图形匹配阈值」与圆弧手势识别增强",
+            "category": "feature",
             "items": [
               "**可调「手势图形匹配阈值」设置**：在「设置 -> 鼠标手势」新增图形匹配阈值调节（`50%–100%`，默认 `75%`；设为 `100%` 时切换为严格精确方向匹配），兼顾自然圆滑手写与精准控场需求 (#4, @Yafeiml)。",
               "**反 C / 正 C 等平滑圆弧识别率大幅提升**：重构方向段化简与 32 点折线/圆弧双原型方向敏感相似度引擎，修复反 C（`→ ↓ ←`）、正 C（`← ↓ →`）、U 形等手势因平滑弯曲或收笔微斜导致的识别失败，同时完整保留「下右（`↓ →`）」收笔防误触保护 (#4, @Yafeiml)。",
@@ -1342,12 +2006,14 @@
           },
           {
             "title": "普通右键单击零起始光点闪烁",
+            "category": "fix",
             "items": [
               "**轨迹覆盖层对齐最小识别距离延迟激活**：按下右键但移动未超过「手势最小识别距离」（默认 `24px`）前全程零光点、零覆盖层唤醒，普通右键点击更干净利落；跨过阈值后无缝回填起笔及途经轨迹，并同步优化原地按住右键滚轮时的动作提示展示 (#4, @Yafeiml)。"
             ]
           },
           {
             "title": "自定义录制画板重构与 V 形对角手势精准识别",
+            "category": "improvement",
             "items": [
               "**前后端识别算法同源对齐与尖角消歧**：重构前端录制画板识别管线使其与原生 C++ 引擎 100% 一致，新增上下文尖角矢量消歧、8 方向对角抖动消除与圆底折叠，随手绘制各种自然倾角的 V 形（`↘ ↗`）等对角手势均可稳定一次录准（感谢小众软件 @buliugu）。",
               "**新增手动 8 方向箭头点选拼装与实时预览**：画板下方新增 8 方向矢量箭头点选拼装条与退格按钮（点选 `↘` + `↗` 即可秒建 V 形手势），绘制过程实时展示识别箭头徽章，快捷预设同步补充「反 C（`→ ↓ ←`）」与「V 形（`↘ ↗`）」（感谢小众软件 @buliugu）。",
@@ -1356,6 +2022,7 @@
           },
           {
             "title": "高速连续手势防误触与稳定性加固",
+            "category": "fix",
             "items": [
               "**高速连划「下右」关闭标签页防误触优化**：解耦「起笔激活距离」与「拐弯切段距离」，并增加高速连划起笔短暂复位惯性容错，大幅提升连续快速画 `↓ →` 关闭多个浏览器标签页时的命中率，减少误触「最小化」。",
               "**取消单段对角隐式跨手势展开**：不再将单段斜拉（如 `↙`）静默展开为组合手势（如 `↓ ←` 关闭窗口），避免斜拉早松手误关整个浏览器窗口。",
@@ -1364,6 +2031,7 @@
           },
           {
             "title": "搜索结果表格「所在目录」列宽自由拖拽修复",
+            "category": "feature",
             "items": [
               "**全列 1:1 像素级顺滑调宽**：修复默认表格视图下拖动「所在目录」右边界误压缩右侧「大小」列而被 `72px` 最小宽度卡死、以及锁宽后仍被 `minmax(px, 1fr)` 强行撑回导致缩不动的问题；改为与 Windows 资源管理器 / Everything 一致的单列像素直调，拖动时自动冻结左侧弹性列防漂移，超出窗口宽度自动触发平滑横向滚动（感谢 V2EX @lzrainchen）。"
             ]
@@ -1379,9 +2047,16 @@
       "publishedAt": "2026-11-22T15:32:39+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.3.0** 官方正式版。以下为相较上一个正式发行版 **v1.2.1** 的核心新功能、社区反馈落地与性能优化摘要。",
+        "counts": {
+          "feature": 2,
+          "improvement": 3,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "全新独立 Rust 版 Picasa 轻量看图器 (`Tools3000_Picasa_Viewer.exe`)",
+            "category": "feature",
             "items": [
               "**单文件零依赖与原版灵魂还原**：基于纯 Rust + Direct3D11 / DirectComposition / Direct2D 构建，体积 `< 2 MB`、无需额外运行库即可独立运行；完整还原半透明桌面穿透、纯净贴边柔和阴影、图片区内左键自由拖拽定位、点击空白处或任务栏自动缩为标准可缩放小窗口、光标锚点对数滚轮缩放、底部胶片缩略图流、平滑叠化幻灯片放映与两级 `Esc` 退出，并实现 GPU 上传后零双份常驻与空闲极低内存占用。",
               "**现代高分屏与格式补强**：原生适配 100%~250%+ 混合多屏缩放，支持 17 种常见/现代/动图/矢量图片格式与顺逆时针旋转、水平/垂直无损翻转；内嵌与主程序一致的 8 语种并自动跟随系统语言，内置高分屏文件关联配置面板（安装包默认不勾选，可随时在「设置 -> Picasa 看图器」一键开启或关闭）。"
@@ -1389,6 +2064,7 @@
           },
           {
             "title": "文件与全文搜索全面重构",
+            "category": "improvement",
             "items": [
               "**独立标准 Windows 应用窗口**：支持任务栏驻留、最小化、最大化/还原、系统分屏贴靠与右键窗口菜单，切到其他软件后按 `Alt+Space` 直接呼出搜索窗，不再误触发上一次结果的快速预览（感谢 V2EX `@xclimbing`）。",
               "**Everything 风格纯净表格视图与扩展属性列**：升级为高密度表格视图，全列支持表头整格点击直控排序、自由调宽、拖拽换序与右键选列；支持 36+ 扩展属性视口惰性加载、随时可选历史搜索下拉与底部实时扫描进度栏（感谢 V2EX `@xclimbing`）。",
@@ -1398,6 +2074,7 @@
           },
           {
             "title": "截图独立快速保存与 OCR 识别提速",
+            "category": "improvement",
             "items": [
               "**截图工具栏新增独立「快速保存」按钮**：左键点击或按 `Ctrl+Shift+S` 免弹窗一键直存截图保存目录（默认 `%LOCALAPPDATA%\\Tools3000\\Screenshots`，便携模式为程序同级 `Tools3000Data\\Screenshots`，可在「设置 -> 截图与录屏 -> 保存目录」随时自定义并常驻展示，无需开启自动保存），右键点击或按 `Ctrl+S` 弹出系统另存为对话框，完整覆盖普通截图、长截图与贴图二次编辑（感谢 V2EX `@wildqueen`）。",
               "**OCR 识别大幅提速**：修复同目录误清 DirectML 推理会话导致的重复冷启动，引入两阶段热保活（60 秒显存整理 + 15 分钟空闲释放）、4KB 模型头校验与二维码局部 ROI 快路径，大幅缩短截图与贴图文字识别耗时。"
@@ -1405,6 +2082,7 @@
           },
           {
             "title": "鼠标手势个性开关与硬件亮度控制",
+            "category": "feature",
             "items": [
               "**轨迹视觉独立开关**：新增「松手渐隐效果」与「手势提示文字」独立开关，关闭渐隐后松手 0ms 即刻清屏，轨迹线与提示文字可自由正交组合（感谢 V2EX `@wildqueen`）。",
               "**原生删除键与单键快捷发送**：内置命令新增「删除键 (`Delete`)」「退格键 (`Backspace`)」，手势「发送快捷键」编辑器放行单键录入，无需手写 Lua 脚本（感谢 V2EX `@wildqueen`）。",
@@ -1413,6 +2091,7 @@
           },
           {
             "title": "后台待机瘦身与发布包精简",
+            "category": "improvement",
             "items": [
               "**后台静默资源治理**：完善 WebView2 隐藏挂起与 QuickLook 闲置销毁、截图插件 12 个重型多媒体/AI 运行库按需延迟加载、贴图写时复制及 AI 修复/聚光灯闲置释放，显著降低后台常驻内存与 CPU 唤醒，同时保持高压下手势跟手与搜索瞬开。",
               "**安装包瘦身与文档同步**：剔除冗余未引用 DLL，跨账户卸载自动清理注册表与文件关联，发布资产精简为清爽 3 件套（安装包、便携包、`SHA256SUMS.txt`）；更新「关于」页面核心技术栈与全部 8 语种 README。"
@@ -1429,9 +2108,16 @@
       "publishedAt": "2026-11-21T18:48:13+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.2.1** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "全面升级全部 14 个设置页、独立浮窗与抽屉至温润精工视觉体系，采用流体双阶自适应画布（Reading 960px / Workspace 1280px）根治窄栏挤压手势表操作列与 104 键热力图截断问题",
               "重塑全站状态徽章与通知弹窗（AppToaster / SavedToast）为无噪微点与自适应紧凑毛玻璃浮层，彻底告别高饱和大绿块；标题栏左上角默认展示立体彩色 3D Logo",
@@ -1444,6 +2130,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "在 PROJECT_MEMORY.md 增量沉淀 Warm Precision 视觉体系、流体双阶画布、MECE 四维 WindowElementDetector 引擎、统一 AppToaster 与搜索模式正交解耦架构决策",
               "在 routes.ts 建立 canvasWidth 单一事实源并全面接入 @container app-canvas 容器查询；新建 AppToaster 统一接管主设置窗与搜文件浮窗全部 sonner 通知并关闭 richColors",
@@ -1455,6 +2142,7 @@
           },
           {
             "title": "稳定性与底层演进",
+            "category": "fix",
             "items": [
               "在全球 8 语种 README 中完整呈现「QQ/微信截图 -> 标注方便的 FastStone Capture -> 可贴图的 Snipaste -> 滚动长截图与 OCR 的 PixPin」真实工具演进轨迹"
             ]
@@ -1470,9 +2158,16 @@
       "publishedAt": "2026-11-21T15:21:57+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.2.0** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "彻底根治录屏、演播室导出与高精度 OCR 后主进程专用私有内存长期飙升至数 GB 的痛点，主进程常驻保持轻盈低耗，杜绝「关于」监控面板与任务管理器虚拟提交高企",
               "独立 OCR 子进程闲置 60 秒自动退场、录屏与演播室导出子进程任务完成即刻退场，由操作系统 100% 物理与虚拟内存双归零",
@@ -1481,6 +2176,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "根目录 LICENSE 写入 FSF 官方逐字 GNU GPL v3.0 原文以确保 GitHub Licensee 精准识别，同级新增 LICENSE-EXCEPTION.md 声明 GPLv3 Section 7 链接豁免并纳入 deploy.ps1 打包白名单",
               "全链路同步 8 语种 README、AboutPage.tsx、8 套前端国际化词典、ui/package.json、Scoop bucket、WinGet 1.10.0 多语言清单（通过 winget validate 实机校验）、SPDX SBOM 生成器与 41 份源码/文档头声明",
@@ -1507,6 +2203,7 @@
           },
           {
             "title": "稳定性与底层演进",
+            "category": "fix",
             "items": [
               "将项目全仓开源协议由 MIT 正式升级为 GNU GPL v3.0（附带标准 Windows 系统库与 Microsoft Edge WebView2 链接豁免），在保障个人与企业终端用户 100% 免费无限制使用的同时有效防止源码换皮闭源收割",
               "在「关于」页面版本号旁新增等宽真实编译构建日期展示（如 v1.2.0 · 2026-11-21），方便用户与排障场景一眼确认构建批次",
@@ -1535,9 +2232,16 @@
       "publishedAt": "2026-11-21T06:35:20+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.11** 官方正式版。本版本面向全球用户全面升级了 **8 种界面语言全栈支持**（默认自动跟随系统语言并支持随时手动切换）、**8 语种 Windows 安装向导**，以及 **8 套多语种 README 与 72 份本地化导演级交互演示资产**。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "**软件全界面原生支持 8 种语言**：全面覆盖 **简体中文 (`zh-CN`)、繁體中文 (`zh-TW`)、English (`en-US`)、日本語 (`ja-JP`)、한국어 (`ko-KR`)、Русский (`ru-RU`)、Português (Brasil) (`pt-BR`)、Español (`es-ES`)**，贯通设置中心、极速搜索、托盘菜单、QuickLook 预览、截图标注工具栏、贴图与贴图组、滚动长截图、高清录屏与自动运镜演播室、全局鼠标手势、键鼠回显、OCR 对照窗口与系统右键菜单。",
               "**默认自动跟随系统语言 + 一键防误切手动切换**：首次启动默认自动匹配当前 Windows 显示语言（未知语种自动回退 English）；随时可通过窗口标题栏快捷语言胶囊或「设置 -> 通用 -> 界面语言」即时切换，下拉选项展示各语种原生母语名称，杜绝误切外语后找不到切回入口。",
@@ -1547,6 +2251,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "构建 C++ 微内核 8 语种运行时 `UiI18n`（`TOOLS3000CORE_API` 跨 DLL 导出），通过 `GetUserDefaultUILanguage` + `LCIDToLocaleName` 精确区分简繁与海外系统语言；基于 O(1) 线程安全不可变词典快照加载 `resources/locales/native/<tag>.json`，提供 `noexcept` 常驻指针与异常安全 `{0}/{1}` 占位符格式化 API。",
               "完成全库 55 个 C++ 原生 UI 源文件共 855 个原生词条迁移与 6 套海外/繁体原生词典精译；同步升级 `MessageBridge` 透传 `systemLanguage` / `resolvedLanguage` 并修正 `Logger` 海外语种日志路由至英文模板。",
@@ -1557,6 +2262,7 @@
           },
           {
             "title": "质量门禁与稳定性保障",
+            "category": "fix",
             "items": [
               "新增 C++ 单元测试 `UiI18nTest.EightLanguageResolutionCatalogLoadingAndInstallerContract` 与前端单测 `ui/src/i18n/languages.test.ts`，验证全栈 8 语种解析、词典完整加载与安装器契约。",
               "全量通过前端 7 重静态门禁、Vitest 196/196 单测、C++ 全量 781/781 单测、三合一单次切屏鼠标手势 E2E、截图录屏演播室 E2E、文件与内容搜索跨进程 E2E、按键回显硬断言 E2E 以及 Authenticode 代码签名强校验。"
@@ -1573,9 +2279,16 @@
       "publishedAt": "2026-11-21T02:37:53+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.10** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "在文本识别设置页新增「识别精度档位」选择：日常截图与代码默认使用约 16 MB 的极速轻量版，默认安装包保持零膨胀",
               "针对高频识别手写笔记、拍屏与复杂模糊文档的用户，支持一键按需叠加下载 ~90 MB 高精度离线增强模型，下载后自动激活，也可随时一键移除释放磁盘空间",
@@ -1584,6 +2297,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "生成并归档 docs/images/{zh-CN,en-US}/pin_groups_demo.webp（~820 KB），升级 8 卡 2+2+3+1 结构 Bento 总览海报 feature_bento_overview.png 与演播室导出动图 screen_recording_demo.webp，并校验中英双语 README 全部 10 处图像路径与零 Emoji 合规。",
               "渲染并归档中英双语共 10 份全新高保真视觉资产（feature_bento_overview.png、ocr_live_text_demo.webp、升级版演播室 screen_recording_demo.webp、content_search_demo.webp、capture_markup_demo.webp），全部动图体积克制在 357~977 KB",
@@ -1603,6 +2317,7 @@
           },
           {
             "title": "稳定性与底层演进",
+            "category": "fix",
             "items": [
               "新增中英双语「桌面贴图与贴图分组管理」高清动图（展示 F3 多图置顶、彩色分组、顶部导览条按组秒切与一键磁吸平铺），让 8 大核心功能全部具备直观动图展示",
               "升级演播室动图、Bento 总览图与 README 说明，明确突出录屏支持一键导出 MP4、微信直发 GIF（免点直播表情 / 可双击放大高清大图）与高清动态 WebP",
@@ -1630,9 +2345,16 @@
       "publishedAt": "2026-11-21T01:22:27+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.9** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "彻底根治虚拟机及物理机直接运行安装包覆盖升级后自动重启系统的问题，无论交互式点击完成还是静默安装均实现 100% 物理零重启当场生效",
               "清除演播室扫描外部第三方软件目录的历史残留，确保任意纯净新机安装后背景数量与开发机 100% 一致且零版权风险",
@@ -1642,6 +2364,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "新增 SSOT 判定函数 OcrEngine::shouldSeamlessJoinSoftWrappedJsonLine：基于转义感知双引号状态机与 JSON 上下文检测，结合同栏邻接几何约束及漏引号跨新键 \"Key\": 防误粘护栏。",
               "统一接入 PinWindowOcr::joinAlignedSelectedPieces、OcrEngine::orderTextBlocksWithXYCut、OcrEngine::recognizeToText 与 OcrEngine::smartMergeParagraphs。",
@@ -1703,6 +2426,7 @@
           },
           {
             "title": "稳定性与底层演进",
+            "category": "fix",
             "items": [
               "解决压缩单行 JSON 或长 URL 在编辑器自动软折行（例如中文字\"浇/封\"、\"电/子\"、\"产/品\"跨行）时，贴图划选复制或对照面板复制会在字符串内部插入硬换行符 \\r\\n 导致粘贴到 Postman/Apifox/VS Code 报 JSON 语法错误的问题。",
               "复制整段软折行紧凑 JSON 后可直接通过 Postman Beautify 一键格式化，无需手工删除中间换行。",
@@ -1753,9 +2477,16 @@
       "publishedAt": "2026-11-20T10:51:37+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.8** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 0,
+          "total": 2
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "演播室自动运镜全面升级为认知友好型体验：新增「柔和 / 标准 / 动感」三档预置与倍率（低至 1.00x）、节奏、触发频率、聚焦暗角四维无级微调，支持「放大时锁定视角」防文字漂移与视觉因果自动纠偏，告别打断观看思路的频繁晃动",
               "长截图编辑器支持鼠标悬停在已选中的标注图元（箭头、矩形、椭圆、线条、文字、序号、马赛克等）上滚动滚轮直接调节大小，空白处及未选中区域保持丝滑翻页",
@@ -1766,6 +2497,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "StudioTimeline / StudioVideoCompositor / StudioPreviewWindow 实现三档预置 + 四维无级参数 SSOT 持久化、非对称进出镜临界阻尼弹簧、84% 三脚架死区锁镜、160x90 代理帧视觉差分因果校正与微秒级低分高斯羽化聚光暗角",
               "CaptureInteractionPolicy.h 建立长截图滚轮路由单一事实源（resolveLongImageWheelRoute），引入非钳制文档坐标命中与随 DPI/缩放自适应的 11 DIP 恒定视觉容差带",
@@ -1785,9 +2517,16 @@
       "publishedAt": "2026-11-19T19:46:12+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.7** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 1,
+          "total": 3
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "修复长截图悬浮控制台点击「完成/暂停/贴图/保存/取消」无响应的问题，确保按钮悬停、防手抖与防连点反馈 100% 必达",
               "根治深色聊天/AI 对话及分栏界面的长截图复读机式重复拼接，解决触底微动误拼、手动回滚误报与启动 1 秒秒停痛点",
@@ -1799,6 +2538,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "移除 ScrollCaptureOverlay::m_controlHwnd 误调的 applyTaskbarSafeOverlayStyle（消除 WS_EX_TRANSPARENT 鼠标穿透），接入 SetCapture/WM_CAPTURECHANGED、按下期冻结重排与 Z-Order 压顶",
               "重构 ScrollCapture 引擎为有效纹理行双轨验证（ZNCC + 前景 MAD）、抗混叠 pyrDown 6 峰/5 簇、单次纹理锚定边栏桥接、32 条带静态侧栏剥离、前/后向对称对决及尾部全局防重复循环门禁（豁免周期表格）",
@@ -1815,6 +2555,7 @@
           },
           {
             "title": "稳定性与底层演进",
+            "category": "fix",
             "items": [
               "上线「方案 B」截图贴图原位无痕改字能力：选字即点 [改字] 原地修改图片中的文字，支持 60FPS 呼吸闪烁光标、鼠标点选定位与拖选、字号/字重/字体族/背景模式精调、双击二次编辑与 Ctrl+Z/Ctrl+Y 零重跑 OCR 无损还原。",
               "新增可选按需下载的 MI-GAN 512 本地 AI 纹理修复模型（设置 -> 文字识别），基础安装包 0 KB 膨胀，支持断点进度、取消下载与一键移除。",
@@ -1835,9 +2576,16 @@
       "publishedAt": "2026-11-19T11:37:45+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.6** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 0,
+          "total": 2
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "**任意行距零压字文字批注**：针对代码编辑器、终端日志、密集表格等窄行距场景，波浪线与直线自动探测两行真实缝隙并精准停泊居中，绝不再冲入下一行盖住文字；同时在遇到任意文字笔画（如 `g/p/q/y` 降部或极窄行距字头）时自动退居文字底层，保证字迹 100% 刀锋清晰，宽松网页文档则继续保持舒展大气的斜角书法丝带质感；",
               "**标注后 `Ctrl+C` 与工具栏复制 100% 必达**：修复在贴图上给选中文字画完波浪线/直线/荧光笔后按 `Ctrl+C` 仍误复制为纯文本的问题；清透批注态下按 `Ctrl+C` 或点击悬浮舱自动切显的「复制图」按钮，均可直接复制带全部最新标注的高清图片；",
@@ -1847,6 +2595,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "`TextAnnotationHelper.h` 新增自适应行距几何求解器（`resolveAdaptiveWavyPlacement` / `resolveAdaptiveStraightPlacement` / `findNearestBelowSpanGap`），随真实行间走廊宽度连续平滑收束振幅、笔宽与直线弓弧；",
               "`MarkupEngine.cpp` 新增外围纯背景环带采样（`estimateLocalBgBgrFromCanvas`）、像素级真实行间走廊探测（`probeTextRowCorridorFromCanvas`）与对比度自适应文字保护穿底混合（`blendHandDrawnInkBehindTextOntoCanvas`），并补齐冷启动首次绘制荧光笔/波浪线前的 `ensureGdiplusStartup()` 防护；",
@@ -1865,9 +2614,16 @@
       "publishedAt": "2026-11-19T10:47:22+08:00",
       "zh": {
         "summary": "欢迎使用 **Tools3000 v1.0.5** 官方正式版。以下为本次版本的核心功能演进、问题修复与底层架构改进摘要。",
+        "counts": {
+          "feature": 1,
+          "improvement": 1,
+          "fix": 0,
+          "total": 2
+        },
         "sections": [
           {
             "title": "业务与功能体验进化 (用户视角)",
+            "category": "feature",
             "items": [
               "选中文字原位智能批注：贴图与截图框选双入口支持对识别出的文字一键添加清透荧光笔、38度斜角书法丝带波浪线与微弧手绘重点直线，支持同选区叠加、快捷键极速落笔、多色实时换色与无损撤销重做，且零重跑 OCR",
               "批注工具栏视觉重构：贴图悬浮舱与截图二级属性栏全面升级为高定微晶分段轨道槽、立体浮起滑块卡片与高光珠宝色珠，彻底消除廉价红底误配与拥挤观感",
@@ -1879,6 +2635,7 @@
           },
           {
             "title": "架构演进与技术重构 (底层实现)",
+            "category": "improvement",
             "items": [
               "新增 TextAnnotationHelper.h 实现版面感知跨行选区桥接、黄金呼吸间距基线与 C无穷光滑相位调制的 38 度斜角平头书法笔尖丝带生成器，结合 MarkupEngine 单通道联合蒙版正片叠底与背景亮度自适应油墨渐变",
               "ScreenRecorder 引入微秒级 freezeCaptureImmediately 物理采样屏障、RecordingIndicator 轻量保存态接管、StudioPreviewWindow 离屏首帧预提交与 AVFrame TV Black 预填四重防线",
@@ -1898,9 +2655,16 @@
       "publishedAt": "2026-11-19T02:59:23+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.0.4 官方正式版**！本次版本聚焦 **全场景离线实景文字识别（Live Text OCR）的十倍级性能跃迁与零遮挡对照交互重塑**，全面引入 **DirectML 多档固定形状 Session 零重编译架构与后台空闲 PSO 预热**、**近轴对齐零拷贝切片与 FFD 降序最佳条带装箱**、**自适应斜铺半透明溯源水印精准剔除**、**8-Slot 图像内容指纹毫秒级缓存**、**0ms 原位实景贴图与智能侧翼避让对照面板**，并补齐 **录屏演播室与全套浮层窗口的实时主题色/深浅色同步**。 Welcome to **Tools3000 v1.0.4 Official Release**! This release delivers a world-class leap in **Live Text OCR performance and side-by-side workflow UX**, featuring **Zero-Recompile Fixed-Shape DirectML Session Buckets with Background PSO Pre-warming**, **Zero-Copy Axis-Aligned Cropping & First-Fit Decreasing (FFD) Strip Packing**, **Adaptive Faint Diagonal Traceability Watermark Filtering**, **Sub-millisecond 8-Slot Image Content Fingerprint LRU Caching**, **0ms In-Place Live-Text Pinning with Non-Occluding Side-Docked Comparison Panel**, and **Real-Time Live Theme/Accent Synchronization across Studio & Capture Overlays**.",
+        "counts": {
+          "feature": 0,
+          "improvement": 4,
+          "fix": 0,
+          "total": 4
+        },
         "sections": [
           {
             "title": "[十倍级 OCR 极速架构] DirectML 固定桶零重编译、突发缓存拉取与后台静默预热",
+            "category": "improvement",
             "items": [
               "**固定形状多桶 Session 彻底消灭 GPU 动态重编译风暴**：构建 **3 档 DBNet 检测画布桶**（`960×640`、`1280×1024`、`960×1280`）与 **4 档识别微批次桶**（`1×640`、`4×960`、`16×960`、`32×960`），根除任意选区尺寸与动态条带宽度引发的百次级 DirectML / D3D12 算子图推翻重编译；高分屏密集长图文（`2226×1652`，2,700+ 字）端到端耗时由 `18.68s` 压降至 **`1.56s`**（提速 **`12.0x`**），多栏密集网格业务单据（`1024×537`）压降至 **`0.73s`**，日常中小选区 **`90 ~ 220ms`** 瞬时出字；",
               "**启动期后台低干扰静默预热（`warmupAsync`）**：插件就绪后在后台低优先级线程自动完成模型加载与常用固定桶管线预编译，消灭首次识字 `3.0s` 冷启动等待；",
@@ -1909,6 +2673,7 @@
           },
           {
             "title": "[高精度几何装箱与抗水印干扰] 零拷贝切片、FFD 降序装箱、斜铺淡水印剔除与指纹缓存",
+            "category": "improvement",
             "items": [
               "**近轴对齐 `O(1)` 零拷贝切片与 FFD 降序最佳装箱**：对常规水平文本行直接采用零拷贝子图切片与无逆透视矩阵的线性字符像素映射（小字行采用 `cv::INTER_CUBIC` 保持紧凑英文间距锐度）；长行采用单趟连续指针列方差切分，配合 **First-Fit Decreasing (FFD)** 降序条带紧凑装箱与语序还原，条带装载率提升至 `92%+`；",
               "**自适应斜向半透明溯源水印精准过滤**：当页面主体为水平正交排版时，自动对 `14° ~ 68°` 倾角候选框执行内部双线性网格灰度分位数采样，精准剔除低对比度斜铺溯源水印，100% 零误伤灰底行内代码胶囊与表格细字，消除水印乱码穿插与近半无效推理；",
@@ -1917,6 +2682,7 @@
           },
           {
             "title": "[世界级识字交互与全域实时主题] 0ms 原位实景贴图、侧翼避让对照面板与零重复推理",
+            "category": "improvement",
             "items": [
               "**0ms 原位贴图 + 侧翼停靠对照双流合一**：截图框选点击 `[提取文字]` 瞬间 `0ms` 在原选区坐标生成实景选字贴图，并将识别结果面板**智能侧翼吸附停靠在原图右侧/左侧边缘**（告别居中弹窗遮挡原图，状态刷新平滑无闪烁）；单次推理结果同时驱动原图直接划词/复制表格与侧翼面板全文精修；",
               "**零重复推理与最新任务优先接管**：贴图后台预热完成时按 `Ctrl+T` / 右键提取文字 `0ms` 直接消费内存结果，预热进行中自动挂载完成意图复用唯一在途任务，彻底根除双线程排队重复识别；连续框选识字支持最新任务 `0ms` 优先接管，永不弹窗阻断用户操作；",
@@ -1924,11 +2690,8 @@
             ]
           },
           {
-            "title": "发布资产与 SHA-256 校验说明 (Release Assets)",
-            "items": []
-          },
-          {
             "title": "开源许可证与作者署名 (License & Attribution)",
+            "category": "improvement",
             "items": [
               "**项目作者 (Author)**：**`Yy1 (yuan278501381)`**（GitHub：@yuan278501381）",
               "**项目仓库 (Repository)**：https://github.com/yuan278501381/Tools3000",
@@ -1946,9 +2709,16 @@
       "publishedAt": "2026-11-18T23:51:46+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.0.3 官方正式版**！本次版本全面重塑了录屏演播室的视听与操控质感，带来 **双层视网膜超清预览引擎（`StudioHiResFrameReader`）**、**电影胶片画廊 + 三层雕刻声学山峦曲线与静音气口引导主轨**、**黄金三段式走带控制栏与三级长·中·短精密游标卡尺时间刻度（支持 `1x ~ 24x` 无级局部精修缩放与 4 小时超长录屏）**、**深浅背景自动适应的企业溯源与品牌双模水印全链路系统**，以及 **WinML/DirectML 硬件加速与版面感知严苛基线对齐的秒级实景选字 OCR**。 Welcome to **Tools3000 v1.0.3 Official Release**! This release elevates the Studio screen recording, capture watermarking, and Live Text OCR engines to a new level of precision: introducing a **Dual-Tier Retina Native-Resolution Preview Engine**, **Cinema Filmstrip + Sculpted Acoustic Mountain Waveform with Smart Silence Guides**, **Symmetric Three-Zone Transport Bar & Three-Tier Vernier Timecode Ruler (with `1x ~ 24x` zoom and 4-hour long-session architecture)**, **Light/Dark Auto-Adaptive Brand & Traceability Watermarks**, and **WinML/DirectML Accelerated Layout-Aware Live Text OCR**.",
+        "counts": {
+          "feature": 0,
+          "improvement": 5,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "[演播室视听与时间轴重塑] 双层视网膜超清舞台、电影胶片山峦音轨、黄金三段式走带与三级精密刻度",
+            "category": "improvement",
             "items": [
               "**标准 Windows 自由缩放窗口与双层视网膜超清预览引擎**：演播室全面采用原生 `WS_OVERLAPPEDWINDOW` 架构，支持四边与四角丝滑拉伸大小、Aero Snap 边缘贴靠分屏、双击最大化与尺寸记忆；内置 `1280px` 瞬时代理帧牌组 + 驻留式原片全分辨率解码器 `StudioHiResFrameReader`（含 LRU 帧缓存与 `HIGH_QUALITY_CUBIC` 视口像素级对齐），无论窗口拉得多大或叠加高倍特写运镜，代码与表格文字始终刀锋般锐利；",
               "**黄金三段式对称控制栏与 `1.0x ~ 24.0x` 时间轴无级精修缩放**：左翼聚合 `[拆分(S) | 删除 | 倍速]`、`[撤销 | 重做]`、`[标注 | 运镜]` 创作三舱；中枢居中锚定一体式微晶走带控制台 `[ |< 跳回片头 ] [ < 上一帧 ] [ 立体主播放/暂停 ] [ > 下一帧 ] | 双色防抖等宽时间码`（支持 `Home` 与 `Left / Right` 单帧微调）；右翼配备 `[ 全览/倍率 | - ──o── + ]` 视野缩放舱，支持悬停时间轴直接滚轮光标中心锚定缩放、`Shift+滚轮` 或底部微晶滑块平滑平移；",
@@ -1959,6 +2729,7 @@
           },
           {
             "title": "[全链路企业溯源与品牌水印] 图片 Logo / 文字角标 / 斜铺溯源三模合一与深浅背景自动显影",
+            "category": "improvement",
             "items": [
               "**演播室成片与静态截图/贴图共享单一事实源水印引擎**：全面支持透明 PNG/WebP 品牌 Logo（记忆最近 6 张常用徽标，支持直接在预览画面拖拽自由定位与右下角手柄无级缩放）、微晶胶囊文字角标与 `-28°` 斜向交错网格平铺水印；",
               "**深浅与中间调背景自动适应显影**：平铺水印支持 `{user}`、`{host}`、`{date}`、`{time}` 智能变量双向点选开关、`35% ~ 280%` 全程线性字号缩放，以及平滑亮度场双极自适应混合——无论浅色文档表格、深色代码窗口还是中间灰界面均自动呈现清晰柔和的对比度，且固定在画面顶层不随镜头推拉晃动；支持企业策略注册表强制锁定，并与主设置界面双向实时同步。"
@@ -1966,6 +2737,7 @@
           },
           {
             "title": "[录屏画质、音频与系统级细节] 硬件高码率防噪点、全局锁色板纯净 GIF 与一体化麦克风选择",
+            "category": "improvement",
             "items": [
               "**缩放运动零马赛克与纯净无偏色双档 GIF**：激活硬件编码质量优先模式与高动态码率根除全屏缩放帧宏块噪点；GIF 导出跨全片均匀预采样构建锁定全局 256 色调色板（内置 12 级无偏色中性黑白灰护栏与平坦纯色零抖动死区锁），彻底消除深色背景斜纹噪点与中途切入浅白界面的偏黄染色，清晰区分 `GIF (微信表情 · 免点直播)` 与 `GIF (高清大图 · 可双击放大)`；",
               "**一体化麦克风分体胶囊与纯净系统原声**：录屏工具栏提供 `[ 图标开关 | 选择来源 ]` 分体胶囊，默认对齐 Windows 控制台默认输入设备并支持一键切换外接/内置麦克风；人声降噪严格仅作用于麦克风通道，100% 原样保留电脑系统背景声音；补齐跨现代编辑器（VS Code / 浏览器 / 办公软件）打字自动运镜以及录制期自动隐藏任务栏与桌面图标。"
@@ -1973,17 +2745,15 @@
           },
           {
             "title": "[微信级离线实景选字 OCR] WinML/DirectML 硬件加速、秒级静默预热与版面感知严苛基线对齐",
+            "category": "improvement",
             "items": [
               "**WinML/DirectML 加速与贴图 0ms 静默预热**：接入系统原生 `Windows.AI.MachineLearning` 零拷贝张量与宽幅条带合批推理（优先启用 DirectML GPU 加速），贴图创建瞬间后台低干扰静默完成预热，鼠标移入文字即刻划选；",
               "**版面感知分栏隔离与严苛水平行对齐**：自动检测物理竖向窗格分割线与半屏空白鸿沟，隔离异构侧边栏与多区域表单，杜绝跨栏串行与超长幽灵框。"
             ]
           },
           {
-            "title": "发布资产与 SHA-256 校验说明 (Release Assets)",
-            "items": []
-          },
-          {
             "title": "开源许可证与作者署名 (License & Attribution)",
+            "category": "improvement",
             "items": [
               "**项目作者 (Author)**：**`Yy1 (yuan278501381)`**（GitHub：@yuan278501381）",
               "**项目仓库 (Repository)**：https://github.com/yuan278501381/Tools3000",
@@ -2001,9 +2771,16 @@
       "publishedAt": "2026-11-17T01:38:58+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.0.2 官方正式版**！本次版本迎来了三大生产力引擎的重磅跃升：**演播室自动运镜录屏与多格式高定背景导出台（含微信直发自动播放 GIF 与网页动态 WebP）**、**微信级原图实景选字双引擎高精度离线 OCR（PP-OCRv4 + Excel 零空列表格直贴）** 以及 **工程制图与办公文档零文件锁空格秒看引擎（CAD/天正/DXF/CDR/PSD/AI/3D/Office/PDF）**，同时根治了 4K 高分屏下第三方中文输入法候选框过小与全文检索大体积字体流耗时等深水区痛点。 Welcome to **Tools3000 v1.0.2 Official Release**! This release introduces three flagship productivity engines: **Studio Auto-Zoom Screen Recorder & Multi-Format Export Suite** (featuring WeChat inline auto-play GIFs, 24-bit animated WebP, 4K GPU hardware encoding, and 8 curated Calm/Airy/Landscape backdrops), **Dual-Engine Offline Live Text OCR** (powered by PP-OCRv4 ONNX with zero-column-drift Excel table reconstruction and QR decoding), and **Zero-Lock Industry CAD/Prepress/3D & Office/PDF QuickLook Preview**, alongside PerMonitorV2 IME scaling and ultra-fast PDF full-text indexing.",
+        "counts": {
+          "feature": 2,
+          "improvement": 3,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "[演播室录屏与导出] 自动点击放大运镜、8 款高定背景与微信自动播放 GIF / 动态 WebP 导出台",
+            "category": "feature",
             "items": [
               "**物理弹簧自动运镜与超清矢量光标重绘**：开启演播室模式后（录制倒计时卡片实时呈现自动放大运镜提示，正式开录自动隐藏左下角快捷键浮层零穿帮），每次鼠标点击与输入焦点切换均通过二阶临界阻尼弹簧（零超调）平滑推进特写镜头，配合 `OneEuroFilter2D` 滤除手部微抖动并在放大画面顶层以亚像素精度重绘超清矢量指针与点击波纹；停止录制即刻弹出 30fps 实时演播室预览窗，支持分段独立开关运镜或 0 秒一键保留原片；",
               "**沉稳 · 轻盈 · 风景 三大系列 8 款高定背景**：摒弃传统生硬线性渐变，采用多光源高斯弥散网格、四层大气透视远山剪影与湖面晨光程序化合成及 `4x4 Bayer` 抗色带抖动，内置 **沉稳系列**（`深海曜石`、`暮夜星云`、`松烟墨翠`）、**轻盈系列**（`晨雾云母`、`暖杏羊绒`、`晴空薄荷`）与 **风景系列**（`暮色苍山`、`拂晓湖山`），演播室右侧提供 `4x2` 实时缩略图卡片一键直选；",
@@ -2015,6 +2792,7 @@
           },
           {
             "title": "[高精度离线文字识别] 微信级原图实景选字 (`Live Text`)、PP-OCRv4 引擎与纯净表格直贴",
+            "category": "feature",
             "items": [
               "**零门槛贴图实景选字与顺手扫二维码**：贴图空白处保持左键拖拽移动，鼠标移入图内文字自动切换 `I` 型光标逐字流式划选、双击选词，松手即现 `[复制]`、`[复制为表格]`、`[对照面板]` 微晶胶囊，并自动识别正色与深底反色二维码；",
               "**零依赖膨胀的 PP-OCRv4 离线模型包与按需安装**：复用内置 `OpenCV DNN` 驱动 DBNet 倾斜检测 + 方向矫正 + SVTR/CRNN 双宽度分桶推理（内置 Protobuf 动态符号维度固化重写器与模型内嵌 6,623 字词典自解析，国内镜像高速直连下载），安装包同步提供默认不勾选的可选离线引擎子项；",
@@ -2023,6 +2801,7 @@
           },
           {
             "title": "[QuickLook 空格预览] 工程制图、印前设计、3D 模型与办公文档 100% 零文件锁秒看",
+            "category": "improvement",
             "items": [
               "**工业与设计专业格式全覆盖**：支持 AutoCAD / 天正建筑 `.dwg`、SolidWorks `.sldprt/.sldasm`、SketchUp `.skp` 高清预览，`.dxf` 多图层交互式矢量看图（10%~5000% 光标中心缩放、底色自适应反色与中文图层开关），CorelDRAW `.cdr` 多页预览，Photoshop `.psd/.psb` 流式合成大图，Illustrator `.ai/.eps` 矢量渲染，以及 `.stl/.obj` 零依赖 WebGL 双光源 + 线框 360° 3D 检视器；",
               "**办公文档零乱码无文件锁引擎**：全链路采用共享内存瞬时读取并即刻释放句柄（不阻塞外部软件保存或重命名），支持 `.xlsx/.csv/.tsv` 标准字母列标与多工作表 0ms 切换、`.docx` 段落表格与内嵌截图混排渲染、`.pptx` 幻灯片大纲及 `.pdf` 内存高清页面光栅化。"
@@ -2030,17 +2809,15 @@
           },
           {
             "title": "[高分屏输入法与全文检索] 原生 `PerMonitorV2` 清单适配与 PDF 检索加速",
+            "category": "improvement",
             "items": [
               "**4K 高分屏第三方中文输入法完美缩放**：为 `Tools3000.exe` 静态嵌入 `PerMonitorV2` 高分屏感知清单与 Windows 10/11 兼容 GUID，联动 WebView2 `NotifyParentWindowPositionChanged` 实时同步输入焦点坐标，彻底解决高分屏缩放环境下搜索窗内搜狗等中文输入法候选框显示过小的问题；",
               "**全文检索与百万索引冷启动提速**：`PdfExtractor` 精准识别并免解压秒跳 PDF 内嵌数 MB 二进制字库流与图像流，大幅缩短海量文档 `content:` 检索耗时；300 万级文件快照升级单趟流式加载与后台低优先级异步预热，确保首次搜索流畅响应。"
             ]
           },
           {
-            "title": "发布资产与 SHA-256 校验说明 (Release Assets)",
-            "items": []
-          },
-          {
             "title": "开源许可证与作者署名 (License & Attribution)",
+            "category": "improvement",
             "items": [
               "**项目作者 (Author)**：**`Yy1 (yuan278501381)`**（GitHub：@yuan278501381）",
               "**项目仓库 (Repository)**：https://github.com/yuan278501381/Tools3000",
@@ -2058,9 +2835,16 @@
       "publishedAt": "2026-11-16T13:27:28+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.0.1 官方正式版**！本次发布围绕 **桌面贴图与截图标注心流重塑、跨表面原生/Web 主题大一统、百万级搜索引擎内存瘦身与并发提速、底层键鼠管线收敛** 进行了全栈深度进化，累计合入 37 项体验打磨与工程加固。 Welcome to **Tools3000 v1.0.1 Official Release**! This release delivers a comprehensive Direct2D crystal context menu overhaul for desktop pins, multi-point polyline & centripetal smooth curve markup, 50-step full-transaction vector Undo/Redo, cross-surface dark/light & accent theme unification, and a ~50.3 MB memory reduction across the multi-million-file search index.",
+        "counts": {
+          "feature": 0,
+          "improvement": 5,
+          "fix": 0,
+          "total": 5
+        },
         "sections": [
           {
             "title": "[贴图与交互] Direct2D 微晶自绘右键复合面板与实时无级不透明度滑块",
+            "category": "improvement",
             "items": [
               "**三段式减负信息架构**：彻底告别旧版平铺 23~25 行的系统灰白长菜单，重构为 **「顶栏 6 枚图文快捷格 + 实时无级不透明度滑块 + 6~7 行精炼主干」**，一级扫视认知负荷降低 65%，且 100% 保留全部既有功能与键盘快捷键；",
               "**高频动作抬手即达**：顶栏等宽排布 `复制`、`标注`、`识字`、`旋转`（支持 `Shift + 点击` 直接逆时针旋转 90°）、`反色`（激活态高亮微晶胶囊）、`保存`，大幅缩短鼠标移动距离；",
@@ -2070,6 +2854,7 @@
           },
           {
             "title": "[截图标注与 OCR] 多点折线/美感向心曲线连接、文字交叠防挖空与无损编辑栈",
+            "category": "improvement",
             "items": [
               "**直线工具双模态升级（多点折线 & 美感平滑曲线）**：保留按住拖拽秒画单段直线的直觉手感；轻点画布即进入多点连续连线模式，二级属性栏支持一键互切 **「多点折线连接」** 与 **「美感向心样条曲线 ($\\alpha = 0.5$)」**（严格穿过每个点击锚点、数学保证零自交打结，落盘采用 `1/16 px` 亚像素精度消除斜向锯齿），支持 `Backspace` 撤回锚点、靠近起点磁吸闭合成环及独立顶点微调手柄；",
               "**默认燕尾箭头与思源黑体字芯杂色根治**：箭头工具初始默认升级为现代利落的**燕尾箭头**；根治 `Noto Sans SC` / `Source Han Sans SC` 汉字交叠笔画在 `FillModeAlternate` 奇偶规则下产生的交叉处白色挖空虚线杂色，切换为非零环绕规则 (`FillModeWinding`) 与离屏满不透明度合成；",
@@ -2079,6 +2864,7 @@
           },
           {
             "title": "[文件与正文搜索] 百万级索引立省 ~50 MB 内存与无锁并发加速",
+            "category": "improvement",
             "items": [
               "**索引结构精简与零锁阻塞水合**：移除 `FileIndexStore` 冗余平行键表，在 275 万文件规模下立省 **`~50.3 MB`** 常驻物理内存；引入支持嵌套工作窃取的常驻查询线程池，消除持锁期间的磁盘属性阻塞；桌面/开始菜单快捷方式与 `FOLDERID_AppsFolder` UWP 应用提权排序；",
               "**斜杠路径双级预筛与 Excel 行号精确还原**：支持形如 `service\\main.cpp` 的目录位掩码 + 末段文件名 $O(1)$ 预筛；`ZipXmlExtractor` 升级 65KB EOCD 按需流式解压并解析 `.xlsx` `sharedStrings.xml` 按行精确还原单元格文本；`rust_content` 补齐运行时 AVX2 动态派发与 ARM64 NEON 加速。"
@@ -2086,6 +2872,7 @@
           },
           {
             "title": "[全局视觉、设置中心与系统底座] 跨表面主题大一统与零空转省电",
+            "category": "improvement",
             "items": [
               "**原生 Direct2D 浮层与 WebView2 主题/强调色全同步**：建立 `NativeThemePalette` 单一事实源，截图工具栏、贴图悬浮栏/右键面板/分组栏、长图控制台、录屏灵动岛、离线 OCR 结果窗、手势轨迹胶囊与文件对话框导览条全面联动深浅色模式与自定义主题强调色，WebView2 首帧同步挂载 `data-theme` 消除亮色冷启动闪屏；",
               "**设置中心 `Ctrl + K` 细粒度全文检索与纯矢量双回车热力图**：侧边栏搜索支持直达任意具体开关配置项；`KeyboardHook` 区分 `LLKHF_EXTENDED` 独立统计主键盘回车与小键盘回车热力分布；",
@@ -2093,11 +2880,8 @@
             ]
           },
           {
-            "title": "发布资产与 SHA-256 校验说明 (Release Assets)",
-            "items": []
-          },
-          {
             "title": "开源许可证与作者署名 (License & Attribution)",
+            "category": "improvement",
             "items": [
               "**项目作者 (Author)**：**`Yy1 (yuan278501381)`**（GitHub：@yuan278501381）",
               "**项目仓库 (Repository)**：https://github.com/yuan278501381/Tools3000",
@@ -2115,9 +2899,16 @@
       "publishedAt": "2026-11-11T15:33:17+08:00",
       "zh": {
         "summary": "欢迎体验 **Tools3000 v1.0.0 官方正式版**！这是 Tools3000 历经全链路深度打磨与系统工程精细演进后的首个官方正式里程碑版本。 Tools3000 是一款专为 Windows 10/11 与 Windows Server 平台日常办公、设计创作、开发运维与极客生产力打造的**全场景高性能原生桌面效率工具集**。依托 **C++20 原生微内核 + Rust SIMD 全文检索引擎 + Direct2D/DirectComposition 硬件加速合成**，Tools3000 将**文件与全文搜索、全局鼠标手势、屏幕四角触发角、全能截图与录屏、按键回显与统计、鼠标演示与特效、文件对话框助手、远程协助增强**深度熔铸为一体，提供轻盈纯净、随叫随到、无打扰的世界级桌面交互体验。 Welcome to **Tools3000 v1.0.0 Official Release**! Engineered with a native C++20 microkernel, a zero-dependency Rust SIMD full-text engine (`tools3000_content_rs`), and GPU-accelerated Direct2D/DirectComposition rendering, Tools3000 unifies **File & Content Search, Global Mouse Gestures, Screen Hot Corners, Screen Capture & Recording, Keycast Overlay & Analytics, Cursor Effects & Presentation, File Dialog Enhancer, and Remote Assistance Boost** into an ultra-lightweight desktop productivity suite.",
+        "counts": {
+          "feature": 2,
+          "improvement": 8,
+          "fix": 0,
+          "total": 10
+        },
         "sections": [
           {
             "title": "[01] 文件与全文搜索 (File & Content Search) — 275万文件秒查与正文穿透",
+            "category": "improvement",
             "items": [
               "**百万级文件毫秒响应与跨目录秒搜**：随时按下 `Alt + Space` 零延迟唤起搜索中心。基于底层 NTFS MFT 元数据直读、USN 实时增量日志与**可分离目录 64 位位掩码 (`FileRecord::dirMask`) + 极大反链预筛算法**，在 275 万真实文件规模下，跨目录多词查询与拼音首字母混搜（如 `xykj 部署手册`）耗时稳定在 **20~27 ms**；",
               "**最匹配优先置顶与无锁 Bloom Frecency 加权**：多关键词与多扩展名并集（如 `*.log *.txt log`）自动隔离扩展名假命中，按文件名主干（Stem）命中覆盖度分层置顶，并结合 **64 位双哈希 Bloom 运行历史无锁快照 (`RunHistorySnapshot`)** 将高频打开的文件（`[打开 N 次]`）智能排在最前；",
@@ -2128,6 +2919,7 @@
           },
           {
             "title": "[02] 全局鼠标手势 (Global Mouse Gestures) — 流光轨迹、边缘滚轮与即时触发",
+            "category": "feature",
             "items": [
               "**右键/中键轨迹、滚轮联动与屏幕边缘滑动**：按住右键（或中键）一划即可执行后退、前进、关闭标签页、恢复标签页、窗口置顶等操作；支持在桌面或任务栏边缘滑动滚轮调节系统音量或切换虚拟桌面；",
               "**实时方向提示与立即执行 (`instantExecute`)**：轨迹绘制期间实时呈现方向动作提示；支持轨迹达标刹那微秒级立即触发而无需等待松开按键，并提供应用级专属作用域规则与全屏游戏自动避让。"
@@ -2135,6 +2927,7 @@
           },
           {
             "title": "[03] 屏幕四角触发角 (Screen Hot Corners) — 零瞄准四角盲甩调度",
+            "category": "feature",
             "items": [
               "**四角物理盲操作**：将光标推入屏幕四个角落即可一键显示桌面、打开多任务视图或立即锁屏息屏；",
               "**防抖驻留滤波**：内置驻留延迟滤波，日常快速划过绝不误触，全屏游戏与观影时自动静默。"
@@ -2142,6 +2935,7 @@
           },
           {
             "title": "[04] 全能截图、长截图、贴图与高清录屏 (Capture, Scroll Capture, Pin & Recording)",
+            "category": "improvement",
             "items": [
               "**DirectX 零黑屏定格与对标 PixPin/Figma 精细标注**：",
               "按 `F1` 瞬间零黑屏定格并磁吸窗口边界；内置 **Figma 式近场平滑渐显 (`smoothstep`) 圆角手柄**与抗锯齿曲率光标；",
@@ -2159,6 +2953,7 @@
           },
           {
             "title": "[05] 按键回显与本地统计 (Keycast & Keystroke Analytics)",
+            "category": "improvement",
             "items": [
               "**DirectWrite 真实字宽测量与高对比微晶键帽**：实时渲染半透明微晶键帽与连击角标（`Ctrl + C x3`），长组合键自适应宽度绝不截断；",
               "**智能上档符号折叠与打字静默**：`Shift + 8` 自动折叠为 `*`；连续打字与拼音输入自动静默，仅在按下功能组合键时浮现；",
@@ -2167,6 +2962,7 @@
           },
           {
             "title": "[06] 鼠标演示与特效 (Cursor Effects & Presentation)",
+            "category": "improvement",
             "items": [
               "**双击 Ctrl 聚光灯焦点**：柔和压暗背景并高亮跟随光标，物理窗口主动缩减 1 像素（`vw - 1, vh - 1`）从底层阻断误触发 Windows 专注助手；",
               "**局部微视口点击水波纹与流光尾迹**：采用 100~300px 动态包围盒与 256 阶 LUT 查表渲染，GPU 开销降低 99%。"
@@ -2174,12 +2970,14 @@
           },
           {
             "title": "[07] 文件对话框助手 (File Dialog Enhancer)",
+            "category": "improvement",
             "items": [
               "**顶部微晶导览胶囊条**：在标准打开/保存对话框（`#32770`）顶部悬浮微晶胶囊，一键秒切至当前已打开的 Explorer 目录或收藏路径，并为不同宿主应用独立记忆工作目录。"
             ]
           },
           {
             "title": "[08] 远程协助增强 (Remote Assistance Boost)",
+            "category": "improvement",
             "items": [
               "**系统热键直通与 RustDesk 触控板四指横滑守护**：远控窗口内 `Alt + Tab`、`Win + E`、`Win + R` 直接透传至远端，同时智能放行本地虚拟桌面切换；内置 `MouseHook` 物理按键掩码追踪与手势延迟按下配对自愈机制，彻底根除 RustDesk/ToDesk 下精密触控板四指横滑间歇性失效；",
               "**11 通道修饰键粘滞急救与输入法智能脱敏**：快速双击右侧 `Ctrl`（或按 `Ctrl + Alt + Backspace`）无抢焦冲刷释放所有粘滞修饰键；进出远控窗口自动切换英文键盘（`ENG 0409`）并无感恢复本机输入法。"
@@ -2187,6 +2985,7 @@
           },
           {
             "title": "物理内存占用横向对比 (Memory Consumption Benchmark)",
+            "category": "improvement",
             "items": [
               "**日常静默待机仅 `~11 MB`**：原生编译零虚拟机包袱，窗口隐藏时自动挂载 `TrySuspend()` 冻结 WebView2 JS 堆；",
               "**全模块并发运转仅 `20 ~ 40 MB`**：八大核心模块并发常驻仅占传统 Electron 工具的 1/20；",
@@ -2194,11 +2993,8 @@
             ]
           },
           {
-            "title": "发布资产与 SHA-256 校验说明 (Release Assets)",
-            "items": []
-          },
-          {
             "title": "开源许可证与作者署名 (License & Attribution)",
+            "category": "improvement",
             "items": [
               "**项目作者 (Author)**：**`Yy1 (yuan278501381)`**（GitHub：@yuan278501381）",
               "**项目仓库 (Repository)**：https://github.com/yuan278501381/Tools3000",

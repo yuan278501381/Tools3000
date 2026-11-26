@@ -251,36 +251,55 @@ export default function SearchApp() {
     };
   }, []);
 
-  // 双 rAF 确认首帧（及挂起/最小化唤醒帧）实际栅格化提交后再通知原生宿主原子揭幕，杜绝 Win10/核显短暂黑屏闪烁
+  // 真实首帧握手（根治 Issue #29 Win10 LTSC / 机械盘首次黑屏）：
+  // 严禁使用短定时器（如 120ms）在 GPU 首帧尚未光栅化提交前谎报就绪而提前扯掉 DWM Cloak！
+  // 必须确认 document 可见 + 搜索输入框 DOM 已真实排版占位 + 经历完整双 rAF 渲染周期后再通知宿主原子揭幕。
   useEffect(() => {
     let raf1 = 0;
     let raf2 = 0;
     let resumeRaf1 = 0;
     let resumeRaf2 = 0;
-    let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
     let resumeTimer: ReturnType<typeof setTimeout> | null = null;
+    let layoutRetryCount = 0;
     const sendFirstPaintReady = () => {
       void bridgeRequest('search.firstPaintReady', undefined, { silent: true }).catch(() => undefined);
     };
     const notifyReady = () => {
       if (firstPaintNotifiedRef.current) return;
       firstPaintNotifiedRef.current = true;
-      if (fallbackTimer !== null) {
-        clearTimeout(fallbackTimer);
-        fallbackTimer = null;
-      }
       sendFirstPaintReady();
+    };
+    const isRealLayoutPainted = (): boolean => {
+      const inputEl = inputRef.current;
+      if (!inputEl) return false;
+      const rect = inputEl.getBoundingClientRect();
+      // jsdom 单测环境中 getBoundingClientRect 默认全 0，仅在真实浏览器存在视口宽高时强校元素尺寸
+      if (window.innerWidth > 0 && window.innerHeight > 0) {
+        return rect.width > 0 && rect.height > 0;
+      }
+      return true;
     };
     const scheduleVisiblePaintNotify = () => {
       if (firstPaintNotifiedRef.current || document.hidden) return;
-      if (fallbackTimer === null) {
-        fallbackTimer = setTimeout(notifyReady, 120);
-      }
-      if (!raf1) {
-        raf1 = requestAnimationFrame(() => {
-          raf2 = requestAnimationFrame(notifyReady);
+      if (raf1) return;
+      const tickCheck = () => {
+        raf1 = 0;
+        if (firstPaintNotifiedRef.current || document.hidden) return;
+        if (!isRealLayoutPainted() && layoutRetryCount < 12) {
+          layoutRetryCount += 1;
+          raf1 = requestAnimationFrame(tickCheck);
+          return;
+        }
+        // 强制触发布局提交后再等下一帧合成器提交完成
+        void document.documentElement.offsetHeight;
+        raf2 = requestAnimationFrame(() => {
+          raf2 = 0;
+          if (!document.hidden) {
+            notifyReady();
+          }
         });
-      }
+      };
+      raf1 = requestAnimationFrame(tickCheck);
     };
     const onVisibility = () => {
       if (!document.hidden) {
@@ -301,7 +320,8 @@ export default function SearchApp() {
         }
         sendFirstPaintReady();
       };
-      resumeTimer = setTimeout(ackResume, 120);
+      // 仅保留 900ms 极端保底防死等，常规完全由真实双 rAF 确认驱动
+      resumeTimer = setTimeout(ackResume, 900);
       resumeRaf1 = requestAnimationFrame(() => {
         void document.documentElement.offsetHeight;
         resumeRaf2 = requestAnimationFrame(ackResume);
@@ -317,7 +337,6 @@ export default function SearchApp() {
       if (raf2) cancelAnimationFrame(raf2);
       if (resumeRaf1) cancelAnimationFrame(resumeRaf1);
       if (resumeRaf2) cancelAnimationFrame(resumeRaf2);
-      if (fallbackTimer !== null) clearTimeout(fallbackTimer);
       if (resumeTimer !== null) clearTimeout(resumeTimer);
     };
   }, []);

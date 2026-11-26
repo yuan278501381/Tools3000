@@ -51,6 +51,8 @@ const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   search: 'sidebar.kw_search',
   clipboard: 'sidebar.kw_clipboard',
   text_expander: 'sidebar.kw_text_expander',
+  window_manager: 'sidebar.kw_window_manager',
+  caps_layer: 'sidebar.kw_caps_layer',
   gesture: 'sidebar.kw_gesture',
   hotcorner: 'sidebar.kw_hotcorner',
   capture: 'sidebar.kw_capture',

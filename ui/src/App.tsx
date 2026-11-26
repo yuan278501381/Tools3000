@@ -22,8 +22,8 @@ import { OnboardingModal } from './components/OnboardingModal';
 import { SavedToast } from './components/SavedToast';
 import { WindowResizeHandles } from './components/WindowResizeHandles';
 import { getPageMetadata, PAGE_DEFINITIONS } from './pages/registry';
-import { isBuiltinPluginId, resolveExtensionRoute } from './config/routes';
-import { consumePendingDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
+import { isBuiltinPluginId, isPluginActiveInSet, resolveExtensionRoute } from './config/routes';
+import { consumePendingDeepNavigation, emitDeepNavigation, type DeepNavigationPayload } from './config/settingsSearchIndex';
 import { bridgeRequest, useBridgeEvent } from './hooks/useBridge';
 import {
   applyLocalAppearance,
@@ -61,6 +61,8 @@ const DialogEnhancerPage = lazy(() => import('./pages/DialogEnhancerPage').then(
 const RemoteBoostPage = lazy(() => import('./pages/RemoteBoostPage').then((module) => ({ default: module.RemoteBoostPage })));
 const PicasaViewerPage = lazy(() => import('./pages/PicasaViewerPage').then((module) => ({ default: module.PicasaViewerPage })));
 const FileLocksmithPage = lazy(() => import('./pages/FileLocksmithPage').then((module) => ({ default: module.FileLocksmithPage })));
+const WindowManagerPage = lazy(() => import('./pages/WindowManagerPage').then((module) => ({ default: module.WindowManagerPage })));
+const CapsLayerPage = lazy(() => import('./pages/CapsLayerPage').then((module) => ({ default: module.CapsLayerPage })));
 const FeedbackModal = lazy(() => import('./components/FeedbackModal').then((module) => ({ default: module.FeedbackModal })));
 const WhatsNewModal = lazy(() => import('./components/WhatsNewModal').then((module) => ({ default: module.WhatsNewModal })));
 
@@ -164,11 +166,7 @@ function App() {
           const cachedSet = new Set(cached);
           const pageDef = PAGE_DEFINITIONS.find((p) => p.id === saved);
           if (pageDef?.requiresPlugin) {
-            const req = pageDef.requiresPlugin;
-            const ok = (req === 'dialogenhancer' || req === 'dialog_enhancer')
-              ? (cachedSet.has('dialogenhancer') || cachedSet.has('dialog_enhancer'))
-              : cachedSet.has(req);
-            if (!ok) return 'general';
+            if (!isPluginActiveInSet(cachedSet, pageDef.requiresPlugin)) return 'general';
           }
         }
         return saved as NavId;
@@ -204,6 +202,8 @@ function App() {
   const picasaWasActiveRef = useRef<boolean>(false);
   const locksmithWasActiveRef = useRef<boolean>(false);
   const textExpanderWasActiveRef = useRef<boolean>(false);
+  const windowManagerWasActiveRef = useRef<boolean>(false);
+  const capsLayerWasActiveRef = useRef<boolean>(false);
   const pageTitleRef = useRef<HTMLHeadingElement>(null);
   const contentContainerRef = useRef<HTMLDivElement>(null);
 
@@ -236,14 +236,23 @@ function App() {
   }, [handleNavSelect]);
 
   useBridgeEvent('settings:navigate', (raw: unknown) => {
+    const obj = (raw && typeof raw === 'object')
+      ? (raw as { page?: unknown; navId?: unknown; subTab?: unknown; tabId?: unknown })
+      : null;
     const page = typeof raw === 'string'
       ? raw
-      : (raw && typeof raw === 'object' && typeof (raw as { page?: unknown }).page === 'string'
-        ? (raw as { page: string }).page
-        : '');
+      : (typeof obj?.page === 'string'
+        ? obj.page
+        : (typeof obj?.navId === 'string' ? obj.navId : ''));
     const target = resolveNavFromHash(page);
     if (target) {
       handleNavSelect(target);
+      const subTab = typeof obj?.subTab === 'string'
+        ? obj.subTab
+        : (typeof obj?.tabId === 'string' ? obj.tabId : '');
+      if (subTab) {
+        emitDeepNavigation({ navId: target, tabId: subTab });
+      }
     }
   });
 
@@ -319,6 +328,8 @@ function App() {
     const picasaNowActive = activeList.includes('picasa_viewer');
     const locksmithNowActive = activeList.includes('file_locksmith');
     const textExpanderNowActive = activeList.includes('text_expander');
+    const windowManagerNowActive = activeList.includes('window_manager') || activeList.includes('windowmanager');
+    const capsLayerNowActive = activeList.includes('caps_layer') || activeList.includes('capslayer');
     if (!picasaNowActive && picasaWasActiveRef.current && activeNavRef.current === 'picasa_viewer') {
       // 用户在 Picasa 图片查看器页面内就地关闭总开关时，保留当前页供查看停用态或直接重开
       setRetainedDisabledNav('picasa_viewer');
@@ -337,9 +348,23 @@ function App() {
     } else if (textExpanderNowActive) {
       setRetainedDisabledNav((prev) => (prev === 'text_expander' ? null : prev));
     }
+    if (!windowManagerNowActive && windowManagerWasActiveRef.current && activeNavRef.current === 'window_manager') {
+      // 用户在窗口管理页面内就地关闭总开关时，保留当前页供继续编排布局或随时重开
+      setRetainedDisabledNav('window_manager');
+    } else if (windowManagerNowActive) {
+      setRetainedDisabledNav((prev) => (prev === 'window_manager' ? null : prev));
+    }
+    if (!capsLayerNowActive && capsLayerWasActiveRef.current && activeNavRef.current === 'caps_layer') {
+      // 用户在 Caps 引导改键页面内就地关闭总开关时，保留当前页供继续编辑键位或随时重开
+      setRetainedDisabledNav('caps_layer');
+    } else if (capsLayerNowActive) {
+      setRetainedDisabledNav((prev) => (prev === 'caps_layer' ? null : prev));
+    }
     picasaWasActiveRef.current = picasaNowActive;
     locksmithWasActiveRef.current = locksmithNowActive;
     textExpanderWasActiveRef.current = textExpanderNowActive;
+    windowManagerWasActiveRef.current = windowManagerNowActive;
+    capsLayerWasActiveRef.current = capsLayerNowActive;
     setActivePluginIds(activeList);
     try {
       localStorage.setItem('tools3000:active-plugins', JSON.stringify(activeList));
@@ -367,6 +392,15 @@ function App() {
           .flatMap((plugin) => {
             if (plugin.id === 'dialogenhancer' || plugin.id === 'dialog_enhancer') {
               return ['dialogenhancer', 'dialog_enhancer'];
+            }
+            if (plugin.id === 'window_manager' || plugin.id === 'windowmanager') {
+              return ['window_manager', 'windowmanager'];
+            }
+            if (plugin.id === 'caps_layer' || plugin.id === 'capslayer') {
+              return ['caps_layer', 'capslayer'];
+            }
+            if (plugin.id === 'quick_look' || plugin.id === 'quicklook') {
+              return ['quick_look', 'quicklook'];
             }
             return [plugin.id];
           })
@@ -597,10 +631,7 @@ function App() {
     const pageDef = PAGE_DEFINITIONS.find((p) => p.id === navId);
     if (pageDef) {
       if (pageDef.requiresPlugin) {
-        if (pageDef.requiresPlugin === 'dialogenhancer' || pageDef.requiresPlugin === 'dialog_enhancer') {
-          return activePlugins.has('dialogenhancer') || activePlugins.has('dialog_enhancer');
-        }
-        return activePlugins.has(pageDef.requiresPlugin);
+        return isPluginActiveInSet(activePlugins, pageDef.requiresPlugin);
       }
       if (pageDef.category === 'extension') {
         if (plugins.length === 0 && activePluginIds) {
@@ -644,6 +675,8 @@ function App() {
       case 'search':          return <SearchPage />;
       case 'clipboard':       return <ClipboardPage />;
       case 'text_expander':   return <TextExpanderPage />;
+      case 'window_manager':  return <WindowManagerPage />;
+      case 'caps_layer':      return <CapsLayerPage />;
       case 'keycast':         return <KeycastPage />;
       case 'spotlight':       return <SpotlightPage />;
       case 'dialog_enhancer': return <DialogEnhancerPage />;

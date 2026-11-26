@@ -1,0 +1,678 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WindowManagerPage.css — 窗口管理模块工作台样式 (@container 自适应)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.wm-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 1.15rem;
+  padding-bottom: 2.5rem;
+  font-family: var(--font-sans);
+}
+
+/* ── 顶部 Hero 卡片与遥测条 ──────────────────────────────────────────────── */
+
+.wm-hero-card {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  border-radius: var(--radius-md);
+}
+
+.wm-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+}
+
+.wm-hero__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.wm-hero__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.wm-hero__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.wm-hero__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-hero__desc {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.wm-hero__switch {
+  flex-shrink: 0;
+}
+
+.wm-telemetry-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.95rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.wm-telemetry-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.wm-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.wm-status-dot--active {
+  background: var(--success);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--success) 55%, transparent);
+}
+
+.wm-status-dot--idle {
+  background: var(--text-muted);
+}
+
+.wm-status-dot--error {
+  background: var(--danger);
+}
+
+.wm-telemetry-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.wm-telemetry-pills {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.wm-metric-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.62rem;
+  border-radius: var(--radius-full);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.wm-metric-pill--muted {
+  color: var(--text-secondary);
+}
+
+.wm-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin-top: 0.8rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--danger) 10%, var(--well-bg));
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  color: var(--danger);
+  font-size: 0.85rem;
+  font-weight: 550;
+  line-height: 1.45;
+}
+
+.wm-spin {
+  animation: wm-rotate 0.85s linear infinite;
+}
+
+@keyframes wm-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 分段 Tab 活跃点与面板 ──────────────────────────────────────────────── */
+
+.wm-tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.wm-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.wm-cascade-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+}
+
+.wm-feature-head-card {
+  border: 1px solid var(--card-border);
+}
+
+.wm-feature-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.wm-feature-head__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.wm-feature-head__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.96rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-feature-head__title svg {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.wm-feature-head__desc {
+  margin: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.wm-feature-head__right {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  flex-shrink: 0;
+}
+
+/* ── 显示器条与控件 ─────────────────────────────────────────────────────── */
+
+.wm-monitor-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 0.9rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.wm-monitor-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.wm-monitor-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.38rem 0.72rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.wm-monitor-pill:hover {
+  border-color: var(--card-border-hover);
+  color: var(--text-primary);
+}
+
+.wm-monitor-pill.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+  color: var(--text-primary);
+}
+
+.wm-monitor-pill__name {
+  white-space: nowrap;
+}
+
+.wm-monitor-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.wm-fullscreen-callout {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.9rem;
+  padding: 0.68rem 0.9rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--card-border));
+  background: color-mix(in srgb, var(--primary) 8%, var(--well-bg));
+}
+
+.wm-fullscreen-callout__body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.wm-fullscreen-callout__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  font-size: 0.86rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-fullscreen-callout__title svg {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.wm-fullscreen-callout__desc {
+  margin: 0;
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.48;
+  color: var(--text-secondary);
+}
+
+.wm-desktop-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-bottom: 0.95rem;
+  padding: 0.72rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--well-border);
+  background: var(--well-bg);
+}
+
+.wm-desktop-bar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.wm-desktop-bar__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  font-size: 0.84rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-desktop-bar__label svg {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.wm-desktop-bar__head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.wm-desktop-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.48rem;
+}
+
+.wm-desktop-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.42rem;
+  padding: 0.36rem 0.68rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.wm-desktop-pill:hover {
+  border-color: var(--card-border-hover);
+  color: var(--text-primary);
+}
+
+.wm-desktop-pill.is-selected {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 13%, var(--card-bg));
+  color: var(--text-primary);
+}
+
+.wm-desktop-pill__dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--success) 55%, transparent);
+  flex-shrink: 0;
+}
+
+.wm-desktop-pill__name {
+  white-space: nowrap;
+}
+
+.wm-desktop-empty {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.wm-range-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.wm-range-slider {
+  width: 140px;
+  accent-color: var(--primary);
+  cursor: pointer;
+}
+
+.wm-segmented {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.wm-segmented__btn {
+  padding: 0.28rem 0.78rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.wm-segmented__btn:hover {
+  color: var(--text-primary);
+  background: var(--ghost-hover-bg);
+}
+
+.wm-segmented__btn.is-active {
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
+}
+
+/* ── Workspaces 工作区卡片 ──────────────────────────────────────────────── */
+
+.wm-ws-capture-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 0.9rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.wm-ws-capture-bar__input {
+  flex: 1 1 240px;
+  min-width: 200px;
+}
+
+.wm-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.45rem;
+  padding: 1.8rem 1rem;
+  color: var(--text-muted);
+}
+
+.wm-empty-state__title {
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-empty-state__desc {
+  margin: 0;
+  max-width: 460px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.wm-ws-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.9rem;
+}
+
+.wm-ws-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+}
+
+.wm-ws-card__identity {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.wm-ws-card__title {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-ws-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+.wm-ws-card__apps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.wm-ws-app-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.18rem 0.45rem;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.wm-ws-app-meta {
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.wm-ws-card__empty-apps {
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* ── Utilities 工具区 ───────────────────────────────────────────────────── */
+
+.wm-utilities-stack {
+  gap: 0.95rem;
+}
+
+.wm-util-body {
+  margin-top: 0.85rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.wm-color-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.wm-color-swatch {
+  width: 34px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--input-border);
+  background: var(--input-bg);
+  cursor: pointer;
+}
+
+.wm-quick-actions-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.85rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--card-border);
+}
+
+/* ── 编辑工作区 Modal ───────────────────────────────────────────────────── */
+
+.wm-edit-ws-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+
+.wm-edit-ws-apps {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.wm-edit-ws-apps__label {
+  font-size: 0.86rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-edit-ws-app-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.55rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.wm-edit-ws-app-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex: 1;
+  min-width: 0;
+}
+
+@container (max-width: 760px) {
+  .wm-ws-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .wm-hero,
+  .wm-feature-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

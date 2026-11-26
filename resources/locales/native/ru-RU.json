@@ -989,5 +989,7 @@
   "重点说明||Text": "Важно",
   "静音||Off": "Выкл",
   "高刷||Smooth": "Высокий FPS",
-  "鼠标自动运镜||Auto Zoom": "Автозум мыши"
+  "鼠标自动运镜||Auto Zoom": "Автозум мыши",
+  "Quick Translate": "Быстрый перевод",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "Нарисуйте T (←→↓), чтобы перевести выделенный текст или буфер"
 }

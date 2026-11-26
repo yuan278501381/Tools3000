@@ -1,0 +1,569 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CapsLayerPage.css — Caps 引导改键工作台样式 (@container 自适应)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.caps-page {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  padding-bottom: 2.5rem;
+  font-family: var(--font-sans);
+}
+
+/* ── 顶部 Hero 卡片 ──────────────────────────────────────────────────────── */
+
+.caps-hero-card {
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  border-radius: var(--radius-md);
+}
+
+.caps-hero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.2rem;
+}
+
+.caps-hero__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.caps-hero__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.caps-hero__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.caps-hero__title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.caps-hero__desc {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.caps-hero__switch {
+  flex-shrink: 0;
+}
+
+.caps-hero-controls {
+  margin-top: 0.95rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.caps-segmented {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  gap: 3px;
+  border-radius: 9px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.caps-segmented__btn {
+  padding: 0.28rem 0.78rem;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.caps-segmented__btn:hover {
+  color: var(--text-primary);
+  background: var(--ghost-hover-bg);
+}
+
+.caps-segmented__btn.is-active {
+  background: var(--thumb-bg);
+  border-color: var(--thumb-border);
+  color: var(--text-primary);
+  font-weight: 650;
+  box-shadow: var(--thumb-shadow);
+}
+
+.caps-shift-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  margin-top: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--primary) 7%, var(--well-bg));
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, var(--well-border));
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.caps-shift-hint__icon {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.caps-cascade-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.caps-section-desc {
+  margin: -0.2rem 0 0.7rem;
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+/* ── 一键预设卡片 ───────────────────────────────────────────────────────── */
+
+.caps-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.caps-preset-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0.85rem 0.95rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), transform var(--transition-fast);
+}
+
+.caps-preset-card:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, var(--card-bg));
+}
+
+.caps-preset-card__top {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.caps-preset-card__title {
+  font-size: 0.92rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.caps-preset-card__desc {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.caps-spin {
+  animation: caps-rotate 0.85s linear infinite;
+}
+
+@keyframes caps-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── 双栏作用域工作台 ───────────────────────────────────────────────────── */
+
+.caps-workspace {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  width: 100%;
+}
+
+.caps-scope-sidebar {
+  width: 230px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 0.8rem 0.7rem;
+  border-radius: var(--radius-md);
+  background: var(--card-bg);
+  border: 1px solid var(--card-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.caps-scope-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.caps-scope-section__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.caps-scope-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.caps-scope-add-btn:hover {
+  border-color: var(--card-border);
+  background: var(--ghost-hover-bg);
+  color: var(--text-primary);
+}
+
+.caps-scope-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.caps-scope-item:hover {
+  background: var(--ghost-hover-bg);
+  color: var(--text-primary);
+}
+
+.caps-scope-item.is-active {
+  background: var(--nav-active-bg);
+  border-color: var(--nav-active-border);
+  box-shadow: var(--nav-active-shadow);
+  color: var(--text-primary);
+}
+
+.caps-scope-item__icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--icon-tile-bg);
+  border: 1px solid var(--icon-tile-border);
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.caps-scope-item__text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.caps-scope-item__title {
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.caps-scope-item__sub {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.caps-scope-item__proc {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.caps-scope-item__count {
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums lining-nums;
+  color: var(--text-muted);
+}
+
+.caps-scope-item__del {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.caps-scope-item__del:hover {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.caps-scope-add-full-btn {
+  margin-top: 0.35rem;
+  width: 100%;
+  justify-content: center;
+}
+
+/* ── 右侧映射详情区 ─────────────────────────────────────────────────────── */
+
+.caps-detail-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.caps-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.caps-detail-header__info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.caps-detail-header__title-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  color: var(--primary);
+}
+
+.caps-detail-header__title {
+  margin: 0;
+  font-size: 0.96rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.caps-detail-header__desc {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.caps-detail-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.caps-mappings-card > .uikit-card__body {
+  padding: 0;
+}
+
+.caps-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 0.45rem;
+  padding: 2rem 1.25rem;
+  color: var(--text-muted);
+}
+
+.caps-empty-state__title {
+  font-size: 0.95rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.caps-empty-state__desc {
+  margin: 0;
+  max-width: 440px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.caps-mappings-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.caps-mapping-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.72rem 1rem;
+  border-bottom: 1px solid var(--card-border);
+  transition: background var(--transition-fast);
+}
+
+.caps-mapping-row:last-child {
+  border-bottom: none;
+}
+
+.caps-mapping-row:hover {
+  background: var(--ghost-hover-bg);
+}
+
+.caps-mapping-row.is-muted {
+  opacity: 0.58;
+}
+
+.caps-mapping-row__keys {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.caps-mapping-row__arrow {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.caps-mapping-row__label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.caps-mapping-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+
+/* ── Modal 表单与快捷胶囊 ───────────────────────────────────────────────── */
+
+.caps-modal-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.caps-quick-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.caps-quick-pill {
+  padding: 0.18rem 0.55rem;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--card-border);
+  background: var(--well-bg);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+
+.caps-quick-pill:hover,
+.caps-quick-pill.is-active {
+  border-color: var(--primary);
+  background: var(--primary-dim);
+  color: var(--primary);
+}
+
+@container (max-width: 780px) {
+  .caps-presets-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .caps-workspace {
+    flex-direction: column;
+  }
+
+  .caps-scope-sidebar {
+    width: 100%;
+  }
+
+  .caps-hero,
+  .caps-mapping-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

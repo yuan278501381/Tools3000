@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 // ─────────────────────────────────────────────────────────────────────────────
-// generate-changelog-bundle.mjs — 构建期离线分页更新日志数据生成器
+// generate-changelog-bundle.mjs — 构建期世界级离线更新日志结构化数据生成器 (Schema v2)
 //
 // 职责：
 //   1. 扫描仓库 docs/RELEASE_NOTES_v*.md（按 SemVer 降序取最新 50 版）；
 //   2. 从 Git Annotated Tag 精确读取各版发布 ISO 8601 时间戳（未打标回退 git log / mtime）；
-//   3. 结构化提取中/英双语更新摘要与分组条目，剥离升级步骤与 SHA-256 校验样板；
-//   4. 写入 ui/src/generated/changelogData.json，供 WhatsNewModal 动态懒加载分块消费。
+//   3. 结构化提取中/英双语更新摘要与条目，剔除升级样板与 0 项空壳速查节；
+//   4. 自动将聚合修复容器（如「重要问题修复」）拆分为独立条目，精准判定每条语义分类
+//      (feature / improvement / fix)，提取 GitHub Issue 与社区致谢徽章，并汇总各项统计计数；
+//   5. 写入 ui/src/generated/changelogData.json，供 WhatsNewModal 懒加载分块消费。
 // ─────────────────────────────────────────────────────────────────────────────
 
 import fs from 'node:fs';
@@ -121,22 +123,197 @@ function isStandaloneUpgradeLine(line) {
   return /^\*{2}(Upgrade|升级方式)\*{2}\s*[:：]/i.test(t);
 }
 
+function isEmptyQuickRefHeading(title) {
+  return /(速查|操作路径|快捷键速查|文件位置速查|quick\s*reference|where\s+to\s+find)/i.test(title);
+}
+
+/**
+ * 提取标题末尾括号内的 GitHub Issue 编号与社区致谢信息，返回干净标题与结构化归因对象。
+ * 兼容：
+ *   - "双击 Ctrl 电影级交互平滑放大 (#34, @cainiaoNO1)"
+ *   - "修复运行后 Windows 任务栏右键控制菜单失效（感谢 LINUX DO @kidcode）"
+ *   - "文件对话框（`#30`, `@baowuji`；感谢 Linux.do `@sounder`）"
+ */
+function extractTitleAndAttribution(rawTitle) {
+  const trimmed = String(rawTitle || '').trim();
+  const suffixRe = /\s*[（(]([^()（）]*(?:#\d+|@\S+|感谢|thanks?\b)[^()（）]*)[）)]\s*$/i;
+  const match = suffixRe.exec(trimmed);
+  if (!match) {
+    return { title: trimmed, attribution: undefined };
+  }
+
+  const innerRaw = match[1].replace(/`/g, '').replace(/\s+/g, ' ').trim();
+  const cleanTitle = trimmed.slice(0, match.index).trim();
+  if (!cleanTitle) {
+    return { title: trimmed, attribution: undefined };
+  }
+
+  const issueMatch = innerRaw.match(/#(\d+)/);
+  const issueNumber = issueMatch ? Number(issueMatch[1]) : undefined;
+  // 精炼展示标签：保留可读的 Issue 与社区鸣谢，替换冗余分隔
+  const label = innerRaw
+    .replace(/,\s*/g, ' · ')
+    .replace(/；\s*/g, ' · ')
+    .trim();
+
+  return {
+    title: cleanTitle,
+    attribution: {
+      ...(issueNumber !== undefined ? { issueNumber } : {}),
+      label,
+    },
+  };
+}
+
+/**
+ * 识别「重要问题修复 / Bug Fixes」等纯分类容器节，将其内部以 "**标题**：说明" 组织的
+ * 多条独立修复自动拆解为各自独立的变更条目，确保计数精确无合并失真。
+ */
+function isAggregateContainerHeading(title) {
+  const t = String(title || '').trim();
+  if (/^(重要问题修复|问题修复|缺陷修复|关键修复|bug\s*fixes?|key\s*fixes?|fixes?)$/i.test(t)) {
+    return 'fix';
+  }
+  if (/^(新增功能|全新功能|新特性|new\s*features?|features?)$/i.test(t)) {
+    return 'feature';
+  }
+  if (/^(优化与改进|体验优化|性能与优化|improvements?|enhancements?)$/i.test(t)) {
+    return 'improvement';
+  }
+  return null;
+}
+
+function splitAggregateBullet(rawItem) {
+  const text = String(rawItem || '').trim();
+  // 匹配 "**标题** (可选归因)：正文" 或 "**标题**：正文"
+  const m = text.match(/^\*\*([^*]+)\*\*\s*([（(][^()（）]+[）)])?\s*[:：]\s*(.+)$/);
+  if (!m) return null;
+  const baseTitle = m[1].trim();
+  const suffix = m[2] ? ` ${m[2].trim()}` : '';
+  const body = m[3].trim();
+  if (!baseTitle || !body) return null;
+  return {
+    rawTitle: `${baseTitle}${suffix}`,
+    body,
+  };
+}
+
+/**
+ * MECE 三元语义分类器：精准判定每条变更属于
+ * - 'feature'     新增功能（全新模块、新模式、新开关、新入口、核心能力上线）
+ * - 'fix'         问题修复（Bug 修复、黑屏/闪退/卡死/点穿/失效/报错/泄漏根治）
+ * - 'improvement' 优化改进（交互体验打磨、性能/内存优化、文案润色、架构升级与日志治理）
+ */
+function classifySectionCategory(title, items) {
+  const t = String(title || '').replace(/`/g, '').trim();
+  const firstItem = String(items?.[0] || '').replace(/`/g, '').trim();
+
+  // 1. 历史 1.0.x ~ 1.2.x 固定三大板块显式映射
+  if (/^(业务与功能体验进化|Business\s*&\s*Feature)/i.test(t)) return 'feature';
+  if (/^(稳定性与底层演进|质量门禁与稳定性保障|Stability)/i.test(t)) return 'fix';
+  if (/^(架构演进与技术重构|Architecture)/i.test(t)) return 'improvement';
+
+  // 2. 强特征前缀优先：以「全新 / 新增」开头或模块冒号后紧跟「新增 / 全新」明确为新功能
+  if (
+    /^(全新|新增|推出|引入|Added\b|New\b|Introducing\b|Offline\s+"What's\s+New")/i.test(t) ||
+    /[:：]\s*(新增|全新|推出|支持\s*\d+|自由切换|自定义多路径)/i.test(t)
+  ) {
+    return 'feature';
+  }
+
+  // 3. 明确问题修复前缀与强缺陷修复词（排除“报错条”这类被识别文本对象）
+  if (
+    /^(彻底)?(修复|解决|消除|清除|根治)|^(Fix|Fixed|Fixes|Eliminated|Resolved|Cleaned\s+Up|Clean\s+.*Exit)\b/i.test(t) ||
+    /(问题修复|故障修复|闪退|黑屏|白屏|卡死|无反应|点穿|透明空框|失效|报错(?!条)|双图重复|异常菜单|滞留|未按需清零|零句柄触碰|防僵死|防误触|零起始光点|bug\s*fix|crash|black\s*flash|not\s+opening|empty\s+translucent|visibility|unresponsive|freeze|leak)/i.test(t)
+  ) {
+    return 'fix';
+  }
+
+  // 4. 明确新增功能信号（新模块、新模式、独立开关、专业软件自动避让/让位、工作流能力上线）
+  if (
+    /(电影级交互平滑放大|平滑放大|按前台应用自动让位|自动避让|独立开关|自定义多路径排除|端到端加密|云端与同步盘备份|便携版原地热更新|文本扩展器|文件占用解锁|微信级截图原位翻译|持久化剪贴板|MCP\s*Server|Picasa|一键直达|自由切换|支持\s*8\s*方向|自由拖拽|固定选区|边界自动换行|手势图形匹配阈值|硬件亮度控制|演播室录屏|离线文字识别跨代升级|高精度离线文字识别|空格快速预览|全局鼠标手势|触发角|Smooth\s+Zoom|Auto-Yield|Auto-Bypass|Toggle|Text\s+Expander|File\s+Locksmith|In-Place\s+Translation\s+\(Keyless|Persistent\s+Clipboard|Picasa|Hot\s+Corner|Multi-Path\s+Exclusion|Encrypted\s+Cloud\s+Backup)/i.test(t) ||
+    /^(文件搜索.*万能启动器|打开\s*\/\s*保存文件弹窗也能)/i.test(t)
+  ) {
+    return 'feature';
+  }
+
+  // 5. 若标题较中性，借助首条正文前缀辅助校验
+  if (/^(彻底)?(修复|解决|消除)|^(Fixed|Resolved|Eliminated)\b/i.test(firstItem)) {
+    return 'fix';
+  }
+  if (/^(新增|全新|推出|Added\b|Introduced\b|Launched\b)/i.test(firstItem)) {
+    return 'feature';
+  }
+
+  // 6. 默认归为优化改进（交互对齐、性能/内存优化、文案润色、模型升级、日志治理等）
+  return 'improvement';
+}
+
+function summarizeCounts(sections) {
+  const counts = { feature: 0, improvement: 0, fix: 0, total: 0 };
+  for (const sec of sections) {
+    if (sec.category === 'feature') counts.feature += 1;
+    else if (sec.category === 'fix') counts.fix += 1;
+    else counts.improvement += 1;
+    counts.total += 1;
+  }
+  return counts;
+}
+
+function finalizeSections(rawSections) {
+  const result = [];
+  for (const sec of rawSections) {
+    // 剔除无任何内容的空壳速查标题
+    if (sec.items.length === 0) {
+      if (!sec.title || isEmptyQuickRefHeading(sec.title)) continue;
+      continue;
+    }
+
+    const containerCat = isAggregateContainerHeading(sec.title);
+    if (containerCat && sec.items.length > 0) {
+      const parsedChildren = sec.items.map((it) => splitAggregateBullet(it));
+      if (parsedChildren.every((c) => c !== null)) {
+        for (const child of parsedChildren) {
+          const { title, attribution } = extractTitleAndAttribution(child.rawTitle);
+          result.push({
+            title,
+            category: containerCat,
+            ...(attribution ? { attribution } : {}),
+            items: [child.body],
+          });
+        }
+        continue;
+      }
+    }
+
+    const { title, attribution } = extractTitleAndAttribution(sec.title);
+    const category = containerCat ?? classifySectionCategory(title, sec.items);
+    result.push({
+      title,
+      category,
+      ...(attribution ? { attribution } : {}),
+      items: sec.items,
+    });
+  }
+  return result;
+}
+
 function parseLocaleBlock(rawBlock) {
   const lines = String(rawBlock || '').split(/\r?\n/);
   const summaryParts = [];
-  const sections = [];
+  const rawSections = [];
   let currentSection = null;
   let seenStructured = false;
 
   const ensureSection = (title) => {
     const cleanTitle = stripLeadingOrderNumber(title);
-    const existing = sections.find((s) => s.title === cleanTitle);
+    const existing = rawSections.find((s) => s.title === cleanTitle);
     if (existing) {
       currentSection = existing;
       return existing;
     }
     const created = { title: cleanTitle, items: [] };
-    sections.push(created);
+    rawSections.push(created);
     currentSection = created;
     return created;
   };
@@ -148,12 +325,10 @@ function parseLocaleBlock(rawBlock) {
     if (trimmed === '---' || trimmed === '***') continue;
     if (isBoilerplateStopHeading(trimmed)) break;
     if (isStandaloneUpgradeLine(trimmed)) continue;
-    // 跳过一级标题与语言锚点导航栏
     if (/^#\s+/.test(trimmed)) continue;
     if (/^\*\*\[English\]/i.test(trimmed)) continue;
     if (/^>\s*如遇\s*Windows Defender SmartScreen/i.test(trimmed)) break;
 
-    // 跳过独立代码块（通常是 Get-FileHash 示例）
     if (trimmed.startsWith('```')) {
       i += 1;
       while (i < lines.length && !lines[i].trim().startsWith('```')) {
@@ -162,7 +337,6 @@ function parseLocaleBlock(rawBlock) {
       continue;
     }
 
-    // 三级标题：明确的新分组（例如 ### 1. 修复 Bilibili...）
     const h3 = trimmed.match(/^###\s+(.+)$/);
     if (h3) {
       seenStructured = true;
@@ -170,11 +344,9 @@ function parseLocaleBlock(rawBlock) {
       continue;
     }
 
-    // 顶层编号行：如 "1. **Title**"（若后续有缩进子列表则作分组标题，否则作为单条变更项）
     const numbered = raw.match(/^(\d+)\.\s+(.+)$/);
     if (numbered) {
       seenStructured = true;
-      // 向前探测下一非空行是否为缩进子项
       let nextNonEmpty = '';
       for (let j = i + 1; j < lines.length; j += 1) {
         if (lines[j].trim()) {
@@ -194,7 +366,6 @@ function parseLocaleBlock(rawBlock) {
       continue;
     }
 
-    // 无序列表项（含缩进二级列表项）
     const bullet = raw.match(/^(\s*)[-*]\s+(.+)$/);
     if (bullet) {
       seenStructured = true;
@@ -204,7 +375,6 @@ function parseLocaleBlock(rawBlock) {
       continue;
     }
 
-    // 二级标题在块内部出现时（例如某些老版本多个 ## 小节），当作分组标题
     const h2 = trimmed.match(/^##\s+(.+)$/);
     if (h2) {
       seenStructured = true;
@@ -212,28 +382,27 @@ function parseLocaleBlock(rawBlock) {
       continue;
     }
 
-    // 普通段落：位于结构化列表前的作为版本概览摘要
     if (!seenStructured) {
       const cleaned = cleanInlineMarkdown(trimmed);
       if (cleaned) summaryParts.push(cleaned);
     }
   }
 
-  const filteredSections = sections.filter((s) => s.items.length > 0 || s.title.length > 0);
+  const sections = finalizeSections(rawSections);
   const summary = summaryParts.join(' ').trim();
-  if (!summary && filteredSections.length === 0) {
+  if (!summary && sections.length === 0) {
     return null;
   }
   return {
     summary,
-    sections: filteredSections,
+    counts: summarizeCounts(sections),
+    sections,
   };
 }
 
 function parseReleaseNotesMarkdown(markdown) {
   const normalized = String(markdown || '').replace(/\r\n/g, '\n');
 
-  // 1. 先按尾部校验/升级样板截断，保证不会把 SHA-256 哈希表混进任何语言分区
   const allLines = normalized.split('\n');
   const trimmedLines = [];
   for (const line of allLines) {
@@ -244,7 +413,6 @@ function parseReleaseNotesMarkdown(markdown) {
   }
   const coreText = trimmedLines.join('\n');
 
-  // 2. 检测双语分区：英文区 "## English Release Highlights" 与中文区任意含中文的二级标题（排除升级方式/校验）
   const enHeadingRe = /^##\s+English(?:\s+Release\s+Highlights)?\s*$/im;
   const zhHeadingRe = /^##\s+(?!升级方式|下载与升级|文件完整性校验|校验与安全)[^\n]*[\u4e00-\u9fff][^\n]*$/m;
 
@@ -265,7 +433,6 @@ function parseReleaseNotesMarkdown(markdown) {
   } else if (enMatch) {
     enRaw = coreText.slice(enMatch.index + enMatch[0].length);
   } else if (zhMatch) {
-    // 早期单中文版：一级标题下的导语通常在 ## 之前，需一并纳入 summary
     const intro = coreText.slice(0, zhMatch.index);
     const body = coreText.slice(zhMatch.index + zhMatch[0].length);
     zhRaw = `${intro}\n${body}`;
@@ -316,7 +483,7 @@ function main() {
   });
 
   const payload = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     totalKnownReleases: candidates.length,
     bundledCount: releases.length,
     releases,
@@ -325,7 +492,6 @@ function main() {
   fs.mkdirSync(OUTPUT_DIR, { recursive: true });
   const serializedLf = `${JSON.stringify(payload, null, 2)}\n`;
 
-  // 若逻辑内容未变化（忽略 Windows CRLF / LF 行尾差异）则跳过写入，避免反复构建弄脏 Git 工作区或触发 Vite 不必要重建
   const prev = fs.existsSync(OUTPUT_FILE) ? fs.readFileSync(OUTPUT_FILE, 'utf8') : null;
   const prevNormalized = prev !== null ? prev.replace(/\r\n/g, '\n') : null;
   if (prevNormalized !== serializedLf) {
@@ -336,7 +502,7 @@ function main() {
 
   const sizeKb = (Buffer.byteLength(serializedLf, 'utf8') / 1024).toFixed(1);
   const latest = releases[0]?.tag ?? 'none';
-  console.log(`[OK] Changelog bundle ready: ${releases.length} releases (latest ${latest}, ${sizeKb} KB) -> ${path.relative(REPO_ROOT, OUTPUT_FILE)}`);
+  console.log(`[OK] Changelog bundle v2 ready: ${releases.length} releases (latest ${latest}, ${sizeKb} KB) -> ${path.relative(REPO_ROOT, OUTPUT_FILE)}`);
 }
 
 main();

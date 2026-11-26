@@ -73,4 +73,42 @@ describe('ClipboardPage', () => {
       expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.clearHistory', { keepPinned: true });
     });
   });
+
+  it('supports switching multi-monitor placement modes, capturing fixed position, locking bounds, and resetting defaults', async () => {
+    render(<ClipboardPage />);
+
+    await waitFor(() => {
+      expect(screen.getByText('42')).toBeTruthy();
+    });
+
+    // 1. 切换至「固定位置与大小」模式
+    const fixedRadio = screen.getByRole('radio', { name: /Fixed Position & Size/i });
+    fireEvent.click(fixedRadio);
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.updateSettings', {
+        windowPositionMode: 'fixed',
+      });
+    });
+
+    // 2. Fixed 模式下展开坐标微调与防误触锁定开关
+    const lockToggle = document.getElementById('clipboard-lock-bounds-toggle') as HTMLInputElement;
+    expect(lockToggle).toBeTruthy();
+    fireEvent.click(lockToggle);
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.updateSettings', {
+        lockWindowBounds: true,
+      });
+    });
+
+    // 3. 点击「捕获当前位置」与「重置默认」
+    fireEvent.click(screen.getByRole('button', { name: 'Capture Current Position' }));
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.captureFixedPlacement');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reset to Default' }));
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.resetPlacement');
+    });
+  });
 });

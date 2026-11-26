@@ -465,7 +465,8 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
     case 'general.getSettings':
       return {
         language: 'zh-CN', autoStart: false, runAsAdmin: true, elevated: false, theme: 'light',
-        logLevel: 'info', minimizeToTray: true, checkUpdates: true,
+        // TODO(pre-release): 缺陷排查收敛后正式发版前，切回 'info'
+        logLevel: 'trace', minimizeToTray: true, checkUpdates: true,
       };
 
     case 'ocr.getSettings':
@@ -568,8 +569,154 @@ function getMockResponse(method: string, params: Record<string, unknown> = {}): 
     case 'hotkey.setHotkeyExclusions':
       return { success: true };
 
+    case 'clipboard.getSettings':
+      return {
+        enabled: true,
+        hotkey: 'Alt+V',
+        maxItems: 500,
+        maxDays: 30,
+        maxImageMb: 16,
+        autoPaste: true,
+        plainTextByDefault: false,
+        captureImages: true,
+        captureFiles: true,
+        hidePinnedInOtherCategories: false,
+        hideOnBlur: true,
+        hideOnPaste: true,
+        keepOpenAfterDrag: true,
+        singleClickPaste: false,
+        excludedApps: 'KeePass.exe,KeePassXC.exe,1Password.exe,Bitwarden.exe',
+        windowPositionMode: 'follow_mouse',
+        windowWidthDip: 760,
+        windowHeightDip: 560,
+        hasFixedAnchor: false,
+        fixedX: 0,
+        fixedY: 0,
+        fixedMonitorDevice: '',
+        lockWindowBounds: false,
+      };
+
+    case 'clipboard.getWindowState':
+      return {
+        success: true,
+        pinned: false,
+        maximized: false,
+        positionMode: 'follow_mouse',
+        fixedLocked: false,
+        lockBounds: false,
+      };
+
+    case 'clipboard.toggleFixedPlacement':
+      return {
+        success: true,
+        pinned: false,
+        maximized: false,
+        positionMode: 'fixed',
+        fixedLocked: true,
+        lockBounds: false,
+      };
+
+    case 'clipboard.captureFixedPlacement':
+      return {
+        success: true,
+        captured: true,
+        settings: {
+          windowPositionMode: 'fixed',
+          hasFixedAnchor: true,
+          fixedX: 240,
+          fixedY: 160,
+          windowWidthDip: 760,
+          windowHeightDip: 560,
+          fixedMonitorDevice: '\\\\.\\DISPLAY1',
+        },
+      };
+
+    case 'clipboard.resetPlacement':
+      return {
+        success: true,
+        settings: {
+          windowPositionMode: 'follow_mouse',
+          windowWidthDip: 760,
+          windowHeightDip: 560,
+          hasFixedAnchor: false,
+          fixedX: 0,
+          fixedY: 0,
+          fixedMonitorDevice: '',
+          lockWindowBounds: false,
+        },
+      };
+
     case 'config.get':
       return false;
+
+    case 'windowManager.getMonitors':
+      return {
+        monitors: [
+          { id: 'DISPLAY1', name: 'Display 1', width: 2560, height: 1440, dpi: 120, isPrimary: true },
+        ],
+        currentDesktopId: 'desktop-1',
+        virtualDesktops: [
+          { id: 'desktop-1', name: '', index: 1, isCurrent: true },
+        ],
+      };
+
+    case 'windowManager.getVirtualDesktops':
+      return {
+        currentDesktopId: 'desktop-1',
+        desktops: [
+          { id: 'desktop-1', name: '', index: 1, isCurrent: true },
+        ],
+      };
+
+    case 'windowManager.getRuntimeStats':
+      return {
+        running: false,
+        pid: 0,
+        workingSetBytes: 0,
+        privateBytes: 0,
+        handleCount: 0,
+        gdiObjects: 0,
+        userObjects: 0,
+        pinnedCount: 0,
+        trayMinimizedCount: 0,
+        activeFeatures: [],
+      };
+
+    case 'windowManager.execAction':
+      return { success: true };
+
+    case 'windowManager.importPowerToysLayouts':
+      return { importedCount: 0, layouts: [] };
+
+    case 'windowManager.captureWorkspace':
+      return {
+        workspace: {
+          id: `ws-${Date.now()}`,
+          name: String(params.name || 'Workspace'),
+          apps: [],
+        },
+      };
+
+    case 'capsLayer.getSettings':
+      return {
+        enabled: false,
+        tapAction: 'toggle_caps',
+        shiftCapsTogglesNative: true,
+        excludedApps: [],
+        globalMappings: [],
+        appProfiles: [],
+      };
+
+    case 'capsLayer.updateSettings':
+    case 'capsLayer.applyPreset':
+      return {
+        enabled: Boolean(params.enabled ?? false),
+        tapAction: (params.tapAction as string) || 'toggle_caps',
+        shiftCapsTogglesNative: Boolean(params.shiftCapsTogglesNative ?? true),
+        excludedApps: Array.isArray(params.excludedApps) ? params.excludedApps : [],
+        globalMappings: Array.isArray(params.globalMappings) ? params.globalMappings : [],
+        appProfiles: Array.isArray(params.appProfiles) ? params.appProfiles : [],
+      };
 
     // 所有 update / action 方法返回成功
     case 'system.openUrl':

@@ -82,6 +82,8 @@
 #include "ui/QuickTranslatePopupWindow.h"
 #include "clipboard/ClipboardManager.h"
 #include "text_expander/TextExpanderManager.h"
+#include "caps_layer/CapsLayerManager.h"
+#include "core/ipc/WindowKitController.h"
 #include "ui/QuickLookNavigation.h"
 #include "ui/TrayWindow.h"
 #include "ui/ToastOverlay.h"
@@ -118,6 +120,7 @@ void preloadSettingsWindow(HINSTANCE hInstance);
 // ── 全局状态 ─────────────────────────────────────────────────────────────────
 static HANDLE g_singleInstanceMutex = nullptr;
 static UINT g_wmTaskbarCreated = 0;
+static UINT g_wmWindowKitEditorResult = 0;
 static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
@@ -185,9 +188,17 @@ void syncForegroundFullscreenState(bool forceRefresh = false) {
     auto& hotkeyMgr = tools3000::core::HotkeyManager::instance();
     const std::string fgProcName = fg ? tools3000::core::WinUtils::getProcessNameFromWindow(fg) : std::string{};
     hotkeyMgr.updateForegroundProcess(fgProcName);
+    tools3000::caps_layer::CapsLayerManager::instance().updateForegroundProcess(fgProcName);
     if (hotkeyMgr.isFullscreenSuspended() != suspendHotkeys) {
         hotkeyMgr.setFullscreenSuspended(suspendHotkeys);
+        if (suspendHotkeys) {
+            tools3000::caps_layer::CapsLayerManager::instance().resetRuntimeState();
+        }
     }
+
+    const bool remoteActive = tools3000::core::RemoteMasterEngine::instance().isRemoteForeground() ||
+                              tools3000::core::KeyboardHook::instance().isRemoteSuspended();
+    tools3000::core::WindowKitController::instance().syncMutedFlags(suspendHotkeys || suspendGestures, remoteActive);
 
     auto& mouseHook = tools3000::core::MouseHook::instance();
     if (mouseHook.isFullscreenSuspended() != suspendGestures) {
@@ -705,7 +716,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     );
     {
         const std::string configuredLogLevel =
-            tools3000::core::ConfigManager::instance().get<std::string>("/general/logLevel", "info");
+            tools3000::core::ConfigManager::instance().get<std::string>(
+                "/general/logLevel", tools3000::core::Logger::kDefaultLogLevel);
         if (configuredLogLevel == "trace") {
             tools3000::core::Logger::setLevel(spdlog::level::trace);
         } else if (configuredLogLevel == "debug") {
@@ -1101,6 +1113,10 @@ HWND createMessageWindow(HINSTANCE hInstance) {
         const UINT msgShowBroadcast = RegisterWindowMessageW(L"Tools3000_ShowSettings_Broadcast");
         if (msgShowBroadcast != 0) {
             ChangeWindowMessageFilterEx(hwnd, msgShowBroadcast, MSGFLT_ALLOW, nullptr);
+        }
+        g_wmWindowKitEditorResult = RegisterWindowMessageW(tools3000::core::kWindowKitEditorResultMsgName);
+        if (g_wmWindowKitEditorResult != 0) {
+            ChangeWindowMessageFilterEx(hwnd, g_wmWindowKitEditorResult, MSGFLT_ALLOW, nullptr);
         }
     }
 
@@ -2127,7 +2143,17 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         LOG_ERROR("[RemoteMaster] Failed to initialize: unknown exception");
     }
     tools3000::core::KeyboardHook::instance().setLowLevelKeyInterceptor([](const KBDLLHOOKSTRUCT& data, WPARAM wp) -> bool {
-        return tools3000::core::RemoteMasterEngine::instance().onLowLevelKeyboardEvent(data, wp);
+        if (tools3000::core::RemoteMasterEngine::instance().onLowLevelKeyboardEvent(data, wp)) {
+            return true;
+        }
+        auto& caps = tools3000::caps_layer::CapsLayerManager::instance();
+        if (caps.isEnabled()) {
+            auto& kh = tools3000::core::KeyboardHook::instance();
+            if (!kh.isFullscreenSuspended() && !kh.isRemoteSuspended()) {
+                return caps.handleLowLevelKey(data, wp);
+            }
+        }
+        return false;
     });
 
     tools3000::core::MessageBridge::instance().registerHostHandler("remote.getSettings", [](const nlohmann::json&) -> nlohmann::json {
@@ -2218,6 +2244,14 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                 {"hideOnPaste", s.hideOnPaste},
                 {"keepOpenAfterDrag", s.keepOpenAfterDrag},
                 {"singleClickPaste", s.singleClickPaste},
+                {"windowPositionMode", s.windowPositionMode},
+                {"windowWidthDip", s.windowWidthDip},
+                {"windowHeightDip", s.windowHeightDip},
+                {"hasFixedAnchor", s.hasFixedAnchor},
+                {"fixedX", s.fixedX},
+                {"fixedY", s.fixedY},
+                {"fixedMonitorDevice", s.fixedMonitorDevice},
+                {"lockWindowBounds", s.lockWindowBounds},
                 {"excludedApps", s.excludedApps}
             };
         });
@@ -2249,6 +2283,37 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             if (params.contains("singleClickPaste") && params["singleClickPaste"].is_boolean()) {
                 s.singleClickPaste = params["singleClickPaste"].get<bool>();
             }
+            bool placementChanged = false;
+            if (params.contains("windowPositionMode") && params["windowPositionMode"].is_string()) {
+                s.windowPositionMode = params["windowPositionMode"].get<std::string>();
+                placementChanged = true;
+            }
+            if (params.contains("windowWidthDip") && params["windowWidthDip"].is_number_integer()) {
+                s.windowWidthDip = params["windowWidthDip"].get<int>();
+                placementChanged = true;
+            }
+            if (params.contains("windowHeightDip") && params["windowHeightDip"].is_number_integer()) {
+                s.windowHeightDip = params["windowHeightDip"].get<int>();
+                placementChanged = true;
+            }
+            if (params.contains("fixedX") && params["fixedX"].is_number_integer()) {
+                s.fixedX = params["fixedX"].get<int>();
+                s.hasFixedAnchor = true;
+                placementChanged = true;
+            }
+            if (params.contains("fixedY") && params["fixedY"].is_number_integer()) {
+                s.fixedY = params["fixedY"].get<int>();
+                s.hasFixedAnchor = true;
+                placementChanged = true;
+            }
+            if (params.contains("fixedMonitorDevice") && params["fixedMonitorDevice"].is_string()) {
+                s.fixedMonitorDevice = params["fixedMonitorDevice"].get<std::string>();
+                placementChanged = true;
+            }
+            if (params.contains("lockWindowBounds") && params["lockWindowBounds"].is_boolean()) {
+                s.lockWindowBounds = params["lockWindowBounds"].get<bool>();
+                placementChanged = true;
+            }
             if (params.contains("excludedApps") && params["excludedApps"].is_string()) s.excludedApps = params["excludedApps"].get<std::string>();
 
             bool hotkeyChanged = false;
@@ -2259,6 +2324,11 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
 
             const bool saved = tools3000::clipboard::ClipboardManager::instance().updateSettings(s);
+            if (placementChanged) {
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::ClipboardWindow::instance().applyPlacementSettingsNow();
+                });
+            }
             if (enabledProvided || hotkeyChanged) {
                 registerClipboardHotkey();
             }
@@ -2472,6 +2542,81 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             });
             return {{"success", true}};
         });
+
+        mb.registerHostHandler("clipboard.captureFixedPlacement", [](const nlohmann::json&) -> nlohmann::json {
+            bool captured = false;
+            auto runCapture = [&captured]() {
+                auto& cw = tools3000::ui::ClipboardWindow::instance();
+                if (!cw.isVisible()) {
+                    cw.show(GetModuleHandleW(nullptr));
+                    captured = false;
+                } else {
+                    captured = cw.captureCurrentBoundsAsFixed();
+                }
+            };
+            auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+            if (dispatcher.isOwnerThread()) {
+                runCapture();
+            } else {
+                dispatcher.post([]() {
+                    auto& cw = tools3000::ui::ClipboardWindow::instance();
+                    if (!cw.isVisible()) {
+                        cw.show(GetModuleHandleW(nullptr));
+                    } else {
+                        cw.captureCurrentBoundsAsFixed();
+                    }
+                });
+            }
+            const auto s = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            nlohmann::json settingsSnap = {
+                {"windowPositionMode", s.windowPositionMode},
+                {"windowWidthDip", s.windowWidthDip},
+                {"windowHeightDip", s.windowHeightDip},
+                {"hasFixedAnchor", s.hasFixedAnchor},
+                {"fixedX", s.fixedX},
+                {"fixedY", s.fixedY},
+                {"fixedMonitorDevice", s.fixedMonitorDevice},
+                {"lockWindowBounds", s.lockWindowBounds}
+            };
+            return {
+                {"success", true},
+                {"captured", captured},
+                {"settings", settingsSnap},
+                {"windowPositionMode", s.windowPositionMode},
+                {"windowWidthDip", s.windowWidthDip},
+                {"windowHeightDip", s.windowHeightDip},
+                {"hasFixedAnchor", s.hasFixedAnchor},
+                {"fixedX", s.fixedX},
+                {"fixedY", s.fixedY},
+                {"fixedMonitorDevice", s.fixedMonitorDevice},
+                {"lockWindowBounds", s.lockWindowBounds}
+            };
+        });
+
+        mb.registerHostHandler("clipboard.resetPlacement", [](const nlohmann::json&) -> nlohmann::json {
+            auto& dispatcher = tools3000::core::MainThreadDispatcher::instance();
+            if (dispatcher.isOwnerThread()) {
+                tools3000::ui::ClipboardWindow::instance().resetPlacementToDefault();
+            } else {
+                dispatcher.post([]() {
+                    tools3000::ui::ClipboardWindow::instance().resetPlacementToDefault();
+                });
+            }
+            const auto s = tools3000::clipboard::ClipboardManager::instance().getSettings();
+            return {
+                {"success", true},
+                {"settings", {
+                    {"windowPositionMode", s.windowPositionMode},
+                    {"windowWidthDip", s.windowWidthDip},
+                    {"windowHeightDip", s.windowHeightDip},
+                    {"hasFixedAnchor", s.hasFixedAnchor},
+                    {"fixedX", s.fixedX},
+                    {"fixedY", s.fixedY},
+                    {"fixedMonitorDevice", s.fixedMonitorDevice},
+                    {"lockWindowBounds", s.lockWindowBounds}
+                }}
+            };
+        });
     }
 
     // 5.7. 系统级文本扩展器 (Text Expander，默认关闭 opt-in 零钩子，支持动态宏与无痕防污染展开)
@@ -2505,6 +2650,70 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         });
         mb.registerHostHandler("textExpander.exportRules", [](const nlohmann::json&) -> nlohmann::json {
             return tools3000::text_expander::TextExpanderManager::instance().exportRulesJson();
+        });
+    }
+
+    // 5.8. CapsLayer 引导键与分应用改键 (纯 Rust 零分配状态机，出厂默认关闭 < 1ns 短路)
+    {
+        tools3000::caps_layer::CapsLayerManager::instance().initialize();
+        auto& mb = tools3000::core::MessageBridge::instance();
+        mb.registerHostHandler("capsLayer.getSettings", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::caps_layer::CapsLayerManager::instance().getSettingsJson();
+        });
+        mb.registerHostHandler("capsLayer.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::caps_layer::CapsLayerManager::instance().updateSettings(params);
+        });
+        mb.registerHostHandler("capsLayer.applyPreset", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string presetId = params.is_object()
+                ? params.value("preset", params.value("presetId", std::string("arrows_ijkl")))
+                : std::string("arrows_ijkl");
+            return tools3000::caps_layer::CapsLayerManager::instance().applyPreset(presetId);
+        });
+    }
+
+    // 5.9. 纯 Rust 独立窗口管理引擎控制器 (Tools3000_WindowKit.exe，出厂默认全关 0 进程 0 占用)
+    {
+        tools3000::core::WindowKitController::instance().initialize();
+        auto& mb = tools3000::core::MessageBridge::instance();
+        mb.registerHostHandler("windowManager.getSettings", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().getSettingsJson();
+        });
+        mb.registerHostHandler("windowManager.updateSettings", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().updateSettings(params);
+        });
+        mb.registerHostHandler("windowManager.execAction", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string action = params.is_object() ? params.value("action", std::string{}) : std::string{};
+            nlohmann::json arg = (params.is_object() && params.contains("arg")) ? params["arg"] : params;
+            if (action == "open_layout_editor" || action == "openLayoutEditor") {
+                if (!arg.is_object()) {
+                    arg = nlohmann::json::object();
+                }
+                auto& settingsWnd = tools3000::ui::SettingsWindow::instance();
+                if (settingsWnd.isVisible() && settingsWnd.hwnd()) {
+                    arg["restoreSettingsHwnd"] = reinterpret_cast<int64_t>(settingsWnd.hwnd());
+                    tools3000::core::MainThreadDispatcher::instance().post([]() {
+                        tools3000::ui::SettingsWindow::instance().hide();
+                    });
+                }
+            }
+            return tools3000::core::WindowKitController::instance().execAction(action, arg);
+        });
+        mb.registerHostHandler("windowManager.getMonitors", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().getMonitorsJson();
+        });
+        mb.registerHostHandler("windowManager.getVirtualDesktops", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().getVirtualDesktopsJson();
+        });
+        mb.registerHostHandler("windowManager.captureWorkspace", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string name = params.is_object() ? params.value("name", std::string{}) : std::string{};
+            return tools3000::core::WindowKitController::instance().captureWorkspaceJson(name);
+        });
+        mb.registerHostHandler("windowManager.importPowerToysLayouts", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string src = params.is_object() ? params.value("sourcePath", std::string{}) : std::string{};
+            return tools3000::core::WindowKitController::instance().importPowerToysLayoutsJson(src);
+        });
+        mb.registerHostHandler("windowManager.getRuntimeStats", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().getRuntimeStatsJson();
         });
     }
 
@@ -2687,6 +2896,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
 
     tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
         [](const tools3000::core::ThemeChangedEvent&) {
+            tools3000::core::WindowKitController::instance().notifyHostEnvironmentChanged();
             tools3000::core::MainThreadDispatcher::instance().post([]() {
                 tools3000::ui::QuickTranslatePopupWindow::instance().reloadTheme();
             });
@@ -2699,6 +2909,38 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             tools3000::core::MainThreadDispatcher::instance().post([message]() {
                 tools3000::ui::ToastOverlay::instance().showToast(
                     tools3000::core::WinUtils::wstringToUtf8(message));
+            });
+        }
+    );
+
+    // 鼠标手势 / 触发角内置命令「划词与剪贴板翻译」零耦合路由（不依赖快捷键模拟）
+    tools3000::core::EventBus::instance().subscribe<tools3000::core::ActionTriggerQuickTranslateEvent>(
+        [](const tools3000::core::ActionTriggerQuickTranslateEvent& ev) {
+            const POINT pt = ev.cursorPt;
+            const HWND targetHwnd = ev.targetHwnd;
+            tools3000::core::MainThreadDispatcher::instance().post([pt, targetHwnd]() {
+                HWND fg = (targetHwnd && IsWindow(targetHwnd)) ? targetHwnd : GetForegroundWindow();
+                POINT effectivePt = pt;
+                if (effectivePt.x == 0 && effectivePt.y == 0) {
+                    GetCursorPos(&effectivePt);
+                }
+                const std::string configuredKey = tools3000::core::ConfigManager::instance().get<std::string>(
+                    "/hotkeys/Translate Selection", "Alt+X");
+                tools3000::ui::QuickTranslatePopupWindow::instance().triggerQuickTranslate(
+                    effectivePt, fg, configuredKey.empty() ? "Alt+X" : configuredKey);
+            });
+        }
+    );
+
+    // 划词翻译浮窗快捷菜单「打开翻译设置」直达设置页「文本识别与翻译 -> 原位与划词翻译」
+    tools3000::core::EventBus::instance().subscribe<tools3000::core::ActionOpenTranslateSettingsEvent>(
+        [](const tools3000::core::ActionOpenTranslateSettingsEvent&) {
+            tools3000::core::MainThreadDispatcher::instance().post([]() {
+                showSettingsWindow();
+                tools3000::core::MessageBridge::instance().pushEvent("settings:navigate", {
+                    {"navId", "ocr"},
+                    {"subTab", "translate"}
+                });
             });
         }
     );
@@ -2773,6 +3015,8 @@ void shutdownSubsystems() {
     tools3000::ui::QuickLookWindow::instance().destroy();
     tools3000::ui::TrayWindow::instance().destroy();
     tools3000::text_expander::TextExpanderManager::instance().shutdown();
+    tools3000::caps_layer::CapsLayerManager::instance().shutdown();
+    tools3000::core::WindowKitController::instance().shutdown();
     tools3000::clipboard::ClipboardManager::instance().shutdown();
     tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().setPreInterceptor(nullptr);
@@ -3019,6 +3263,16 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
     }
 
+    if (g_wmWindowKitEditorResult != 0 && msg == g_wmWindowKitEditorResult) {
+        const bool saved = (wParam != 0);
+        const bool restoreSettings = (lParam != 0);
+        tools3000::core::WindowKitController::instance().handleLayoutEditorResult(saved);
+        if (restoreSettings) {
+            showSettingsWindow();
+        }
+        return 0;
+    }
+
     if (g_wmTaskbarCreated != 0 && msg == g_wmTaskbarCreated) {
         LOG_INFO("检测到系统任务栏重建 (TaskbarCreated)，重新注册托盘图标");
         tools3000::tray::TrayIcon::instance().recreate();
@@ -3050,6 +3304,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         tools3000::core::EventBus::instance().publish(tools3000::core::SystemSessionChangedEvent{static_cast<uint32_t>(wParam)});
         if (wParam == WTS_SESSION_LOCK || wParam == WTS_SESSION_LOGOFF) {
             LOG_INFO("检测到 Windows 系统会话锁屏或注销 (0x{:X})，主动挂起渲染并释放物理内存", wParam);
+            tools3000::caps_layer::CapsLayerManager::instance().resetRuntimeState();
             tools3000::ui::CinemaZoomEngine::instance().handleSystemInterruption("session_lock_or_logoff");
             tools3000::ui::SpotlightOverlay::instance().dismiss();
             tools3000::core::WinUtils::trimWorkingSet();
@@ -3064,6 +3319,7 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         tools3000::core::EventBus::instance().publish(tools3000::core::SystemPowerChangedEvent{static_cast<uint32_t>(wParam)});
         if (wParam == PBT_APMSUSPEND) {
             LOG_INFO("检测到系统进入休眠或睡眠 (0x{:X})，主动挂起渲染并释放物理内存", wParam);
+            tools3000::caps_layer::CapsLayerManager::instance().resetRuntimeState();
             tools3000::ui::CinemaZoomEngine::instance().handleSystemInterruption("power_suspend");
             tools3000::ui::SpotlightOverlay::instance().dismiss();
             tools3000::core::WinUtils::trimWorkingSet();

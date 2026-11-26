@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { isBuiltinPluginId } from './routes';
+import { isBuiltinPluginId, normalizeBuiltinPluginId } from './routes';
 import { normalizeProcessInput } from '../utils/processName';
 
 describe('Builtin Plugin SSOT & Hotkey Exclusion Normalization', () => {
-  it('treats quick_look and all built-in modules as built-in plugins so they never appear as phantom sidebar extensions', () => {
+  it('treats quick_look, window_manager, caps_layer and all built-in modules as built-in plugins so they never appear as phantom sidebar extensions', () => {
     expect(isBuiltinPluginId('quick_look')).toBe(true);
+    expect(isBuiltinPluginId('window_manager')).toBe(true);
+    expect(isBuiltinPluginId('windowmanager')).toBe(true);
+    expect(isBuiltinPluginId('caps_layer')).toBe(true);
+    expect(isBuiltinPluginId('capslayer')).toBe(true);
+    expect(normalizeBuiltinPluginId('windowmanager')).toBe('window_manager');
+    expect(normalizeBuiltinPluginId('capslayer')).toBe('caps_layer');
     expect(isBuiltinPluginId('search')).toBe(true);
     expect(isBuiltinPluginId('spotlight')).toBe(true);
     expect(isBuiltinPluginId('capture')).toBe(true);

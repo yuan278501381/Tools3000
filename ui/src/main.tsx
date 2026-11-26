@@ -1,18 +1,25 @@
 /* eslint-disable react-refresh/only-export-components -- application entrypoint owns stable lazy surface boundaries */
-import { StrictMode, Component, Suspense, lazy } from 'react'
+import { StrictMode, Component, Suspense, lazy, type ComponentType } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import i18n from 'i18next'
-import './i18n/config'
+import { i18nReady } from './i18n/config'
 
 // 每个 WebView 表面只解析自己的组件树。生产构建会为这些动态入口保留独立
-// chunk；WebView2 的虚拟主机映射会从同一 ui 目录安全加载它们。
-const SettingsApp = lazy(() => import('./App.tsx'))
-const SearchApp = lazy(() => import('./SearchApp.tsx'))
-const TrayApp = lazy(() => import('./TrayApp.tsx'))
-const QuickLookApp = lazy(() => import('./QuickLookApp.tsx'))
-const ClipboardApp = lazy(() => import('./ClipboardApp.tsx'))
+// chunk；同时根据当前路由在模块加载瞬间立即并行预拉目标表面 chunk 与单一语言包，
+// 将机械盘冷启时的 2 轮串行瀑布压平为 1 轮并行读盘，消除中间 Suspense 空白闪烁。
+const loadSettingsApp = () => import('./App.tsx')
+const loadSearchApp = () => import('./SearchApp.tsx')
+const loadTrayApp = () => import('./TrayApp.tsx')
+const loadQuickLookApp = () => import('./QuickLookApp.tsx')
+const loadClipboardApp = () => import('./ClipboardApp.tsx')
+
+const SettingsApp = lazy(loadSettingsApp)
+const SearchApp = lazy(loadSearchApp)
+const TrayApp = lazy(loadTrayApp)
+const QuickLookApp = lazy(loadQuickLookApp)
+const ClipboardApp = lazy(loadClipboardApp)
 
 class ErrorBoundary extends Component<{children: ReactNode}, {hasError: boolean, error: Error | null}> {
   constructor(props: {children: ReactNode}) {
@@ -103,12 +110,30 @@ window.onerror = function (msg, url, lineNo, columnNo, error) {
   reload.focus();
 };
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{i18n.t('main.loading', 'Loading...')}</div>}>
-        {isTray ? <TrayApp /> : (isSearch ? <SearchApp /> : (isQuickLook ? <QuickLookApp /> : (isClipboard ? <ClipboardApp /> : <SettingsApp />)))}
-      </Suspense>
-    </ErrorBoundary>
-  </StrictMode>,
-)
+// 立即与单一语言包并行预拉当前路由的目标表面 chunk，就绪后一次性直出真实 UI（0 Suspense 闪烁）
+const preloadActiveSurface = (): Promise<{ default: ComponentType } | null> => {
+  if (isTray) return loadTrayApp()
+  if (isSearch) return loadSearchApp()
+  if (isQuickLook) return loadQuickLookApp()
+  if (isClipboard) return loadClipboardApp()
+  return loadSettingsApp()
+}
+
+const surfacePreloadPromise = preloadActiveSurface().catch(() => null)
+
+void Promise.all([i18nReady.catch(() => undefined), surfacePreloadPromise]).then(([, preloaded]) => {
+  const ActiveSurface = preloaded?.default
+  const fallbackSurface = isTray
+    ? <TrayApp />
+    : (isSearch ? <SearchApp /> : (isQuickLook ? <QuickLookApp /> : (isClipboard ? <ClipboardApp /> : <SettingsApp />)))
+
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <ErrorBoundary>
+        <Suspense fallback={<div role="status" aria-live="polite" className="surface-loading">{i18n.t('main.loading', 'Loading...')}</div>}>
+          {ActiveSurface ? <ActiveSurface /> : fallbackSurface}
+        </Suspense>
+      </ErrorBoundary>
+    </StrictMode>,
+  )
+})

@@ -132,6 +132,7 @@ void WebViewEnvironmentManager::acquire(ReadyCallback callback) {
             L"--disable-features=RendererCodeIntegrity,Translate,InterestFeedContentSuggestions "
             L"--disable-background-networking "
             L"--disable-component-update "
+            L"--disable-backgrounding-occluded-windows "
             L"--allow-no-sandbox-job");
     }
 

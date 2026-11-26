@@ -1,0 +1,16 @@
+[package]
+name = "tools3000_caps_rs"
+version = "0.1.0"
+edition = "2021"
+description = "Zero-dependency Rust state machine for CapsLock leader layer and per-application key remapping in Tools3000"
+license = "GPL-3.0-only"
+
+[lib]
+name = "tools3000_caps_rs"
+crate-type = ["staticlib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "abort"

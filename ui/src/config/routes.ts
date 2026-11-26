@@ -26,6 +26,8 @@ import {
   ClipboardList,
   TextCursorInput,
   LockOpen,
+  LayoutGrid,
+  KeyRound,
   Puzzle,
   type LucideIcon,
 } from 'lucide-react';
@@ -36,6 +38,8 @@ export type BuiltinNavId =
   | 'search'
   | 'clipboard'
   | 'text_expander'
+  | 'window_manager'
+  | 'caps_layer'
   | 'gesture'
   | 'hotcorner'
   | 'capture'
@@ -67,7 +71,7 @@ export interface RouteItemConfig {
   toneEnd: string;       // 精工 Squircle 模块徽标渐变终止色
   canvasWidth?: PageCanvasWidth; // 内容画布语义天花板: reading (960px) / workspace (1280px)
   fallbackLabel?: string;
-  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'clipboard' | 'text_expander' | 'dialogenhancer' | 'dialog_enhancer' | 'file_locksmith' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
+  requiresPlugin?: 'gesture' | 'capture' | 'search' | 'clipboard' | 'text_expander' | 'window_manager' | 'caps_layer' | 'dialogenhancer' | 'dialog_enhancer' | 'file_locksmith' | 'keycast' | 'spotlight' | 'remote_boost' | 'picasa_viewer';
 }
 
 export const APP_ROUTES: readonly RouteItemConfig[] = [
@@ -85,6 +89,8 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
   { id: 'gesture', labelKey: 'nav.gesture', subtitleKey: 'navSubtitle.gesture', category: 'core_tools', icon: Mouse, toneStart: '#8b5cf6', toneEnd: '#7c3aed', canvasWidth: 'workspace', requiresPlugin: 'gesture' },
   { id: 'hotcorner', labelKey: 'nav.hotcorner', subtitleKey: 'navSubtitle.hotcorner', category: 'core_tools', icon: MonitorUp, toneStart: '#f59e0b', toneEnd: '#d97706', canvasWidth: 'reading', requiresPlugin: 'gesture' },
   { id: 'text_expander', labelKey: 'nav.text_expander', subtitleKey: 'navSubtitle.text_expander', category: 'core_tools', icon: TextCursorInput, toneStart: '#6366f1', toneEnd: '#8b5cf6', canvasWidth: 'reading', requiresPlugin: 'text_expander' },
+  { id: 'window_manager', labelKey: 'nav.window_manager', subtitleKey: 'navSubtitle.window_manager', category: 'core_tools', icon: LayoutGrid, toneStart: '#0ea5e9', toneEnd: '#2563eb', canvasWidth: 'workspace', requiresPlugin: 'window_manager' },
+  { id: 'caps_layer', labelKey: 'nav.caps_layer', subtitleKey: 'navSubtitle.caps_layer', category: 'core_tools', icon: KeyRound, toneStart: '#8b5cf6', toneEnd: '#6366f1', canvasWidth: 'workspace', requiresPlugin: 'caps_layer' },
   // 3. 文件检索、流转与零驻留系统扩展
   { id: 'search', labelKey: 'nav.search', subtitleKey: 'navSubtitle.search', category: 'core_tools', icon: Search, toneStart: '#0ea5e9', toneEnd: '#0284c7', canvasWidth: 'workspace', requiresPlugin: 'search' },
   { id: 'dialog_enhancer', labelKey: 'nav.dialog_enhancer', subtitleKey: 'navSubtitle.dialog_enhancer', category: 'core_tools', icon: FolderSymlink, toneStart: '#3b82f6', toneEnd: '#2563eb', canvasWidth: 'reading', requiresPlugin: 'dialogenhancer' },
@@ -121,7 +127,7 @@ export const PLUGIN_DOMAIN_GROUPS: readonly PluginDomainGroupMeta[] = [
   {
     id: 'input_control',
     titleKey: 'plugins.domainInputControl',
-    pluginIds: ['gesture', 'text_expander'],
+    pluginIds: ['gesture', 'text_expander', 'window_manager', 'caps_layer'],
   },
   {
     id: 'file_system',
@@ -150,6 +156,10 @@ const BUILTIN_PLUGIN_ALIAS_TO_CANONICAL: Readonly<Record<string, string>> = {
   picasa_viewer: 'picasa_viewer',
   quicklook: 'quick_look',
   quick_look: 'quick_look',
+  windowmanager: 'window_manager',
+  window_manager: 'window_manager',
+  capslayer: 'caps_layer',
+  caps_layer: 'caps_layer',
 };
 
 const BUILTIN_PLUGIN_ALIAS_GROUPS: Readonly<Record<string, readonly string[]>> = {
@@ -159,6 +169,8 @@ const BUILTIN_PLUGIN_ALIAS_GROUPS: Readonly<Record<string, readonly string[]>> =
   remote_boost: ['remote_boost', 'remote'],
   picasa_viewer: ['picasa_viewer', 'picasaviewer'],
   quick_look: ['quick_look', 'quicklook'],
+  window_manager: ['window_manager', 'windowmanager'],
+  caps_layer: ['caps_layer', 'capslayer'],
 };
 
 export function normalizeBuiltinPluginId(id: string): string {

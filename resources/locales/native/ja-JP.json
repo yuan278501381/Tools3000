@@ -989,5 +989,7 @@
   "重点说明||Text": "ポイント解説",
   "静音||Off": "ミュート",
   "高刷||Smooth": "高フレーム",
-  "鼠标自动运镜||Auto Zoom": "マウス自動ズーム"
+  "鼠标自动运镜||Auto Zoom": "マウス自動ズーム",
+  "Quick Translate": "クイック翻訳",
+  "Draw T-shape (L-R-D) to translate selected or clipboard text": "T字（←→↓）を描いて選択中またはクリップボードのテキストを翻訳"
 }

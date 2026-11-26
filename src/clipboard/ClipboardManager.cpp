@@ -849,6 +849,21 @@ bool ClipboardManager::initialize(HINSTANCE hInstance, const std::filesystem::pa
     loaded.hideOnPaste = cfg.get<bool>("/clipboard/hideOnPaste", true);
     loaded.keepOpenAfterDrag = cfg.get<bool>("/clipboard/keepOpenAfterDrag", true);
     loaded.singleClickPaste = cfg.get<bool>("/clipboard/singleClickPaste", false);
+    loaded.windowPositionMode = cfg.get<std::string>("/clipboard/windowPositionMode", "follow_mouse");
+    if (loaded.windowPositionMode != "follow_mouse" &&
+        loaded.windowPositionMode != "remember_last" &&
+        loaded.windowPositionMode != "fixed") {
+        loaded.windowPositionMode = "follow_mouse";
+    }
+    loaded.windowWidthDip = std::clamp(cfg.get<int>("/clipboard/windowWidthDip", 760), 560, 2400);
+    loaded.windowHeightDip = std::clamp(cfg.get<int>("/clipboard/windowHeightDip", 560), 420, 1600);
+    loaded.hasFixedAnchor = cfg.get<bool>("/clipboard/hasFixedAnchor", false);
+    loaded.fixedX = cfg.get<int>("/clipboard/fixedX", 0);
+    loaded.fixedY = cfg.get<int>("/clipboard/fixedY", 0);
+    loaded.fixedRelX = std::clamp(cfg.get<double>("/clipboard/fixedRelX", 0.5), 0.0, 1.0);
+    loaded.fixedRelY = std::clamp(cfg.get<double>("/clipboard/fixedRelY", 0.38), 0.0, 1.0);
+    loaded.fixedMonitorDevice = cfg.get<std::string>("/clipboard/fixedMonitorDevice", "");
+    loaded.lockWindowBounds = cfg.get<bool>("/clipboard/lockWindowBounds", false);
     loaded.excludedApps = cfg.get<std::string>(
         "/clipboard/excludedApps", loaded.excludedApps);
 
@@ -963,6 +978,15 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
     clamped.maxItems = std::clamp(clamped.maxItems, 20, 5000);
     clamped.maxDays = std::clamp(clamped.maxDays, 0, 3650);
     clamped.maxImageMb = std::clamp(clamped.maxImageMb, 1, 64);
+    if (clamped.windowPositionMode != "follow_mouse" &&
+        clamped.windowPositionMode != "remember_last" &&
+        clamped.windowPositionMode != "fixed") {
+        clamped.windowPositionMode = "follow_mouse";
+    }
+    clamped.windowWidthDip = std::clamp(clamped.windowWidthDip, 560, 2400);
+    clamped.windowHeightDip = std::clamp(clamped.windowHeightDip, 420, 1600);
+    clamped.fixedRelX = std::clamp(clamped.fixedRelX, 0.0, 1.0);
+    clamped.fixedRelY = std::clamp(clamped.fixedRelY, 0.0, 1.0);
 
     {
         std::lock_guard<std::mutex> lock(m_settingsMutex);
@@ -986,6 +1010,16 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
             {"hideOnPaste", clamped.hideOnPaste},
             {"keepOpenAfterDrag", clamped.keepOpenAfterDrag},
             {"singleClickPaste", clamped.singleClickPaste},
+            {"windowPositionMode", clamped.windowPositionMode},
+            {"windowWidthDip", clamped.windowWidthDip},
+            {"windowHeightDip", clamped.windowHeightDip},
+            {"hasFixedAnchor", clamped.hasFixedAnchor},
+            {"fixedX", clamped.fixedX},
+            {"fixedY", clamped.fixedY},
+            {"fixedRelX", clamped.fixedRelX},
+            {"fixedRelY", clamped.fixedRelY},
+            {"fixedMonitorDevice", clamped.fixedMonitorDevice},
+            {"lockWindowBounds", clamped.lockWindowBounds},
             {"excludedApps", clamped.excludedApps}
         }},
         {"plugins", {
@@ -1009,7 +1043,15 @@ bool ClipboardManager::updateSettings(const ClipboardSettings& next) {
             {"hideOnBlur", clamped.hideOnBlur},
             {"hideOnPaste", clamped.hideOnPaste},
             {"keepOpenAfterDrag", clamped.keepOpenAfterDrag},
-            {"singleClickPaste", clamped.singleClickPaste}
+            {"singleClickPaste", clamped.singleClickPaste},
+            {"windowPositionMode", clamped.windowPositionMode},
+            {"windowWidthDip", clamped.windowWidthDip},
+            {"windowHeightDip", clamped.windowHeightDip},
+            {"hasFixedAnchor", clamped.hasFixedAnchor},
+            {"fixedX", clamped.fixedX},
+            {"fixedY", clamped.fixedY},
+            {"fixedMonitorDevice", clamped.fixedMonitorDevice},
+            {"lockWindowBounds", clamped.lockWindowBounds}
         });
     return saved;
 }

@@ -503,4 +503,56 @@ describe('ClipboardApp', () => {
     fireEvent.click(options[2], { detail: 1, ctrlKey: true });
     expect(bridgeRequestMock.mock.calls.filter((c) => c[0] === 'clipboard.pasteItem').length).toBe(callsAfterFirst);
   });
+
+  it('toggles fixed placement from header button and blocks dragging/resizing when lockBounds is active', async () => {
+    const baseImpl = bridgeRequestMock.getMockImplementation();
+    bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>, opts?: unknown) => {
+      if (method === 'clipboard.getWindowState') {
+        return {
+          success: true,
+          pinned: false,
+          maximized: false,
+          positionMode: 'follow_mouse',
+          fixedLocked: false,
+          lockBounds: false,
+        };
+      }
+      if (method === 'clipboard.toggleFixedPlacement') {
+        return {
+          success: true,
+          pinned: false,
+          maximized: false,
+          positionMode: 'fixed',
+          fixedLocked: true,
+          lockBounds: true,
+        };
+      }
+      return baseImpl ? baseImpl(method, params, opts) : { success: true };
+    });
+
+    const { container } = render(<ClipboardApp />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Rich formatted note')).toBeTruthy();
+    });
+
+    // 初始未锁定时存在 8 向缩放边
+    expect(container.querySelectorAll('.clip-popup__resize-edge').length).toBe(8);
+
+    // 点击标题栏「固定当前位置与大小」按钮
+    const fixBtn = screen.getByRole('button', { name: 'Fix current position and size' });
+    fireEvent.click(fixBtn);
+    await waitFor(() => {
+      expect(bridgeRequestMock).toHaveBeenCalledWith('clipboard.toggleFixedPlacement', undefined, { silent: true });
+      expect(screen.getByRole('button', { name: 'Unfix panel position (follow active monitor)' })).toBeTruthy();
+    });
+
+    // 锁定后隐藏 8 向缩放边，且拖拽标题栏不会触发 startDrag
+    expect(container.querySelectorAll('.clip-popup__resize-edge').length).toBe(0);
+    const header = container.querySelector('.clip-popup__header') as HTMLElement;
+    fireEvent.mouseDown(header, { button: 0, screenX: 100, screenY: 100 });
+    fireEvent.mouseMove(window, { buttons: 1, screenX: 140, screenY: 140 });
+    fireEvent.mouseUp(window);
+    expect(bridgeRequestMock).not.toHaveBeenCalledWith('clipboard.startDrag', expect.anything(), expect.anything());
+  });
 });

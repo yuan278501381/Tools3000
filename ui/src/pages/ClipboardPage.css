@@ -95,8 +95,102 @@
   min-width: 240px;
 }
 
+.clipboard-page__mode-group {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  width: 100%;
+}
+
+.clipboard-page__mode-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  padding: 12px 14px;
+  text-align: left;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--card-border);
+  background: var(--bg-surface-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.clipboard-page__mode-card:hover {
+  border-color: var(--primary);
+  background: var(--bg-elevated);
+}
+
+.clipboard-page__mode-card--active {
+  border-color: var(--primary);
+  background: var(--bg-elevated);
+  box-shadow: 0 0 0 2px var(--primary-glow);
+}
+
+.clipboard-page__mode-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.clipboard-page__mode-desc {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.clipboard-page__dims-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.clipboard-page__dim-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.clipboard-page__dim-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.clipboard-page__anchor-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
+
+.clipboard-page__anchor-status {
+  display: inline-flex;
+  align-items: center;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-surface-secondary);
+  color: var(--text-secondary);
+  font-size: 0.84rem;
+  font-weight: 500;
+  line-height: 1.45;
+  font-variant-numeric: tabular-nums lining-nums;
+  font-feature-settings: "tnum" 1;
+}
+
 @container (max-width: 640px) {
   .clipboard-page__stats-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .clipboard-page__mode-group {
+    grid-template-columns: 1fr;
   }
 }
