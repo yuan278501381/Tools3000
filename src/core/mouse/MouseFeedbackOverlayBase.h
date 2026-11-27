@@ -106,6 +106,9 @@ public:
     /// 静态工具：基于 QPC 单调微秒时钟与预期帧周期判断是否触发了瞬时返回（防 RDP / 锁屏 / 虚拟显卡 100% CPU 暴走）
     static int64_t computeAntiSpinRemainingUs(int64_t elapsedUs, int64_t targetPeriodUs) noexcept;
 
+    /// 静态工具：判定等待 FrameLatencyWaitable 后是否仍需调用 DwmFlush（防止双 VSync 叠加将 60/144Hz 腰斩为半帧率）
+    static bool shouldInvokeDwmFlushAfterWaitable(int64_t waitedUs, int64_t sinceLastFrameUs, int64_t targetPeriodUs) noexcept;
+
 protected:
     MouseFeedbackOverlayBase();
 

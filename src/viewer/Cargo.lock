@@ -341,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "tools3000_picasa_viewer"
-version = "1.5.3"
+version = "1.5.4"
 dependencies = [
  "flate2",
  "gif",

@@ -6,6 +6,19 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-27] 聚光灯 `FadeOut` 退场放大特效满帧零掉帧根治：消除 4 重卡顿链 (Issue `#33 @LiangDongXing-cn`, `fix/spotlight-fadeout-zero-drop`)
+- **实机逐帧微秒溯源（Issue `#33` 实机视频 + `T3000_TRACE_FRAMES` 微秒探针）**：
+  1. **双源 VSync 串行叠加锁半帧**：`MouseFeedbackOverlayBase::baseRenderLoop` 此前对 `FrameLatencyWaitable` 与 `DwmFlush()` 无条件串行调用，一旦渲染略逼近 VBlank 边沿即跨过下一刷新沿，强行空等整个下一周期导致 `60Hz -> 30Hz / 144Hz -> 72Hz` 腰斩；
+  2. **退场 3 层全屏 2.2-Gamma 径向渐变填满 4K 显存带宽**：`FadeOut` 期间 `scalePulse` 最高放大至 `6.0x` 时，`computeFourRectClipGeometry` 的 `centerBox` 膨胀至覆盖整屏，暗幕与 3D 珍珠球双渐变叠加成整屏 3 层 `D2D1_GAMMA_2_2` 径向渐变；且 `FadeOut` 末段在暗幕仍 `alpha=0.14` 时硬切断产生闪白感；
+  3. **Direct2D 大半径 `DrawEllipse` 路径剖分悬崖（31–39ms 尖峰真凶）**：实测 `p=0.508` / `p=0.616` 时退场扩散水波环 `DrawEllipse` 半径跨越 `~2400px`（包围盒 `>4800px`），触发 Direct2D 内部 CPU 路径加宽与海量三角剖分，使单次 `ID2D1DeviceContext::EndDraw()` 从 `0.65ms` 暴涨 60 倍至 **`39.6ms / 31.3ms`**；同帧逐帧重建 4 个 `CreateGradientStopCollection` / `CreateRadialGradientBrush` COM 对象亦额外消耗 `0.7~2.2ms` CPU；
+  4. **QPC 防空转阈值过高破坏 VSync 锁相**：`computeAntiSpinRemainingUs` 原 `55%`（`9.2ms @ 60Hz`）阈值在系统偶发轻负载后，将 `DwmFlush()` 正常等待 `3.5~5.8ms` 重锁 VBlank 边沿的行为误判为瞬时假返回，额外强睡 `9~12ms` 把渲染推离 VSync 边沿，诱发自激式 30FPS 半帧振荡。
+- **世界级终局方案 (`MouseFeedbackOverlayBase.{h,cpp}`, `SpotlightOverlay.{h,cpp}`, `SpotlightOverlayRenderer.cpp`, `SpotlightOverlayInputController.cpp`, `test_ui_lifecycle.inc`)**：
+  1. **单源 VSync 防腰斩 + 15% 纯瞬返防空转护栏**：新增可测导出函数 `shouldInvokeDwmFlushAfterWaitable`（`waited >= 45%` 或 `sinceLastFrame >= 55%` 时严禁二次 `DwmFlush`）；将 `computeAntiSpinRemainingUs` 收紧至 `< 15%` 纯瞬时假返回护栏并检测 `FAILED(DwmFlush())`，高负载扰动后 1 帧即可瞬间重锁原生刷新率；
+  2. **GPU 原生 `PRIMITIVE_BLEND_COPY` 单椭圆挖洞 + 精确四角剔除 + `drawSafeCircleStroke` 零剖分悬崖**：暗幕改用 `Clear(dimColor)` + `D2D1_PRIMITIVE_BLEND_COPY` + 透明刷 `FillEllipse`（硬件亚像素抗锯齿挖洞，绝不走 `ID2D1GeometryGroup` CPU 布尔剖分）；半径 `> 1200px` 的所有描边圆环（柔边、`FadeOut` 水波、`aurora_ripple`、`inward_gravity` 入场环）统一经 `drawSafeCircleStroke` 转为屏幕可见弧段直线逼近（仅绘视口内可见段，恒定 `< 0.08ms`），超四角距离整屏跳过；
+  3. **设备期缓存径向渐变笔刷零分配复用 + 柔顺退场曲线**：`SpotlightOverlay` 缓存 `m_cachedSphereBrush` / `m_cachedBounceBrush`（按 RGB 缓存，每帧仅 `SetOpacity`/`SetCenter`/`SetRadius`，`draw` 耗时由 `2178us` 降至 **`~25us`**）；`FadeOut` 水晶球锁定原半径随 `(1-p)^3` 消隐、暗幕按 `(1-p)^2.2` 平滑至 `<= 0.004` 彻底消除断崖闪白。
+- **实机多轮连续压测实证（3455×2159 4K 高分屏，60Hz 原生刷新）**：
+  - 连续 4 轮 × 4 场景（共 16 项基准）全部 **0% 丢帧**；常规 `300px` `FadeOut`：`21~22 帧, P50=16.58ms, P95=17.25~17.64ms, dropRate=0%`；极限 `500px` 大尺寸 `FadeOut`（退场半径 `> 2500px`）：`21 帧, P50=16.55ms, P95=17.06~17.45ms, dropRate=0%`。
+
 ### [2026-11-27] 摇晃鼠标寻光标四重物理抗误触引擎与最小移动距离配置 (Issue `#33 @LiangDongXing-cn`, `fix/shake-mouse-distance-detector`)
 - **日常高频误触发根因**：旧版 `SpotlightOverlayInputController.cpp` 将 `delta = (|dx| >= |dy|) ? dx : dy` 混用为单一 `dir = +/-1`（45° 斜线滑行时 `|dx|` 与 `|dy|` 交替略大，100ms 内即可伪造 10+ 次假折返），且仅按 `6 DIP` 单点位移计数、无单程摆幅/总距离/速度/停顿断链/拖拽静默门槛，导致阈值调至 `10` 仍频繁误弹聚焦圈。
 - **终局方案 (`src/core/mouse/MouseShakeDetector.h`, `SpotlightOverlay.{h,cpp}`, `SpotlightOverlayInputController.cpp`, `src/main.cpp`, `SpotlightPage.tsx`, 8 套 `locales/*.json`, `test_ui_lifecycle.inc`)**：

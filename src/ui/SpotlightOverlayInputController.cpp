@@ -762,15 +762,15 @@ void SpotlightOverlay::tickAnimation() {
                     }
                 }
             } else if (m_animState == AnimState::FadeOut) {
-                // 全屏水波巨浪漫溢散开：如海浪向全屏四角极速推进并平滑消散
+                // 电影级平滑光圈退场：平稳扩张 + 二次柔和淡出，消除末段灰幕断崖闪白
                 float progress = (std::clamp)(static_cast<float>(elapsedMs) / fadeOutDuration, 0.0f, 1.0f);
                 m_focusProgress = progress;
 
-                float waveEase = 1.0f - std::pow(1.0f - progress, 2.5f);
-                m_scalePulse = 1.0f + waveEase * 5.5f;
-                m_currentAlpha = (std::clamp)(std::pow(1.0f - progress, 1.4f), 0.0f, 1.0f);
+                float waveEase = 1.0f - std::pow(1.0f - progress, 2.2f);
+                m_scalePulse = 1.0f + waveEase * 4.5f;
+                m_currentAlpha = (std::clamp)(std::pow(1.0f - progress, 2.2f), 0.0f, 1.0f);
 
-                if (elapsedMs >= fadeOutDuration || m_currentAlpha <= 0.01f) {
+                if (elapsedMs >= fadeOutDuration || m_currentAlpha <= 0.004f) {
                     m_animState = AnimState::Idle;
                     m_ringOnlyMode = false;
                     m_currentAlpha = 0.0f;
