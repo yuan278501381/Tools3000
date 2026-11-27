@@ -2073,6 +2073,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             {"animationDurationMs", s.animationDurationMs},
             {"holdDurationMs", s.holdDurationMs},
             {"shakeThreshold", s.shakeThreshold},
+            {"shakeMinDistance", s.shakeMinDistance},
             {"spotlightAnimStyle", s.spotlightAnimStyle},
             {"doubleCtrlMode", s.doubleCtrlMode},
             {"zoomLevel", s.zoomLevel},
@@ -2103,6 +2104,7 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
         if (params.contains("animationDurationMs") && params["animationDurationMs"].is_number()) s.animationDurationMs = params["animationDurationMs"].get<int>();
         if (params.contains("holdDurationMs") && params["holdDurationMs"].is_number()) s.holdDurationMs = params["holdDurationMs"].get<int>();
         if (params.contains("shakeThreshold") && params["shakeThreshold"].is_number()) s.shakeThreshold = params["shakeThreshold"].get<int>();
+        if (params.contains("shakeMinDistance") && params["shakeMinDistance"].is_number()) s.shakeMinDistance = params["shakeMinDistance"].get<int>();
         if (params.contains("spotlightAnimStyle") && params["spotlightAnimStyle"].is_string()) s.spotlightAnimStyle = params["spotlightAnimStyle"].get<std::string>();
         if (params.contains("doubleCtrlMode") && params["doubleCtrlMode"].is_string()) s.doubleCtrlMode = params["doubleCtrlMode"].get<std::string>();
         if (params.contains("zoomLevel") && params["zoomLevel"].is_number()) s.zoomLevel = params["zoomLevel"].get<float>();

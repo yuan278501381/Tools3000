@@ -632,41 +632,23 @@ void SpotlightOverlay::processMouseMoveLocked(POINT pt, bool bypass) {
         }
     }
 
-    // 2. 摇晃鼠标寻找光标检测 (macOS/Windows 级高灵敏累积折返加速算法)
+    // 2. 摇晃鼠标寻找光标检测 (双轴独立追踪 + 单程摆幅死区 + 累计距离/速度门槛 + 拖拽静默)
     if (m_animState == AnimState::Idle && m_settings.triggerShakeMouse && !bypass) {
-        if (m_lastMousePos.x == 0 && m_lastMousePos.y == 0) {
-            m_lastMousePos = pt;
-            m_shakeWindowStart = now;
-            return;
+        const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()).count();
+        const bool mouseButtonDown =
+            ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0) ||
+            ((GetAsyncKeyState(VK_MBUTTON) & 0x8000) != 0);
+        const tools3000::core::MouseShakeConfig shakeCfg{
+            m_settings.shakeThreshold,
+            m_settings.shakeMinDistance
+        };
+        if (m_shakeDetector.feed(pt.x, pt.y, nowMs, dpiScale, mouseButtonDown, shakeCfg)) {
+            trigger(pt, false, /*allowCinemaZoom=*/false);
         }
-
-        int dx = pt.x - m_lastMousePos.x;
-        int dy = pt.y - m_lastMousePos.y;
-        m_lastMousePos = pt;
-
-        // 计算主要位移轴向
-        int delta = (std::abs(dx) >= std::abs(dy)) ? dx : dy;
-        const int minShakeDelta = tools3000::core::MouseViewportManager::scaleMetric(6, dpiScale);
-        if (std::abs(delta) >= minShakeDelta) {
-            int dir = (delta > 0) ? 1 : -1;
-            auto windowElapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_shakeWindowStart).count();
-            if (windowElapsed > 1000) {
-                m_shakeReversals = 0;
-                m_shakeWindowStart = now;
-                m_lastMoveDir = dir;
-            } else if (m_lastMoveDir != 0 && dir != m_lastMoveDir) {
-                m_shakeReversals++;
-                m_lastMoveDir = dir;
-                int threshold = (std::clamp)(m_settings.shakeThreshold, 3, 20);
-                if (m_shakeReversals >= threshold) {
-                    m_shakeReversals = 0;
-                    m_shakeWindowStart = {};
-                    trigger(pt, false, /*allowCinemaZoom=*/false);
-                }
-            } else {
-                m_lastMoveDir = dir;
-            }
-        }
+    } else if (m_animState != AnimState::Idle || bypass) {
+        m_shakeDetector.reset();
     }
 }
 

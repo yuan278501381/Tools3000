@@ -153,7 +153,10 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
         cfg.set<bool>("/spotlight/holdDurationV2Migrated", true);
     }
     m_settings.holdDurationMs = (std::max)(0, rawHoldDurationMs);
-    m_settings.shakeThreshold = cfg.get<int>("/spotlight/shakeThreshold", 4);
+    m_settings.shakeThreshold = tools3000::core::MouseShakeDetector::clampReversalThreshold(
+        cfg.get<int>("/spotlight/shakeThreshold", tools3000::core::MouseShakeDetector::kDefaultReversalThreshold));
+    m_settings.shakeMinDistance = tools3000::core::MouseShakeDetector::clampMinDistanceDip(
+        cfg.get<int>("/spotlight/shakeMinDistance", tools3000::core::MouseShakeDetector::kDefaultMinDistanceDip));
     m_settings.spotlightAnimStyle = cfg.get<std::string>("/spotlight/spotlightAnimStyle", "inward_gravity");
     {
         const std::string mode = cfg.get<std::string>("/spotlight/doubleCtrlMode", "spotlight");
@@ -292,6 +295,9 @@ void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {
         std::lock_guard lock(m_mutex);
         m_settings = settings;
         m_settings.holdDurationMs = (std::max)(0, m_settings.holdDurationMs);
+        m_settings.shakeThreshold = tools3000::core::MouseShakeDetector::clampReversalThreshold(m_settings.shakeThreshold);
+        m_settings.shakeMinDistance = tools3000::core::MouseShakeDetector::clampMinDistanceDip(m_settings.shakeMinDistance);
+        m_shakeDetector.reset();
         if (m_settings.doubleCtrlMode != "spotlight" &&
             m_settings.doubleCtrlMode != "cinema_zoom" &&
             m_settings.doubleCtrlMode != "cinema_zoom_ring") {
@@ -352,6 +358,7 @@ void SpotlightOverlay::updateSettings(const SpotlightSettings& settings) {
             {"animationDurationMs", persisted.animationDurationMs},
             {"holdDurationMs", persisted.holdDurationMs},
             {"shakeThreshold", persisted.shakeThreshold},
+            {"shakeMinDistance", persisted.shakeMinDistance},
             {"spotlightAnimStyle", persisted.spotlightAnimStyle},
             {"doubleCtrlMode", persisted.doubleCtrlMode},
             {"zoomLevel", persisted.zoomLevel},
@@ -388,6 +395,7 @@ void SpotlightOverlay::resetDefaults() {
     m_ripples.clear();
     m_trail.clear();
     m_stickyLocalViewport = {};
+    m_shakeDetector.reset();
     m_ctrlState = CtrlDoubleTapState::Idle;
     m_firstCtrlDownTime = {};
     m_firstCtrlUpTime = {};

@@ -17,6 +17,7 @@
 #include <thread>
 
 #include "core/mouse/MouseFeedbackOverlayBase.h"
+#include "core/mouse/MouseShakeDetector.h"
 #include "core/mouse/MouseStreamCore.h"
 #include "core/mouse/MouseViewportManager.h"
 #include "core/utils/SpscRingBuffer.h"
@@ -32,7 +33,8 @@ struct SpotlightSettings {
     int spotlightSize = 300;           // 直径 (像素，默认 300)
     int animationDurationMs = 1000;    // 渐变动画速度 (ms)
     int holdDurationMs = 0;            // 停留保持时间 (ms，默认 0 表示持续常亮不自动退出)
-    int shakeThreshold = 4;            // 摇晃检测灵敏度 (默认 4，极速响应)
+    int shakeThreshold = tools3000::core::MouseShakeDetector::kDefaultReversalThreshold;  // 摇晃折返次数 (默认 4, [3, 20])
+    int shakeMinDistance = tools3000::core::MouseShakeDetector::kDefaultMinDistanceDip;   // 摇晃最小累计移动距离 (DIP, 默认 400, [100, 2000])
     std::string spotlightAnimStyle = "inward_gravity"; // inward_gravity (默认向心引力超聚焦), tactical_sonar (科技声纳), aurora_ripple (极简涟漪)
 
     // 双击 Ctrl 演示模式与电影级平滑交互放大 (Issue #34)
@@ -263,12 +265,9 @@ private:
     std::chrono::steady_clock::time_point m_firstCtrlUpTime{};
     bool m_ctrlIsPhysicallyDown = false;
 
-    // 摇晃鼠标检测状态
-    POINT m_lastMousePos{0, 0};
+    // 摇晃鼠标双轴抗误触状态机与末帧渲染锚点
+    tools3000::core::MouseShakeDetector m_shakeDetector{};
     POINT m_lastRenderedPos{-9999, -9999};
-    int m_lastMoveDir = 0;
-    int m_shakeReversals = 0;
-    std::chrono::steady_clock::time_point m_shakeWindowStart{};
 
     std::vector<ClickRipple> m_ripples;
     std::vector<TrailParticle> m_trail;

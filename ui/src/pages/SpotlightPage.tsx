@@ -51,6 +51,7 @@ interface SpotlightSettings {
   animationDurationMs: number;
   holdDurationMs: number;
   shakeThreshold: number;
+  shakeMinDistance: number;
   spotlightAnimStyle: string;
   doubleCtrlMode: string;
   zoomLevel: number;
@@ -77,6 +78,7 @@ const DEFAULT_SETTINGS: SpotlightSettings = {
   animationDurationMs: 1000,
   holdDurationMs: 0,
   shakeThreshold: 4,
+  shakeMinDistance: 400,
   spotlightAnimStyle: 'inward_gravity',
   doubleCtrlMode: 'spotlight',
   zoomLevel: 2.0,
@@ -504,8 +506,8 @@ export const SpotlightPage: FC = () => {
             />
             <SubSettingGroup disabled={!settings.triggerShakeMouse}>
               <SettingRow
-                label={t('spotlight.shakeThreshold', 'Shake Threshold')}
-                description={t('spotlight.shakeThresholdDesc', 'Shake detection sensitivity (default 4).')}
+                label={t('spotlight.shakeThreshold', 'Shake Reversals')}
+                description={t('spotlight.shakeThresholdDesc', 'Number of rapid direction reversals required along the same axis (default 4).')}
               >
                 <NumberInput
                   min={3}
@@ -514,7 +516,22 @@ export const SpotlightPage: FC = () => {
                   disabled={!settings.triggerShakeMouse}
                   value={settings.shakeThreshold}
                   onChange={(v) => void saveSetting('shakeThreshold', v)}
-                  ariaLabel={t('spotlight.shakeThreshold', 'Shake Threshold')}
+                  ariaLabel={t('spotlight.shakeThreshold', 'Shake Reversals')}
+                />
+              </SettingRow>
+              <SettingRow
+                label={t('spotlight.shakeMinDistance', 'Minimum Shake Distance')}
+                description={t('spotlight.shakeMinDistanceDesc', 'Total cursor travel required within the shake window to prevent accidental triggers during normal mouse use (default 400 px).')}
+              >
+                <NumberInput
+                  min={100}
+                  max={2000}
+                  step={50}
+                  unit="px"
+                  disabled={!settings.triggerShakeMouse}
+                  value={settings.shakeMinDistance}
+                  onChange={(v) => void saveSetting('shakeMinDistance', v)}
+                  ariaLabel={t('spotlight.shakeMinDistance', 'Minimum Shake Distance')}
                 />
               </SettingRow>
             </SubSettingGroup>
