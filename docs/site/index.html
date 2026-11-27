@@ -884,17 +884,17 @@
     <section class="hero" id="top">
       <div class="hero-badge">
         <span class="dot"></span>
-        <span data-i18n="heroBadge">v1.5.5 Released · Native C++20 &amp; Rust · Zero Electron · GPL-3.0</span>
+        <span data-i18n="heroBadge">v1.5.6 Released · Native C++20 &amp; Rust · Zero Electron · GPL-3.0</span>
       </div>
-      <h1 data-i18n-html="heroTitle">13 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span></h1>
-      <p class="hero-sub" data-i18n="heroSub">Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark &amp; command search (+ 350 KB MCP), persistent clipboard, 8-language offline OCR with in-place &amp; quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app auto-bypass &amp; E2E-encrypted cloud sync.</p>
+      <h1 data-i18n-html="heroTitle">15 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span></h1>
+      <p class="hero-sub" data-i18n="heroSub">Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark &amp; command search (+ 350 KB MCP), native Window Manager (SnapZones / Workspaces / Fluent Alt+Tab), CapsLayer, persistent clipboard, 8-language offline OCR with in-place &amp; quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app &amp; PPT auto-bypass, and E2E-encrypted cloud sync.</p>
 
       <div class="cta-row">
-        <a class="btn-primary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.5.5-Setup.exe">
+        <a class="btn-primary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.5.6-Setup.exe">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          <span data-i18n="dlInstaller">Download Installer (v1.5.5)</span>
+          <span data-i18n="dlInstaller">Download Installer (v1.5.6)</span>
         </a>
-        <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.5.5-win-x64-portable.zip">
+        <a class="btn-secondary" href="https://github.com/yuan278501381/Tools3000/releases/latest/download/Tools3000-v1.5.6-win-x64-portable.zip">
           <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
           <span data-i18n="dlPortable">Portable ZIP (No Install)</span>
         </a>
@@ -969,7 +969,7 @@
               <button type="button" class="pill-btn pill-btn--icon" id="demoPrevBtn" aria-label="Previous demo">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="15 18 9 12 15 6"/></svg>
               </button>
-              <span class="demo-count num" id="demoCount">1 / 8</span>
+              <span class="demo-count num" id="demoCount">1 / 10</span>
               <button type="button" class="pill-btn pill-btn--icon" id="demoNextBtn" aria-label="Next demo">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </button>
@@ -981,7 +981,7 @@
 
     <section id="modules">
       <div class="sec-head">
-        <h2 data-i18n="modTitle">Modular by Design — Pick 1 Tool or All 13</h2>
+        <h2 data-i18n="modTitle">Modular by Design — Pick 1 Tool or All 15</h2>
         <p data-i18n="modSub">Love single-purpose tools without juggling 10 background processes? Toggle every module independently — disabled tools unload completely with zero background usage.</p>
       </div>
       <div class="filter-bar" id="moduleFilters" role="tablist" aria-label="Filter modules"></div>
@@ -1097,7 +1097,7 @@
             </div>
             <p class="panel-desc" data-i18n="ramDesc">Running 10 separate Electron/WPF utilities drains over 1.2 GB of RAM and spawns conflicting global keyboard/mouse hooks. Tools3000 shares a single microkernel.</p>
             <div class="bar-row">
-              <div class="bar-meta"><span data-i18n="ramGood">Tools3000 (All 13 modules ready)</span><span class="num" style="color:var(--emerald);">~15 MB</span></div>
+              <div class="bar-meta"><span data-i18n="ramGood">Tools3000 (All 15 modules ready)</span><span class="num" style="color:var(--emerald);">~15 MB</span></div>
               <div class="bar-track"><div class="bar-fill-good"></div></div>
             </div>
             <div class="bar-row" style="margin-top:20px;">
@@ -1149,51 +1149,55 @@
     };
 
     const DEMOS = [
-      { id: 'search', file: 'search_demo.webp', en: 'Omni Search', zh: '全能聚合秒搜', capEn: 'Alt + Space: NTFS MFT files, full text, apps, 37 system commands & browser bookmarks with real Favicons + Spacebar QuickLook.', capZh: 'Alt + Space 毫秒聚合搜全盘文件、文档全文、已装应用、37 条系统命令与书签，按空格直接预览。' },
-      { id: 'ocr', file: 'ocr_live_text_demo.webp', en: 'OCR & In-Place Translate', zh: '离线识字与原位翻译', capEn: 'Auto-detects 8 languages offline, renders clean in-place screenshot translations, plus Alt + X instant quick translate.', capZh: '离线自动识别多语文字，无痕原位排版译文，并支持 Alt + X 纯原生轻量划词与剪贴板翻译。' },
-      { id: 'dialog', file: 'dialog_enhancer_demo.webp', en: 'Ctrl+G Dialog Jump', zh: 'Ctrl+G 对话框快跳', capEn: 'Press Ctrl + G inside Open/Save dialogs to jump straight to active folders, or Ctrl + Shift + G for inline directory search.', capZh: '打开/保存弹窗内按 Ctrl + G 一键直达活跃文件夹，按 Ctrl + Shift + G 内嵌全盘目录即搜。' },
+      { id: 'search', file: 'search_demo.webp', en: 'Omni Search', zh: '全能聚合秒搜', capEn: 'Alt + Space: NTFS MFT files, full text, apps, 37 system commands & browser bookmarks with real Favicons + Spacebar QuickLook.', capZh: 'Alt + Space 毫秒聚合搜全盘文件、文档全文、已装应用、37 条系统命令与书签，支持空格预览。' },
+      { id: 'window_manager', file: 'window_manager_demo.webp', en: 'Window Manager Suite', zh: '窗口管理套件', capEn: 'Native Rust + Slint Fluent engine (0 VRAM, opt-in): SnapZones magnetic tiling, 4px red-frame Workspaces capture & Fluent Alt+Tab with 1–9 jump.', capZh: '纯 Rust + Slint Fluent 独立引擎（零显存，默认关闭按需启用）：SnapZones 等比磁吸分屏、4px 正红细边工作区摆拍与增强 Alt+Tab 1–9 秒切。' },
+      { id: 'ocr', file: 'ocr_live_text_demo.webp', en: 'OCR & In-Place Translate', zh: '离线识字与原位翻译', capEn: 'Auto-detects 8 languages offline (PP-OCRv6), renders clean in-place screenshot translations, plus Alt + X instant quick translate.', capZh: '离线自动识别多语文字（PP-OCRv6），无痕原位排版译文，并支持 Alt + X 纯原生轻量划词与剪贴板翻译。' },
       { id: 'record', file: 'screen_recording_demo.webp', en: 'Cinema Auto-Zoom Studio', zh: '电影级自动运镜录屏', capEn: 'Critically-damped spring camera zoom following clicks & waveform trimming, exporting crisp MP4, compact chat GIF, or animated WebP.', capZh: '点击自动平滑推拉弹簧运镜 + 音轨波形剪辑，一键导出高清 MP4、轻量聊天动图 GIF 与动态 WebP。' },
       { id: 'clipboard', file: 'clipboard_demo.webp', en: 'Clipboard Drag-Paste', zh: '持久化剪贴板直拖', capEn: 'Alt + V: Rust crash-safe clipboard history surviving reboots, with multi-select merge, drag-to-paste & image OCR/translate.', capZh: 'Alt + V 跨重启不丢的剪贴板历史，支持多选合并、拖拽直贴、收藏分组与图片一键识字翻译。' },
       { id: 'expander', file: 'text_expander_demo.webp', en: 'Text Expander', zh: '文本扩展器', capEn: 'Type ;mail or ;date anywhere to expand snippets & 15 dynamic macros with automatic password-manager exclusion.', capZh: '敲入 ;mail / ;date 等短词瞬间展开长文本与 15 类动态宏，自动避让密码管理器且零剪贴板污染。' },
+      { id: 'caps_layer', file: 'caps_layer_demo.webp', en: 'CapsLayer Remap', zh: 'CapsLayer 引导改键', capEn: 'Opt-in ergonomic CapsLock leader (0 hooks when off): Caps+IJKL home-row arrows, editing keys & automatic per-app profiles.', capZh: '按需启用的 CapsLock 引导层（关闭零钩子）：Caps+IJKL 主键区方向与编辑导航，自动随前台应用切换键位方案。' },
+      { id: 'dialog', file: 'dialog_enhancer_demo.webp', en: 'Ctrl+G Dialog Jump', zh: 'Ctrl+G 对话框快跳', capEn: 'Press Ctrl + G inside Open/Save dialogs to jump straight to active folders, or Ctrl + Shift + G for inline directory search.', capZh: '打开/保存弹窗内按 Ctrl + G 一键直达活跃文件夹，按 Ctrl + Shift + G 内嵌全盘目录即搜。' },
       { id: 'capture', file: 'capture_markup_demo.webp', en: 'Capture & Region Studio', zh: '标注截图与固定选区', capEn: 'F1 precision vector markup, Shift + F1 repeat last region, R cycling, and pinned custom region presets.', capZh: 'F1 精准矢量标注、Shift + F1 重复上次选区、R 循环切换历史框，支持置顶固定选区工作台。' },
       { id: 'gesture', file: 'mouse_gesture_demo.webp', en: 'Gestures & Auto-Bypass', zh: '全局手势与专业避让', capEn: 'Right-drag gestures with pause-to-cancel, hot corners, edge scroll & 0ms right-click bypass in CAD/3D apps.', capZh: '右键流光轨迹手势，支持停顿取消、四角触发、边缘滚轮调节，内置 CAD/3D 专业软件零延迟右键避让。' }
     ];
 
     const FILTER_CATS = [
-      { id: 'all', en: 'All 13 Tools', zh: '全部 13 项' },
+      { id: 'all', en: 'All 15 Tools', zh: '全部 15 项' },
       { id: 'search', en: 'Search & Input', zh: '搜索、剪贴板与输入' },
       { id: 'media', en: 'Capture, OCR & Studio', zh: '截图、翻译与录屏' },
-      { id: 'system', en: 'Presenter, Gestures & System', zh: '演示、手势与系统' }
+      { id: 'system', en: 'Windows, Presenter & System', zh: '窗口、演示与系统' }
     ];
 
     const MODULES = [
-      { cat: 'search', kbd: 'Alt + Space', en: ['Omni File, App & Bookmark Search', 'Millisecond NTFS MFT search across files, apps, bookmarks & commands, with Ctrl+C file copy, 0 MB sleep & Spacebar QuickLook.'], zh: ['全能文件 / 应用 / 书签秒搜', 'NTFS 毫秒级聚合检索文件、应用、书签与系统命令，支持 Ctrl+C 直接复制文件本体、0 MB 休眠与空格预览。'] },
+      { cat: 'search', kbd: 'Alt + Space', en: ['Omni File, App & Bookmark Search', 'Millisecond NTFS MFT search across files, apps, bookmarks & commands, with Ctrl+C file copy, 0 MB sleep & opt-in Spacebar QuickLook.'], zh: ['全能文件 / 应用 / 书签秒搜', 'NTFS 毫秒级聚合检索文件、应用、书签与系统命令，支持 Ctrl+C 直接复制文件本体、0 MB 休眠与按需开启空格预览。'] },
       { cat: 'search', kbd: 'content:', en: ['Full-Text Document Search', 'Rust SIMD search across code, Markdown, Office, PDF & OFD content with highlighted line snippets.'], zh: ['多格式文档内容全文搜索', 'Rust SIMD 极速检索代码、Markdown、Office、PDF 与 OFD 正文并高亮上下文。'] },
       { cat: 'search', kbd: 'Alt + V', en: ['Persistent Clipboard History', 'Color source app icons, universal drag-to-paste (browsers, terminals & AI IDEs), multi-select merge & reboot persistence.'], zh: ['重启不丢的剪贴板历史', '彩色来源图标、支持拖入浏览器/终端/AI 编程工具直贴、多选合并粘贴与图片一键识字翻译。'] },
       { cat: 'search', kbd: ';trigger', en: ['Native Text Expander', 'Expand triggers & 15 dynamic macros (date offsets, UUID, weekday, cursor) with fullwidth compatibility & zero idle hooks.'], zh: ['全局文本扩展器', '任意输入框敲短词秒展长文与 15 类动态宏（支持全半角符号智能兼容与实时预览），关闭零占用。'] },
+      { cat: 'search', kbd: 'Caps + IJKL', en: ['CapsLayer Leader & App Remap (Opt-In)', 'Turn CapsLock into home-row arrows, editing keys & per-app shortcut profiles — disabled by default with 0 hooks until opted in.'], zh: ['CapsLayer 引导改键（按需启用）', '将 CapsLock 升级为主键区方向/编辑层与应用级键位方案，默认关闭零钩子零干扰，按需一键开启。'] },
       { cat: 'media', kbd: 'F1 / Shift+F1', en: ['Precision Capture & Region Manager', 'Vector annotations, decoupled copy/save actions, R region history cycling & pinned region presets.'], zh: ['精准截图与固定选区工作台', '矢量标注、独立控制自动保存与复制、R 键历史选区复用与置顶固定选区工作台。'] },
       { cat: 'media', kbd: 'Scroll', en: ['Scrolling Long Screenshot', 'Auto-scrolls web pages, chat threads & code editors with real-time stitching preview.'], zh: ['智能滚动长截图', '自动平滑滚动网页、长会话与代码编辑器，实时预览无缝拼接。'] },
       { cat: 'media', kbd: 'F3', en: ['120Hz+ Grouped Desktop Pins', 'GPU wheel zoom, lossless cold compression for 4K/long pins, and hover-priority Live Text selection.'], zh: ['120Hz 顺滑贴图与无损内存封顶', 'GPU 丝滑缩放、多标签贴图组、多张 4K/长图无损冷压缩，贴图文字直接划选复制。'] },
-      { cat: 'media', kbd: 'Ctrl+Shift+O / Alt+X', en: ['Offline OCR, In-Place & Quick Translate', '8-language offline OCR with seamless 1:1 in-place translation, plus zero-WebView Alt+X selection translate with SSMS/Emacs auto-yield.'], zh: ['多语离线识字、原位与划词翻译', '8 语种离线 OCR 与无痕截图原位翻译，附带零 WebView 的 Alt+X 划词翻译（自动避让 SSMS / Emacs）。'] },
+      { cat: 'media', kbd: 'Ctrl+Shift+O / Alt+X', en: ['Offline OCR, In-Place & Quick Translate', '8-language PP-OCRv6 offline OCR with 1:1 in-place translation, plus zero-WebView Alt+X selection translate & 3-mode selector.'], zh: ['多语离线识字、原位与划词翻译', '8 语种 PP-OCRv6 离线识字与无痕截图原位翻译，3 选 1 翻译卡片开箱即用，附带零 WebView 的 Alt+X 划词翻译。'] },
       { cat: 'media', kbd: 'Ctrl+Shift+R', en: ['Cinema Auto-Zoom Screen Studio', 'Smooth spring click-following zoom & audio waveform trim, exporting crisp MP4, compact chat GIF & animated WebP.'], zh: ['电影级自动运镜录屏演播室', '临界阻尼弹簧自动跟焦推拉 + 音轨波形剪辑，一键导出高清 MP4、轻量聊天动图 GIF 与动态 WebP。'] },
+      { cat: 'system', kbd: 'Alt+Tab / SnapZones', en: ['Native Window Manager Suite (Opt-In)', 'Standalone Rust + Slint Fluent engine (0 VRAM, 0 RAM when off): dual-layer SnapZones with magnetic 1:1 canvas, 4px red-frame Workspaces capture & Fluent Alt+Tab / Alt+`.'], zh: ['原生窗口管理套件（按需启用）', '纯 Rust + Slint Fluent 独立引擎（零显存、关闭零进程）：双层 SnapZones 等比磁吸分屏、正红细边工作区快照与增强 Alt+Tab / Alt+`。'] },
       { cat: 'system', kbd: 'Ctrl+G / Shift+G', en: ['File Dialog Quick Jump & Search', 'Press Ctrl+G inside Open/Save dialogs to jump to active folders, Ctrl+Shift+G for inline directory search & per-app path memory.'], zh: ['文件对话框 Ctrl+G 快跳与即搜', '打开/保存弹窗按 Ctrl+G 一键直达活跃文件夹，Ctrl+Shift+G 内嵌目录即搜并自动记忆各软件路径。'] },
-      { cat: 'system', kbd: 'Right Drag', en: ['Global Gestures & Pro-App Bypass', '60fps trail, pause-to-cancel, hot corners, edge wheel volume/brightness & 0ms right-click bypass in 30+ CAD/3D apps.'], zh: ['全局手势与专业软件自动避让', '停顿防误触、四角触发、边缘滚轮调音亮，内置 30+ 款 CAD/UG/3D 软件右键零延迟直通。'] },
-      { cat: 'system', kbd: 'Double Ctrl', en: ['Cinema Interactive Zoom & Keycast', 'Double-press Ctrl for smooth hardware zoom where clicking & typing keep working, plus spotlight, click ripples & keycast HUD.'], zh: ['双击 Ctrl 电影级交互放大与演示', '双击 Ctrl 丝滑推拉放大且全程支持真实点击与打字（Ctrl+滚轮调倍），兼备聚光灯与按键回显。'] },
-      { cat: 'system', kbd: 'Cloud / Right Click', en: ['E2E Cloud Sync, Unlocker & <2 MB Viewer', 'AES-256-GCM cloud config sync (OneDrive/WebDAV/S3), zero-resident File Locksmith, <2 MB Rust Picasa Viewer & RDP key flush.'], zh: ['加密云同步、占用解锁与轻量看图', '端到端加密配置云备份（OneDrive/WebDAV/S3）、零常驻文件解锁、不足 2 MB Rust 看图器与远控防卡键。'] }
+      { cat: 'system', kbd: 'Right Drag', en: ['Global Gestures & Pro-App Bypass', '60fps trail, pause-to-cancel, hot corners, edge wheel volume/brightness, Window Manager gestures & 0ms bypass in 30+ CAD/3D apps.'], zh: ['全局手势与专业软件自动避让', '停顿防误触、四角触发、边缘滚轮调音亮、窗口管理专属手势，内置 30+ 款 CAD/UG/3D 软件右键零延迟直通。'] },
+      { cat: 'system', kbd: 'Double Ctrl', en: ['Cinema Interactive Zoom & PPT-Safe Keycast', 'Double-press Ctrl for smooth interactive zoom where clicking & typing keep working, plus spotlight & keycast automatically preserved in PowerPoint slideshows.'], zh: ['双击 Ctrl 交互放大与 PPT 演示护航', '双击 Ctrl 丝滑推拉放大且支持真实点击打字，PPT/WPS 全屏放映时自动保留按键回显、聚光灯、截图与录屏。'] },
+      { cat: 'system', kbd: 'Cloud / Right Click', en: ['E2E Cloud Sync, Unlocker & <2 MB Viewer', 'AES-256-GCM cloud config sync (OneDrive/WebDAV/S3), opt-in zero-resident File Locksmith, <2 MB Rust Picasa Viewer & opt-in Remote Boost.'], zh: ['加密云同步、占用解锁与轻量看图', '端到端加密配置云备份（OneDrive/WebDAV/S3）、按需启用零常驻文件解锁、不足 2 MB Rust 看图器与远控防卡键。'] }
     ];
 
     const I18N = {
       en: {
         navDemos: 'Live Demos', navModules: 'Modular Tools', navSync: 'Sync & Privacy', navMcp: 'MCP & Footprint', navReleases: 'Releases',
-        heroBadge: 'v1.5.5 Released · Native C++20 & Rust · Zero Electron · GPL-3.0',
-        heroTitle: '13 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span>',
-        heroSub: 'Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark & command search (+ 350 KB MCP), persistent clipboard, 8-language offline OCR with in-place & quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app auto-bypass & E2E-encrypted cloud sync.',
-        dlInstaller: 'Download Installer (v1.5.5)', dlPortable: 'Portable ZIP (No Install)', viewSource: 'Star on GitHub', copyBtn: 'Copy',
+        heroBadge: 'v1.5.6 Released · Native C++20 & Rust · Zero Electron · GPL-3.0',
+        heroTitle: '15 Modular Windows Power Tools.<br /><span class="grad">One ~15 MB Native Microkernel.</span>',
+        heroSub: 'Replace scattered utilities without all-in-one bloat — toggle every module independently (disabled tools unload completely with zero background usage). Pick only what you need: instant file, full-text, app, bookmark & command search (+ 350 KB MCP), native Window Manager (SnapZones / Workspaces / Fluent Alt+Tab), CapsLayer, persistent clipboard, 8-language offline OCR with in-place & quick translate, Ctrl+G file dialog jump, cinema auto-zoom studio, double-Ctrl interactive zoom, pro-app & PPT auto-bypass, and E2E-encrypted cloud sync.',
+        dlInstaller: 'Download Installer (v1.5.6)', dlPortable: 'Portable ZIP (No Install)', viewSource: 'Star on GitHub', copyBtn: 'Copy',
         mobileTip: 'Browsing on a phone or tablet? Tools3000 runs natively on Windows 10/11 (x64 & ARM64). Copy the link to install on your PC later.',
         copyPcLink: 'Copy Link for PC', starForLater: 'Star on GitHub',
         stat1: 'Idle RAM (0 MB optional search sleep)', stat2: 'Million-file NTFS MFT + USN query', stat3: 'Zero-dependency Rust CLI & MCP server', stat4: 'UI + offline OCR & in-place translation',
-        demoTitle: 'See It in Action', demoSub: 'Real native recordings on Windows 11 — swipe or tap to zoom on mobile, zero mockups.', tapZoom: 'Zoom',
-        modTitle: 'Modular by Design — Pick 1 Tool or All 13', modSub: 'Love single-purpose tools without juggling 10 background processes? Toggle every module independently — disabled tools unload completely with zero background usage.',
+        demoTitle: 'See It in Action', demoSub: 'Real native workflows on Windows 11 — swipe or tap to zoom on mobile.', tapZoom: 'Zoom',
+        modTitle: 'Modular by Design — Pick 1 Tool or All 15', modSub: 'Love single-purpose tools without juggling 10 background processes? Toggle every module independently — disabled tools unload completely with zero background usage.',
         archTitle: 'Built for Multi-PC Workflows, Privacy & Pro Software', archSub: 'Local-first by default with zero telemetry, optional E2E-encrypted cloud sync, and automatic conflict avoidance in professional apps.',
         syncTitle: 'E2E-Encrypted Multi-PC Config Sync', syncDesc: 'Back up and restore your settings, hotkeys, scope rules & custom Lua scripts across PCs without creating an account.',
         syncBullet1: 'OneDrive / Google Drive sync folders, WebDAV & S3-compatible storage (R2 / OSS / MinIO)',
@@ -1202,34 +1206,34 @@
         bypassTitle: 'Zero-Conflict Pro-App Auto-Bypass', bypassDesc: 'Engineered to stay invisible whenever professional tools need native right-click drags or dedicated hotkeys.',
         bypassBullet1: 'Zero-latency right-click gesture bypass in 30+ CAD, UG/NX, SolidWorks, EDA & 3D apps',
         bypassBullet2: 'Per-hotkey foreground auto-yield (e.g. Alt+X yields cleanly to SSMS Execute SQL & Emacs)',
-        bypassBullet3: 'Automatic fullscreen game DND, password-manager privacy exclusion & zero telemetry',
+        bypassBullet3: 'Smart Fullscreen DND (auto-pauses in games, preserves Keycast/Spotlight/Capture in PowerPoint slideshows)',
         mcpTitle: 'AI-Ready 350 KB Local MCP Server', mcpDesc: 'Give Claude Desktop, Cursor, or Windsurf instant read-only NTFS & document full-text search without Node.js or Python. Opt-in by default with hardcoded blocking of .ssh, .env, and private keys.',
         copyMcp: 'Copy MCP Config', ramTitle: 'Why Native C++20 & Rust Matters', ramDesc: 'Running 10 separate Electron/WPF utilities drains over 1.2 GB of RAM and spawns conflicting global keyboard/mouse hooks. Tools3000 shares a single microkernel.',
-        ramGood: 'Tools3000 (All 13 modules ready)', ramHeavy: '10 Separate Utilities (Electron / .NET / Qt)', ramFoot: 'Supports Windows 10 / 11 & Windows Server (2019-2025) across x64 & ARM64, with full non-ASCII Unicode path support.'
+        ramGood: 'Tools3000 (All 15 modules ready)', ramHeavy: '10 Separate Utilities (Electron / .NET / Qt)', ramFoot: 'Supports Windows 10 / 11 & Windows Server (2019-2025) across x64 & ARM64, with full non-ASCII Unicode & Scoop junction support.'
       },
       zh: {
         navDemos: '实机演示', navModules: '模块化工具', navSync: '云同步与避让', navMcp: 'MCP 与内存', navReleases: '版本下载',
-        heroBadge: 'v1.5.5 正式发布 · 原生 C++20 & Rust · 零 Electron · GPL-3.0 开源',
-        heroTitle: '13 款高频 Windows 效率神器<br /><span class="grad">按需独立开关 · 仅 ~15 MB 原生内核</span>',
-        heroSub: '告别十几个后台常驻软件抢热键、吃内存：一站集成全盘文件/全文/应用/书签与命令秒搜（附 350 KB 本地 MCP）、持久化剪贴板、8 语种离线识字与原位/划词翻译、文件对话框 Ctrl+G 快跳即搜、电影级自动运镜录屏、双击 Ctrl 交互平滑放大、专业软件自动避让与端到端加密配置云同步。每个功能均可个性化独立开关，关闭即卸载，零后台占用，只开你真正需要的那几项。',
-        dlInstaller: '下载标准安装包 (v1.5.5)', dlPortable: '下载绿色便携包 (免安装)', viewSource: '前往 GitHub 点 Star', copyBtn: '复制命令',
+        heroBadge: 'v1.5.6 正式发布 · 原生 C++20 & Rust · 零 Electron · GPL-3.0 开源',
+        heroTitle: '15 款高频 Windows 效率神器<br /><span class="grad">按需独立开关 · 仅 ~15 MB 原生内核</span>',
+        heroSub: '告别十几个后台常驻软件抢热键、吃内存：一站集成全盘文件/全文/应用/书签与命令秒搜（附 350 KB 本地 MCP）、原生窗口管理套件（SnapZones 分屏 / 工作区 / Fluent Alt+Tab）、CapsLayer 引导改键、持久化剪贴板、8 语种离线识字与原位/划词翻译、文件对话框 Ctrl+G 快跳即搜、电影级自动运镜录屏、双击 Ctrl 交互平滑放大、专业软件/PPT 智能避让与端到端加密配置云同步。每个功能均可独立开关，关闭即卸载，零后台占用。',
+        dlInstaller: '下载标准安装包 (v1.5.6)', dlPortable: '下载绿色便携包 (免安装)', viewSource: '前往 GitHub 点 Star', copyBtn: '复制命令',
         mobileTip: '当前正在手机/平板上浏览：Tools3000 为 Windows 10/11 原生桌面软件（支持 x64 & ARM64），可先复制链接发到电脑，或在 GitHub 点 Star 收藏。',
         copyPcLink: '复制电脑访问链接', starForLater: 'GitHub 收藏',
         stat1: '日常待机内存（搜索支持闲置 0 MB 休眠）', stat2: '百万级文件 NTFS MFT 秒搜响应', stat3: '零依赖纯 Rust 命令行与 MCP 服务', stat4: '界面多语言 + 离线识字与原位翻译',
-        demoTitle: '全功能实机动态演示', demoSub: '100% Windows 真机实录 — 手机端支持左右滑动切换与点击放大查看细节。', tapZoom: '放大查看',
-        modTitle: '模块化自由组合 — 只开 1 项或全开 13 项随你决定', modSub: '既拒绝十几个独立软件各自常驻抢热键、吃内存，也不强迫“全家桶绑定”——每个功能均可独立开关，关闭即卸载，零后台占用。',
-        archTitle: '为多台电脑、数据隐私与专业软件而生', archSub: '默认 100% 本地运行零遥测，可选端到端加密配置云同步，并在 CAD/3D/数据库等专业软件中自动让位零冲突。',
+        demoTitle: '全功能实机动态演示', demoSub: '100% 原生工作流动态演示 — 手机端支持左右滑动切换与点击放大查看细节。', tapZoom: '放大查看',
+        modTitle: '模块化自由组合 — 只开 1 项或全开 15 项随你决定', modSub: '既拒绝十几个独立软件各自常驻抢热键、吃内存，也不强迫“全家桶绑定”——每个功能均可独立开关，进阶工具默认关闭零后台占用。',
+        archTitle: '为多台电脑、数据隐私与专业软件而生', archSub: '默认 100% 本地运行零遥测，可选端到端加密配置云同步，并在 CAD/3D/数据库及 PPT 演示场景中智能适配零冲突。',
         syncTitle: '端到端加密多端配置云同步', syncDesc: '无需注册账号，即可将全部设置、快捷键、应用规则与自定义 Lua 脚本在多台电脑间安全备份与一键恢复。',
         syncBullet1: '支持 OneDrive / Google Drive 同步文件夹、WebDAV 网盘与 S3 兼容存储（R2 / OSS / MinIO）',
         syncBullet2: '可选本地 AES-256-GCM 口令加密（云端零明文），凭据经 Windows DPAPI 本机安全保存',
         syncBullet3: '支持退出时静默自动备份、历史快照滚动保留与云端一键回滚还原',
-        bypassTitle: '专业软件零冲突智能避让', bypassDesc: '从底层钩子与热键引擎出发，切入专业生产力环境瞬间自动交还控制权，绝不打断核心操作。',
+        bypassTitle: '专业软件零冲突智能避让', bypassDesc: '从底层钩子与热键引擎出发，切入专业生产力与游戏环境瞬间自动交还控制权，PPT 演示时则全程护航。',
         bypassBullet1: '内置 30+ 款 CAD / UG / SolidWorks / EDA / 3D 软件右键手势零延迟自动直通',
         bypassBullet2: '支持单条热键按前台应用自动让位（如 Alt+X 切入 SSMS 执行 SQL / Emacs 时自动放行）',
-        bypassBullet3: '全屏游戏智能免打扰、密码管理器自动免录，零遥测、零静默联网上传',
+        bypassBullet3: '全屏免打扰智能分场景（游戏全屏自动退让；PowerPoint / WPS 演示自动保留按键回显、聚光灯、截图与录屏）',
         mcpTitle: '内置 350 KB 零依赖本地 MCP 搜索服务', mcpDesc: '无需安装 Node.js 或 Python，一行配置让 Claude Desktop、Cursor、Windsurf 秒搜本地文件与 Office/PDF/代码正文；默认安全关闭，内置拦截 .ssh / .env / 私钥目录。',
         copyMcp: '复制 MCP 配置', ramTitle: '为什么坚持原生 C++20 + Rust', ramDesc: '同时开齐十款 Electron / .NET 独立效率软件往往常驻吃掉 1.2 GB+ 内存并引发全局钩子冲突；Tools3000 共享单一轻量微内核。',
-        ramGood: 'Tools3000（13 大模块全就绪待机）', ramHeavy: '10 款传统独立效率软件合计占用', ramFoot: '全面支持 Windows 10 / 11 与 Windows Server 多用户桌面（x64 & ARM64），完美兼容中文及多语种安装路径。'
+        ramGood: 'Tools3000（15 大模块全就绪待机）', ramHeavy: '10 款传统独立效率软件合计占用', ramFoot: '全面支持 Windows 10 / 11 与 Windows Server 多用户桌面（x64 & ARM64），完美兼容中文路径与 Scoop 软链安装。'
       }
     };
 

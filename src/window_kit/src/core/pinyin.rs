@@ -447,6 +447,7 @@ pub fn fuzzy_subsequence_score(needle: &str, haystack: &str) -> Option<i32> {
 
 /// 定位搜索词在窗口标题中的高亮区间（UTF-16 字符索引 `(start, len)`），
 /// 同时支持原文子串与中文拼音首字母命中定位，供 DirectWrite TextLayout 精准着重渲染！
+#[allow(dead_code)]
 pub fn find_title_highlight_utf16_ranges(
     query: &str,
     title: &str,

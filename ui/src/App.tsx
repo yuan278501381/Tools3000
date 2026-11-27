@@ -46,6 +46,7 @@ const GesturePage = lazy(() => import('./pages/GesturePage').then((module) => ({
 const CapturePage = lazy(() => import('./pages/CapturePage').then((module) => ({ default: module.CapturePage })));
 const OcrPage = lazy(() => import('./pages/OcrPage').then((module) => ({ default: module.OcrPage })));
 const GeneralPage = lazy(() => import('./pages/GeneralPage').then((module) => ({ default: module.GeneralPage })));
+const HotkeysPage = lazy(() => import('./pages/HotkeysPage').then((module) => ({ default: module.HotkeysPage })));
 const AboutPage = lazy(() => import('./pages/AboutPage').then((module) => ({ default: module.AboutPage })));
 const PerformancePage = lazy(() => import('./pages/PerformancePage').then((module) => ({ default: module.PerformancePage })));
 const PluginsPage = lazy(() => import('./pages/PluginsPage').then((module) => ({ default: module.PluginsPage })));
@@ -684,6 +685,7 @@ function App() {
       case 'remote_boost':    return <RemoteBoostPage />;
       case 'picasa_viewer':   return <PicasaViewerPage />;
       case 'plugins':         return <PluginsPage initialPlugins={plugins} onNavigate={handleNavSelect} />;
+      case 'hotkeys':         return <HotkeysPage />;
       case 'general':         return <GeneralPage onNavigate={handleNavSelect} onOpenOnboarding={() => setShowOnboarding(true)} />;
       case 'about':           return <AboutPage onNavigate={handleNavSelect} onOpenChangelog={handleOpenManualChangelog} />;
       default:
@@ -723,8 +725,6 @@ function App() {
           installedExtensions={installedExtensions}
         />
         <main className="app__main" aria-labelledby="app-page-title">
-          <AppToaster theme={theme} surface="settings" />
-
           {/* ── 顶部更新轻提示条（红点全链路语义承接：进入设置即刻看清更新版本并可一键操作/忽略） ── */}
           {updateState.badgeVisible && activeNav !== 'about' && (
             <div
@@ -847,6 +847,7 @@ function App() {
           />
         </Suspense>
       )}
+      <AppToaster theme={theme} surface="settings" />
       <WindowResizeHandles />
     </div>
   );

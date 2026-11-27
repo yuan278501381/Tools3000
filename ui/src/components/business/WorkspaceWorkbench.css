@@ -186,6 +186,40 @@
   gap: 0.45rem;
 }
 
+/* 吸顶哨兵：抵消父级 flex gap 实现物理 0 占位，仅用于 IntersectionObserver 检测触顶 */
+.ws-editor-sticky-sentinel {
+  height: 1px;
+  margin-top: -0.95rem;
+  margin-bottom: -1px;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+/* 吸顶控制台：预览舞台 + 基本配置到达滚动视口顶部后锁定不动，下方应用列表继续自由滚动 */
+.ws-editor-sticky-dock {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky-dock);
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  background: var(--bg-base);
+  margin: -8px -8px -4px;
+  padding: 8px 8px 12px;
+  border-bottom: 1px solid transparent;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* 仅调整视觉层级装饰，严禁在吸顶态修改自身高度，彻底避免滚动抖动震荡 */
+.ws-editor-sticky-dock.is-stuck {
+  border-bottom-color: var(--card-border);
+  box-shadow: 0 12px 24px -18px rgba(0, 0, 0, 0.52);
+}
+
+[data-theme="light"] .ws-editor-sticky-dock.is-stuck {
+  box-shadow: 0 12px 24px -18px rgba(24, 24, 27, 0.18);
+}
+
 .ws-stage-card {
   display: flex;
   flex-direction: column;
@@ -430,6 +464,7 @@
   border-radius: var(--radius-sm);
   border: 1px solid var(--card-border);
   background: var(--card-bg);
+  scroll-margin-top: 460px;
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
 
@@ -608,7 +643,90 @@
   color: var(--text-secondary);
 }
 
+/* 中矮视口（如 1080p @ 150% 默认窗口）：静态收紧吸顶区呼吸间距，保留双卡吸顶同时腾出下方列表空间 */
+@media (max-height: 780px) {
+  .ws-editor-sticky-dock {
+    gap: 0.65rem;
+    padding: 6px 8px 10px;
+    margin: -6px -8px -2px;
+  }
+
+  .ws-stage-card {
+    gap: 0.55rem;
+  }
+
+  .ws-stage-monitors {
+    padding: 0.2rem 0.25rem;
+  }
+
+  .ws-stage-screen-col {
+    width: min(220px, 100%);
+  }
+
+  .ws-stage-screen {
+    min-height: 102px;
+  }
+
+  .ws-stage-footer {
+    padding-top: 0.5rem;
+  }
+
+  .ws-meta-card {
+    gap: 0.6rem;
+  }
+
+  .ws-meta-checks {
+    padding-top: 0.5rem;
+  }
+
+  .ws-app-row {
+    scroll-margin-top: 360px;
+  }
+}
+
+/* 极矮视口保护：释放表单卡随内容滚动，仅保持核心微缩桌面舞台吸顶，确保下方列表始终可操作 */
+@media (max-height: 600px) {
+  .ws-editor-sticky-dock {
+    display: contents;
+  }
+
+  .ws-editor-sticky-dock > .ws-stage-card {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky-dock);
+    box-shadow: 0 -10px 0 6px var(--bg-base), var(--shadow-sm);
+  }
+
+  .ws-editor-sticky-dock.is-stuck > .ws-stage-card {
+    box-shadow: 0 -10px 0 6px var(--bg-base), var(--shadow-md);
+  }
+
+  .ws-app-row {
+    scroll-margin-top: 260px;
+  }
+}
+
 @container (max-width: 720px) {
+  /* 窄屏下三列配置表单纵排变高，仅让微缩预览舞台吸顶避免挤占应用列表 */
+  .ws-editor-sticky-dock {
+    display: contents;
+  }
+
+  .ws-editor-sticky-dock > .ws-stage-card {
+    position: sticky;
+    top: 0;
+    z-index: var(--z-sticky-dock);
+    box-shadow: 0 -10px 0 6px var(--bg-base), var(--shadow-sm);
+  }
+
+  .ws-editor-sticky-dock.is-stuck > .ws-stage-card {
+    box-shadow: 0 -10px 0 6px var(--bg-base), var(--shadow-md);
+  }
+
+  .ws-app-row {
+    scroll-margin-top: 280px;
+  }
+
   .ws-meta-grid,
   .ws-app-detail-grid {
     grid-template-columns: 1fr;

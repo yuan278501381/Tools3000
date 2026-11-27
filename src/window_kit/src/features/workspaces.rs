@@ -15,12 +15,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 use crate::core::config::{
-    parse_hex_color, UnrelatedWindowAction, WindowKitConfig, WorkspaceAppEntry, WorkspaceProfile,
-    ZoneLayoutType,
+    UnrelatedWindowAction, WindowKitConfig, WorkspaceAppEntry, WorkspaceProfile, ZoneLayoutType,
 };
 use crate::core::constants::{
     WM_WK_INTERNAL_WORKSPACE_DONE, WM_WK_INTERNAL_WORKSPACE_PROGRESS,
-    WORKSPACE_MATCH_TIMEOUT_MS, WORKSPACE_POLL_INTERVAL_MS, WORKSPACE_PROGRESS_WINDOW_CLASS,
+    WORKSPACE_MATCH_TIMEOUT_MS, WORKSPACE_POLL_INTERVAL_MS,
 };
 use crate::core::geometry::{
     detect_matching_zone_indices, merge_zone_rects, resolve_zone_by_index, RectI,
@@ -35,29 +34,19 @@ use crate::core::win_utils::{
     enumerate_monitors, enumerate_user_windows, extract_window_icon_png_data_url,
     get_window_aumid, get_window_normal_placement_rect, get_window_visual_rect,
     is_process_elevated, minimize_window_async, monitor_for_hwnd, place_window_visual_rect,
-    query_process_command_line_args, spawn_process_with_elevation_policy, to_wide, MonitorInfo,
-    WindowInfo,
+    query_process_command_line_args, spawn_process_with_elevation_policy, MonitorInfo, WindowInfo,
 };
-use crate::render::d2d::{
-    rect_f, render_layered_window_d2d, rgb_a, rgba, rounded_rect, SharedGraphics,
-};
+use crate::render::d2d::SharedGraphics;
 use crate::{wk_info, wk_warn};
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::{Mutex, Once, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
-use windows::core::PCWSTR;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Graphics::Direct2D::D2D1_DRAW_TEXT_OPTIONS_CLIP;
-use windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, IsWindow, LoadCursorW, PostMessageW,
-    RegisterClassExW, SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, HWND_TOPMOST, IDC_ARROW,
-    SWP_NOACTIVATE, SW_HIDE, SW_MAXIMIZE, SW_MINIMIZE, SW_SHOWNOACTIVATE, WNDCLASSEXW,
-    WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
+    PostMessageW, ShowWindow, SW_MAXIMIZE, SW_MINIMIZE,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -777,12 +766,12 @@ fn apply_workspace_app_placement(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub struct WorkspaceProgressOverlay {
-    hwnd: Option<HWND>,
+    visible: bool,
 }
 
 impl WorkspaceProgressOverlay {
     pub fn new() -> Self {
-        Self { hwnd: None }
+        Self { visible: false }
     }
 
     pub fn show_progress(
@@ -793,125 +782,50 @@ impl WorkspaceProgressOverlay {
         collapsed_screens: usize,
         finished: bool,
         cfg: &WindowKitConfig,
-        gfx: Option<&SharedGraphics>,
+        _gfx: Option<&SharedGraphics>,
     ) {
-        let Some(g) = gfx else {
-            return;
-        };
         let monitors = enumerate_monitors();
         let Some(primary) = monitors.iter().find(|m| m.is_primary).or_else(|| monitors.first()) else {
             return;
         };
-        if self.hwnd.is_none() {
-            self.hwnd = create_progress_window();
-        }
-        let Some(hwnd) = self.hwnd else {
-            return;
-        };
-
         let s = (primary.dpi as f32 / 96.0).max(1.0);
-        let w = (336.0 * s).round() as i32;
-        let h = (82.0 * s).round() as i32;
+        let w = (348.0 * s).round() as i32;
+        let h = (86.0 * s).round() as i32;
         let margin = (18.0 * s).round() as i32;
         let x = primary.work_rect.right - w - margin;
         let y = primary.work_rect.bottom - h - margin;
-
-        let dark = cfg.is_dark_theme();
-        let accent = parse_hex_color(&cfg.accent_color, [0.23, 0.51, 0.96]);
-        let title_fmt = g.ui_text_format(13.0 * s, true, false).ok();
-        let sub_fmt = g.mono_text_format(11.8 * s, false, false).ok();
 
         let ratio = if total == 0 {
             1.0
         } else {
             (placed as f32 / total as f32).clamp(0.0, 1.0)
         };
-        let heading = if finished {
-            format!("工作区「{workspace_name}」已就绪 ({placed}/{total})")
-        } else {
-            format!("正在编排工作区「{workspace_name}」 ({placed}/{total})")
-        };
-        let subtitle = if collapsed_screens > 0 {
-            format!("检测到 {collapsed_screens} 块离线副屏 · 已按比例自适应折叠至在线屏")
+        let status_text = if collapsed_screens > 0 {
+            format!("{placed}/{total} · 折叠 {collapsed_screens} 屏")
         } else if finished {
-            "全部窗口位置、分区与状态已同步完成".to_string()
+            format!("已就绪 {placed}/{total}")
         } else {
-            "正在启动并精准停靠应用窗口...".to_string()
+            format!("{placed}/{total}")
         };
-
-        let ok = render_layered_window_d2d(g, hwnd, x, y, w, h, |rt| unsafe {
-            let bg = if dark { rgba(0.09, 0.11, 0.15, 0.94) } else { rgba(0.99, 0.995, 1.0, 0.96) };
-            let border = if dark { rgba(1.0, 1.0, 1.0, 0.16) } else { rgba(0.10, 0.14, 0.22, 0.16) };
-            let track = if dark { rgba(1.0, 1.0, 1.0, 0.12) } else { rgba(0.10, 0.14, 0.22, 0.10) };
-            let text_main = if dark { rgba(0.96, 0.98, 1.0, 0.98) } else { rgba(0.08, 0.11, 0.17, 0.96) };
-            let text_muted = if dark { rgba(0.72, 0.78, 0.86, 0.90) } else { rgba(0.32, 0.38, 0.48, 0.92) };
-            let accent_col = if finished { rgba(0.13, 0.72, 0.42, 1.0) } else { rgb_a(accent, 1.0) };
-
-            let (Ok(b_bg), Ok(b_border), Ok(b_track), Ok(b_text), Ok(b_muted), Ok(b_accent)) = (
-                rt.CreateSolidColorBrush(&bg, None),
-                rt.CreateSolidColorBrush(&border, None),
-                rt.CreateSolidColorBrush(&track, None),
-                rt.CreateSolidColorBrush(&text_main, None),
-                rt.CreateSolidColorBrush(&text_muted, None),
-                rt.CreateSolidColorBrush(&accent_col, None),
-            ) else {
-                return;
-            };
-
-            let wf = w as f32;
-            let hf = h as f32;
-            let card = rect_f(1.0, 1.0, wf - 1.0, hf - 1.0);
-            rt.FillRoundedRectangle(&rounded_rect(card, 10.0 * s), &b_bg);
-            rt.DrawRoundedRectangle(&rounded_rect(card, 10.0 * s), &b_border, 1.2 * s, None);
-
-            if let Some(fmt) = &title_fmt {
-                let hw = to_wide(&heading);
-                rt.DrawText(
-                    &hw[..hw.len().saturating_sub(1)],
-                    fmt,
-                    &rect_f(14.0 * s, 12.0 * s, wf - 14.0 * s, 34.0 * s),
-                    &b_text,
-                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-            }
-            if let Some(fmt) = &sub_fmt {
-                let sw = to_wide(&subtitle);
-                rt.DrawText(
-                    &sw[..sw.len().saturating_sub(1)],
-                    fmt,
-                    &rect_f(14.0 * s, 35.0 * s, wf - 14.0 * s, 55.0 * s),
-                    &b_muted,
-                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                    DWRITE_MEASURING_MODE_NATURAL,
-                );
-            }
-
-            let bar_r = rect_f(14.0 * s, hf - 14.0 * s, wf - 14.0 * s, hf - 9.0 * s);
-            rt.FillRoundedRectangle(&rounded_rect(bar_r, 2.5 * s), &b_track);
-            let fill_w = (bar_r.right - bar_r.left) * ratio;
-            if fill_w > 1.0 {
-                let fr = rect_f(bar_r.left, bar_r.top, bar_r.left + fill_w, bar_r.bottom);
-                rt.FillRoundedRectangle(&rounded_rect(fr, 2.5 * s), &b_accent);
-            }
-        });
-
-        if ok.is_ok() {
-            unsafe {
-                let _ = SetWindowPos(hwnd, HWND_TOPMOST, x, y, w, h, SWP_NOACTIVATE);
-                let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-            }
-        }
+        crate::ui_slint::show_or_update_workspace_progress(
+            crate::ui_slint::WorkspaceProgressViewState {
+                theme: crate::ui_slint::SlintThemeSpec {
+                    dark: cfg.is_dark_theme(),
+                    accent_hex: cfg.accent_color.clone(),
+                },
+                window_rect: RectI::from_xywh(x, y, w, h),
+                workspace_name: workspace_name.to_string(),
+                status_text,
+                progress: ratio,
+            },
+        );
+        self.visible = true;
     }
 
     pub fn hide_and_destroy(&mut self) {
-        if let Some(h) = self.hwnd.take() {
-            unsafe {
-                if IsWindow(h).as_bool() {
-                    let _ = ShowWindow(h, SW_HIDE);
-                    let _ = DestroyWindow(h);
-                }
-            }
+        if self.visible {
+            self.visible = false;
+            crate::ui_slint::hide_workspace_progress();
         }
     }
 }
@@ -920,56 +834,6 @@ impl Drop for WorkspaceProgressOverlay {
     fn drop(&mut self) {
         self.hide_and_destroy();
     }
-}
-
-fn ensure_progress_class() {
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| unsafe {
-        let hinst = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
-        let cls = to_wide(WORKSPACE_PROGRESS_WINDOW_CLASS);
-        let wc = WNDCLASSEXW {
-            cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
-            style: CS_HREDRAW | CS_VREDRAW,
-            lpfnWndProc: Some(progress_wnd_proc),
-            hInstance: hinst,
-            hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or_default(),
-            lpszClassName: PCWSTR(cls.as_ptr()),
-            ..Default::default()
-        };
-        let _ = RegisterClassExW(&wc);
-    });
-}
-
-fn create_progress_window() -> Option<HWND> {
-    ensure_progress_class();
-    unsafe {
-        let hinst = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
-        let cls = to_wide(WORKSPACE_PROGRESS_WINDOW_CLASS);
-        CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE,
-            PCWSTR(cls.as_ptr()),
-            PCWSTR::null(),
-            WS_POPUP,
-            0,
-            0,
-            1,
-            1,
-            None,
-            None,
-            hinst,
-            None,
-        )
-        .ok()
-    }
-}
-
-unsafe extern "system" fn progress_wnd_proc(
-    hwnd: HWND,
-    msg: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
 #[cfg(test)]

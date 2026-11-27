@@ -566,14 +566,10 @@ static bool ensureSearchServiceRunning() {
     }
 
     // SCM 明确不存在、无法启动或已停止后，才允许便携进程回退。
-    wchar_t modulePath[MAX_PATH]{};
-    GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-    std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+    // 统一经 WinUtils::getExeDirectory() 展开受信任物理目录（兼容 Scoop current Junction 且无 MAX_PATH 限制）。
+    const std::filesystem::path exeDir = tools3000::core::WinUtils::getExeDirectory();
     std::filesystem::path serviceExe = exeDir / L"Tools3000_Service.exe";
     std::error_code ec;
-    if (!std::filesystem::exists(serviceExe, ec)) {
-        serviceExe = exeDir / L"Tools3000_Service.exe";
-    }
 
     if (std::filesystem::exists(serviceExe, ec)) {
         STARTUPINFOW si{sizeof(si)};
@@ -2230,9 +2226,7 @@ public:
         });
 
         mb.registerHandler("search.getExternalCliInfo", [](const nlohmann::json&) -> nlohmann::json {
-            wchar_t modulePath[MAX_PATH]{};
-            GetModuleFileNameW(nullptr, modulePath, MAX_PATH);
-            const std::filesystem::path exeDir = std::filesystem::path(modulePath).parent_path();
+            const std::filesystem::path exeDir = tools3000::core::WinUtils::getExeDirectory();
             const std::filesystem::path companion = exeDir / L"tools3000-cli.exe";
             std::error_code ec;
             bool installed = std::filesystem::exists(companion, ec);

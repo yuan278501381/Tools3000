@@ -57,7 +57,7 @@ interface RemoteState {
 }
 
 const DEFAULT_SETTINGS: RemoteMasterSettings = {
-  enabled: true,
+  enabled: false,
   hotkeyTunnelEnabled: true,
   emergencyFlushEnabled: true,
   doubleRightCtrlTrigger: false,

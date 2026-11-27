@@ -23,7 +23,7 @@
 
 <br />
 
-Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bookmark search (with Live Watch, 3 RAM tiers & CLI / MCP), document content search, persistent clipboard history, native Text Expander, inline File Dialog search, File Locksmith, scrolling capture, precision markup, grouped desktop pins, 8-language offline OCR & clean in-place translation, screen recording with auto-zoom Studio (exporting MP4, Discord/Slack/GitHub-ready compact GIF, and animated WebP), global mouse gestures, encrypted config backup, and a Rust Picasa photo viewer** into one native Windows app. Core features run 100% locally with full support for non-English install folders and Windows usernames, keep the resident main host around **2–6 MB** of private working set (with optional 0 MB idle search sleep), and support personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
+Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bookmark search (with Live Watch, 3 RAM tiers & CLI / MCP), document content search, persistent clipboard history, native Text Expander, native Window Manager (SnapZones, Workspaces & Fluent Alt+Tab), CapsLayer, inline File Dialog search, File Locksmith, scrolling capture, precision markup, grouped desktop pins, 8-language offline OCR & clean in-place translation, screen recording with auto-zoom Studio (exporting MP4, Discord/Slack/GitHub-ready compact GIF, and animated WebP), global mouse gestures, encrypted config backup, and a Rust Picasa photo viewer** into one native Windows app. Core features run 100% locally with full support for non-English install folders and Windows usernames, keep the resident main host around **2–6 MB** of private working set (with optional 0 MB idle search sleep), and support personal PCs (`x64` & `ARM64`) as well as concurrent multi-user Windows Server desktops.
 
 > **Quick Install** — Grab **[Installer `.exe` / Portable `.zip` (Latest Release)](https://github.com/yuan278501381/Tools3000/releases/latest)**, or install via **Scoop** (`winget install Yy1.Tools3000` PR `#487469` pending merge):
 > ```powershell
@@ -35,7 +35,7 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
 ## At a Glance
 
 <p align="center">
-  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Twelve Core Capabilities Overview" width="100%" />
+  <img src="docs/images/en-US/feature_bento_overview.png" alt="Tools3000 Fifteen Core Capabilities Overview" width="100%" />
 </p>
 
 ---
@@ -76,7 +76,7 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
 </table>
 
 <details>
-<summary><b>View 7 more live demos</b> — File Dialog Inline Search, File Locksmith, Scrolling Capture, Precision Markup, 120Hz Pin Groups, Document Full-Text Search &amp; Global Mouse Gestures</summary>
+<summary><b>View 9 more live demos</b> — File Dialog Inline Search, File Locksmith, Scrolling Capture, Precision Markup, 120Hz Pin Groups, Document Full-Text Search &amp; Global Mouse Gestures, Native Window Manager &amp; CapsLayer</summary>
 <br />
 <table>
   <tr>
@@ -115,6 +115,16 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
       <sub><b>Global Mouse Gestures</b> · Pause-to-cancel on by default, profile-aware window switching, instant trigger &amp; edge wheel</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/window_manager_demo.webp" alt="Native Window Manager Suite: SnapZones tiling, Workspaces red-frame capture, and Fluent Alt+Tab switcher" width="100%" /><br />
+      <sub><b>Native Window Manager (Opt-in)</b> · SnapZones magnetic 1:1 tiling, 4px red-frame Workspaces capture &amp; Fluent Alt+Tab / Alt+` (0 VRAM, 0 RAM when off)</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="docs/images/en-US/caps_layer_demo.webp" alt="CapsLayer ergonomic CapsLock leader navigation and per-app key remapping" width="100%" /><br />
+      <sub><b>CapsLayer Remap (Opt-in)</b> · Hold CapsLock + IJKL for home-row arrows &amp; editing with per-app profiles (0 hooks when off)</sub>
+    </td>
+  </tr>
 </table>
 </details>
 
@@ -124,6 +134,8 @@ Tools3000 unifies everyday **file, app, system-command & real-Favicon browser bo
 | **Document Content Search** | Prefix `content:` to search directly inside Word, Excel, PDF, PowerPoint, CAD, and source code with highlighted snippets and one-click line copy. |
 | **Persistent Clipboard History** | Press `Alt + V` (with tray menu access and quick tray toggle) for clipboard history that survives reboots; shows real color source app icons & friendly names, supports universal drag-to-paste across modern web browsers, CLI terminals, borderless apps & AI IDEs, `Shift / Ctrl` ordered merge-paste & batch delete, HTML/RTF rich text, collection groups, inline editing, `Alt + 1..9` instant paste, color swatches, 1-click hide-pinned in other categories, and sensitive-app exclusion. |
 | **Text Expander** | Type short triggers (e.g. `;date`, `;now`, `;sig`) in any Windows app to expand full phrases and 15 dynamic macros (date offsets `{{date+Nd}}`, localized `{{weekday}}`, `{{uuid}}`, `{{timestamp}}`, `{{user}}`, clipboard & `{{cursor}}` placement); includes automatic CJK fullwidth/halfwidth trigger compatibility, optional delimiter retention, live preview, password-manager auto-pause, Windows privacy markers (zero history / `Win + V` pollution), and zero hooks/RAM when off. |
+| **Window Manager Suite (Opt-in · 0 RAM Off)** | Standalone Rust + Slint Fluent engine (zero WebView2, zero GPU VRAM; completely off by default with 0 process &amp; 0 RAM until opted in): dual-layer **SnapZones** with proportional magnetic 1:1 canvas &amp; 0–9 hotkeys, **Workspaces** 4px crimson-frame desktop capture + `.lnk` shortcuts, freely resizable **Quick Switch (`Alt+Tab` &amp; standalone `Alt+``)** with `1–9` jump &amp; search, plus zero-lag focus/always-on-top borders. |
+| **CapsLayer Leader & App Remap (Opt-in)** | Turn `CapsLock` into an ergonomic home-row arrow (`I/J/K/L`), editing (`Home/End/Backspace/Del`), and shortcut leader layer with per-app profiles and instant presets; off by default with 0 hooks and clear input-method guidance when enabled. |
 | **File Dialog Assistant** | Docks a quick-jump bar with Listary-style inline folder search directly onto Windows Open / Save As / Folder dialogs (including Tools3000's own dialogs), strictly protecting Save-As filenames from overwrite. |
 | **File Locksmith** | Find out what is locking a stubborn file and unlock it safely — via Explorer right-click (optional `Shift + Right-click`), Search right-click, or the built-in File Locksmith page. Uses zero background RAM, leaves system files untouched, and cleans up its menu automatically when disabled. |
 | **Scrolling Capture** | Auto-scroll seamless stitching for web pages, documents, and chats with live side preview, lossless head/tail trim, and in-place annotation. |
@@ -202,6 +214,8 @@ Dedicated single-purpose tools each excel at deep niche workflows. Tools3000 is 
 | **Picasa Photo Viewer / FastStone / Windows Photos** | Optional under-2 MB zero-dependency Rust recreation of the classic lightweight Picasa viewer (also works completely standalone), bringing faithful animations plus 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, and lossless flip | When you need full Google Picasa album catalog management, face recognition, or dedicated batch RAW editing |
 | **Listary Dialog Jump / PowerToys File Locksmith** | Listary-style inline folder search in Windows Open/Save and internal dialogs (protecting Save-As filenames); zero-RAM File Locksmith via Explorer right-click or built-in page | Full Listary custom launcher action workflows or deep kernel handle forensics |
 | **Espanso / Beeftext / AutoHotkey Snippets** | Built-in native Text Expander (ready out of the box, zero hooks when off) with immediate/boundary triggers, date/clipboard/cursor macros, password-manager auto-skip, live sandbox, and JSON import/export | Complex YAML form dialogs, shell-command dynamic output, or cross-platform Linux/macOS config sync |
+| **PowerToys FancyZones & Workspaces / AltTab** | Opt-in native Rust + Slint Fluent Window Manager (0 VRAM, 0 RAM when off): dual-layer SnapZones + magnetic 1:1 canvas, red-frame Workspaces capture with desktop shortcuts, freely resizable `Alt+Tab` (`1–9` &amp; search) + standalone `Alt+``, and zero-lag pin/focus borders | Complex PowerToys ecosystem utilities beyond windowing, or deep tiling-WM scripting like GlazeWM / Komorebi |
+| **AutoHotkey / SharpKeys / CapsLock+** | Opt-in visual CapsLayer leader (`Caps+IJKL` arrows/editing) with per-app profile switching and zero-code presets (0 hooks when off) | Full programmatic keyboard macro languages or firmware-level QMK/VIA remapping |
 
 ---
 

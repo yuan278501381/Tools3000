@@ -1,0 +1,229 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ui/workspace_capture.slint — Workspaces v2 正红边框摆拍中心悬浮卡 & 启动进度浮窗
+//                              1:1 复刻 PowerToys Workspaces 居中 Fluent 捕获卡片
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { ThemeTokens } from "tokens.slint";
+import { VectorIcon, LucidePaths } from "icons.slint";
+
+export component WorkspaceCaptureWindow inherits Window {
+    title: "Tools3000_WindowKit_CaptureCard";
+    no-frame: true;
+    always-on-top: true;
+    background: ThemeTokens.modal-bg;
+    default-font-family: ThemeTokens.font-family;
+    preferred-width: 396px;
+    preferred-height: 158px;
+
+    in-out property <string> txt-title: "快速创建工作区";
+    in-out property <string> txt-hint: "排列好窗口布局，完成后单击“捕获”。";
+    in-out property <string> txt-capture: "捕获";
+    in-out property <string> txt-cancel: "取消";
+    in-out property <bool> busy: false;
+
+    callback capture-clicked();
+    callback cancel-clicked();
+    callback drag-window-requested();
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        background: ThemeTokens.modal-bg;
+        border-width: 1px;
+        border-color: ThemeTokens.border-strong;
+        clip: true;
+
+        TouchArea {
+            width: 100%;
+            height: 100%;
+            pointer-event(ev) => {
+                if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                    root.drag-window-requested();
+                }
+            }
+        }
+
+        VerticalLayout {
+            padding-left: 18px;
+            padding-right: 18px;
+            padding-top: 12px;
+            padding-bottom: 18px;
+            spacing: 12px;
+
+            // 顶栏（极简图标 + 标题 + 关闭 ×）
+            HorizontalLayout {
+                height: 26px;
+                spacing: 8px;
+                alignment: stretch;
+
+                VectorIcon {
+                    y: 5px;
+                    icon-size: 16px;
+                    path-data: LucidePaths.layers;
+                    icon-color: ThemeTokens.accent;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.txt-title;
+                    color: ThemeTokens.text-primary;
+                    font-size: 13.5px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 6px;
+                    background: cap-cls.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                    VectorIcon {
+                        x: 6px; y: 6px; icon-size: 14px;
+                        path-data: LucidePaths.close;
+                        icon-color: ThemeTokens.text-secondary;
+                    }
+                    cap-cls := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel-clicked(); }
+                    }
+                }
+            }
+
+            // 居中引导语
+            Text {
+                vertical-stretch: 1;
+                text: root.txt-hint;
+                color: ThemeTokens.text-primary;
+                font-size: 14.5px;
+                font-weight: 500;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            // 底栏等宽双按钮（强调色“捕获” + 柔和中性“取消”）
+            HorizontalLayout {
+                height: 36px;
+                spacing: 10px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 6px;
+                    background: cap-go.pressed
+                        ? ThemeTokens.accent-pressed
+                        : (cap-go.has-hover ? ThemeTokens.accent-hover : ThemeTokens.accent);
+                    opacity: root.busy ? 0.65 : 1.0;
+
+                    Text {
+                        text: root.txt-capture;
+                        color: ThemeTokens.text-on-accent;
+                        font-size: 14px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    cap-go := TouchArea {
+                        mouse-cursor: pointer;
+                        enabled: !root.busy;
+                        clicked => { root.capture-clicked(); }
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 6px;
+                    background: cap-no.has-hover ? ThemeTokens.btn-secondary-hover : ThemeTokens.btn-secondary-bg;
+
+                    Text {
+                        text: root.txt-cancel;
+                        color: ThemeTokens.text-primary;
+                        font-size: 14px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    cap-no := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.cancel-clicked(); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component WorkspaceProgressWindow inherits Window {
+    title: "Tools3000_WindowKit_WorkspaceProgress";
+    no-frame: true;
+    always-on-top: true;
+    background: ThemeTokens.card-bg;
+    default-font-family: ThemeTokens.font-family;
+    preferred-width: 348px;
+    preferred-height: 86px;
+
+    in-out property <string> workspace-name: "";
+    in-out property <string> status-text: "";
+    in-out property <float> progress: 0.0;
+
+    Rectangle {
+        width: 100%;
+        height: 100%;
+        border-radius: 8px;
+        background: ThemeTokens.card-bg;
+        border-width: 1px;
+        border-color: ThemeTokens.border-strong;
+
+        VerticalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            padding-bottom: 14px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: stretch;
+
+                VectorIcon {
+                    y: 2px;
+                    icon-size: 16px;
+                    path-data: LucidePaths.layers;
+                    icon-color: ThemeTokens.accent;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.workspace-name;
+                    color: ThemeTokens.text-primary;
+                    font-size: 14px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.status-text;
+                    color: ThemeTokens.text-secondary;
+                    font-size: 12.5px;
+                    font-weight: 500;
+                }
+            }
+
+            Rectangle {
+                height: 6px;
+                border-radius: 3px;
+                background: ThemeTokens.well-bg;
+                clip: true;
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    height: 100%;
+                    width: parent.width * clamp(root.progress, 0.0, 1.0);
+                    border-radius: 3px;
+                    background: ThemeTokens.accent;
+                    animate width { duration: 140ms; easing: ease-out; }
+                }
+            }
+        }
+    }
+}

@@ -16,7 +16,7 @@ import {
   Search, Camera, Mouse, Sparkles, FolderSymlink,
   Keyboard, Highlighter, ChevronRight, ChevronLeft, Check, Zap,
   Cast, RotateCcw, Languages, ClipboardList, Video, Image as ImageIcon,
-  Pin, SlidersHorizontal, Layers, TextCursorInput, Cloud,
+  Pin, SlidersHorizontal, Layers, TextCursorInput, Cloud, LayoutGrid,
 } from 'lucide-react';
 import './OnboardingModal.css';
 
@@ -225,7 +225,7 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
         </button>
 
         <div className="onboarding__body">
-          {/* ── Step 0: 欢迎 (2x4 共 8 张旗舰能力卡，全景覆盖 12 大核心模块) ── */}
+          {/* ── Step 0: 欢迎 (2x4 共 8 张旗舰能力卡，全景覆盖 15 大核心模块) ── */}
           <div className={getStepClass(0)} aria-hidden={step !== 0} inert={step !== 0}>
             <h2 id="onboarding-step-0-title" ref={(node) => { titleRefs.current[0] = node; }} tabIndex={-1} className="onboarding__title">{t('onboarding.welcomeTitle')}</h2>
             <p className="onboarding__subtitle">{t('onboarding.welcomeSubtitle')}</p>
@@ -274,10 +274,10 @@ export const OnboardingModal: FC<Props> = ({ onComplete }) => {
               </div>
               <div className="onboarding__feature-card">
                 <div className="onboarding__feature-icon" aria-hidden="true">
-                  <ImageIcon size={19} />
+                  <LayoutGrid size={19} />
                 </div>
-                <span className="onboarding__feature-name">{t('onboarding.featurePicasa' as never, '< 2 MB Rust Picasa Viewer')}</span>
-                <span className="onboarding__feature-desc">{t('onboarding.featurePicasaDesc' as never, '41 formats, 4K High-DPI & instant standalone binary')}</span>
+                <span className="onboarding__feature-name">{t('onboarding.featureWindowManager' as never, 'Window Manager Suite')}</span>
+                <span className="onboarding__feature-desc">{t('onboarding.featureWindowManagerDesc' as never, 'SnapZones tiling, workspaces capture & Fluent Alt+Tab switcher (opt-in)')}</span>
               </div>
               <div className="onboarding__feature-card">
                 <div className="onboarding__feature-icon" aria-hidden="true">

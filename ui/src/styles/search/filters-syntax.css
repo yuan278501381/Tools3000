@@ -112,13 +112,13 @@
     line-height: 1.4;
     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.22);
     pointer-events: none;
-    z-index: 120;
+    z-index: var(--z-modal-context);
     white-space: nowrap;
 }
 
 .category-ctx-menu {
     position: fixed;
-    z-index: 130;
+    z-index: var(--z-modal-context);
     min-width: 184px;
     padding: 5px;
     border-radius: 9px;

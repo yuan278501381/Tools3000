@@ -695,6 +695,7 @@ WPARAM WindowKitController::resolveActionCode(const std::string& actionName) noe
     if (actionName == "start_workspace_capture" || actionName == "startWorkspaceCapture") return kWindowKitActionStartWorkspaceCapture;
     if (actionName == "preview_border_style" || actionName == "previewBorderStyle") return kWindowKitActionPreviewBorderStyle;
     if (actionName == "open_layout_editor_direct" || actionName == "openLayoutEditorDirect") return kWindowKitActionOpenLayoutEditorDirect;
+    if (actionName == "apply_layout_by_id" || actionName == "applyLayoutById") return kWindowKitActionApplyLayoutById;
     return 0;
 }
 
@@ -886,7 +887,7 @@ nlohmann::json WindowKitController::buildResponseJsonLocked() const {
 
 nlohmann::json WindowKitController::buildRustRuntimePayloadLocked(const std::string& traceId) const {
     auto& cfg = ConfigManager::instance();
-    const std::string theme = cfg.get<std::string>("/general/theme", "dark");
+    const std::string theme = cfg.get<std::string>("/general/theme", "system");
     const std::string accentColor = resolveAccentHex(cfg.get<std::string>("/general/accentColor", "blue"));
     const std::string logLevel = cfg.get<std::string>("/general/logLevel", Logger::kDefaultLogLevel);
 
@@ -1634,6 +1635,20 @@ nlohmann::json WindowKitController::execAction(const std::string& actionName, co
             if (arg.is_object() && arg.contains("digit") && arg["digit"].is_number_integer()) {
                 lParam = static_cast<LPARAM>(arg["digit"].get<int64_t>());
             }
+        }
+
+        if (code == kWindowKitActionApplyLayoutById) {
+            std::string layoutId;
+            if (arg.is_string()) {
+                layoutId = arg.get<std::string>();
+            } else if (arg.is_object() && arg.contains("layoutId") && arg["layoutId"].is_string()) {
+                layoutId = arg["layoutId"].get<std::string>();
+            }
+            const nlohmann::json payload = {
+                {"layoutId", layoutId},
+                {"uiLang", resolveEffectiveUiLangShort()}
+            };
+            WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
         }
 
         if (code == kWindowKitActionLaunchWorkspace) {

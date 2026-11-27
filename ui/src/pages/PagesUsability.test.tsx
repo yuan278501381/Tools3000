@@ -7,6 +7,7 @@ import { KeyStatsPage } from './KeyStatsPage';
 import { DialogEnhancerPage } from './DialogEnhancerPage';
 import { CapturePage } from './CapturePage';
 import { GeneralPage } from './GeneralPage';
+import { HotkeysPage } from './HotkeysPage';
 import { SearchPage } from './SearchPage';
 import * as bridge from '../hooks/useBridge';
 
@@ -189,7 +190,7 @@ describe('Pages Usability & Regression Suite', () => {
     expect(screen.getByText('D:\\Projects\\Tools3000')).toBeDefined();
   });
 
-  it('CapturePage displays Record Snapshot shortcut row and GeneralPage opens data directory on button click', async () => {
+  it('CapturePage displays Record Snapshot shortcut row, HotkeysPage lists & filters shortcuts, and GeneralPage opens data directory on button click', async () => {
     bridgeSpy.mockImplementation(async (method: string) => {
       if (method === 'capture.getSettings') {
         return { format: 'png', quality: 90, saveToFile: true, copyToClipboard: true };
@@ -206,7 +207,16 @@ describe('Pages Usability & Regression Suite', () => {
             conflictType: 'none',
             sessionScoped: true,
           },
+          {
+            name: 'WindowKit: Toggle Always on Top',
+            shortcut: 'Ctrl+Win+T',
+            registered: true,
+            conflictType: 'none',
+          },
         ];
+      }
+      if (method === 'hotkey.getExclusions') {
+        return { global: [] };
       }
       if (method === 'general.getSettings') {
         return {
@@ -237,10 +247,26 @@ describe('Pages Usability & Regression Suite', () => {
     cleanup();
 
     await act(async () => {
-      render(<GeneralPage />);
+      render(<HotkeysPage />);
     });
 
     expect(screen.getByText('general.shortcutRecordSnapshot')).toBeDefined();
+    expect(screen.getByText('windowManager.hkToggleAlwaysOnTop')).toBeDefined();
+
+    const filterInput = screen.getByRole('textbox', { name: /Filter by feature/i });
+    await act(async () => {
+      fireEvent.change(filterInput, { target: { value: 'Ctrl+Win+T' } });
+    });
+
+    expect(screen.queryByText('general.shortcutRecordSnapshot')).toBeNull();
+    expect(screen.getByText('windowManager.hkToggleAlwaysOnTop')).toBeDefined();
+
+    cleanup();
+
+    await act(async () => {
+      render(<GeneralPage />);
+    });
+
     expect(screen.getByText('D:\\Portable\\Tools3000\\data')).toBeDefined();
 
     const openDirBtn = screen.getByTitle('general.openDataDirBtn');

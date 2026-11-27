@@ -206,7 +206,7 @@ TEST(RemoteMasterTest, SettingsJsonRoundTrip) {
         {"targetProcesses", 12345}
     };
     RemoteMasterSettings safeDefault = RemoteMasterSettings::fromJson(corruptJson);
-    EXPECT_TRUE(safeDefault.enabled); // 维持默认 true
+    EXPECT_FALSE(safeDefault.enabled); // 维持默认 false（按需启用）
     EXPECT_FALSE(safeDefault.targetProcesses.empty()); // 维持默认列表
 }
 
@@ -214,9 +214,9 @@ TEST(RemoteMasterTest, CacheInvalidationAndDefaults) {
     auto& engine = RemoteMasterEngine::instance();
     engine.resetDefaults();
 
-    // 默认列表验证 (doubleRightCtrlTrigger 默认关闭以避免与双击 Ctrl 聚光灯冲突)
+    // 默认列表验证 (远控增强默认关闭按需启用；doubleRightCtrlTrigger 默认关闭以避免与双击 Ctrl 聚光灯冲突)
     auto def = engine.getSettings();
-    EXPECT_TRUE(def.enabled);
+    EXPECT_FALSE(def.enabled);
     EXPECT_TRUE(def.hotkeyTunnelEnabled);
     EXPECT_TRUE(def.emergencyFlushEnabled);
     EXPECT_FALSE(def.doubleRightCtrlTrigger);
@@ -260,8 +260,9 @@ TEST(RemoteMasterTest, RightCtrlDoubleTapStateMachine) {
     bool consumedDefault = engine.onLowLevelKeyboardEvent(rctrlData, WM_KEYUP);
     EXPECT_FALSE(consumedDefault);
 
-    // 1. 显式开启急救配置并模拟远控客户端处于前台
+    // 1. 显式开启远控增强与急救配置并模拟远控客户端处于前台
     RemoteMasterSettings s = engine.getSettings();
+    s.enabled = true;
     s.doubleRightCtrlTrigger = true;
     engine.updateSettings(s);
     engine.setMockForeground(reinterpret_cast<HWND>(0x1234), true, "mstsc.exe");
@@ -350,8 +351,9 @@ TEST(RemoteMasterTest, DedicatedEmergencyShortcut) {
     backData.scanCode = 0x0E;
     EXPECT_FALSE(engine.onLowLevelKeyboardEvent(backData, WM_KEYDOWN));
 
-    // 3. 动态配置快捷键响应测试 (配置为 Alt+F12 并在事件中携带 LLKHF_ALTDOWN 触发)
+    // 3. 动态配置快捷键响应测试 (开启模块并配置为 Alt+F12，在事件中携带 LLKHF_ALTDOWN 触发)
     auto s = engine.getSettings();
+    s.enabled = true;
     s.emergencyShortcut = "Alt+F12";
     engine.updateSettings(s);
     EXPECT_EQ(engine.getParsedEmergencyShortcut().vk, static_cast<UINT>(VK_F12));
@@ -402,6 +404,9 @@ TEST(RemoteMasterTest, DedicatedEmergencyShortcut) {
 TEST(RemoteMasterTest, HotkeyTunnelingInterception) {
     auto& engine = RemoteMasterEngine::instance();
     engine.resetDefaults();
+    auto s = engine.getSettings();
+    s.enabled = true;
+    engine.updateSettings(s);
 
     HWND dummyHwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x12345678));
 
@@ -483,6 +488,9 @@ TEST(RemoteMasterTest, HotkeyTunnelingInterception) {
 TEST(RemoteMasterTest, ImeSanitizerLifecycle) {
     auto& engine = RemoteMasterEngine::instance();
     engine.resetDefaults();
+    auto sInit = engine.getSettings();
+    sInit.enabled = true;
+    engine.updateSettings(sInit);
 
     HWND dummyHwnd = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x87654321));
 
@@ -499,6 +507,9 @@ TEST(RemoteMasterTest, ImeSanitizerLifecycle) {
 
     // 处于脱敏态时动态关闭脱敏配置：应立即退出脱敏状态
     engine.resetDefaults();
+    auto sReenable = engine.getSettings();
+    sReenable.enabled = true;
+    engine.updateSettings(sReenable);
     engine.setMockForeground(dummyHwnd, true, "RustDesk.exe");
     EXPECT_TRUE(engine.isImeSanitized());
     auto s2 = engine.getSettings();
@@ -583,7 +594,10 @@ TEST(RemoteMasterTest, InitializeReentrancyAndForegroundDetection) {
         EXPECT_TRUE(ok);
     });
 
-    // 7. 验证远控前台失焦转为非远控时 initialize() 能够正确触发清理与输入法还原
+    // 7. 验证开启模块后，远控前台失焦转为非远控时 initialize() 能够正确触发清理与输入法还原
+    auto s7 = engine.getSettings();
+    s7.enabled = true;
+    engine.updateSettings(s7);
     engine.setMockForeground(dummyRemote, true, "ToDesk.exe");
     EXPECT_TRUE(engine.isRemoteForeground());
     EXPECT_TRUE(engine.isImeSanitized());
@@ -694,7 +708,10 @@ TEST(RemoteMasterTest, RawInputClientBypassHotkeySuspendAndBareKeyRejection) {
     EXPECT_FALSE(RemoteMasterEngine::isRawInputRemoteClient("ToDesk.exe"));
     EXPECT_FALSE(RemoteMasterEngine::isRawInputRemoteClient("explorer.exe", L"CabinetWClass"));
 
-    // 2. 验证远控前台获焦/失焦联动 HotkeyManager 远控挂起标志位，且对 parsec.exe 不拦截伪造 Win 键消息
+    // 2. 验证开启模块后，远控前台获焦/失焦联动 HotkeyManager 远控挂起标志位，且对 parsec.exe 不拦截伪造 Win 键消息
+    auto sEnable = engine.getSettings();
+    sEnable.enabled = true;
+    engine.updateSettings(sEnable);
     HWND dummyParsec = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x51001));
     HWND dummyLocal = reinterpret_cast<HWND>(static_cast<uintptr_t>(0x51002));
     engine.setMockForeground(dummyParsec, true, "parsec.exe");

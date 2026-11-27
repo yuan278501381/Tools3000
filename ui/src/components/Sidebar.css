@@ -11,7 +11,7 @@
   flex-direction: column;
   flex-shrink: 0;
   position: relative;
-  z-index: 10;
+  z-index: var(--z-sidebar);
 }
 
 /* ── Logo ─────────────────────────────────────────────────────────────────── */

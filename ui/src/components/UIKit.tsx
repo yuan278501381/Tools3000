@@ -131,16 +131,20 @@ export const SettingRow: FC<SettingRowProps> = ({
 interface SettingGroupProps {
   title: string;
   icon?: ReactNode;
+  actions?: ReactNode;
   children: ReactNode;
 }
 
-export const SettingGroup: FC<SettingGroupProps> = ({ title, icon, children }) => {
+export const SettingGroup: FC<SettingGroupProps> = ({ title, icon, actions, children }) => {
   const titleId = useId();
   return (
     <section className="uikit-group" aria-labelledby={titleId}>
       <div className="uikit-group__header">
-        {icon && <span className="uikit-group__icon" aria-hidden="true">{icon}</span>}
-        <h2 id={titleId} className="uikit-group__title">{title}</h2>
+        <div className="uikit-group__heading">
+          {icon && <span className="uikit-group__icon" aria-hidden="true">{icon}</span>}
+          <h2 id={titleId} className="uikit-group__title">{title}</h2>
+        </div>
+        {actions && <div className="uikit-group__actions">{actions}</div>}
       </div>
       <div className="uikit-group__content">{children}</div>
     </section>

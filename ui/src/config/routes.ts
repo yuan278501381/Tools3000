@@ -28,6 +28,7 @@ import {
   LockOpen,
   LayoutGrid,
   KeyRound,
+  Command,
   Puzzle,
   type LucideIcon,
 } from 'lucide-react';
@@ -35,6 +36,7 @@ import {
 export type BuiltinNavId =
   | 'general'
   | 'plugins'
+  | 'hotkeys'
   | 'search'
   | 'clipboard'
   | 'text_expander'
@@ -78,6 +80,7 @@ export const APP_ROUTES: readonly RouteItemConfig[] = [
   // ── 系统设置 ──────────────────────────────────────────────────────────────
   { id: 'general', labelKey: 'nav.settings', subtitleKey: 'navSubtitle.general', category: 'system', icon: Settings, toneStart: '#64748b', toneEnd: '#475569', canvasWidth: 'reading' },
   { id: 'plugins', labelKey: 'nav.plugins', subtitleKey: 'navSubtitle.plugins', category: 'system', icon: Boxes, toneStart: '#6366f1', toneEnd: '#4f46e5', canvasWidth: 'reading' },
+  { id: 'hotkeys', labelKey: 'nav.hotkeys', subtitleKey: 'navSubtitle.hotkeys', category: 'system', icon: Command, toneStart: '#0ea5e9', toneEnd: '#2563eb', canvasWidth: 'reading' },
 
   // ── 核心效率工具（MECE 4 域语义成对单一事实源：侧边栏 / 功能模块 / 托盘 100% 同序） ──
   // 1. 高频捕获与剪贴流转

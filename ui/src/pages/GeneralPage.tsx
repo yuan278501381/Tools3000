@@ -2,7 +2,7 @@
  * GeneralPage — 通用设置页
  *
  * 从 C++ ConfigManager 加载设置，修改后通过 IPC 实时保存。
- * 遵循由高频到低频再到危险收尾的 7 大正交分组信息架构。
+ * 遵循由高频到低频再到危险收尾的 6 大正交分组信息架构（快捷键一览已独立为固定一级菜单）。
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
@@ -15,17 +15,12 @@ import {
   Select,
   Button,
   CodeBadge,
-  Modal,
   ConfirmModal,
   PageSkeleton,
 } from '../components/UIKit';
 import { CloudBackupCard } from '../components/business/CloudBackupCard';
-import { HotkeyAppExclusionBar } from '../components/business/HotkeyAppExclusionBar';
-import { HotkeyRecorder } from '../components/HotkeyRecorder';
-import { HotkeyStatusBadge, type HotkeyEntry } from '../components/HotkeyStatusBadge';
 import type { NavId } from '../config/routes';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
-import { groupHotkeysByDomain, resolveHotkeyLabel, sortHotkeysByPriority } from '../config/hotkeyCatalog';
 import {
   applyLocalAppearance,
   isAccentColor,
@@ -48,24 +43,17 @@ import {
   Zap,
   Globe,
   Database,
-  Keyboard,
   Download,
   Upload,
   RotateCcw,
-  RefreshCw,
   Check,
-  CheckCircle2,
   AlertTriangle,
-  AlertOctagon,
   FolderOpen,
-  Layers,
-  MinusCircle,
   Package,
   HardDrive,
   Sparkles,
   MemoryStick,
   ArrowUpRight,
-  Shield,
 } from 'lucide-react';
 import './GeneralPage.css';
 
@@ -101,9 +89,6 @@ interface OperationResult {
   success: boolean;
   cancelled?: boolean;
   error?: string;
-  shortcut?: string;
-  conflictType?: string;
-  conflictWith?: string;
 }
 
 const ACCENT_PRESETS = [
@@ -135,58 +120,10 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
     trayIconTheme: 'system',
   });
   const [loading, setLoading] = useState(true);
-  const [refreshingHotkeys, setRefreshingHotkeys] = useState(false);
   const [isRestartingElevated, setIsRestartingElevated] = useState(false);
-  const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
-  const [globalExcludedApps, setGlobalExcludedApps] = useState<string[]>([]);
-  const [editingExclusionHotkey, setEditingExclusionHotkey] = useState<HotkeyEntry | null>(null);
   const [accent, setAccent] = useState<string>(() => readStoredAccent('blue'));
 
   const { t, i18n } = useTranslation();
-
-  const handleSaveGlobalExclusions = async (nextApps: string[]) => {
-    const previous = globalExcludedApps;
-    setGlobalExcludedApps(nextApps);
-    try {
-      const res = await bridgeRequest<OperationResult & { apps?: string[] }>('hotkey.setGlobalExclusions', {
-        apps: nextApps,
-      });
-      if (res && res.success === false) {
-        throw new Error(res.error || t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'));
-      }
-      if (res && Array.isArray(res.apps)) {
-        setGlobalExcludedApps(res.apps);
-      }
-    } catch (error) {
-      setGlobalExcludedApps(previous);
-      toast.error(t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'), {
-        description: String(error),
-      });
-    }
-  };
-
-  const handleSavePerHotkeyExclusions = async (hotkeyName: string, nextApps: string[]) => {
-    try {
-      const res = await bridgeRequest<OperationResult>('hotkey.setHotkeyExclusions', {
-        name: hotkeyName,
-        apps: nextApps,
-      });
-      if (res && res.success === false) {
-        throw new Error(res.error || t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'));
-      }
-      const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
-      if (Array.isArray(refreshed)) {
-        const sorted = sortHotkeysByPriority(refreshed);
-        setHotkeys(sorted);
-        const updated = sorted.find((item) => item.name === hotkeyName) ?? null;
-        setEditingExclusionHotkey(updated);
-      }
-    } catch (error) {
-      toast.error(t('hotkeyExclusion.saveFailed', 'Failed to save excluded apps'), {
-        description: String(error),
-      });
-    }
-  };
 
   const handleAccentChange = useCallback(async (id: string) => {
     if (!isAccentColor(id)) return;
@@ -233,43 +170,36 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
   // 初始化获取设置
   useEffect(() => {
     let cancelled = false;
-    Promise.all([
-      bridgeRequest<GeneralSettings>('general.getSettings'),
-      bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
-      bridgeRequest<{ global?: string[] }>('hotkey.getExclusions').catch(() => ({ global: [] })),
-    ]).then(([res, hotkeyData, exclusionData]) => {
-      if (cancelled) return;
-      setSettings(prev => ({ ...prev, ...res }));
-      if (isAccentColor(res.accentColor)) {
-        setAccent(res.accentColor);
-      }
-      applyLocalAppearance(
-        { theme: res.theme, accentColor: res.accentColor },
-        { dispatchEvents: false },
-      );
-      if (res.systemLanguage) {
-        setDetectedSystemLanguage(res.systemLanguage);
-      }
-      const normalizedLang = normalizeLanguagePreference(res.language);
-      setSettings(prev => ({ ...prev, language: normalizedLang }));
-      const targetLang = resolveI18nBundle(normalizedLang, res.systemLanguage);
-      applyHtmlLanguageAttribute(targetLang);
-      if (i18n.language !== targetLang) {
-        void i18n.changeLanguage(targetLang);
-      }
-      setHotkeys(Array.isArray(hotkeyData) ? sortHotkeysByPriority(hotkeyData) : []);
-      if (exclusionData && Array.isArray(exclusionData.global)) {
-        setGlobalExcludedApps(exclusionData.global);
-      }
-    })
-    .catch((error) => {
-      if (cancelled) return;
-      console.error(error);
-      toast.error(t('general.loadFailed'));
-    })
-    .finally(() => {
-      if (!cancelled) setLoading(false);
-    });
+    bridgeRequest<GeneralSettings>('general.getSettings')
+      .then((res) => {
+        if (cancelled) return;
+        setSettings(prev => ({ ...prev, ...res }));
+        if (isAccentColor(res.accentColor)) {
+          setAccent(res.accentColor);
+        }
+        applyLocalAppearance(
+          { theme: res.theme, accentColor: res.accentColor },
+          { dispatchEvents: false },
+        );
+        if (res.systemLanguage) {
+          setDetectedSystemLanguage(res.systemLanguage);
+        }
+        const normalizedLang = normalizeLanguagePreference(res.language);
+        setSettings(prev => ({ ...prev, language: normalizedLang }));
+        const targetLang = resolveI18nBundle(normalizedLang, res.systemLanguage);
+        applyHtmlLanguageAttribute(targetLang);
+        if (i18n.language !== targetLang) {
+          void i18n.changeLanguage(targetLang);
+        }
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        console.error(error);
+        toast.error(t('general.loadFailed'));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
     return () => { cancelled = true; };
     // i18n.changeLanguage 会换掉 t/i18n 引用；放进依赖会把 IPC 打成几百 Hz，卡死主线程钩子。
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -418,15 +348,11 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
       if (result.cancelled) return;
       if (!result.success) throw new Error(result.error || t('general.importFailed'));
       toast.success(t('general.importSuccess'));
-      const [refreshed, refreshedHotkeys] = await Promise.all([
-        bridgeRequest<GeneralSettings>('general.getSettings'),
-        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
-      ]);
+      const refreshed = await bridgeRequest<GeneralSettings>('general.getSettings');
       setSettings(prev => ({ ...prev, ...refreshed }));
       if (isAccentColor(refreshed.accentColor)) {
         setAccent(refreshed.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(refreshed.language);
       applyLocalAppearance({ theme: refreshed.theme, accentColor: refreshed.accentColor });
       void persistAppearanceToBackend({ theme: refreshed.theme, accentColor: refreshed.accentColor });
@@ -441,15 +367,11 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
       const result = await bridgeRequest<OperationResult>('config.reset');
       if (!result.success) throw new Error(result.error || t('general.resetFailed'));
       toast.success(t('general.resetSuccess'));
-      const [res, refreshedHotkeys] = await Promise.all([
-        bridgeRequest<GeneralSettings>('general.getSettings'),
-        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
-      ]);
+      const res = await bridgeRequest<GeneralSettings>('general.getSettings');
       setSettings(prev => ({ ...prev, ...res }));
       if (isAccentColor(res.accentColor)) {
         setAccent(res.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(res.language);
       applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
       void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
@@ -460,15 +382,11 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
 
   const refreshAllAfterRestore = useCallback(async () => {
     try {
-      const [res, refreshedHotkeys] = await Promise.all([
-        bridgeRequest<GeneralSettings>('general.getSettings'),
-        bridgeRequest<HotkeyEntry[]>('hotkey.getAll').catch(() => []),
-      ]);
+      const res = await bridgeRequest<GeneralSettings>('general.getSettings');
       setSettings(prev => ({ ...prev, ...res }));
       if (isAccentColor(res.accentColor)) {
         setAccent(res.accentColor);
       }
-      if (Array.isArray(refreshedHotkeys)) setHotkeys(sortHotkeysByPriority(refreshedHotkeys));
       applyLanguagePreference(res.language);
       applyLocalAppearance({ theme: res.theme, accentColor: res.accentColor });
       void persistAppearanceToBackend({ theme: res.theme, accentColor: res.accentColor });
@@ -476,54 +394,6 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
       // 忽略静默刷新异常
     }
   }, [applyLanguagePreference]);
-
-  // ── 刷新快捷键状态 ───────────────────────────────────────────────────────
-  const refreshHotkeys = useCallback(async () => {
-    setRefreshingHotkeys(true);
-    try {
-      const data = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
-      setHotkeys(Array.isArray(data) ? sortHotkeysByPriority(data) : []);
-      toast.success(t('general.recheckShortcuts'));
-    } catch {
-      toast.error(t('general.loadFailed'));
-    } finally {
-      setRefreshingHotkeys(false);
-    }
-  }, [t]);
-
-  const rebindHotkey = async (entry: HotkeyEntry, shortcut: string) => {
-    const previous = entry.shortcut;
-    const previousRegistered = entry.registered;
-    setHotkeys(items => items.map(item =>
-      item.name === entry.name ? { ...item, shortcut } : item));
-    try {
-      const result = await bridgeRequest<OperationResult>('hotkey.rebind', {
-        name: entry.name,
-        hotkey: shortcut,
-      });
-      if (!result.success) throw new Error(result.error || t('hotkey.bindFailed'));
-      const applied = result.shortcut ?? shortcut;
-      // 重新拉取完整状态以同步全量冲突关系
-      const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
-      setHotkeys(Array.isArray(refreshed) ? sortHotkeysByPriority(refreshed) : []);
-      toast.success(`${resolveHotkeyLabel(t, entry.name)}: ${applied || t('general.shortcutDisabled')}`);
-    } catch (error) {
-      setHotkeys(items => items.map(item =>
-        item.name === entry.name && item.shortcut === shortcut
-          ? { ...item, shortcut: previous, registered: previousRegistered }
-          : item));
-      toast.error(t('hotkey.bindFailed'), { description: String(error) });
-    }
-  };
-
-  const internalConflictsCount = hotkeys.filter(h => h.conflictType === 'internal').length;
-  const externalConflictsCount = hotkeys.filter(h =>
-    h.conflictType === 'external' || (h.registered === false && Boolean(h.shortcut) && h.armed !== false)).length;
-  const sessionOnlyCount = hotkeys.filter(h =>
-    Boolean(h.shortcut) && h.armed === false && !h.conflict && h.conflictType !== 'external' && h.conflictType !== 'internal').length;
-  const globalActiveCount = hotkeys.filter(h =>
-    Boolean(h.shortcut) && (h.registered !== false) && h.armed !== false && !h.conflict && h.conflictType !== 'internal' && h.conflictType !== 'external').length;
-  const unboundCount = hotkeys.filter(h => !h.shortcut).length;
 
   if (loading) {
     return <PageSkeleton cards={3} rowsPerCard={4} />;
@@ -705,175 +575,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         </Card>
       </SettingGroup>
 
-      {/* ── 3. 快捷键总览与冲突检测（高频前置） ──────────────────────── */}
-      <SettingGroup title={t('general.keyboardShortcuts')} icon={<Keyboard size={20} strokeWidth={2.5} />}>
-        <Card>
-          <div className="general-page__hotkey-health-bar">
-            <div className="general-page__hotkey-health-stats">
-              <span className="general-page__stat-pill total">
-                <Keyboard size={12} /> {t('general.hotkeysAllCount', 'All {{count}} items', { count: hotkeys.length })}
-              </span>
-              <span className="general-page__stat-pill ok">
-                <CheckCircle2 size={12} /> {t('general.hotkeysActiveCount', 'Active {{count}} items', { count: globalActiveCount })}
-              </span>
-              {sessionOnlyCount > 0 && (
-                <span className="general-page__stat-pill session">
-                  <Layers size={12} /> {t('general.hotkeysSessionCount', 'Scoped {{count}} items', { count: sessionOnlyCount })}
-                </span>
-              )}
-              {internalConflictsCount > 0 && (
-                <span className="general-page__stat-pill warning">
-                  <AlertTriangle size={12} /> {t('general.hotkeysInternalConflictsCount', 'Internal Conflicts {{count}} items', { count: internalConflictsCount })}
-                </span>
-              )}
-              {externalConflictsCount > 0 && (
-                <span className="general-page__stat-pill danger">
-                  <AlertOctagon size={12} /> {t('general.hotkeysExternalConflictsCount', 'External Conflicts {{count}} items', { count: externalConflictsCount })}
-                </span>
-              )}
-              {unboundCount > 0 && (
-                <span className="general-page__stat-pill unbound">
-                  <MinusCircle size={12} /> {t('general.hotkeysUnboundCount', 'Unbound {{count}} items', { count: unboundCount })}
-                </span>
-              )}
-            </div>
-            <Button
-              variant="ghost"
-              className="general-page__recheck-btn"
-              onClick={refreshHotkeys}
-              disabled={refreshingHotkeys}
-              title={t('general.recheckShortcuts')}
-            >
-              <RefreshCw size={12} className={refreshingHotkeys ? 'general-page__spin' : ''} />
-              <span>{t('general.recheckShortcuts')}</span>
-            </Button>
-          </div>
-
-          {hotkeys.length === 0 ? (
-            <div className="general-page__empty">{t('general.noShortcuts')}</div>
-          ) : (
-            <div className="general-page__hotkey-sections">
-              {groupHotkeysByDomain(hotkeys).map((section) => (
-                <section
-                  key={section.id}
-                  className="general-page__hotkey-section"
-                  aria-label={String(t(section.titleKey as never, { defaultValue: section.defaultTitle }))}
-                >
-                  <div className="general-page__hotkey-section-header">
-                    <span className="general-page__hotkey-section-title">
-                      {String(t(section.titleKey as never, { defaultValue: section.defaultTitle }))}
-                    </span>
-                    <span className="general-page__hotkey-section-count">
-                      {section.items.length}
-                    </span>
-                  </div>
-                  <div className="general-page__hotkey-list">
-                    {section.items.map((hk) => {
-                      const isInternal = hk.conflictType === 'internal';
-                      const isExternal = hk.conflictType === 'external' ||
-                        (hk.registered === false && Boolean(hk.shortcut) && hk.armed !== false);
-
-                      return (
-                        <div
-                          key={hk.name}
-                          className={`general-page__hotkey-item ${isInternal ? 'is-internal' : ''} ${isExternal ? 'is-external' : ''}`}
-                        >
-                          <div className="general-page__hotkey-info">
-                            <div className="general-page__hotkey-name-row">
-                              <span className="general-page__hotkey-name">
-                                {resolveHotkeyLabel(t, hk.name)}
-                              </span>
-                              <HotkeyStatusBadge entry={hk} />
-                            </div>
-                          </div>
-                          <div className="general-page__hotkey-control">
-                            <button
-                              type="button"
-                              className={`general-page__hotkey-exclude-btn ${(hk.excludedApps?.length ?? 0) > 0 ? 'has-apps' : ''}`}
-                              onClick={() => setEditingExclusionHotkey(hk)}
-                              title={
-                                (hk.excludedApps?.length ?? 0) > 0
-                                  ? t('hotkeyExclusion.badgeTooltip', 'Auto-yields in: {{apps}}', {
-                                      apps: hk.excludedApps!.join(', '),
-                                    })
-                                  : t('hotkeyExclusion.configurePerHotkeyTip', 'Configure per-app auto-yield rules')
-                              }
-                            >
-                              <Shield size={13} aria-hidden="true" />
-                              {(hk.excludedApps?.length ?? 0) > 0 && (
-                                <span>
-                                  {t('hotkeyExclusion.excludedCountBadge', 'Yields {{count}}', {
-                                    count: hk.excludedApps!.length,
-                                  })}
-                                </span>
-                              )}
-                            </button>
-                            <HotkeyRecorder
-                              id={`general-hotkey-${hk.name.replace(/\s+/g, '-').toLowerCase()}`}
-                              value={hk.shortcut}
-                              ariaLabel={resolveHotkeyLabel(t, hk.name)}
-                              onChange={(value) => void rebindHotkey(hk, value)}
-                            />
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </section>
-              ))}
-            </div>
-          )}
-
-          <div className="general-page__hotkey-global-exclusions">
-            <SettingRow
-              layout="vertical"
-              label={t('general.globalHotkeyExclusionsTitle', 'Global Hotkey Auto-Yield Apps')}
-              description={t(
-                'general.globalHotkeyExclusionsDesc',
-                'Automatically yields all Tools3000 global shortcuts when any listed app is focused, and restores them immediately on focus switch',
-              )}
-            >
-              <HotkeyAppExclusionBar
-                apps={globalExcludedApps}
-                compact
-                emptyText={t('hotkeyExclusion.emptyGlobal', 'No global do-not-disturb apps configured')}
-                pickerTitle={t('hotkeyExclusion.pickerGlobalTitle', 'Pick App to Auto-Yield All Global Shortcuts')}
-                onChange={(nextApps) => void handleSaveGlobalExclusions(nextApps)}
-              />
-            </SettingRow>
-          </div>
-        </Card>
-      </SettingGroup>
-
-      {editingExclusionHotkey && (
-        <Modal
-          open
-          title={t('hotkeyExclusion.modalTitle', 'Auto-Yield Apps — {{name}}', {
-            name: resolveHotkeyLabel(t, editingExclusionHotkey.name),
-          })}
-          onClose={() => setEditingExclusionHotkey(null)}
-          footer={
-            <Button variant="primary" onClick={() => setEditingExclusionHotkey(null)}>
-              {t('common.done', 'Done')}
-            </Button>
-          }
-        >
-          <p className="general-page__exclusion-modal-desc">
-            {t(
-              'hotkeyExclusion.modalDesc',
-              'When any listed process is in the foreground, only this shortcut is released to the active app while all other Tools3000 shortcuts stay active.',
-            )}
-          </p>
-          <HotkeyAppExclusionBar
-            apps={editingExclusionHotkey.excludedApps ?? []}
-            emptyText={t('hotkeyExclusion.emptyPerHotkey', 'Active in all apps; add process names to auto-yield')}
-            pickerTitle={t('hotkeyExclusion.pickerPerHotkeyTitle', 'Pick App to Auto-Yield This Shortcut')}
-            onChange={(nextApps) => void handleSavePerHotkeyExclusions(editingExclusionHotkey.name, nextApps)}
-          />
-        </Modal>
-      )}
-
-      {/* ── 4. 版本更新与新手引导 ───────────────────────────────────── */}
+      {/* ── 3. 版本更新与新手引导 ───────────────────────────────────── */}
       <SettingGroup title={t('general.updatesAndGuide')} icon={<Sparkles size={20} strokeWidth={2.5} />}>
         <Card>
           <Toggle
@@ -912,7 +614,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         </Card>
       </SettingGroup>
 
-      {/* ── 5. 配置备份、同步与迁移 ─────────────────────────────────── */}
+      {/* ── 4. 配置备份、同步与迁移 ─────────────────────────────────── */}
       <SettingGroup title={t('general.backupAndMigration')} icon={<Database size={20} strokeWidth={2.5} />}>
         <Card>
           <SettingRow
@@ -970,7 +672,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         </Card>
       </SettingGroup>
 
-      {/* ── 6. 诊断日志与排障 ───────────────────────────────────────── */}
+      {/* ── 5. 诊断日志与排障 ───────────────────────────────────────── */}
       <SettingGroup title={t('general.diagnosticsAndLogs')} icon={<Settings size={20} strokeWidth={2.5} />}>
         <Card>
           <Toggle
@@ -1057,7 +759,7 @@ export const GeneralPage: FC<GeneralPageProps> = ({ onNavigate, onOpenOnboarding
         </Card>
       </SettingGroup>
 
-      {/* ── 7. 重置与恢复（沉底危险区防误触） ──────────────────────── */}
+      {/* ── 6. 重置与恢复（沉底危险区防误触） ──────────────────────── */}
       <SettingGroup title={t('general.dangerZone')} icon={<AlertTriangle size={20} strokeWidth={2.5} />}>
         <Card className="general-page__danger-card">
           <SettingRow label={t('general.resetConfig')} description={t('general.resetConfigDesc')}>

@@ -29,7 +29,7 @@ describe('OnboardingModal', () => {
     cleanup();
   });
 
-  it('renders Step 0 with 8 flagship capability cards (2x4) covering all 12 core modules', () => {
+  it('renders Step 0 with 8 flagship capability cards (2x4) covering core modules including Window Manager Suite', () => {
     const { container } = render(<OnboardingModal onComplete={onCompleteMock} />);
 
     // Step 0 header
@@ -49,7 +49,8 @@ describe('OnboardingModal', () => {
     expect(screen.getByText('onboarding.featureDialogEnhancer')).toBeTruthy();
     expect(screen.getByText('onboarding.featureStudio')).toBeTruthy();
     expect(screen.getAllByText('onboarding.featureGesture').length).toBeGreaterThanOrEqual(1);
-    expect(screen.getByText('onboarding.featurePicasa')).toBeTruthy();
+    expect(screen.getByText('onboarding.featureWindowManager')).toBeTruthy();
+    expect(screen.getByText('onboarding.featureWindowManagerDesc')).toBeTruthy();
     expect(screen.getByText('onboarding.featurePresentRemote')).toBeTruthy();
     expect(screen.getByText('onboarding.featurePresentRemoteDesc')).toBeTruthy();
   });
@@ -108,6 +109,8 @@ describe('OnboardingModal', () => {
 
     expect(screen.getByText('onboarding.completeTitle')).toBeTruthy();
     expect(screen.getByText('onboarding.completeTipPicasa')).toBeTruthy();
+    expect(screen.getByText('onboarding.completeTipTextExpander')).toBeTruthy();
+    expect(screen.getByText('onboarding.completeTipCloudSync')).toBeTruthy();
     expect(screen.getByText('onboarding.completeTipModules')).toBeTruthy();
     const startButton = screen.getByRole('button', { name: /onboarding\.startButton/i });
     await act(async () => {

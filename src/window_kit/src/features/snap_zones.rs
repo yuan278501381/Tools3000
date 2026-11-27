@@ -749,13 +749,36 @@ impl SnapZonesManager {
             .iter()
             .find(|l| l.hotkey_digit == Some(digit))
             .map(|l| l.id.clone())?;
+        self.apply_layout_by_id(&layout_id, cfg, trace_id)
+    }
+
+    /// Action 25: 按指定 layoutId 一键切换当前光标/前台显示器(+虚拟桌面)的活动分屏布局（供鼠标手势内置命令调用）
+    pub fn apply_layout_by_id(
+        &mut self,
+        layout_id: &str,
+        cfg: &mut WindowKitConfig,
+        trace_id: &str,
+    ) -> Option<(String, Option<String>, String)> {
+        let trimmed = layout_id.trim();
+        if trimmed.is_empty() || cfg.find_layout(trimmed).is_none() {
+            return None;
+        }
         let monitors = enumerate_monitors();
         let fg = resolve_foreground_or_target_hwnd();
-        let mon = if !fg.0.is_null() {
-            monitor_for_hwnd(fg, &monitors)
+        let mut cursor_pt = POINT::default();
+        let mon = if unsafe { GetCursorPos(&mut cursor_pt) }.is_ok() {
+            monitor_for_point(cursor_pt.x, cursor_pt.y, &monitors)
         } else {
-            monitors.first().cloned()
-        }?;
+            None
+        }
+        .or_else(|| {
+            if !fg.0.is_null() {
+                monitor_for_hwnd(fg, &monitors)
+            } else {
+                None
+            }
+        })
+        .or_else(|| monitors.first().cloned())?;
         let desktop_id = if cfg.snap_zones.per_virtual_desktop {
             resolve_window_or_current_desktop_id(fg)
         } else {
@@ -764,18 +787,17 @@ impl SnapZonesManager {
         cfg.snap_zones.bind_monitor_layout(
             &mon.id,
             desktop_id.as_deref().unwrap_or(""),
-            &layout_id,
+            trimmed,
         );
         wk_info!(
             trace_id,
             "snapZones",
-            "switched monitor '{}' (desktop={:?}) to layout '{}' via hotkey digit {}",
+            "switched monitor '{}' (desktop={:?}) to layout '{}'",
             mon.id,
             desktop_id,
-            layout_id,
-            digit
+            trimmed
         );
-        Some((mon.id, desktop_id, layout_id))
+        Some((mon.id, desktop_id, trimmed.to_string()))
     }
 
     /// 多屏拔插、旋转或虚拟桌面变更时自动自愈，避免遗留旧分辨率半屏叠加层
@@ -907,12 +929,12 @@ impl SnapZonesManager {
         let accent = parse_hex_color(&cfg.accent_color, [0.23, 0.51, 0.96]);
         let hi_alpha = cfg.snap_zones.highlight_opacity.clamp(0.12, 0.78);
         let scale = (mon.dpi as f32 / 96.0).max(1.0);
-        let radius = 12.0 * scale;
+        let radius = 6.0 * scale;
         let show_numbers = cfg.snap_zones.show_zone_numbers;
         let source_alpha = (fade_alpha.clamp(0.10, 1.0) * 255.0).round() as u8;
         let master_a = 1.0f32;
 
-        let num_fmt = gfx.ui_text_format(21.0 * scale, true, true).ok();
+        let num_fmt = gfx.ui_text_format(24.0 * scale, true, true).ok();
         let title_fmt = gfx.ui_text_format(13.0 * scale, true, true).ok();
 
         let merged_preview = if hovered.len() >= 2 {
@@ -923,9 +945,9 @@ impl SnapZonesManager {
 
         let render_res =
             render_layered_window_d2d_alpha(gfx, oh, work.left, work.top, w, h, source_alpha, |rt| unsafe {
-            // 对标 FancyZones 图 2 高通透克制美学：极浅磨砂白/暗玻璃 + 极细主题色描边，绝不盖脏底层真实应用内容
-            let idle_rgb = if dark { [0.08, 0.11, 0.16] } else { [0.97, 0.98, 0.99] };
-            let idle_base_a = if dark { 0.34 } else { 0.38 };
+            // 对标 FancyZones 图 2 高通透克制美学：极浅磨砂白/暗玻璃 + 锐利主题色描边，底层窗口清晰透出
+            let idle_rgb = if dark { [0.075, 0.095, 0.14] } else { [0.975, 0.982, 0.992] };
+            let idle_base_a = if dark { 0.28 } else { 0.34 };
             let stroke_idle_rgb = accent;
             let badge_fill_col = if dark {
                 rgba(0.085, 0.105, 0.155, 0.88 * master_a)

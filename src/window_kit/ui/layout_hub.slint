@@ -1,0 +1,1173 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ui/layout_hub.slint — SnapZones v2 双层共视布局管理器（Slint Fluent 高保真版）
+//                       1:1 对标参考截图（显示器选卡 + 6 大白色/曜石模板卡片 + 自定义卡片
+//                       + 悬浮右键/铅笔菜单 + 居中磨砂编辑弹窗 + 滑块/开关/方向星标）
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { ThemeTokens } from "tokens.slint";
+import { VectorIcon, LucidePaths } from "icons.slint";
+import { Slider, Switch, LineEdit, ComboBox } from "std-widgets.slint";
+
+export struct MonitorCardItem {
+    index: int,
+    badge-num: string,
+    resolution: string,
+    scale-text: string,
+    friendly-name: string,
+    selected: bool,
+}
+
+export struct VirtualDesktopPill {
+    id: string,
+    label: string,
+    active: bool,
+}
+
+export struct ZoneThumbRect {
+    rx: float,
+    ry: float,
+    rw: float,
+    rh: float,
+    layer: int,
+}
+
+export struct LayoutCardItem {
+    id: string,
+    name: string,
+    is-builtin: bool,
+    is-no-layout: bool,
+    is-layered: bool,
+    is-active: bool,
+    hotkey-badge: string,
+    thumbs: [ZoneThumbRect],
+}
+
+component LayoutThumbnailWell inherits Rectangle {
+    in property <[ZoneThumbRect]> thumbs: [];
+    in property <bool> is-no-layout: false;
+    in property <bool> is-layered: false;
+    in property <bool> active: false;
+    in property <string> hotkey-badge: "";
+
+    border-radius: 6px;
+    background: ThemeTokens.well-bg;
+    border-width: root.is-no-layout ? 1px : 0px;
+    border-color: ThemeTokens.border-subtle;
+    clip: true;
+
+    for z in root.thumbs : Rectangle {
+        x: 5px + z.rx * (parent.width - 10px);
+        y: 5px + z.ry * (parent.height - 10px);
+        width: max(4px, z.rw * (parent.width - 10px));
+        height: max(4px, z.rh * (parent.height - 10px));
+        border-radius: 2.5px;
+        // 叠层布局（如“焦点”3层 / 自定义叠加画布）呈现 3 阶明暗梯度 + 清晰 1.5px 高光隔断描边 + 轻柔叠层阴影
+        background: root.active
+            ? (root.is-layered
+                ? (z.layer <= 0 ? ThemeTokens.zone-tile-active-layer0
+                    : (z.layer == 1 ? ThemeTokens.zone-tile-active-layer1 : ThemeTokens.zone-tile-active-layer2))
+                : ThemeTokens.zone-tile-active-bg)
+            : (root.is-layered
+                ? (z.layer <= 0 ? ThemeTokens.zone-tile-layer0
+                    : (z.layer == 1 ? ThemeTokens.zone-tile-layer1 : ThemeTokens.zone-tile-layer2))
+                : ThemeTokens.zone-tile-bg);
+        border-width: root.is-layered ? 1.5px : 1px;
+        border-color: root.active ? ThemeTokens.zone-tile-active-stroke : ThemeTokens.zone-tile-stroke;
+        drop-shadow-blur: root.is-layered ? 4px : 0px;
+        drop-shadow-offset-y: root.is-layered ? 1px : 0px;
+        drop-shadow-color: ThemeTokens.zone-tile-shadow;
+    }
+
+    // 布局快捷数字角标置于缩略槽右上角，释放标题行完整展示布局名称
+    if root.hotkey-badge != "" : Rectangle {
+        x: parent.width - self.width - 5px;
+        y: 5px;
+        height: 18px;
+        border-radius: 4px;
+        background: ThemeTokens.card-bg;
+        border-width: 1px;
+        border-color: root.active ? ThemeTokens.accent : ThemeTokens.border-strong;
+
+        HorizontalLayout {
+            padding-left: 5px;
+            padding-right: 5px;
+            Text {
+                text: root.hotkey-badge;
+                color: root.active ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                font-size: 11px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+component FluentLayoutCard inherits Rectangle {
+    in property <LayoutCardItem> item;
+    callback select-layout(string);
+    callback edit-clicked(string);
+
+    height: 158px;
+    border-radius: 8px;
+    background: card-ta.has-hover && !root.item.is-active ? ThemeTokens.card-hover-bg : ThemeTokens.card-bg;
+    border-width: root.item.is-active ? 2px : 1px;
+    border-color: root.item.is-active ? ThemeTokens.accent : ThemeTokens.border-subtle;
+    drop-shadow-blur: root.item.is-active ? 10px : 6px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: ThemeTokens.card-shadow;
+
+    animate border-color { duration: 130ms; easing: ease-out; }
+    animate background { duration: 130ms; easing: ease-out; }
+
+    card-ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.select-layout(root.item.id);
+        }
+    }
+
+    VerticalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        padding-top: 10px;
+        padding-bottom: 11px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            height: 24px;
+            spacing: 4px;
+            alignment: stretch;
+
+            Text {
+                horizontal-stretch: 1;
+                text: root.item.name;
+                color: root.item.is-active ? ThemeTokens.accent : ThemeTokens.text-primary;
+                font-size: 13.5px;
+                font-weight: 600;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if !root.item.is-no-layout : Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 5px;
+                background: edit-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+
+                VectorIcon {
+                    x: 5px;
+                    y: 5px;
+                    icon-size: 14px;
+                    path-data: LucidePaths.pencil;
+                    icon-color: root.item.is-active ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                }
+
+                edit-ta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.edit-clicked(root.item.id);
+                    }
+                }
+            }
+        }
+
+        LayoutThumbnailWell {
+            vertical-stretch: 1;
+            thumbs: root.item.thumbs;
+            is-no-layout: root.item.is-no-layout;
+            is-layered: root.item.is-layered;
+            active: root.item.is-active;
+            hotkey-badge: root.item.hotkey-badge;
+        }
+    }
+}
+
+export component LayoutHubWindow inherits Window {
+    title: "Tools3000_WindowKit_LayoutHub";
+    no-frame: true;
+    always-on-top: true;
+    background: ThemeTokens.canvas-bg;
+    default-font-family: ThemeTokens.font-family;
+    preferred-width: 1060px;
+    preferred-height: 620px;
+
+    // 多语言文案绑定（由 Rust 运行时根据 uiLang 注入）
+    in-out property <string> txt-title: "SnapZones 布局编辑器";
+    in-out property <string> txt-templates: "模板";
+    in-out property <string> txt-custom: "自定义";
+    in-out property <string> txt-new-layout: "新建布局";
+    in-out property <string> txt-save: "保存";
+    in-out property <string> txt-cancel: "取消";
+    in-out property <string> txt-create: "创建";
+    in-out property <string> txt-edit: "编辑";
+    in-out property <string> txt-edit-zones: "编辑区域";
+    in-out property <string> txt-duplicate: "复制";
+    in-out property <string> txt-delete: "删除";
+    in-out property <string> txt-zone-count: "区域数";
+    in-out property <string> txt-zone-count-unit: "区域";
+    in-out property <string> txt-spacing: "区域周围的空间";
+    in-out property <string> txt-pixels: "像素";
+    in-out property <string> txt-highlight-dist: "突出显示距离";
+    in-out property <string> txt-default-horiz: "水平监视器方向的默认布局";
+    in-out property <string> txt-default-vert: "垂直监视器方向的默认布局";
+    in-out property <string> txt-layout-name: "名称";
+    in-out property <string> txt-layout-hotkey: "布局快捷键";
+    in-out property <string> txt-grid-label: "网格 (Grid)";
+    in-out property <string> txt-grid-desc: "通过分割线和合并单元格精准切分";
+    in-out property <string> txt-canvas-label: "画布 (Canvas)";
+    in-out property <string> txt-canvas-desc: "自由拖放和重叠任意尺寸分区";
+    in-out property <string> txt-no-custom: "暂无自定义布局，点击右下角“新建布局”或复制模板开始创建";
+
+    // 主视图数据模型
+    in-out property <[MonitorCardItem]> monitors: [];
+    in-out property <[VirtualDesktopPill]> desktops: [];
+    in-out property <[LayoutCardItem]> template-layouts: [];
+    in-out property <[LayoutCardItem]> custom-layouts: [];
+
+    // 悬浮上下文菜单状态（自定义卡片点铅笔展开，动态贴合被点击卡片）
+    in-out property <bool> context-menu-open: false;
+    in-out property <string> context-menu-layout-id: "";
+    in-out property <int> context-menu-card-index: 0;
+
+    // 弹窗状态: 0=无弹窗, 1=编辑模板, 2=编辑自定义布局, 3=新建布局
+    in-out property <int> modal-mode: 0;
+    in-out property <string> modal-title: "";
+    in-out property <string> draft-layout-id: "";
+    in-out property <string> draft-name: "";
+    in-out property <int> draft-zone-count: 3;
+    in-out property <bool> draft-show-spacing: true;
+    in-out property <int> draft-spacing: 16;
+    in-out property <int> draft-highlight-distance: 20;
+    in-out property <int> draft-hotkey-index: 0; // 0=无, 1..10 => 数字 0..9
+    in-out property <[string]> hotkey-options: ["无", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+    in-out property <bool> draft-default-horizontal: false;
+    in-out property <bool> draft-default-vertical: false;
+    in-out property <bool> draft-create-canvas: false;
+    in-out property <bool> draft-is-layered: false;
+    in-out property <[ZoneThumbRect]> draft-thumbs: [];
+
+    // 事件回调 -> Rust 主控
+    callback select-monitor(int);
+    callback select-desktop(string);
+    callback select-layout(string);
+    callback open-template-editor(string);
+    callback open-custom-menu(string, int);
+    callback custom-menu-action(string, string); // action, layout-id
+    callback open-create-modal();
+    callback draft-preview-changed(int, bool, int, int); // zone_count, show_spacing, spacing, highlight_distance
+    callback modal-save();
+    callback modal-cancel();
+    callback modal-duplicate();
+    callback modal-delete();
+    callback modal-open-fullscreen-zones();
+    callback create-confirm(string, bool);
+    callback close-window();
+    callback minimize-window();
+    callback toggle-maximize-window();
+    callback drag-window-requested();
+
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        key-pressed(ev) => {
+            if (ev.text == Key.Escape) {
+                if (root.modal-mode != 0) {
+                    root.modal-cancel();
+                } else if (root.context-menu-open) {
+                    root.context-menu-open = false;
+                } else {
+                    root.close-window();
+                }
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
+        background: ThemeTokens.canvas-bg;
+        border-width: 1px;
+        border-color: ThemeTokens.border-strong;
+        border-radius: 8px;
+        clip: true;
+
+        VerticalLayout {
+            spacing: 0px;
+
+            // ── 顶部 Fluent 标题栏（可拖拽 + 最小化/最大化/关闭） ─────────────
+            Rectangle {
+                height: 38px;
+                background: ThemeTokens.header-bg;
+
+                TouchArea {
+                    width: 100%;
+                    height: 100%;
+                    pointer-event(ev) => {
+                        if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                            root.drag-window-requested();
+                        }
+                    }
+                    double-clicked => {
+                        root.toggle-maximize-window();
+                    }
+                }
+
+                HorizontalLayout {
+                    padding-left: 14px;
+                    padding-right: 4px;
+                    spacing: 8px;
+                    alignment: stretch;
+
+                    VectorIcon {
+                        y: (parent.height - self.height) / 2;
+                        path-data: LucidePaths.layout-grid;
+                        icon-size: 15px;
+                        icon-color: ThemeTokens.accent;
+                    }
+
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.txt-title;
+                        color: ThemeTokens.text-primary;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                    }
+
+                    // 最小化
+                    Rectangle {
+                        width: 42px; height: 34px; y: 2px; border-radius: 6px;
+                        background: tb-min.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                        VectorIcon {
+                            x: 14px; y: 10px; icon-size: 14px;
+                            path-data: LucidePaths.minus;
+                            icon-color: ThemeTokens.text-secondary;
+                        }
+                        tb-min := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.minimize-window(); }
+                        }
+                    }
+
+                    // 最大化
+                    Rectangle {
+                        width: 42px; height: 34px; y: 2px; border-radius: 6px;
+                        background: tb-max.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                        VectorIcon {
+                            x: 15px; y: 11px; icon-size: 12px;
+                            path-data: LucidePaths.maximize;
+                            icon-color: ThemeTokens.text-secondary;
+                        }
+                        tb-max := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.toggle-maximize-window(); }
+                        }
+                    }
+
+                    // 关闭
+                    Rectangle {
+                        width: 42px; height: 34px; y: 2px; border-radius: 6px;
+                        background: tb-cls.has-hover ? ThemeTokens.danger : transparent;
+                        VectorIcon {
+                            x: 14px; y: 10px; icon-size: 14px;
+                            path-data: LucidePaths.close;
+                            icon-color: tb-cls.has-hover ? #ffffff : ThemeTokens.text-secondary;
+                        }
+                        tb-cls := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.close-window(); }
+                        }
+                    }
+                }
+            }
+
+            // ── 显示器卡片切换带（1:1 复刻 PowerToys 顶部居中显示器卡片） ────
+            Rectangle {
+                height: root.desktops.length > 1 ? 132px : 98px;
+                background: ThemeTokens.header-bg;
+
+                VerticalLayout {
+                    padding-top: 8px;
+                    padding-bottom: 12px;
+                    spacing: 8px;
+                    alignment: center;
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 14px;
+
+                        for mon in root.monitors : Rectangle {
+                            width: 116px;
+                            height: 76px;
+                            border-radius: 6px;
+                            background: ThemeTokens.card-bg;
+                            border-width: mon.selected ? 2px : 1px;
+                            border-color: mon.selected ? ThemeTokens.accent : ThemeTokens.border-strong;
+                            drop-shadow-blur: mon.selected ? 10px : 4px;
+                            drop-shadow-offset-y: 2px;
+                            drop-shadow-color: ThemeTokens.card-shadow;
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.select-monitor(mon.index); }
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+                                padding: 6px;
+
+                                Text {
+                                    text: mon.badge-num;
+                                    color: mon.selected ? ThemeTokens.accent : ThemeTokens.text-primary;
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: mon.resolution;
+                                    color: mon.selected ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: mon.scale-text;
+                                    color: mon.selected ? ThemeTokens.accent : ThemeTokens.text-muted;
+                                    font-size: 12px;
+                                    font-weight: 500;
+                                    horizontal-alignment: center;
+                                }
+                            }
+                        }
+                    }
+
+                    // 多虚拟桌面胶囊条（单桌面自动隐藏保持纯净）
+                    if root.desktops.length > 1 : HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+
+                        for vd in root.desktops : Rectangle {
+                            height: 24px;
+                            border-radius: 12px;
+                            background: vd.active ? ThemeTokens.accent-soft-bg : ThemeTokens.card-bg;
+                            border-width: 1px;
+                            border-color: vd.active ? ThemeTokens.accent : ThemeTokens.border-subtle;
+
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.select-desktop(vd.id); }
+                            }
+
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                Text {
+                                    text: vd.label;
+                                    color: vd.active ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                                    font-size: 12px;
+                                    font-weight: 600;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 顶部分割发丝线
+                Rectangle {
+                    y: parent.height - 1px;
+                    width: 100%;
+                    height: 1px;
+                    background: ThemeTokens.divider;
+                }
+            }
+
+            // ── 主体区域：模板（6 大标准卡片） + 自定义布局网格 ──────────────
+            Flickable {
+                vertical-stretch: 1;
+                content-height: max(self.height, body-col.preferred-height + 24px);
+
+                body-col := VerticalLayout {
+                    width: parent.width;
+                    alignment: start;
+                    padding-left: 22px;
+                    padding-right: 22px;
+                    padding-top: 16px;
+                    padding-bottom: 68px;
+                    spacing: 20px;
+
+                    // 1. 模板区
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 10px;
+
+                        Text {
+                            height: 24px;
+                            text: root.txt-templates;
+                            color: ThemeTokens.text-primary;
+                            font-size: 17px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        HorizontalLayout {
+                            height: 158px;
+                            spacing: 12px;
+                            for tpl in root.template-layouts : FluentLayoutCard {
+                                horizontal-stretch: 1;
+                                item: tpl;
+                                select-layout(id) => {
+                                    root.context-menu-open = false;
+                                    root.select-layout(id);
+                                }
+                                edit-clicked(id) => {
+                                    root.context-menu-open = false;
+                                    root.open-template-editor(id);
+                                }
+                            }
+                        }
+                    }
+
+                    // 2. 自定义区
+                    VerticalLayout {
+                        alignment: start;
+                        spacing: 10px;
+
+                        Text {
+                            height: 24px;
+                            text: root.txt-custom;
+                            color: ThemeTokens.text-primary;
+                            font-size: 17px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+
+                        if root.custom-layouts.length == 0 : Rectangle {
+                            height: 68px;
+                            border-radius: 8px;
+                            background: ThemeTokens.well-bg;
+                            border-width: 1px;
+                            border-color: ThemeTokens.border-subtle;
+                            Text {
+                                text: root.txt-no-custom;
+                                color: ThemeTokens.text-muted;
+                                font-size: 13px;
+                                font-weight: 500;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // 支持每行最多 6 张自定义卡片（与模板卡片等宽对齐，共展示前 12 个自定义布局）
+                        if root.custom-layouts.length > 0 : HorizontalLayout {
+                            height: 158px;
+                            spacing: 12px;
+                            alignment: start;
+                            for cust[cidx] in root.custom-layouts : Rectangle {
+                                width: cidx < 6 ? max(156px, (root.width - 44px - 60px) / 6) : 0px;
+                                height: 158px;
+                                visible: cidx < 6;
+                                FluentLayoutCard {
+                                    width: parent.width;
+                                    height: 158px;
+                                    item: cust;
+                                    select-layout(id) => {
+                                        root.context-menu-open = false;
+                                        root.select-layout(id);
+                                    }
+                                    edit-clicked(id) => {
+                                        root.open-custom-menu(id, cidx);
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.custom-layouts.length > 6 : HorizontalLayout {
+                            height: 158px;
+                            spacing: 12px;
+                            alignment: start;
+                            for cust[cidx] in root.custom-layouts : Rectangle {
+                                width: cidx >= 6 && cidx < 12 ? max(156px, (root.width - 44px - 60px) / 6) : 0px;
+                                height: 158px;
+                                visible: cidx >= 6 && cidx < 12;
+                                FluentLayoutCard {
+                                    width: parent.width;
+                                    height: 158px;
+                                    item: cust;
+                                    select-layout(id) => {
+                                        root.context-menu-open = false;
+                                        root.select-layout(id);
+                                    }
+                                    edit-clicked(id) => {
+                                        root.open-custom-menu(id, cidx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── 右下角「+ 新建布局」强调色主按钮（1:1 PowerToys 位置与风格） ─────
+        Rectangle {
+            x: parent.width - self.width - 22px;
+            y: parent.height - self.height - 18px;
+            width: 126px;
+            height: 36px;
+            border-radius: 6px;
+            background: new-btn-ta.pressed
+                ? ThemeTokens.accent-pressed
+                : (new-btn-ta.has-hover ? ThemeTokens.accent-hover : ThemeTokens.accent);
+            drop-shadow-blur: 10px;
+            drop-shadow-offset-y: 2px;
+            drop-shadow-color: ThemeTokens.card-shadow;
+
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                padding-left: 12px;
+                padding-right: 12px;
+
+                VectorIcon {
+                    y: (parent.height - self.height) / 2;
+                    path-data: LucidePaths.plus;
+                    icon-size: 15px;
+                    icon-color: ThemeTokens.text-on-accent;
+                }
+                Text {
+                    text: root.txt-new-layout;
+                    color: ThemeTokens.text-on-accent;
+                    font-size: 14px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+            }
+
+            new-btn-ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => {
+                    root.context-menu-open = false;
+                    root.open-create-modal();
+                }
+            }
+        }
+
+        // ── 自定义布局操作弹出菜单（编辑 / 编辑区域 / 复制 / 删除） ──────────
+        if root.context-menu-open && root.modal-mode == 0 : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: transparent;
+
+            TouchArea {
+                clicked => { root.context-menu-open = false; }
+            }
+
+            Rectangle {
+                property <int> col-idx: mod(max(0, root.context-menu-card-index), 6);
+                property <int> row-idx: root.context-menu-card-index >= 6 ? 1 : 0;
+                property <length> card-w: max(156px, (root.width - 44px - 60px) / 6);
+                property <length> anchor-x: 22px + (col-idx + 1) * card-w + col-idx * 12px - 10px;
+                property <length> base-y: (root.desktops.length > 1 ? 424px : 390px) + row-idx * 168px;
+                x: clamp(anchor-x, 16px, max(16px, parent.width - 172px));
+                y: clamp(base-y, 80px, max(80px, parent.height - 174px));
+                width: 156px;
+                height: 154px;
+                border-radius: 8px;
+                background: ThemeTokens.menu-bg;
+                border-width: 1px;
+                border-color: ThemeTokens.border-strong;
+                drop-shadow-blur: 18px;
+                drop-shadow-offset-y: 6px;
+                drop-shadow-color: ThemeTokens.modal-shadow;
+
+                VerticalLayout {
+                    padding: 5px;
+                    spacing: 2px;
+
+                    // 编辑属性
+                    Rectangle {
+                        height: 34px; border-radius: 5px;
+                        background: cm1.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 10px; alignment: start;
+                            VectorIcon { y: 9px; icon-size: 15px; path-data: LucidePaths.pencil; icon-color: ThemeTokens.text-primary; }
+                            Text { text: root.txt-edit; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                        }
+                        cm1 := TouchArea { mouse-cursor: pointer; clicked => { root.context-menu-open = false; root.custom-menu-action("edit", root.context-menu-layout-id); } }
+                    }
+
+                    // 1:1 全屏编辑区域
+                    Rectangle {
+                        height: 34px; border-radius: 5px;
+                        background: cm2.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 10px; alignment: start;
+                            VectorIcon { y: 9px; icon-size: 15px; path-data: LucidePaths.edit-zones; icon-color: ThemeTokens.text-primary; }
+                            Text { text: root.txt-edit-zones; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                        }
+                        cm2 := TouchArea { mouse-cursor: pointer; clicked => { root.context-menu-open = false; root.custom-menu-action("zones", root.context-menu-layout-id); } }
+                    }
+
+                    // 复制
+                    Rectangle {
+                        height: 34px; border-radius: 5px;
+                        background: cm3.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 10px; alignment: start;
+                            VectorIcon { y: 9px; icon-size: 15px; path-data: LucidePaths.copy; icon-color: ThemeTokens.text-primary; }
+                            Text { text: root.txt-duplicate; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                        }
+                        cm3 := TouchArea { mouse-cursor: pointer; clicked => { root.context-menu-open = false; root.custom-menu-action("duplicate", root.context-menu-layout-id); } }
+                    }
+
+                    Rectangle { height: 1px; background: ThemeTokens.divider; }
+
+                    // 删除
+                    Rectangle {
+                        height: 34px; border-radius: 5px;
+                        background: cm4.has-hover ? ThemeTokens.danger-hover-bg : transparent;
+                        HorizontalLayout {
+                            padding-left: 10px; spacing: 10px; alignment: start;
+                            VectorIcon { y: 9px; icon-size: 15px; path-data: LucidePaths.trash; icon-color: ThemeTokens.danger; }
+                            Text { text: root.txt-delete; color: ThemeTokens.danger; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                        }
+                        cm4 := TouchArea { mouse-cursor: pointer; clicked => { root.context-menu-open = false; root.custom-menu-action("delete", root.context-menu-layout-id); } }
+                    }
+                }
+            }
+        }
+
+        // ── 居中磨砂模态弹窗（1=编辑模板 / 2=编辑自定义布局 / 3=新建布局） ──
+        if root.modal-mode != 0 : Rectangle {
+            width: 100%;
+            height: 100%;
+            background: ThemeTokens.modal-scrim;
+
+            TouchArea {
+                clicked => { root.modal-cancel(); }
+            }
+
+            Rectangle {
+                width: 410px;
+                height: root.modal-mode == 3 ? 340px : 510px;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 10px;
+                background: ThemeTokens.modal-bg;
+                border-width: 1px;
+                border-color: ThemeTokens.border-strong;
+                drop-shadow-blur: 28px;
+                drop-shadow-offset-y: 10px;
+                drop-shadow-color: ThemeTokens.modal-shadow;
+
+                TouchArea {} // 阻止点弹窗内部穿透关闭
+
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 14px;
+
+                    // 弹窗顶栏（标题 + 右上角复制/删除图标）
+                    HorizontalLayout {
+                        height: 30px;
+                        alignment: stretch;
+
+                        Text {
+                            horizontal-stretch: 1;
+                            text: root.modal-title;
+                            color: ThemeTokens.text-primary;
+                            font-size: 18px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+
+                        if root.modal-mode == 1 || root.modal-mode == 2 : Rectangle {
+                            width: 30px; height: 30px; border-radius: 6px;
+                            background: dup-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                            VectorIcon { x: 7px; y: 7px; icon-size: 16px; path-data: LucidePaths.copy; icon-color: ThemeTokens.text-secondary; }
+                            dup-ta := TouchArea { mouse-cursor: pointer; clicked => { root.modal-duplicate(); } }
+                        }
+
+                        if root.modal-mode == 2 : Rectangle {
+                            width: 30px; height: 30px; border-radius: 6px;
+                            background: del-ta.has-hover ? ThemeTokens.danger-hover-bg : transparent;
+                            VectorIcon { x: 7px; y: 7px; icon-size: 16px; path-data: LucidePaths.trash; icon-color: ThemeTokens.danger; }
+                            del-ta := TouchArea { mouse-cursor: pointer; clicked => { root.modal-delete(); } }
+                        }
+                    }
+
+                    // ── Modal 1: 编辑内置模板（对标截图 编辑“列”） ────────────
+                    if root.modal-mode == 1 : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 14px;
+
+                        LayoutThumbnailWell {
+                            width: 196px;
+                            height: 112px;
+                            x: (parent.width - self.width) / 2;
+                            thumbs: root.draft-thumbs;
+                            is-layered: root.draft-is-layered;
+                            active: false;
+                        }
+
+                        // 区域数滑块
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-zone-count; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VectorIcon { y: 4px; icon-size: 16px; path-data: LucidePaths.layout-grid; icon-color: ThemeTokens.text-secondary; }
+                                Slider {
+                                    horizontal-stretch: 1;
+                                    minimum: 1;
+                                    maximum: 12;
+                                    step: 1;
+                                    value: root.draft-zone-count;
+                                    changed(v) => {
+                                        root.draft-zone-count = round(v);
+                                        root.draft-preview-changed(root.draft-zone-count, root.draft-show-spacing, root.draft-spacing, root.draft-highlight-distance);
+                                    }
+                                }
+                                Text {
+                                    width: 68px;
+                                    text: root.draft-zone-count + " " + root.txt-zone-count-unit;
+                                    color: ThemeTokens.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // 区域周围的空间滑块 + 开关
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-spacing; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VectorIcon { y: 4px; icon-size: 16px; path-data: LucidePaths.spacing; icon-color: ThemeTokens.text-secondary; }
+                                Slider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0;
+                                    maximum: 64;
+                                    step: 2;
+                                    enabled: root.draft-show-spacing;
+                                    value: root.draft-spacing;
+                                    changed(v) => {
+                                        root.draft-spacing = round(v);
+                                        root.draft-preview-changed(root.draft-zone-count, root.draft-show-spacing, root.draft-spacing, root.draft-highlight-distance);
+                                    }
+                                }
+                                Text {
+                                    width: 58px;
+                                    text: root.draft-spacing + " " + root.txt-pixels;
+                                    color: ThemeTokens.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                                Switch {
+                                    checked <=> root.draft-show-spacing;
+                                    toggled => {
+                                        root.draft-preview-changed(root.draft-zone-count, root.draft-show-spacing, root.draft-spacing, root.draft-highlight-distance);
+                                    }
+                                }
+                            }
+                        }
+
+                        // 突出显示距离滑块
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-highlight-dist; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VectorIcon { y: 4px; icon-size: 16px; path-data: LucidePaths.distance; icon-color: ThemeTokens.text-secondary; }
+                                Slider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0;
+                                    maximum: 80;
+                                    step: 2;
+                                    value: root.draft-highlight-distance;
+                                    changed(v) => {
+                                        root.draft-highlight-distance = round(v);
+                                        root.draft-preview-changed(root.draft-zone-count, root.draft-show-spacing, root.draft-spacing, root.draft-highlight-distance);
+                                    }
+                                }
+                                Text {
+                                    width: 68px;
+                                    text: root.draft-highlight-distance + " " + root.txt-pixels;
+                                    color: ThemeTokens.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // 横竖屏默认星标开关
+                        VerticalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                height: 28px; border-radius: 6px;
+                                background: h-star-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 4px; spacing: 8px; alignment: start;
+                                    VectorIcon {
+                                        y: 6px; icon-size: 16px; path-data: LucidePaths.star;
+                                        filled: root.draft-default-horizontal;
+                                        icon-color: root.draft-default-horizontal ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                                    }
+                                    Text {
+                                        text: root.txt-default-horiz;
+                                        color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center;
+                                    }
+                                }
+                                h-star-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.draft-default-horizontal = !root.draft-default-horizontal; }
+                                }
+                            }
+                            Rectangle {
+                                height: 28px; border-radius: 6px;
+                                background: v-star-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 4px; spacing: 8px; alignment: start;
+                                    VectorIcon {
+                                        y: 6px; icon-size: 16px; path-data: LucidePaths.star;
+                                        filled: root.draft-default-vertical;
+                                        icon-color: root.draft-default-vertical ? ThemeTokens.accent : ThemeTokens.text-secondary;
+                                    }
+                                    Text {
+                                        text: root.txt-default-vert;
+                                        color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center;
+                                    }
+                                }
+                                v-star-ta := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.draft-default-vertical = !root.draft-default-vertical; }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Modal 2: 编辑自定义布局（对标截图 编辑“自定义布局 1”） ──
+                    if root.modal-mode == 2 : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 12px;
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-layout-name; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            LineEdit {
+                                text <=> root.draft-name;
+                                font-size: 14px;
+                            }
+                        }
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-layout-hotkey; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            ComboBox {
+                                model: root.hotkey-options;
+                                current-index <=> root.draft-hotkey-index;
+                            }
+                        }
+
+                        // 居中微缩预览 + 圆形强调色铅笔按钮直达 1:1 全屏区域编辑器
+                        Rectangle {
+                            height: 112px;
+                            LayoutThumbnailWell {
+                                width: 196px;
+                                height: 112px;
+                                x: (parent.width - self.width) / 2;
+                                thumbs: root.draft-thumbs;
+                                is-layered: root.draft-is-layered;
+                                active: false;
+
+                                Rectangle {
+                                    width: 36px;
+                                    height: 36px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 18px;
+                                    background: fab-ta.has-hover ? ThemeTokens.accent-hover : ThemeTokens.accent;
+                                    drop-shadow-blur: 10px;
+                                    drop-shadow-offset-y: 3px;
+                                    drop-shadow-color: ThemeTokens.modal-shadow;
+
+                                    VectorIcon {
+                                        x: 10px; y: 10px; icon-size: 16px;
+                                        path-data: LucidePaths.pencil;
+                                        icon-color: #ffffff;
+                                    }
+
+                                    fab-ta := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.modal-open-fullscreen-zones(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 突出显示距离滑块
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-highlight-dist; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VectorIcon { y: 4px; icon-size: 16px; path-data: LucidePaths.distance; icon-color: ThemeTokens.text-secondary; }
+                                Slider {
+                                    horizontal-stretch: 1;
+                                    minimum: 0;
+                                    maximum: 80;
+                                    step: 2;
+                                    value: root.draft-highlight-distance;
+                                    changed(v) => { root.draft-highlight-distance = round(v); }
+                                }
+                                Text {
+                                    width: 68px;
+                                    text: root.draft-highlight-distance + " " + root.txt-pixels;
+                                    color: ThemeTokens.text-secondary;
+                                    font-size: 13px;
+                                    font-weight: 500;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        // 横竖屏默认星标开关
+                        VerticalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                height: 26px; border-radius: 6px;
+                                background: ch-star-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 4px; spacing: 8px; alignment: start;
+                                    VectorIcon { y: 5px; icon-size: 16px; path-data: LucidePaths.star; filled: root.draft-default-horizontal; icon-color: root.draft-default-horizontal ? ThemeTokens.accent : ThemeTokens.text-secondary; }
+                                    Text { text: root.txt-default-horiz; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                                }
+                                ch-star-ta := TouchArea { mouse-cursor: pointer; clicked => { root.draft-default-horizontal = !root.draft-default-horizontal; } }
+                            }
+                            Rectangle {
+                                height: 26px; border-radius: 6px;
+                                background: cv-star-ta.has-hover ? ThemeTokens.btn-ghost-hover : transparent;
+                                HorizontalLayout {
+                                    padding-left: 4px; spacing: 8px; alignment: start;
+                                    VectorIcon { y: 5px; icon-size: 16px; path-data: LucidePaths.star; filled: root.draft-default-vertical; icon-color: root.draft-default-vertical ? ThemeTokens.accent : ThemeTokens.text-secondary; }
+                                    Text { text: root.txt-default-vert; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 500; vertical-alignment: center; }
+                                }
+                                cv-star-ta := TouchArea { mouse-cursor: pointer; clicked => { root.draft-default-vertical = !root.draft-default-vertical; } }
+                            }
+                        }
+                    }
+
+                    // ── Modal 3: 新建自定义布局（Grid vs Canvas） ────────────
+                    if root.modal-mode == 3 : VerticalLayout {
+                        vertical-stretch: 1;
+                        spacing: 14px;
+
+                        VerticalLayout {
+                            spacing: 4px;
+                            Text { text: root.txt-layout-name; color: ThemeTokens.text-primary; font-size: 13.5px; font-weight: 600; }
+                            LineEdit {
+                                text <=> root.draft-name;
+                                font-size: 14px;
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            height: 120px;
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                border-radius: 8px;
+                                background: !root.draft-create-canvas ? ThemeTokens.accent-soft-bg : ThemeTokens.well-bg;
+                                border-width: !root.draft-create-canvas ? 2px : 1px;
+                                border-color: !root.draft-create-canvas ? ThemeTokens.accent : ThemeTokens.border-subtle;
+                                TouchArea { mouse-cursor: pointer; clicked => { root.draft-create-canvas = false; } }
+                                VerticalLayout {
+                                    padding: 12px; spacing: 6px; alignment: center;
+                                    VectorIcon { x: (parent.width - self.width) / 2; icon-size: 24px; path-data: LucidePaths.layout-grid; icon-color: !root.draft-create-canvas ? ThemeTokens.accent : ThemeTokens.text-secondary; }
+                                    Text { text: root.txt-grid-label; color: ThemeTokens.text-primary; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    Text { text: root.txt-grid-desc; color: ThemeTokens.text-secondary; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                border-radius: 8px;
+                                background: root.draft-create-canvas ? ThemeTokens.accent-soft-bg : ThemeTokens.well-bg;
+                                border-width: root.draft-create-canvas ? 2px : 1px;
+                                border-color: root.draft-create-canvas ? ThemeTokens.accent : ThemeTokens.border-subtle;
+                                TouchArea { mouse-cursor: pointer; clicked => { root.draft-create-canvas = true; } }
+                                VerticalLayout {
+                                    padding: 12px; spacing: 6px; alignment: center;
+                                    VectorIcon { x: (parent.width - self.width) / 2; icon-size: 24px; path-data: LucidePaths.edit-zones; icon-color: root.draft-create-canvas ? ThemeTokens.accent : ThemeTokens.text-secondary; }
+                                    Text { text: root.txt-canvas-label; color: ThemeTokens.text-primary; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    Text { text: root.txt-canvas-desc; color: ThemeTokens.text-secondary; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                    }
+
+                    // 弹窗底栏等宽双按钮（保存/创建 + 取消）
+                    HorizontalLayout {
+                        height: 36px;
+                        spacing: 10px;
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 6px;
+                            background: save-ta.pressed
+                                ? ThemeTokens.accent-pressed
+                                : (save-ta.has-hover ? ThemeTokens.accent-hover : ThemeTokens.accent);
+                            Text {
+                                text: root.modal-mode == 3 ? root.txt-create : root.txt-save;
+                                color: ThemeTokens.text-on-accent;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            save-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if (root.modal-mode == 3) {
+                                        root.create-confirm(root.draft-name, root.draft-create-canvas);
+                                    } else {
+                                        root.modal-save();
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            border-radius: 6px;
+                            background: cancel-ta.has-hover ? ThemeTokens.btn-secondary-hover : ThemeTokens.btn-secondary-bg;
+                            Text {
+                                text: root.txt-cancel;
+                                color: ThemeTokens.text-primary;
+                                font-size: 14px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            cancel-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.modal-cancel(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

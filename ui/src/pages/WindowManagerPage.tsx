@@ -716,6 +716,10 @@ export const WindowManagerPage: FC = () => {
     return monitors[0]?.id ?? 'primary';
   }, [selectedMonitorId, monitors]);
 
+  const selectedMonitor = useMemo(() => {
+    return monitors.find((m) => m.id === effectiveMonitorId) ?? monitors[0] ?? null;
+  }, [monitors, effectiveMonitorId]);
+
   const perDesktopEnabled = data.settings.snapZones.perVirtualDesktop;
 
   const effectiveDesktopId = useMemo(() => {
@@ -1257,6 +1261,10 @@ export const WindowManagerPage: FC = () => {
                   showZoneNumbers={settings.snapZones.showZoneNumbers}
                   zoneGap={settings.snapZones.zoneGap}
                   disabled={!settings.features.snapZones}
+                  monitorWidth={selectedMonitor?.workArea?.w || selectedMonitor?.width || 1920}
+                  monitorHeight={selectedMonitor?.workArea?.h || selectedMonitor?.height || 1080}
+                  monitorLabel={selectedMonitor ? formatMonitorLabel(selectedMonitor, Math.max(0, monitors.findIndex((m) => m.id === selectedMonitor.id))) : undefined}
+                  onOpenFullscreenEditor={handleOpenFullscreenEditor}
                   onSelectLayout={handleSelectLayoutForMonitor}
                   onChangeLayouts={handleLayoutsChanged}
                 />

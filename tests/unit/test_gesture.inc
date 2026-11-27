@@ -3617,8 +3617,8 @@ TEST(GestureAuditRegressionTest, B1_KeyStrokeOemPunctuationRoundTripAndModifierO
     EXPECT_EQ(invalidChar.virtualKey, 0);
 }
 
-TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To37) {
-    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 37);
+TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To43) {
+    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 43);
     EXPECT_EQ(BuiltinCommand::PrevDesktop, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_EQ(BuiltinCommand::NextDesktop, BuiltinCommand::NextVirtualDesktop);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitNextZone), 32);
@@ -3627,13 +3627,19 @@ TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To37) {
     EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitMoveNextMonitor), 35);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitMinimizeToTray), 36);
     EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitQuickSwitch), 37);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitOpenLayoutEditor), 38);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitApplyLayout), 39);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitLaunchWorkspace), 40);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitStartWorkspaceCapture), 41);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitRestoreAllTray), 42);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitRescueOffscreen), 43);
 
-    for (int idx = 0; idx <= 37; ++idx) {
+    for (int idx = 0; idx <= 43; ++idx) {
         EXPECT_TRUE(isValidBuiltinCommandIndex(idx)) << "Expected valid index: " << idx;
         EXPECT_TRUE(isValidBuiltinCommandValue(idx)) << "Expected valid value: " << idx;
     }
     EXPECT_FALSE(isValidBuiltinCommandIndex(-1));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(38));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(44));
     EXPECT_FALSE(isValidBuiltinCommandValue(100));
 }
 
@@ -3960,7 +3966,44 @@ TEST(GestureAuditRegressionTest, TrailFadeActionHintAndNewBuiltinCommands) {
     EXPECT_TRUE(isValidBuiltinCommandIndex(31));
     EXPECT_TRUE(isValidBuiltinCommandIndex(32));
     EXPECT_TRUE(isValidBuiltinCommandIndex(37));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(38));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(38));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(43));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(44));
+
+    // 1.1 验证窗口管理布局与工作区扩展内置命令（38..43）及 builtinParam 序列化/透传
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitOpenLayoutEditor), 38);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitApplyLayout), 39);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitLaunchWorkspace), 40);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitStartWorkspaceCapture), 41);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitRestoreAllTray), 42);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitRescueOffscreen), 43);
+
+    GestureAction layoutAct;
+    layoutAct.type = ActionType::BuiltinCommand;
+    layoutAct.name = "Apply Coding Layout";
+    layoutAct.builtinCmd = BuiltinCommand::WindowKitApplyLayout;
+    layoutAct.builtinParam = "builtin-three-cols";
+    const nlohmann::json layoutJson = layoutAct.toJson();
+    EXPECT_EQ(layoutJson.value("builtinParam", ""), "builtin-three-cols");
+    const GestureAction restoredLayoutAct = GestureAction::fromJson(layoutJson);
+    EXPECT_EQ(restoredLayoutAct.builtinCmd, BuiltinCommand::WindowKitApplyLayout);
+    EXPECT_EQ(restoredLayoutAct.builtinParam, "builtin-three-cols");
+
+    auto& dispatcher = BuiltinCommandDispatcher::instance();
+    std::string receivedParam;
+    dispatcher.registerParamHandler(
+        BuiltinCommand::WindowKitLaunchWorkspace,
+        [&](const std::string& p) { receivedParam = p; });
+    EXPECT_TRUE(dispatcher.hasHandler(BuiltinCommand::WindowKitLaunchWorkspace));
+    GestureAction wsAct;
+    wsAct.type = ActionType::BuiltinCommand;
+    wsAct.name = "Launch Dev Workspace";
+    wsAct.builtinCmd = BuiltinCommand::WindowKitLaunchWorkspace;
+    wsAct.builtinParam = "ws-dev-01";
+    wsAct.execute(nullptr);
+    EXPECT_EQ(receivedParam, "ws-dev-01");
+    dispatcher.clearHandlers();
+    EXPECT_FALSE(dispatcher.hasHandler(BuiltinCommand::WindowKitLaunchWorkspace));
 
     // 默认全局手势集应预置 L-R-D (象形 T) -> 划词翻译内置命令
     const GestureProfile defaultWithTranslate = GestureProfile::createDefaultGlobal();
@@ -5260,4 +5303,18 @@ TEST(GestureTrailOverlayTest, LocalHysteresisSwapChainLowVramAndZeroRedirection)
     EXPECT_EQ(overlay.allocatedTrailSurfaceWidth(), 0);
     EXPECT_EQ(overlay.allocatedTrailSurfaceHeight(), 0);
     overlay.shutdown();
+}
+
+// 回归守护 (GitHub Issue #38):
+// 空闲态按 Esc（或任何 CancelTransientUiEvent 广播）调用 cancelActiveGesture() 必须返回 false，
+// 防止手势插件在未追踪手势时误调用 WinUtils::emergencyFlushInputState() 强行弹起用户正按住的 Ctrl/Shift。
+TEST(GestureEngineTest, CancelActiveGestureReturnsFalseWhenIdle) {
+    using namespace tools3000::gesture;
+    auto& engine = GestureEngine::instance();
+    // 确保处于空闲态
+    engine.cancelActiveGesture();
+    EXPECT_EQ(engine.state(), GestureState::Idle);
+    // 空闲态再次调用必须严格返回 false
+    EXPECT_FALSE(engine.cancelActiveGesture());
+    EXPECT_EQ(engine.state(), GestureState::Idle);
 }

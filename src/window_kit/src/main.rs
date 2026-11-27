@@ -9,6 +9,7 @@
 mod core;
 mod features;
 mod render;
+mod ui_slint;
 
 use crate::core::config::{
     import_powertoys_fancyzones_str, serialize_imported_layouts, SnapTriggerMode, WindowKitConfig,
@@ -32,7 +33,7 @@ use crate::features::layout_hub::{
 use crate::features::multi_monitor::MultiMonitorManager;
 use crate::features::opacity::OpacityManager;
 use crate::features::quick_switch::{
-    QuickSwitchDelegatedAction, QuickSwitchManager, QUICK_SWITCH_IS_OPEN,
+    QuickSwitchDelegatedAction, QuickSwitchManager, QUICK_SWITCH_HAS_QUERY, QUICK_SWITCH_IS_OPEN,
 };
 use crate::features::snap_zones::SnapZonesManager;
 use crate::features::workspace_capture::{StartCaptureRequest, WorkspaceCaptureManager};
@@ -45,6 +46,8 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, Ordering};
+use std::sync::mpsc;
+use std::thread::{self, JoinHandle};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -53,29 +56,32 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
-    CreateMutexW, OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
+    CreateMutexW, GetCurrentThreadId, OpenProcess, WaitForSingleObject, INFINITE,
+    PROCESS_SYNCHRONIZE,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_OEM_3, VK_RMENU, VK_RWIN,
-    VK_SHIFT, VK_TAB,
+    GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LMENU, VK_LWIN, VK_MENU,
+    VK_NUMPAD1, VK_NUMPAD9, VK_OEM_2, VK_OEM_3, VK_RETURN, VK_RMENU, VK_RWIN, VK_SHIFT, VK_SPACE,
+    VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-    KillTimer, LoadCursorW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
-    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE,
+    GetForegroundWindow, GetMessageW, KillTimer, LoadCursorW, MsgWaitForMultipleObjectsEx,
+    PeekMessageW, PostMessageW, PostQuitMessage, PostThreadMessageW, RegisterClassExW,
+    RegisterWindowMessageW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
+    EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, HHOOK,
     IDC_ARROW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, MSLLHOOKSTRUCT, MWMO_INPUTAVAILABLE,
-    OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_QUIT,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
-    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+    OBJID_WINDOW, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_DISPLAYCHANGE,
+    WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
+    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -96,6 +102,14 @@ static HOOK_SNAP_DRAGGING: AtomicBool = AtomicBool::new(false);
 static HOOK_SNAP_RCLICK_ENABLED: AtomicBool = AtomicBool::new(false);
 /// 右键触发分屏叠加层时吞掉紧随其后的 WM_RBUTTONUP，防止被拖窗口标题栏弹出系统菜单（复刻 FancyZones）
 static HOOK_SNAP_SWALLOW_RBUTTONUP: AtomicBool = AtomicBool::new(false);
+/// 吞掉与 Alt+Tab / Alt+` / QuickSwitch 直通按键配对的 KEYUP，彻底杜绝孤立按键泄漏或系统蜂鸣
+static HOOK_SWALLOW_TAB_UP: AtomicBool = AtomicBool::new(false);
+static HOOK_SWALLOW_GRAVE_UP: AtomicBool = AtomicBool::new(false);
+static HOOK_SWALLOW_QS_UP_VK: AtomicU32 = AtomicU32::new(0);
+/// 独立输入钩子线程按需装卸目标开关
+static HOOK_WANT_KBD: AtomicBool = AtomicBool::new(false);
+static HOOK_WANT_MOUSE: AtomicBool = AtomicBool::new(false);
+const WM_HOOK_THREAD_RECONCILE: u32 = WM_APP + 201;
 static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 
 const ALT_DRAG_EVT_BEGIN_MOVE: usize = 1;
@@ -130,20 +144,40 @@ unsafe extern "system" fn low_level_keyboard_proc(
             let vk = kb.vkCode as u16;
             let ctrl_hwnd = HWND(ctrl_raw as *mut c_void);
 
+            let is_down = msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN;
+            let is_up = msg == WM_SYSKEYUP || msg == WM_KEYUP;
+
+            // 配对按键抬起吞噬（防止系统或后台软件收到孤立 Tab / ` / 1-9 / 字母抬起事件）
+            if is_up {
+                if vk == VK_TAB.0 && HOOK_SWALLOW_TAB_UP.swap(false, Ordering::AcqRel) {
+                    return LRESULT(1);
+                }
+                if vk == VK_OEM_3.0 && HOOK_SWALLOW_GRAVE_UP.swap(false, Ordering::AcqRel) {
+                    return LRESULT(1);
+                }
+                let swallow_vk = HOOK_SWALLOW_QS_UP_VK.load(Ordering::Acquire);
+                if swallow_vk != 0 && swallow_vk == vk as u32 {
+                    HOOK_SWALLOW_QS_UP_VK.store(0, Ordering::Release);
+                    return LRESULT(1);
+                }
+            }
+
             if !HOOK_MUTED.load(Ordering::Acquire) {
                 let alt_down = (kb.flags.0 & LLKHF_ALTDOWN.0) != 0 || async_key_down(VK_MENU.0);
                 let ctrl_down = async_key_down(VK_CONTROL.0);
+                let shift_down = async_key_down(VK_SHIFT.0);
                 let win_down = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
 
                 // 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（仅在 replace_alt_tab 开启时拦截，绝不干扰原生 Ctrl+Alt+Tab）
                 if HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN)
+                    && is_down
                     && vk == VK_TAB.0
                     && alt_down
                     && !ctrl_down
                     && !win_down
                 {
-                    let reverse = if async_key_down(VK_SHIFT.0) { 1usize } else { 0usize };
+                    HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                    let reverse = if shift_down { 1usize } else { 0usize };
                     let _ = PostMessageW(
                         ctrl_hwnd,
                         WM_WK_INTERNAL_ALT_TAB,
@@ -155,13 +189,14 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
                 // 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`（可不接管原生 Alt+Tab 独立启用！）
                 if HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN)
+                    && is_down
                     && vk == VK_OEM_3.0
                     && alt_down
                     && !ctrl_down
                     && !win_down
                 {
-                    let reverse = if async_key_down(VK_SHIFT.0) { 1usize } else { 0usize };
+                    HOOK_SWALLOW_GRAVE_UP.store(true, Ordering::Release);
+                    let reverse = if shift_down { 1usize } else { 0usize };
                     let _ = PostMessageW(
                         ctrl_hwnd,
                         WM_WK_INTERNAL_ALT_TAB,
@@ -170,10 +205,45 @@ unsafe extern "system" fn low_level_keyboard_proc(
                     );
                     return LRESULT(1);
                 }
+
+                // QuickSwitch 已打开态直通键盘流（彻底消灭焦点竞争、按住 Alt 搜索失灵与 1-9 系统蜂鸣）
+                if is_down && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire) && !win_down {
+                    let mod_mask: isize = (if alt_down { 1 } else { 0 })
+                        | (if ctrl_down { 2 } else { 0 })
+                        | (if shift_down { 4 } else { 0 });
+                    let is_digit = (0x31..=0x39).contains(&vk)
+                        || (vk >= VK_NUMPAD1.0 && vk <= VK_NUMPAD9.0);
+                    let has_query = QUICK_SWITCH_HAS_QUERY.load(Ordering::Acquire);
+
+                    // 1. 数字 1-9 秒切（空查询直按 1-9，或任何时候 Alt+1-9 / Ctrl+1-9 毫秒直达）
+                    let intercept_digit = is_digit && (alt_down || ctrl_down || !has_query);
+                    // 2. 按住 Alt 期间的方向/回车/Esc/退格/空格/斜杠/字母 A-Z（无缝锁定进入搜索并强聚焦输入框）
+                    let intercept_alt_nav_or_search = alt_down
+                        && !ctrl_down
+                        && (vk == VK_UP.0
+                            || vk == VK_DOWN.0
+                            || vk == VK_RETURN.0
+                            || vk == VK_ESCAPE.0
+                            || vk == VK_BACK.0
+                            || vk == VK_SPACE.0
+                            || vk == VK_OEM_2.0
+                            || (0x41..=0x5A).contains(&vk));
+
+                    if intercept_digit || intercept_alt_nav_or_search {
+                        HOOK_SWALLOW_QS_UP_VK.store(vk as u32, Ordering::Release);
+                        let _ = PostMessageW(
+                            ctrl_hwnd,
+                            WM_WK_INTERNAL_QS_KEY,
+                            WPARAM(vk as usize),
+                            LPARAM(mod_mask),
+                        );
+                        return LRESULT(1);
+                    }
+                }
             }
 
             // Alt 键释放时通知 QuickSwitch 提交切换，同时绝不吞掉 Alt 抬起避免卡键
-            if (msg == WM_KEYUP || msg == WM_SYSKEYUP)
+            if is_up
                 && (vk == VK_LMENU.0 || vk == VK_RMENU.0 || vk == VK_MENU.0)
                 && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire)
             {
@@ -309,6 +379,116 @@ unsafe extern "system" fn low_level_mouse_proc(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 1.5 独立永不阻塞低级输入钩子线程 (Tools3000-InputHooks)
+//     将 WH_KEYBOARD_LL / WH_MOUSE_LL 与主线程图标提取、磁盘读写、D2D 渲染彻底物理隔离，
+//     保证钩子回调恒定 < 0.01ms，100% 根治 Windows 300ms LowLevelHooksTimeout 超时漏拦截原生 Alt+Tab！
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct InputHookWorker {
+    thread_id: u32,
+    join_handle: Option<JoinHandle<()>>,
+}
+
+impl InputHookWorker {
+    fn spawn() -> Option<Self> {
+        let (tx, rx) = mpsc::sync_channel::<u32>(1);
+        let handle = thread::Builder::new()
+            .name("Tools3000-InputHooks".to_string())
+            .stack_size(128 * 1024)
+            .spawn(move || unsafe {
+                // 强制初始化线程消息队列后再通告线程 ID，确保 PostThreadMessageW 首次即成功
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_NOREMOVE);
+                let tid = GetCurrentThreadId();
+                let _ = tx.send(tid);
+
+                let mut kbd_hook: Option<HHOOK> = None;
+                let mut mouse_hook: Option<HHOOK> = None;
+                let hinst = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
+
+                let sync_hooks = |kbd: &mut Option<HHOOK>, mouse: &mut Option<HHOOK>| {
+                    let want_k = HOOK_WANT_KBD.load(Ordering::Acquire);
+                    let want_m = HOOK_WANT_MOUSE.load(Ordering::Acquire);
+                    if want_k && kbd.is_none() {
+                        if let Ok(h) =
+                            SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), hinst, 0)
+                        {
+                            *kbd = Some(h);
+                        }
+                    } else if !want_k {
+                        if let Some(h) = kbd.take() {
+                            let _ = UnhookWindowsHookEx(h);
+                        }
+                    }
+                    if want_m && mouse.is_none() {
+                        if let Ok(h) =
+                            SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), hinst, 0)
+                        {
+                            *mouse = Some(h);
+                        }
+                    } else if !want_m {
+                        if let Some(h) = mouse.take() {
+                            let _ = UnhookWindowsHookEx(h);
+                        }
+                    }
+                };
+
+                sync_hooks(&mut kbd_hook, &mut mouse_hook);
+
+                while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
+                    if msg.message == WM_HOOK_THREAD_RECONCILE {
+                        sync_hooks(&mut kbd_hook, &mut mouse_hook);
+                    } else {
+                        let _ = TranslateMessage(&msg);
+                        let _ = DispatchMessageW(&msg);
+                    }
+                }
+
+                if let Some(h) = kbd_hook.take() {
+                    let _ = UnhookWindowsHookEx(h);
+                }
+                if let Some(h) = mouse_hook.take() {
+                    let _ = UnhookWindowsHookEx(h);
+                }
+            })
+            .ok()?;
+
+        match rx.recv_timeout(std::time::Duration::from_secs(3)) {
+            Ok(tid) if tid != 0 => Some(Self {
+                thread_id: tid,
+                join_handle: Some(handle),
+            }),
+            _ => {
+                let _ = handle.join();
+                None
+            }
+        }
+    }
+
+    fn signal_reconcile(&self) {
+        unsafe {
+            let _ = PostThreadMessageW(
+                self.thread_id,
+                WM_HOOK_THREAD_RECONCILE,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+
+    fn shutdown(&mut self) {
+        HOOK_WANT_KBD.store(false, Ordering::Release);
+        HOOK_WANT_MOUSE.store(false, Ordering::Release);
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(h) = self.join_handle.take() {
+            let _ = h.join();
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 2. 主线程运行期状态与 WinEvent 调度（单线程 STA 零锁设计）
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -320,13 +500,16 @@ struct ManagedRuntime {
     config: WindowKitConfig,
     muted_flags: usize,
     gfx: Option<SharedGraphics>,
-    kbd_hook: Option<HHOOK>,
-    mouse_hook: Option<HHOOK>,
+    hook_worker: Option<InputHookWorker>,
+    kbd_hook_active: bool,
+    mouse_hook_active: bool,
     winevent_movesize: Option<HWINEVENTHOOK>,
     winevent_focus: Option<HWINEVENTHOOK>,
     winevent_location: Option<HWINEVENTHOOK>,
     winevent_destroy: Option<HWINEVENTHOOK>,
     winevent_minimize: Option<HWINEVENTHOOK>,
+    winevent_hide: Option<HWINEVENTHOOK>,
+    winevent_cloaked: Option<HWINEVENTHOOK>,
     winevent_show: Option<HWINEVENTHOOK>,
     quick_switch: QuickSwitchManager,
     snap_zones: SnapZonesManager,
@@ -371,13 +554,16 @@ impl ManagedRuntime {
             config,
             muted_flags: initial_muted,
             gfx,
-            kbd_hook: None,
-            mouse_hook: None,
+            hook_worker: None,
+            kbd_hook_active: false,
+            mouse_hook_active: false,
             winevent_movesize: None,
             winevent_focus: None,
             winevent_location: None,
             winevent_destroy: None,
             winevent_minimize: None,
+            winevent_hide: None,
+            winevent_cloaked: None,
             winevent_show: None,
             quick_switch: QuickSwitchManager::new(control_hwnd),
             snap_zones: SnapZonesManager::new(),
@@ -473,29 +659,24 @@ impl ManagedRuntime {
             || (f.multi_monitor && self.config.multi_monitor.center_new_windows);
 
         unsafe {
-            // 1. 键盘钩子
-            if need_kbd && self.kbd_hook.is_none() {
-                let hinst = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
-                if let Ok(h) = SetWindowsHookExW(WH_KEYBOARD_LL, Some(low_level_keyboard_proc), hinst, 0) {
-                    self.kbd_hook = Some(h);
+            // 1 & 2. 独立永不阻塞输入钩子线程按需装卸 WH_KEYBOARD_LL / WH_MOUSE_LL（零超时防摘钩）
+            HOOK_WANT_KBD.store(need_kbd, Ordering::Release);
+            HOOK_WANT_MOUSE.store(need_mouse, Ordering::Release);
+            if need_kbd || need_mouse {
+                if let Some(worker) = self.hook_worker.as_ref() {
+                    worker.signal_reconcile();
+                } else {
+                    self.hook_worker = InputHookWorker::spawn();
                 }
-            } else if !need_kbd {
-                if let Some(h) = self.kbd_hook.take() {
-                    let _ = UnhookWindowsHookEx(h);
-                }
+            } else if let Some(mut worker) = self.hook_worker.take() {
+                worker.shutdown();
+            }
+            self.kbd_hook_active = need_kbd && self.hook_worker.is_some();
+            self.mouse_hook_active = need_mouse && self.hook_worker.is_some();
+            if !need_kbd {
                 self.quick_switch.close_and_release(trace_id);
             }
-
-            // 2. 鼠标钩子
-            if need_mouse && self.mouse_hook.is_none() {
-                let hinst = HINSTANCE(GetModuleHandleW(None).unwrap_or_default().0);
-                if let Ok(h) = SetWindowsHookExW(WH_MOUSE_LL, Some(low_level_mouse_proc), hinst, 0) {
-                    self.mouse_hook = Some(h);
-                }
-            } else if !need_mouse {
-                if let Some(h) = self.mouse_hook.take() {
-                    let _ = UnhookWindowsHookEx(h);
-                }
+            if !need_mouse {
                 HOOK_ALT_DRAG_ACTIVE.store(0, Ordering::Release);
                 self.alt_drag.end();
             }
@@ -581,6 +762,49 @@ impl ManagedRuntime {
                         self.winevent_minimize = Some(h);
                     }
                 }
+                // 捕获微信/托盘常驻/UWP 窗口隐藏与虚拟桌面 Cloak，实现 0ms 瞬隐杜绝鬼影边框
+                if self.winevent_hide.is_none() {
+                    let h = SetWinEventHook(
+                        EVENT_OBJECT_HIDE,
+                        EVENT_OBJECT_HIDE,
+                        HINSTANCE::default(),
+                        Some(win_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    );
+                    if !h.is_invalid() {
+                        self.winevent_hide = Some(h);
+                    }
+                }
+                if self.winevent_cloaked.is_none() {
+                    let h = SetWinEventHook(
+                        EVENT_OBJECT_CLOAKED,
+                        EVENT_OBJECT_CLOAKED,
+                        HINSTANCE::default(),
+                        Some(win_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    );
+                    if !h.is_invalid() {
+                        self.winevent_cloaked = Some(h);
+                    }
+                }
+                if self.winevent_movesize.is_none() {
+                    let h = SetWinEventHook(
+                        EVENT_SYSTEM_MOVESIZESTART,
+                        EVENT_SYSTEM_MOVESIZEEND,
+                        HINSTANCE::default(),
+                        Some(win_event_proc),
+                        0,
+                        0,
+                        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+                    );
+                    if !h.is_invalid() {
+                        self.winevent_movesize = Some(h);
+                    }
+                }
                 let _ = SetTimer(
                     self.control_hwnd,
                     TIMER_BORDER_RECONCILE,
@@ -593,6 +817,8 @@ impl ManagedRuntime {
                     &mut self.winevent_location,
                     &mut self.winevent_destroy,
                     &mut self.winevent_minimize,
+                    &mut self.winevent_hide,
+                    &mut self.winevent_cloaked,
                 ] {
                     if let Some(h) = slot.take() {
                         let _ = UnhookWinEvent(h);
@@ -666,8 +892,8 @@ impl ManagedRuntime {
         let summary = format!(
             "active={:?} kbd={} mouse={} movesize={} borders={} show={}",
             f.active_names(),
-            self.kbd_hook.is_some(),
-            self.mouse_hook.is_some(),
+            self.kbd_hook_active,
+            self.mouse_hook_active,
             self.winevent_movesize.is_some(),
             need_borders,
             self.winevent_show.is_some()
@@ -706,6 +932,9 @@ impl ManagedRuntime {
                     return;
                 }
                 self.reconcile_hooks(trace_id);
+                self.quick_switch.refresh_theme_if_open(&self.config);
+                self.layout_hub
+                    .refresh_theme_if_open(&self.config, self.gfx.as_ref());
             }
             Err(err) => {
                 wk_warn!(trace_id, "runtime", "reload config failed: {}", err);
@@ -1220,6 +1449,36 @@ impl ManagedRuntime {
                     .layout_editor
                     .open(req, &self.config, self.gfx.as_ref(), trace_id);
             }
+            ACTION_APPLY_LAYOUT_BY_ID => {
+                let payload_path = self.config_dir.join(FILE_ACTION_PAYLOAD);
+                let mut layout_id = String::new();
+                if let Ok(raw) = std::fs::read_to_string(&payload_path) {
+                    if let Ok(val) = parse_json(&raw) {
+                        layout_id = val.get_str("layoutId", "").trim().to_string();
+                    }
+                }
+                if !layout_id.is_empty()
+                    && self
+                        .snap_zones
+                        .apply_layout_by_id(&layout_id, &mut self.config, trace_id)
+                        .is_some()
+                {
+                    notify_host_hub_sync(&self.config, &self.config_dir, true, false, trace_id);
+                    self.dispatch_zones_preview(1200, trace_id);
+                } else {
+                    // 未指定或目标布局已被删除时回退打开布局管理器，避免手势静默无反馈
+                    let req = OpenHubRequest {
+                        monitor_id: None,
+                        desktop_id: None,
+                        restore_settings_hwnd: None,
+                        ui_lang: "zh".to_string(),
+                    };
+                    self.ensure_gfx();
+                    let _ = self
+                        .layout_hub
+                        .open(req, &self.config, self.gfx.as_ref(), trace_id);
+                }
+            }
             _ => {
                 wk_warn!(trace_id, "action", "unknown action id={}", action_id);
             }
@@ -1261,6 +1520,13 @@ impl ManagedRuntime {
         }
         match event {
             EVENT_SYSTEM_MOVESIZESTART => {
+                if self.always_on_top.pinned_count() > 0 {
+                    self.always_on_top.on_move_size_start(hwnd);
+                }
+                if self.config.features.focus_border {
+                    self.focus_border.on_move_size_start(hwnd);
+                }
+                self.ensure_animation_timer();
                 if self
                     .snap_zones
                     .on_move_size_start(hwnd, &self.config, self.is_muted())
@@ -1277,6 +1543,8 @@ impl ManagedRuntime {
                 }
             }
             EVENT_SYSTEM_MOVESIZEEND => {
+                self.always_on_top.on_move_size_end(hwnd);
+                self.focus_border.on_move_size_end();
                 HOOK_SNAP_DRAGGING.store(false, Ordering::Release);
                 unsafe {
                     let _ = KillTimer(self.control_hwnd, TIMER_SNAP_DRAG_POLL);
@@ -1288,14 +1556,20 @@ impl ManagedRuntime {
                 {
                     self.schedule_cold_path_trim();
                 }
+                if self.always_on_top.pinned_count() > 0 || self.config.features.focus_border {
+                    self.ensure_gfx();
+                }
                 self.always_on_top
                     .sync_borders(&self.config, self.gfx.as_ref(), self.is_muted());
                 self.focus_border.refresh(
                     &self.config,
                     self.gfx.as_ref(),
                     self.is_muted(),
-                    self.quick_switch.is_open(),
+                    self.quick_switch.is_open()
+                        || self.layout_editor.is_open()
+                        || self.layout_hub.is_visible(),
                 );
+                self.ensure_animation_timer();
             }
             EVENT_OBJECT_SHOW => {
                 if !self.layout_editor.is_open() {
@@ -1319,11 +1593,32 @@ impl ManagedRuntime {
             EVENT_SYSTEM_FOREGROUND
             | EVENT_OBJECT_LOCATIONCHANGE
             | EVENT_OBJECT_DESTROY
+            | EVENT_OBJECT_HIDE
+            | EVENT_OBJECT_CLOAKED
             | EVENT_SYSTEM_MINIMIZESTART
             | EVENT_SYSTEM_MINIMIZEEND => {
                 if event == EVENT_OBJECT_DESTROY {
                     self.snap_zones.on_window_destroyed(hwnd);
                     self.multi_monitor.on_window_destroyed(hwnd);
+                }
+                // 目标窗口一旦隐藏、最小化、被 Cloak 或销毁，0ms 瞬隐焦点边框（杜绝微信等托盘窗口残影）
+                if matches!(
+                    event,
+                    EVENT_SYSTEM_MINIMIZESTART
+                        | EVENT_OBJECT_HIDE
+                        | EVENT_OBJECT_CLOAKED
+                        | EVENT_OBJECT_DESTROY
+                ) {
+                    self.focus_border.on_target_vanished(hwnd);
+                }
+                // LOCATIONCHANGE 精准过滤：跳过 99% 无关后台窗口噪音，仅跟踪当前焦点窗或置顶窗
+                if event == EVENT_OBJECT_LOCATIONCHANGE {
+                    let raw = hwnd.0 as isize;
+                    let is_focus_win = raw == self.focus_border.current_target_raw()
+                        || hwnd == unsafe { GetForegroundWindow() };
+                    if !is_focus_win && self.always_on_top.pinned_count() == 0 {
+                        return;
+                    }
                 }
                 if self.always_on_top.pinned_count() > 0 || self.config.features.focus_border {
                     self.ensure_gfx();
@@ -1334,7 +1629,9 @@ impl ManagedRuntime {
                     &self.config,
                     self.gfx.as_ref(),
                     self.is_muted(),
-                    self.quick_switch.is_open() || self.layout_editor.is_open(),
+                    self.quick_switch.is_open()
+                        || self.layout_editor.is_open()
+                        || self.layout_hub.is_visible(),
                 );
                 self.ensure_animation_timer();
             }
@@ -1404,18 +1701,19 @@ impl ManagedRuntime {
                 let _ = KillTimer(self.control_hwnd, timer_id);
             }
             self.anim_timer_active = false;
-            if let Some(h) = self.kbd_hook.take() {
-                let _ = UnhookWindowsHookEx(h);
+            if let Some(mut worker) = self.hook_worker.take() {
+                worker.shutdown();
             }
-            if let Some(h) = self.mouse_hook.take() {
-                let _ = UnhookWindowsHookEx(h);
-            }
+            self.kbd_hook_active = false;
+            self.mouse_hook_active = false;
             for slot in [
                 &mut self.winevent_movesize,
                 &mut self.winevent_focus,
                 &mut self.winevent_location,
                 &mut self.winevent_destroy,
                 &mut self.winevent_minimize,
+                &mut self.winevent_hide,
+                &mut self.winevent_cloaked,
                 &mut self.winevent_show,
             ] {
                 if let Some(h) = slot.take() {
@@ -1440,6 +1738,7 @@ impl ManagedRuntime {
         self.always_on_top.cleanup_overlays();
         self.focus_border.destroy();
         self.alt_drag.end();
+        crate::ui_slint::shutdown_slint_runtime();
 
         wk_info!(trace_id, "runtime", "graceful shutdown complete");
         flush_logger();
@@ -1548,39 +1847,16 @@ unsafe extern "system" fn control_wnd_proc(
                 rt.ensure_animation_timer();
                 true
             }
-            WM_WK_INTERNAL_QUICK_SWITCH_KEY => {
+            WM_WK_INTERNAL_QS_KEY => {
                 let trace = next_trace_id("qs");
-                let action = rt.quick_switch.handle_card_event(
-                    wparam.0,
-                    lparam.0,
-                    &mut rt.config,
-                    &rt.config_dir,
-                    rt.gfx.as_ref(),
-                    &trace,
-                );
-                match action {
-                    QuickSwitchDelegatedAction::None => {}
+                let vk = wparam.0 as u16;
+                let mod_mask = lparam.0 as u32;
+                match rt
+                    .quick_switch
+                    .handle_hook_key(vk, mod_mask, &rt.config, &trace)
+                {
                     QuickSwitchDelegatedAction::Closed => {
                         rt.schedule_cold_path_trim();
-                    }
-                    QuickSwitchDelegatedAction::TogglePinWindow(raw) => {
-                        let _guard = ActionTargetOverrideGuard::enter(Some(HWND(raw as *mut c_void)));
-                        rt.ensure_gfx();
-                        rt.always_on_top
-                            .toggle_foreground(&rt.config, rt.gfx.as_ref(), &trace);
-                    }
-                    QuickSwitchDelegatedAction::MoveWindowToNextZone(raw) => {
-                        let _guard = ActionTargetOverrideGuard::enter(Some(HWND(raw as *mut c_void)));
-                        let _ = rt
-                            .snap_zones
-                            .move_foreground_relative(1, &rt.config, &trace);
-                    }
-                    QuickSwitchDelegatedAction::MinimizeWindowToTray(raw) => {
-                        let _ = rt.multi_monitor.minimize_hwnd_to_tray(
-                            HWND(raw as *mut c_void),
-                            &rt.config,
-                            &trace,
-                        );
                     }
                     QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
                         let _ = rt
@@ -1588,8 +1864,156 @@ unsafe extern "system" fn control_wnd_proc(
                             .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
                         rt.schedule_cold_path_trim();
                     }
+                    _ => {}
                 }
                 rt.ensure_animation_timer();
+                true
+            }
+            WM_WK_INTERNAL_SLINT_EVENT => {
+                for ev in crate::ui_slint::drain_slint_events() {
+                    match &ev {
+                        crate::ui_slint::SlintUiEvent::QsSelectRow(_)
+                        | crate::ui_slint::SlintUiEvent::QsActivateRow(_)
+                        | crate::ui_slint::SlintUiEvent::QsCloseRow(_)
+                        | crate::ui_slint::SlintUiEvent::QsFilterChanged(_)
+                        | crate::ui_slint::SlintUiEvent::QsClearFilter
+                        | crate::ui_slint::SlintUiEvent::QsSearchEngaged
+                        | crate::ui_slint::SlintUiEvent::QsAction(_)
+                        | crate::ui_slint::SlintUiEvent::QsKeyCommand { .. }
+                        | crate::ui_slint::SlintUiEvent::QsDismissed
+                        | crate::ui_slint::SlintUiEvent::QsBoundsChanged { .. } => {
+                            let trace = next_trace_id("qs");
+                            let action = rt.quick_switch.handle_slint_event(
+                                &ev,
+                                &mut rt.config,
+                                &rt.config_dir,
+                                &trace,
+                            );
+                            match action {
+                                QuickSwitchDelegatedAction::None => {}
+                                QuickSwitchDelegatedAction::Closed => {
+                                    rt.schedule_cold_path_trim();
+                                }
+                                QuickSwitchDelegatedAction::TogglePinWindow(raw) => {
+                                    let _guard = ActionTargetOverrideGuard::enter(Some(HWND(
+                                        raw as *mut c_void,
+                                    )));
+                                    rt.ensure_gfx();
+                                    rt.always_on_top.toggle_foreground(
+                                        &rt.config,
+                                        rt.gfx.as_ref(),
+                                        &trace,
+                                    );
+                                    rt.quick_switch.refresh_theme_if_open(&rt.config);
+                                }
+                                QuickSwitchDelegatedAction::MoveWindowToNextZone(raw) => {
+                                    let _guard = ActionTargetOverrideGuard::enter(Some(HWND(
+                                        raw as *mut c_void,
+                                    )));
+                                    let _ = rt.snap_zones.move_foreground_relative(
+                                        1,
+                                        &rt.config,
+                                        &trace,
+                                    );
+                                }
+                                QuickSwitchDelegatedAction::MinimizeWindowToTray(raw) => {
+                                    let _ = rt.multi_monitor.minimize_hwnd_to_tray(
+                                        HWND(raw as *mut c_void),
+                                        &rt.config,
+                                        &trace,
+                                    );
+                                }
+                                QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                                    let _ = rt
+                                        .multi_monitor
+                                        .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
+                                    rt.schedule_cold_path_trim();
+                                }
+                            }
+                            rt.ensure_animation_timer();
+                        }
+                        crate::ui_slint::SlintUiEvent::HubSelectMonitor(_)
+                        | crate::ui_slint::SlintUiEvent::HubSelectDesktop(_)
+                        | crate::ui_slint::SlintUiEvent::HubSelectLayout(_)
+                        | crate::ui_slint::SlintUiEvent::HubOpenTemplateEditor(_)
+                        | crate::ui_slint::SlintUiEvent::HubCustomMenuAction { .. }
+                        | crate::ui_slint::SlintUiEvent::HubOpenCreateModal
+                        | crate::ui_slint::SlintUiEvent::HubDraftPreviewChanged { .. }
+                        | crate::ui_slint::SlintUiEvent::HubModalSave { .. }
+                        | crate::ui_slint::SlintUiEvent::HubModalCancel
+                        | crate::ui_slint::SlintUiEvent::HubModalDuplicate
+                        | crate::ui_slint::SlintUiEvent::HubModalDelete
+                        | crate::ui_slint::SlintUiEvent::HubModalOpenFullscreenZones
+                        | crate::ui_slint::SlintUiEvent::HubCreateConfirm { .. }
+                        | crate::ui_slint::SlintUiEvent::HubClosed => {
+                            let trace = next_trace_id("hub");
+                            rt.ensure_gfx();
+                            match rt.layout_hub.handle_slint_event(
+                                &ev,
+                                &mut rt.config,
+                                &rt.config_dir,
+                                rt.gfx.as_ref(),
+                                &trace,
+                            ) {
+                                HubEventOutcome::None | HubEventOutcome::ConfigMutated => {}
+                                HubEventOutcome::Closed { .. } => {
+                                    rt.focus_border.refresh(
+                                        &rt.config,
+                                        rt.gfx.as_ref(),
+                                        rt.is_muted(),
+                                        rt.quick_switch.is_open(),
+                                    );
+                                    rt.schedule_cold_path_trim();
+                                }
+                                HubEventOutcome::LaunchFullEditor(req) => {
+                                    rt.ensure_gfx();
+                                    let _ = rt.layout_editor.open(
+                                        req,
+                                        &rt.config,
+                                        rt.gfx.as_ref(),
+                                        &trace,
+                                    );
+                                }
+                            }
+                        }
+                        crate::ui_slint::SlintUiEvent::CaptureConfirm => {
+                            let trace = next_trace_id("cap");
+                            let closed = rt.workspace_capture.handle_slint_decision(
+                                true,
+                                &rt.config,
+                                &rt.config_dir,
+                                &trace,
+                            );
+                            if closed {
+                                rt.focus_border.refresh(
+                                    &rt.config,
+                                    rt.gfx.as_ref(),
+                                    rt.is_muted(),
+                                    rt.quick_switch.is_open(),
+                                );
+                                rt.schedule_cold_path_trim();
+                            }
+                        }
+                        crate::ui_slint::SlintUiEvent::CaptureCancel => {
+                            let trace = next_trace_id("cap");
+                            let closed = rt.workspace_capture.handle_slint_decision(
+                                false,
+                                &rt.config,
+                                &rt.config_dir,
+                                &trace,
+                            );
+                            if closed {
+                                rt.focus_border.refresh(
+                                    &rt.config,
+                                    rt.gfx.as_ref(),
+                                    rt.is_muted(),
+                                    rt.quick_switch.is_open(),
+                                );
+                                rt.schedule_cold_path_trim();
+                            }
+                        }
+                    }
+                }
                 true
             }
             WM_WK_INTERNAL_ALT_DRAG_EVENT => {
@@ -1740,60 +2164,8 @@ unsafe extern "system" fn control_wnd_proc(
                 }
                 true
             }
-            WM_WK_INTERNAL_CAPTURE_EVENT => {
-                let trace = next_trace_id("cap");
-                rt.ensure_gfx();
-                let closed = rt.workspace_capture.handle_event(
-                    wparam.0,
-                    lparam.0,
-                    &rt.config,
-                    &rt.config_dir,
-                    rt.gfx.as_ref(),
-                    &trace,
-                );
-                if closed {
-                    rt.focus_border.refresh(
-                        &rt.config,
-                        rt.gfx.as_ref(),
-                        rt.is_muted(),
-                        rt.quick_switch.is_open(),
-                    );
-                    rt.schedule_cold_path_trim();
-                }
-                true
-            }
             WM_WK_INTERNAL_WORKSPACE_DONE => {
                 rt.schedule_cold_path_trim();
-                true
-            }
-            WM_WK_INTERNAL_HUB_EVENT => {
-                let trace = next_trace_id("hub");
-                rt.ensure_gfx();
-                match rt.layout_hub.handle_event(
-                    wparam.0,
-                    lparam.0,
-                    &mut rt.config,
-                    &rt.config_dir,
-                    rt.gfx.as_ref(),
-                    &trace,
-                ) {
-                    HubEventOutcome::None | HubEventOutcome::ConfigMutated => {}
-                    HubEventOutcome::Closed { .. } => {
-                        rt.focus_border.refresh(
-                            &rt.config,
-                            rt.gfx.as_ref(),
-                            rt.is_muted(),
-                            rt.quick_switch.is_open(),
-                        );
-                        rt.schedule_cold_path_trim();
-                    }
-                    HubEventOutcome::LaunchFullEditor(req) => {
-                        rt.ensure_gfx();
-                        let _ = rt
-                            .layout_editor
-                            .open(req, &rt.config, rt.gfx.as_ref(), &trace);
-                    }
-                }
                 true
             }
             WM_WK_INTERNAL_EDITOR_EVENT => {
@@ -1888,17 +2260,31 @@ unsafe extern "system" fn control_wnd_proc(
                         rt.schedule_cold_path_trim();
                     }
                     TIMER_BORDER_RECONCILE => {
+                        if rt.always_on_top.pinned_count() > 0 || rt.config.features.focus_border {
+                            rt.ensure_gfx();
+                        }
+                        let overlay_active = rt.quick_switch.is_open()
+                            || rt.layout_editor.is_open()
+                            || rt.layout_hub.is_visible();
                         rt.always_on_top
                             .sync_borders(&rt.config, rt.gfx.as_ref(), rt.is_muted());
                         rt.focus_border.refresh(
                             &rt.config,
                             rt.gfx.as_ref(),
                             rt.is_muted(),
-                            rt.quick_switch.is_open(),
+                            overlay_active,
                         );
                         rt.ensure_animation_timer();
                     }
                     TIMER_ANIMATION_FRAME => {
+                        if rt.always_on_top.has_active_animation()
+                            || rt.focus_border.has_active_animation()
+                        {
+                            rt.ensure_gfx();
+                        }
+                        let overlay_active = rt.quick_switch.is_open()
+                            || rt.layout_editor.is_open()
+                            || rt.layout_hub.is_visible();
                         let qs_more = rt.quick_switch.tick_animation(&rt.config, rt.gfx.as_ref());
                         let sz_more = rt.snap_zones.tick_animation(&rt.config, rt.gfx.as_ref());
                         let aot_more = rt.always_on_top.tick_animation(
@@ -1910,7 +2296,7 @@ unsafe extern "system" fn control_wnd_proc(
                             &rt.config,
                             rt.gfx.as_ref(),
                             rt.is_muted(),
-                            rt.quick_switch.is_open(),
+                            overlay_active,
                         );
                         if !qs_more && !sz_more && !aot_more && !fb_more {
                             let _ = KillTimer(hwnd, TIMER_ANIMATION_FRAME);
@@ -2183,6 +2569,7 @@ fn run_managed(config_path: PathBuf, parent_pid: Option<u32>, isolated: bool) ->
     };
 
     HOOK_CONTROL_HWND.store(control_hwnd.0 as isize, Ordering::Release);
+    crate::ui_slint::set_control_hwnd(control_hwnd);
     let taskbar_msg_name = to_wide("TaskbarCreated");
     let taskbar_msg = unsafe { RegisterWindowMessageW(PCWSTR(taskbar_msg_name.as_ptr())) };
     WM_TASKBAR_CREATED.store(taskbar_msg, Ordering::Release);

@@ -61,6 +61,7 @@ import {
 } from '../components/gestureModel';
 import { getLocalizedGestureName, getLocalizedGestureDesc } from '../utils/gestureI18n';
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
+import type { WindowManagerResponse } from '../types/windowManager';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
@@ -244,6 +245,8 @@ export const GesturePage: FC = () => {
   const [loading, setLoading] = useState(true);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [pauseHotkey, setPauseHotkey] = useState('Ctrl+Alt+Shift+W');
+  const [wmLayoutNames, setWmLayoutNames] = useState<Record<string, string>>({});
+  const [wmWorkspaceNames, setWmWorkspaceNames] = useState<Record<string, string>>({});
 
   // Modal & Confirm states
   const [appPickerOpen, setAppPickerOpen] = useState(false);
@@ -284,8 +287,19 @@ export const GesturePage: FC = () => {
       case 0: return action.keyStroke ?? '';
       case 1: return action.luaScript ? t('gesture.luaScript', 'Lua Script') : '';
       case 2: {
-        const key = BUILTIN_COMMAND_KEYS[action.builtinCmd ?? 0];
-        return key ? tr(key) : '';
+        const cmd = action.builtinCmd ?? 0;
+        const key = BUILTIN_COMMAND_KEYS[cmd];
+        const base = key ? tr(key) : '';
+        const param = (action.builtinParam ?? '').trim();
+        if (param && cmd === 39) {
+          const layoutName = wmLayoutNames[param] ?? param;
+          return base ? `${base} · ${layoutName}` : layoutName;
+        }
+        if (param && cmd === 40) {
+          const wsName = wmWorkspaceNames[param] ?? param;
+          return base ? `${base} · ${wsName}` : wsName;
+        }
+        return base;
       }
       case 3: {
         const rawPath = (action.programPath ?? '').trim();
@@ -331,9 +345,22 @@ export const GesturePage: FC = () => {
       bridgeRequest<ScopeRule[]>('gesture.getScopeRules'),
       bridgeRequest<HotkeyEntry[]>('hotkey.getAll'),
       bridgeRequest<string>('config.get', { key: '/gesture/webSearchEngine' }, { silent: true }).catch(() => null),
+      bridgeRequest<WindowManagerResponse>('windowManager.getSettings', undefined, { silent: true }).catch(() => null),
     ])
-      .then(([state, profileList, ruleList, hotkeyList, cfgEngine]) => {
+      .then(([state, profileList, ruleList, hotkeyList, cfgEngine, wmRes]) => {
         if (!isMounted) return;
+        if (wmRes?.settings) {
+          const lMap: Record<string, string> = {};
+          for (const l of wmRes.settings.snapZones?.layouts ?? []) {
+            lMap[l.id] = l.name;
+          }
+          setWmLayoutNames(lMap);
+          const wMap: Record<string, string> = {};
+          for (const w of wmRes.settings.workspaces?.items ?? []) {
+            wMap[w.id] = w.name;
+          }
+          setWmWorkspaceNames(wMap);
+        }
         setEnabled(state.enabled);
         const normalizedTrigger = state.triggerButton === 'all' ? 'both' : (state.triggerButton ?? 'right');
         setTriggerButton(normalizedTrigger);

@@ -28,7 +28,7 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 
 ## 핵심 기능 한눈에 보기
 
 <p align="center">
-  <img src="../images/ko-KR/feature_bento_overview.png" alt="Tools3000 12대 핵심 기능 개요" width="100%" />
+  <img src="../images/ko-KR/feature_bento_overview.png" alt="Tools3000 15대 핵심 기능 한눈에 보기" width="100%" />
 </p>
 
 ---
@@ -102,6 +102,16 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 
       <sub><b>텍스트 확장기</b> · 어디서나 <code>;date</code> / <code>;sig</code> 즉시 확장, 동적 매크로·비밀번호 관리자 자동 제외·클립보드 비오염 지원</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/ko-KR/window_manager_demo.webp" alt="네이티브 창 관리: SnapZones 자석 분할, 워크스페이스 스냅샷, Fluent 강화 Alt+Tab" width="100%" /><br />
+      <sub><b>창 관리 스위트 (선택 활성화)</b> · SnapZones 1:1 자석 분할, 4px 붉은 테두리 워크스페이스 캡처 &amp; Fluent Alt+Tab / Alt+` (VRAM 0 · 꺼짐 시 0 MB)</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/ko-KR/caps_layer_demo.webp" alt="CapsLayer 홈로우 리더: CapsLock + IJKL 방향키 및 앱별 키 매핑" width="100%" /><br />
+      <sub><b>CapsLayer 키 매핑 (선택 활성화)</b> · CapsLock + IJKL로 손 이동 없이 방향·편집, 앱별 프리셋 자동 전환 (꺼짐 시 훅 0)</sub>
+    </td>
+  </tr>
 </table>
 
 | 모듈 | 주요 기능 |
@@ -110,6 +120,8 @@ Tools3000은 매일 자주 쓰는 **초고속 파일·앱·시스템 도구 및 
 | **문서 본문 검색** | `content:` 접두사로 Word, Excel, PDF, PowerPoint, CAD 및 소스 코드 내부 텍스트를 검색하고, 강조된 문맥과 행 번호 클릭 원클릭 복사를 지원합니다. |
 | **영구 클립보드 기록** | `Alt + V`(또는 트레이 우클릭 메뉴·트레이 제어 센터 원클릭 전환)로 즉시 호출하며 재부팅 후에도 유지됩니다. 출처 앱의 실제 컬러 아이콘 및 앱 이름 표시, 최신 브라우저 검색창·터미널·AI IDE로의 스마트 드래그 붙여넣기, `Shift / Ctrl` 순차 병합 붙여넣기·일괄 삭제, HTML/RTF 서식, 그룹, 인라인 편집, `Alt + 1..9` 즉시 붙여넣기, 고정 항목 숨김 및 민감 앱 제외를 지원합니다. |
 | **텍스트 확장기** | 모든 Windows 앱에서 `;date`, `;now`, `;sig` 같은 짧은 키워드를 상용구 및 15종 동적 매크로(`{{date+Nd}}` 날짜 오프셋, 요일 `{{weekday}}`, `{{uuid}}`, `{{timestamp}}`, `{{user}}`, 클립보드, `{{cursor}}` 위치 지정)로 즉시 확장합니다. 전각/반각 기호 자동 호환, 구분 키 유지 옵션, 실시간 미리보기, 비밀번호 관리자 자동 제외 및 개인정보 제외 플래그를 지원하며 비활성 시 훅과 메모리 점유가 0입니다. |
+| **창 관리 스위트 (선택형 · 기본 꺼짐)** | 독립 Rust + Slint Fluent 엔진(WebView2·GPU VRAM 0, 비활성 시 프로세스·메모리 0): 이중 레이어 **SnapZones 분할** 및 1:1 자석 캔버스, **워크스페이스** 4px 붉은 테두리 캡처 + 바탕화면 바로가기, 자유 크기 조절 **Fluent Alt+Tab (1–9 즉시 이동 & 검색) / 동일 앱 Alt+`**, 무지연 포커스·고정 테두리. |
+| **CapsLayer 리더 키 매핑 (선택형 · 기본 꺼짐)** | `CapsLock`을 홈로우 방향키(`I/J/K/L`)·편집·단축키 레이어로 확장하고 활성 앱별 프로필을 자동 전환합니다. 기본 꺼짐(훅 0)이며 한영/입력기 습관 안내를 함께 제공합니다. |
 | **파일 대화상자 도우미** | Windows 열기/다른 이름으로 저장/폴더 선택 창과 Tools3000 자체 대화상자 상단에 빠른 이동 바를 자동 표시합니다. Listary 스타일로 폴더를 즉시 검색해 이동하며 저장 파일명은 안전하게 보호합니다. |
 | **파일 잠금 해제** | 삭제되지 않는 파일을 잡고 있는 앱을 즉시 찾아 안전하게 해제합니다. 탐색기 우클릭(선택적으로 `Shift + 우클릭` 시에만 표시), 검색 결과 우클릭 또는 설정 내 전용 페이지에서 바로 파일을 선택해 검사할 수 있으며 평소 상주 메모리는 0 MB이고 끄면 우클릭 메뉴도 자동 정리됩니다. |
 | **자동 스크롤 긴 캡처** | 긴 웹페이지, 문서, 메신저 대화를 자동 스크롤로 매끄럽게 이어 붙입니다. 우측 실시간 미리보기, 상하단 무손실 자르기(언제든 드래그로 복원), 긴 이미지 직접 주석을 지원합니다. |
@@ -188,6 +200,8 @@ scoop install tools3000/tools3000
 | **Picasa 뷰어 / FastStone / Windows 사진** | 2 MB 미만·외부 의존성 제로의 Rust 재구현 경량 Picasa 뷰어(단독 실행 가능) — 클래식 애니메이션에 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW, 무손실 반전 보강 | 원본 Google Picasa의 앨범 라이브러리 관리·얼굴 인식이나 전문 일괄 RAW 현상·편집이 필요한 경우 |
 | **Listary 대화상자 이동 / PowerToys File Locksmith** | Windows 열기/저장 창에서 Listary 스타일 폴더 즉시 검색·이동(저장 파일명 보호); 상주 0 MB '파일 잠금 해제'로 우클릭 또는 전용 페이지에서 즉시 잠금 해제 | Listary 전체 커스텀 런처 액션 워크플로나 커널 핸들 단위의 심층 분석이 필요한 경우 |
 | **Espanso / Beeftext / AutoHotkey 상용구** | 기본 내장 네이티브 텍스트 확장기(바로 사용 가능 · 비활성 시 훅 0), 즉시/구분 키 트리거, 날짜·클립보드·커서 동적 매크로, 비밀번호 관리자 자동 예외, 실시간 샌드박스 및 JSON 가져오기/내보내기 지원 | 복잡한 YAML 폼 팝업, 셸 명령 동적 출력 또는 Linux/macOS 크로스 플랫폼 설정 동기화가 필요한 경우 |
+| **PowerToys FancyZones & Workspaces / AltTab** | 선택형 Rust + Slint Fluent 창 관리(VRAM 0 · 꺼짐 시 0 MB): 이중 SnapZones + 자석 캔버스, 워크스페이스 원클릭 스냅샷·바로가기, 강화 Alt+Tab(1–9 이동) 및 동일 앱 Alt+` | GlazeWM / Komorebi 같은 완전 자동 타일링 WM 스크립트가 필요한 경우 |
+| **AutoHotkey / KeyTweak / CapsLock+** | 코딩 없는 시각적 CapsLayer(`Caps+IJKL` 방향·편집)와 앱별 키 매핑 프리셋(꺼짐 시 훅 0) | 복잡한 AHK 스크립트 매크로나 하드웨어 QMK/VIA 펌웨어 매핑이 필요한 경우 |
 
 ---
 

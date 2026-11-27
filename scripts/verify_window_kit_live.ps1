@@ -169,6 +169,20 @@ public static class WkLiveNative {
         return IntPtr.Zero;
     }
 
+    public static IntPtr FindWindowByClassOrTitleAndPid(string clsOrTitle, uint targetPid) {
+        IntPtr byCls = FindWindowByClassAndPid(clsOrTitle, targetPid);
+        if (byCls != IntPtr.Zero) return byCls;
+        IntPtr cur = IntPtr.Zero;
+        while (true) {
+            cur = FindWindowExW(IntPtr.Zero, cur, null, clsOrTitle);
+            if (cur == IntPtr.Zero) break;
+            uint pid;
+            GetWindowThreadProcessId(cur, out pid);
+            if (pid == targetPid) return cur;
+        }
+        return IntPtr.Zero;
+    }
+
     public static int CountWindowsByClassAndPid(string cls, uint targetPid) {
         int count = 0;
         IntPtr cur = IntPtr.Zero;
@@ -622,14 +636,14 @@ try {
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_QUICK_SWITCH, [IntPtr]0)
     $qsVisible = $false
     $qsHwnd = [IntPtr]::Zero
-    for ($i = 0; $i -lt 50; $i++) {
-        $qsHwnd = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
+    for ($i = 0; $i -lt 100; $i++) {
+        $qsHwnd = [WkLiveNative]::FindWindowByClassOrTitleAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
         if ($qsHwnd -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($qsHwnd)) { $qsVisible = $true; break }
-        Start-Sleep -Milliseconds 10
+        Start-Sleep -Milliseconds 15
     }
     $sw.Stop()
     if (-not $qsVisible) {
-        $qsDiag = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
+        $qsDiag = [WkLiveNative]::FindWindowByClassOrTitleAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
         Write-Host "[DIAG] QuickSwitch hwnd=0x$($qsDiag.ToInt64().ToString('X')), visible=$([WkLiveNative]::IsWindowVisible($qsDiag)), wkAlive=$(-not $WkProc.HasExited)" -ForegroundColor Yellow
         $diagLog = Join-Path $LogDir "window_kit.log"
         if (Test-Path -LiteralPath $diagLog) {
@@ -664,10 +678,10 @@ try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_INTERNAL_ALT_TAB, [IntPtr]0, [IntPtr]1)
     $sameAppVisible = $false
-    for ($i = 0; $i -lt 50; $i++) {
-        $qsSame = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
+    for ($i = 0; $i -lt 80; $i++) {
+        $qsSame = [WkLiveNative]::FindWindowByClassOrTitleAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
         if ($qsSame -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($qsSame)) { $sameAppVisible = $true; break }
-        Start-Sleep -Milliseconds 10
+        Start-Sleep -Milliseconds 15
     }
     $sw.Stop()
     $mPeak = Get-ProcMetrics $WkProc
@@ -689,9 +703,9 @@ try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_LAYOUT_HUB, [IntPtr]0)
     $hubHwnd = [IntPtr]::Zero
-    for ($i = 0; $i -lt 80; $i++) {
-        $hubHwnd = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_LayoutHub", [uint32]$WkProc.Id)
-        if ($hubHwnd -ne [IntPtr]::Zero) { break }
+    for ($i = 0; $i -lt 100; $i++) {
+        $hubHwnd = [WkLiveNative]::FindWindowByClassOrTitleAndPid("Tools3000_WindowKit_LayoutHub", [uint32]$WkProc.Id)
+        if ($hubHwnd -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($hubHwnd)) { break }
         Start-Sleep -Milliseconds 15
     }
     $sw.Stop()
@@ -736,9 +750,9 @@ try {
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_START_WS_CAPTURE, [IntPtr]0)
     $capCard = [IntPtr]::Zero
-    for ($i = 0; $i -lt 80; $i++) {
-        $capCard = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_CaptureCard", [uint32]$WkProc.Id)
-        if ($capCard -ne [IntPtr]::Zero) { break }
+    for ($i = 0; $i -lt 100; $i++) {
+        $capCard = [WkLiveNative]::FindWindowByClassOrTitleAndPid("Tools3000_WindowKit_CaptureCard", [uint32]$WkProc.Id)
+        if ($capCard -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($capCard)) { break }
         Start-Sleep -Milliseconds 15
     }
     $sw.Stop()

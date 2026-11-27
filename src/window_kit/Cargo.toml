@@ -1,6 +1,6 @@
 [package]
 name = "tools3000_window_kit"
-version = "1.5.5"
+version = "1.5.6"
 edition = "2021"
 description = "Tools3000 native standalone Windows window management engine (Quick Switch, SnapZones, Workspaces, Always-on-Top, Opacity, Alt+Drag, Focus Border, Multi-Monitor & Tray)"
 license = "GPL-3.0-only"
@@ -8,6 +8,21 @@ license = "GPL-3.0-only"
 [[bin]]
 name = "Tools3000_WindowKit"
 path = "src/main.rs"
+
+[dependencies]
+slint = { version = "1.19.1", default-features = false, features = [
+    "std",
+    "compat-1-2",
+    "backend-winit",
+    "renderer-software",
+    "software-renderer-path",
+    "raw-window-handle-06",
+    "unstable-winit-030",
+] }
+raw-window-handle = "0.6"
+
+[build-dependencies]
+slint-build = "1.19.1"
 
 [dependencies.windows]
 version = "0.58"

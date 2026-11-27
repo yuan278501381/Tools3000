@@ -174,5 +174,20 @@ trigger: always_on
    - 项目负责人不直接手写英文/外语，所有提供给负责人对外复制粘贴的英文/外语评论、回帖与邮件会被 **1:1 原文直发**；
    - 因此生成的每一段外语草稿必须 **100% 满足纯键盘手打质感**：**绝对严禁出现 Unicode 长破折号 `—`（统一改用带空格短横线 ` - ` 或句号/括号）**、严禁花哨弯引号、严禁 AI 排比腔与客套废话，句式自然简练，附带简体中文对照，并在 HN 发评后通过公开 API（`firebaseio.com/v0/item/<id>.json`）核验 `dead` 状态及控制相邻发言间隔（`>= 15` 分钟）。
 
+---
+
+## 10. 重要新功能全触点同步交付铁律 (Major Feature Full-Touchpoint Sync Standard)
+凡新增重要功能或一级模块（**小修小补、微调或非重要小功能无需执行**），发版前必须同步完成以下全部触点并保持 8 国语言一致：
+1. **新手向导 (`ui/src/components/OnboardingModal.tsx`)**：在欢迎亮点卡、核心快捷键或开箱贴士中体现新功能价值与开启入口（默认关闭的进阶模块须明确提示零后台占用、按需启用）；
+2. **功能模块页 (`ui/src/pages/PluginsPage.tsx` + `PluginManager.cpp` + `MessageBridge.cpp`)**：补齐 8 语种名称、定位描述、资源/输入影响提示与零残留启停开关；
+3. **快捷键一览页 (`ui/src/pages/HotkeysPage.tsx` + `ui/src/config/hotkeyCatalog.ts`)**：凡包含全局快捷键的新功能，必须归入对应业务域并 100% 覆盖 8 语种名称映射；
+4. **系统托盘页 (`ui/src/tray/trayRegistry.ts`)**：常规后台效率模块同步注册快捷开关；**独立按需工具（类似 Picasa 独立图片查看器这类不常驻软件）不加托盘图标**，保持托盘极简克制；
+5. **各语言精细优化 README (`README.md` + `docs/i18n/README.*.md`)**：结合第 9 节地域化铁律（按各国用户习惯、语气、风格及熟悉的参照软件/场景精细润色，绝不机翻）；
+6. **涉及的 8 语种演示动图 (`docs/images/<locale>/*_demo.webp`) 与项目总览一览图 (`docs/images/<locale>/feature_bento_overview.png`)**：同步渲染更新并目视核验无截断、无版本号过时残留；
+7. **GitHub Pages 官网 (`docs/site/index.html`)**：同步更新功能卡片、演示轮播、版本号与下载直链；
+8. **关于页面技术栈 (`ui/src/pages/AboutPage.tsx`)**：若新功能引入了重要底层框架、渲染器或推理引擎（如 Rust / Slint Fluent / ONNX Runtime 等），同步更新关于页面技术栈与开源致谢；
+9. **内存治理策略全景页 (`ui/src/pages/PerformancePage.tsx`)**：若新功能涉及独立进程、渲染表面、缓存池、按需启停或冷路径回收策略，必须同步登记到内存治理策略矩阵中。
+
+
 
 

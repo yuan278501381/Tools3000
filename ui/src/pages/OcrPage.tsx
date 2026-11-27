@@ -1,10 +1,10 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * OcrPage — 双引擎高精度离线文字识别 (PP-OCRv4 + 增强版 Windows OCR) 与原图实景选字设置页
+ * OcrPage — 双引擎高精度离线文字识别 (PP-OCRv6 + 增强版 Windows OCR) 与翻译设置页
  *
- * 顶栏 3 页签信息架构:
- *   1. recognize: 识文与交互（热键、引擎选择、紧邻语种策略、输出与贴图实景选字）
- *   2. translate: 原位与划词翻译（全局划词翻译热键 + 截图原位翻译通道配置）
- *   3. models:    离线引擎与模型包（PP-OCRv4 核心包、+90MB 增强包、4 国扩展包矩阵、MI-GAN 修复包）
+ * 顶栏 3 页签 MECE 信息架构:
+ *   1. recognize: 文字识别（快捷键、动态联动引擎策略、紧凑离线状态条、识文后行为与贴图选字）
+ *   2. translate: 划词与截图翻译（全局划词热键 + 弹窗式应用避让 + 3 场景渐进式翻译通道）
+ *   3. models:    离线模型管理（主力推荐 PP-OCRv6 / 按需增强包 / 额外小语种包 3 张独立卡片）
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, useRef, type FC } from 'react';
@@ -18,7 +18,7 @@ import {
   Badge,
   Select,
   Button,
-  CodeBadge,
+  Modal,
   PageSkeleton,
   type TabItem,
 } from '../components/UIKit';
@@ -34,7 +34,20 @@ import {
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { FileText, Download, X, Sparkles, Loader2, Trash2, Languages, Package } from 'lucide-react';
+import {
+  FileText,
+  Download,
+  X,
+  Sparkles,
+  Loader2,
+  Trash2,
+  Languages,
+  Package,
+  Shield,
+  FolderOpen,
+  Info,
+  Sliders,
+} from 'lucide-react';
 import './OcrPage.css';
 
 interface OcrSettings {
@@ -216,6 +229,7 @@ export const OcrPage: FC = () => {
   const [inpaintBusy, setInpaintBusy] = useState(false);
   const [hotkeys, setHotkeys] = useState<HotkeyEntry[]>([]);
   const [shortcut, setShortcut] = useState('Ctrl+Shift+O');
+  const [translateExclusionsOpen, setTranslateExclusionsOpen] = useState(false);
   const wasDownloadingRef = useRef(false);
   const wasDownloadingServerRef = useRef(false);
   const wasDownloadingScriptPackRef = useRef('');
@@ -754,14 +768,28 @@ export const OcrPage: FC = () => {
   const isUsingWindowsOcr =
     settings.engine === 'windows' || (settings.engine === 'auto' && !modelStatus.installed);
 
+  const resolvedEngineDesc = (() => {
+    const mode = settings.engine || 'auto';
+    if (mode === 'windows') {
+      return t('ocr.engineDescWindows', 'Uses built-in Windows OCR only (zero extra disk usage; suitable for clean text and standard documents)');
+    }
+    if (mode === 'ppocr_v4') {
+      return t('ocr.engineDescPpOcr', 'Always uses the offline PP-OCRv6 engine (50 languages; high accuracy on photos, posters, tables, and code)');
+    }
+    if (modelStatus.installed) {
+      return t('ocr.engineDescAutoDeep', 'Currently using the installed PP-OCRv6 offline engine (50 languages; runs 100% locally)');
+    }
+    return t('ocr.engineDescAutoWindows', 'Currently using built-in Windows OCR (no download needed); will auto-upgrade after downloading the PP-OCRv6 offline pack (~30 MB)');
+  })();
+
   const translateHotkeyEntry =
     hotkeys.find((h) => h.name === 'Quick Translate') ??
     hotkeys.find((h) => h.name === 'Translate Selection');
 
   const tabs: TabItem<OcrPageSubTab>[] = [
-    { id: 'recognize', label: t('ocr.tabRecognize', 'Recognition & Live Text'), icon: <FileText size={16} /> },
-    { id: 'translate', label: t('ocr.tabTranslate', 'In-Place & Quick Translate'), icon: <Languages size={16} /> },
-    { id: 'models', label: t('ocr.tabModels', 'Offline Engines & Packs'), icon: <Package size={16} /> },
+    { id: 'recognize', label: t('ocr.tabRecognize', 'Text Recognition'), icon: <FileText size={16} /> },
+    { id: 'translate', label: t('ocr.tabTranslate', 'Selection & Screenshot Translate'), icon: <Languages size={16} /> },
+    { id: 'models', label: t('ocr.tabModels', 'Offline Models'), icon: <Package size={16} /> },
   ];
 
   const isDownloadingCoreBase =
@@ -834,7 +862,7 @@ export const OcrPage: FC = () => {
         ariaLabel={t('ocr.title')}
       />
 
-      {/* ── Tab 1: 识文与交互 (默认清爽首屏) ───────────────────────────────── */}
+      {/* ── Tab 1: 文字识别 (清爽直白首屏，零重复信息) ────────────────────── */}
       {activeTab === 'recognize' && (
         <div className="ocr-page__tab-panel">
           <SettingGroup title={t('ocr.title')} icon={<FileText size={18} strokeWidth={2.2} />}>
@@ -865,7 +893,7 @@ export const OcrPage: FC = () => {
                     />
                   </div>
                 }
-                description={t('ocr.engineDesc')}
+                description={resolvedEngineDesc}
               >
                 <div className="ocr-page__engine-controls">
                   <Select
@@ -878,56 +906,93 @@ export const OcrPage: FC = () => {
                       { value: 'windows', label: t('ocr.engineWindowsEnhanced') },
                     ]}
                   />
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => setActiveTab('models')}
-                  >
-                    <Package size={14} aria-hidden="true" />
-                    <span>{t('ocr.manageModelsBtn', 'Manage Offline Models')}</span>
-                  </Button>
                 </div>
               </SettingRow>
 
               <SubSettingGroup>
                 {isUsingWindowsOcr ? (
-                  <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
-                    <Select
-                      id="ocr-language"
-                      value={settings.language || 'auto'}
-                      onChange={(val) => updateSetting('language', val)}
-                      options={windowsLangOptions}
-                    />
-                  </SettingRow>
-                ) : (
-                  <SettingRow
-                    label={
-                      <div className="ocr-page__row-label">
-                        <Languages size={15} strokeWidth={2.2} aria-hidden="true" className="ocr-page__label-icon" />
-                        <span>{t('ocr.scriptPackTitle')}</span>
-                        {renderScriptPacksBadge()}
+                  <>
+                    <SettingRow label={t('ocr.language')} description={t('ocr.languageDesc')}>
+                      <Select
+                        id="ocr-language"
+                        value={settings.language || 'auto'}
+                        onChange={(val) => updateSetting('language', val)}
+                        options={windowsLangOptions}
+                      />
+                    </SettingRow>
+
+                    {!modelStatus.installed && (
+                      <div className="ocr-page__engine-banner">
+                        <div className="ocr-page__engine-banner-text">
+                          <span className="ocr-page__engine-banner-title">
+                            {t('ocr.bannerNotInstalledTitle', 'Need higher accuracy for photos, tables, code, or 50+ languages?')}
+                          </span>
+                          <span className="ocr-page__engine-banner-desc">
+                            {t('ocr.bannerNotInstalledDesc', 'Download the PP-OCRv6 offline pack (~30 MB, recommended). Runs 100% locally with no extra runtime.')}
+                          </span>
+                        </div>
+                        <Button
+                          variant="primary"
+                          size="sm"
+                          disabled={actionBusy || modelStatus.downloading}
+                          onClick={() => {
+                            setActiveTab('models');
+                            if (!modelStatus.downloading) {
+                              void handleStartDownload('mobile');
+                            }
+                          }}
+                        >
+                          <Download size={14} aria-hidden="true" />
+                          <span>{t('ocr.bannerDownloadV6Btn', 'Download PP-OCRv6 (~30 MB)')}</span>
+                        </Button>
                       </div>
-                    }
-                    description={
-                      selectedScriptMissingPack && !modelStatus.downloading
-                        ? t('ocr.scriptPackNotInstalledHint')
-                        : t('ocr.scriptPackDesc')
-                    }
-                  >
-                    <Select
-                      id="ocr-script-mode"
-                      value={settings.scriptMode || 'auto'}
-                      onChange={(val) => updateSetting('scriptMode', val)}
-                      options={scriptModeOptions}
-                    />
-                  </SettingRow>
+                    )}
+                  </>
+                ) : (
+                  <div className="ocr-page__engine-banner">
+                    <div className="ocr-page__engine-banner-text">
+                      <div className="ocr-page__row-label">
+                        <span className="ocr-page__engine-banner-title">
+                          {modelStatus.activeModelTier === 'server'
+                            ? t('ocr.bannerActiveServerTitle', 'PP-OCRv6 + High-Accuracy Refinement Active')
+                            : t('ocr.bannerActiveStandardTitle', 'PP-OCRv6 Offline Pack Active (50 Languages Built-In)')}
+                        </span>
+                        {renderModelStatusBadge()}
+                      </div>
+                      <span className="ocr-page__engine-banner-desc">
+                        {installedScriptPackCount > 0
+                          ? t('ocr.bannerWithPacksDesc', 'Includes {{count}} extra language pack(s). Manage refinement and language packs in Offline Models.', {
+                              count: installedScriptPackCount,
+                            })
+                          : t('ocr.bannerStandardDesc', 'Covers Simplified/Traditional Chinese, English, Japanese, and European languages locally. Manage optional packs in Offline Models.')}
+                      </span>
+                    </div>
+                    <div className="ocr-page__engine-banner-actions">
+                      {installedScriptPackCount > 0 && (
+                        <Select
+                          id="ocr-script-mode"
+                          value={settings.scriptMode || 'auto'}
+                          onChange={(val) => updateSetting('scriptMode', val)}
+                          options={scriptModeOptions}
+                        />
+                      )}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => setActiveTab('models')}
+                      >
+                        <Package size={14} aria-hidden="true" />
+                        <span>{t('ocr.manageModelsBtn', 'Manage Offline Models')}</span>
+                      </Button>
+                    </div>
+                  </div>
                 )}
               </SubSettingGroup>
             </Card>
           </SettingGroup>
 
           <SettingGroup
-            title={t('ocr.outputAndLiveTextGroup', 'Output Behavior & Pin Live Text')}
+            title={t('ocr.outputAndLiveTextGroup', 'After Recognition & Pin Live Text')}
             icon={<Sparkles size={18} strokeWidth={2.2} />}
           >
             <Card>
@@ -967,9 +1032,19 @@ export const OcrPage: FC = () => {
         </div>
       )}
 
-      {/* ── Tab 2: 原位与划词翻译 ──────────────────────────────────────────── */}
+      {/* ── Tab 2: 划词与截图翻译 (统一作用域声明 + 紧凑快捷键 + 渐进式通道) ──── */}
       {activeTab === 'translate' && (
         <div className="ocr-page__tab-panel">
+          <div className="ocr-page__scope-banner" role="note">
+            <Info size={15} className="ocr-page__scope-banner-icon" aria-hidden="true" />
+            <span>
+              {t(
+                'ocr.translateSharedScopeHint',
+                'The target languages and translation channel below apply to both Global Selection Translation and Screenshot In-Place Translation.',
+              )}
+            </span>
+          </div>
+
           {translateHotkeyEntry && (
             <Card>
               <SettingRow
@@ -983,62 +1058,95 @@ export const OcrPage: FC = () => {
                 }
                 description={t(
                   'ocr.globalTranslateHotkeyDesc',
-                  'Translate selected text or clipboard content instantly in a floating overlay',
+                  'Press this shortcut after selecting text or copying to open a quick translation popup',
                 )}
               >
-                <HotkeyRecorder
-                  id="ocr-global-translate-shortcut"
-                  value={translateHotkeyEntry.shortcut}
-                  onChange={(v) => void rebindNamedShortcut(translateHotkeyEntry.name, v)}
-                />
-              </SettingRow>
-              <SubSettingGroup disabled={!translateHotkeyEntry.shortcut}>
-                <SettingRow
-                  layout="vertical"
-                  label={t('ocr.translateExcludedAppsTitle', 'Auto-Yield in Professional Apps')}
-                  description={t(
-                    'ocr.translateExcludedAppsDesc',
-                    'Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active',
-                  )}
-                >
-                  <HotkeyAppExclusionBar
-                    apps={translateHotkeyEntry.excludedApps ?? []}
+                <div className="ocr-page__hotkey-actions">
+                  <button
+                    type="button"
+                    className={`ocr-page__exclude-btn ${(translateHotkeyEntry.excludedApps?.length ?? 0) > 0 ? 'has-apps' : ''}`}
                     disabled={!translateHotkeyEntry.shortcut}
-                    compact
-                    emptyText={t('hotkeyExclusion.emptyPerHotkey', 'Active in all apps; add process names to auto-yield')}
-                    pickerTitle={t('hotkeyExclusion.pickerPerHotkeyTitle', 'Pick App to Auto-Yield This Shortcut')}
-                    onChange={(nextApps) => void updateHotkeyExclusions(translateHotkeyEntry.name, nextApps)}
+                    onClick={() => setTranslateExclusionsOpen(true)}
+                    title={t('ocr.translateExcludedAppsTitle', 'Auto-Yield in Specific Apps')}
+                  >
+                    <Shield size={13} aria-hidden="true" />
+                    <span>
+                      {(translateHotkeyEntry.excludedApps?.length ?? 0) > 0
+                        ? t('ocr.yieldAppsCountBtn', 'Yield Apps ({{count}})', {
+                            count: translateHotkeyEntry.excludedApps!.length,
+                          })
+                        : t('ocr.yieldAppsBtn', 'Yield Apps')}
+                    </span>
+                  </button>
+                  <HotkeyRecorder
+                    id="ocr-global-translate-shortcut"
+                    value={translateHotkeyEntry.shortcut}
+                    onChange={(v) => void rebindNamedShortcut(translateHotkeyEntry.name, v)}
                   />
-                </SettingRow>
-              </SubSettingGroup>
+                </div>
+              </SettingRow>
             </Card>
+          )}
+
+          {translateExclusionsOpen && translateHotkeyEntry && (
+            <Modal
+              open
+              title={t('ocr.translateExcludedAppsTitle', 'Auto-Yield in Specific Apps')}
+              onClose={() => setTranslateExclusionsOpen(false)}
+              footer={
+                <Button variant="primary" onClick={() => setTranslateExclusionsOpen(false)}>
+                  {t('common.done', 'Done')}
+                </Button>
+              }
+            >
+              <p className="ocr-page__modal-desc">
+                {t(
+                  'ocr.translateExcludedAppsDesc',
+                  'Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active.',
+                )}
+              </p>
+              <HotkeyAppExclusionBar
+                apps={translateHotkeyEntry.excludedApps ?? []}
+                disabled={!translateHotkeyEntry.shortcut}
+                emptyText={t('hotkeyExclusion.emptyPerHotkey', 'Active in all apps; add process names to auto-yield')}
+                pickerTitle={t('hotkeyExclusion.pickerPerHotkeyTitle', 'Pick App to Auto-Yield This Shortcut')}
+                onChange={(nextApps) => void updateHotkeyExclusions(translateHotkeyEntry.name, nextApps)}
+              />
+            </Modal>
           )}
 
           <InPlaceTranslateCard />
         </div>
       )}
 
-      {/* ── Tab 3: 离线引擎与模型包管理 ────────────────────────────────────── */}
+      {/* ── Tab 3: 离线模型管理 (按「推荐主力 / 按需增强 / 额外语种」3 张独立卡) ── */}
       {activeTab === 'models' && (
         <div className="ocr-page__tab-panel">
+          {/* 卡 1: 主力离线识字引擎 (PP-OCRv6 · 约 30 MB · 推荐) */}
           <SettingGroup
-            title={t('ocr.tabModels', 'Offline Engines & Packs')}
+            title={t('ocr.modelsCoreGroupTitle', 'Core Offline Recognition Engine')}
             icon={<Package size={18} strokeWidth={2.2} />}
+            actions={
+              modelStatus.modelDir ? (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void bridgeRequest('system.openFolder', { path: modelStatus.modelDir })}
+                  title={modelStatus.modelDir}
+                >
+                  <FolderOpen size={14} aria-hidden="true" />
+                  <span>{t('ocr.openModelDirBtn', 'Open Model Folder')}</span>
+                </Button>
+              ) : undefined
+            }
           >
-            <p className="ocr-page__models-intro">
-              {t(
-                'ocr.tabModelsDesc',
-                'Download or manage offline PP-OCR models, multi-language packs, and AI text erase models',
-              )}
-            </p>
-
-            {/* 1. PP-OCRv4 核心包 */}
             <Card>
               <SettingRow
                 layout="vertical"
                 label={
                   <div className="ocr-page__row-label">
                     <span>{t('ocr.deepPackTitle')}</span>
+                    <Badge text={t('ocr.recommendedBadge', 'Recommended')} variant="primary" />
                     {renderModelStatusBadge()}
                   </div>
                 }
@@ -1046,15 +1154,15 @@ export const OcrPage: FC = () => {
               >
                 <div className="ocr-page__pack-stack">
                   <div className="ocr-page__pack-toolbar">
-                    {modelStatus.modelDir && (
-                      <div className="ocr-page__pack-dir">
-                        <span>{t('ocr.modelStorageDir')}</span>
-                        <CodeBadge>{modelStatus.modelDir}</CodeBadge>
-                      </div>
-                    )}
+                    <span className="ocr-page__pack-summary">
+                      {t(
+                        'ocr.deepPackImpactNote',
+                        'Without it: uses built-in Windows OCR (clean text). Installed (~30 MB): 50 languages locally with high accuracy across screenshots, photos, posters, tables, and code.',
+                      )}
+                    </span>
 
                     <div className="ocr-page__pack-actions">
-                      {modelStatus.downloading ? (
+                      {modelStatus.downloading && !modelStatus.downloadingServer && !modelStatus.downloadingScriptPack ? (
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1068,7 +1176,7 @@ export const OcrPage: FC = () => {
                         <Button
                           variant="primary"
                           size="sm"
-                          disabled={actionBusy}
+                          disabled={actionBusy || modelStatus.downloading}
                           onClick={() => void handleStartDownload('mobile')}
                         >
                           {actionBusy ? (
@@ -1102,8 +1210,15 @@ export const OcrPage: FC = () => {
                     )}
                 </div>
               </SettingRow>
+            </Card>
+          </SettingGroup>
 
-              {/* 2. 识别精度档位 +90MB 增强包 */}
+          {/* 卡 2: 按需增强包（高精度精修 +73 MB + 贴图改字背景补全 ~27 MB） */}
+          <SettingGroup
+            title={t('ocr.modelsOptionalGroupTitle', 'Optional Enhancement Packs')}
+            icon={<Sliders size={18} strokeWidth={2.2} />}
+          >
+            <Card>
               <SettingRow
                 layout="vertical"
                 label={
@@ -1186,13 +1301,103 @@ export const OcrPage: FC = () => {
                 </div>
               </SettingRow>
 
-              {/* 3. 4 国扩展包矩阵 */}
               <SettingRow
                 layout="vertical"
                 label={
                   <div className="ocr-page__row-label">
-                    <Languages size={16} strokeWidth={2.2} aria-hidden="true" className="ocr-page__label-icon" />
-                    <span>{t('ocr.scriptPackTitle')}</span>
+                    <span>{t('ocr.inpaintPackTitle')}</span>
+                    {renderInpaintStatusBadge()}
+                  </div>
+                }
+                description={t('ocr.inpaintPackDesc')}
+              >
+                <div className="ocr-page__pack-stack">
+                  <div className="ocr-page__pack-toolbar">
+                    <span className="ocr-page__pack-summary">
+                      {t(
+                        'ocr.inpaintPackImpactNote',
+                        'Solid backgrounds, documents, and tables work without downloading. Only install (~27 MB) if you edit text over complex photos or posters.',
+                      )}
+                    </span>
+
+                    <div className="ocr-page__pack-actions">
+                      {inpaintStatus.modelDir && inpaintStatus.installed && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => void bridgeRequest('system.openFolder', { path: inpaintStatus.modelDir })}
+                          title={inpaintStatus.modelDir}
+                        >
+                          <FolderOpen size={14} aria-hidden="true" />
+                          <span>{t('ocr.openModelDirBtn', 'Open Model Folder')}</span>
+                        </Button>
+                      )}
+                      {inpaintStatus.downloading ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={inpaintBusy}
+                          onClick={() => void handleCancelInpaintDownload()}
+                        >
+                          <X size={15} strokeWidth={2.2} aria-hidden="true" />
+                          <span>{t('ocr.cancelDownload')}</span>
+                        </Button>
+                      ) : inpaintStatus.installed ? (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={inpaintBusy}
+                          onClick={() => void handleDeleteInpaintModel()}
+                        >
+                          <Trash2 size={15} strokeWidth={2.2} aria-hidden="true" />
+                          <span>{t('ocr.inpaintDeleteModel')}</span>
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          disabled={inpaintBusy}
+                          onClick={() => void handleStartInpaintDownload()}
+                        >
+                          {inpaintBusy ? (
+                            <Loader2 size={15} strokeWidth={2.2} className="uikit-spin-icon" aria-hidden="true" />
+                          ) : (
+                            <Download size={15} strokeWidth={2.2} aria-hidden="true" />
+                          )}
+                          <span>{inpaintStatus.state === 'error' ? t('ocr.retryDownload') : t('ocr.downloadInstall')}</span>
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {inpaintStatus.downloading &&
+                    renderDownloadProgress(
+                      inpaintStatus.progressPercent,
+                      inpaintStatus.downloadedBytes,
+                      inpaintStatus.totalBytes,
+                      inpaintStatus.modelFile,
+                      inpaintStatus.phase,
+                      inpaintStatus.speedBytesPerSec,
+                      inpaintStatus.activeMirrorHost,
+                      inpaintStatus.mirrorIndex,
+                      inpaintStatus.mirrorTotal,
+                    )}
+                </div>
+              </SettingRow>
+            </Card>
+          </SettingGroup>
+
+          {/* 卡 3: 额外小语种识别包（韩 / 俄 / 阿 / 泰 · 按需单选） */}
+          <SettingGroup
+            title={t('ocr.scriptPackTitle')}
+            icon={<Languages size={18} strokeWidth={2.2} />}
+          >
+            <Card>
+              <SettingRow
+                layout="vertical"
+                label={
+                  <div className="ocr-page__row-label">
+                    <span>{t('ocr.scriptModeLabel', 'Language Recognition Mode')}</span>
                     {renderScriptPacksBadge()}
                   </div>
                 }
@@ -1320,80 +1525,6 @@ export const OcrPage: FC = () => {
                       {t('ocr.scriptPackNotInstalledHint')}
                     </div>
                   )}
-                </div>
-              </SettingRow>
-
-              {/* 4. MI-GAN 512 修复引擎包 */}
-              <SettingRow
-                layout="vertical"
-                label={
-                  <div className="ocr-page__row-label">
-                    <span>{t('ocr.inpaintPackTitle')}</span>
-                    {renderInpaintStatusBadge()}
-                  </div>
-                }
-                description={t('ocr.inpaintPackDesc')}
-              >
-                <div className="ocr-page__pack-stack">
-                  <div className="ocr-page__pack-toolbar">
-                    {inpaintStatus.modelDir && (
-                      <div className="ocr-page__pack-dir">
-                        <span>{t('ocr.modelStorageDir')}</span>
-                        <CodeBadge>{inpaintStatus.modelDir}</CodeBadge>
-                      </div>
-                    )}
-
-                    <div className="ocr-page__pack-actions">
-                      {inpaintStatus.downloading ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={inpaintBusy}
-                          onClick={() => void handleCancelInpaintDownload()}
-                        >
-                          <X size={15} strokeWidth={2.2} aria-hidden="true" />
-                          <span>{t('ocr.cancelDownload')}</span>
-                        </Button>
-                      ) : inpaintStatus.installed ? (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={inpaintBusy}
-                          onClick={() => void handleDeleteInpaintModel()}
-                        >
-                          <Trash2 size={15} strokeWidth={2.2} aria-hidden="true" />
-                          <span>{t('ocr.inpaintDeleteModel')}</span>
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          disabled={inpaintBusy}
-                          onClick={() => void handleStartInpaintDownload()}
-                        >
-                          {inpaintBusy ? (
-                            <Loader2 size={15} strokeWidth={2.2} className="uikit-spin-icon" aria-hidden="true" />
-                          ) : (
-                            <Download size={15} strokeWidth={2.2} aria-hidden="true" />
-                          )}
-                          <span>{inpaintStatus.state === 'error' ? t('ocr.retryDownload') : t('ocr.downloadInstall')}</span>
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-
-                  {inpaintStatus.downloading &&
-                    renderDownloadProgress(
-                      inpaintStatus.progressPercent,
-                      inpaintStatus.downloadedBytes,
-                      inpaintStatus.totalBytes,
-                      inpaintStatus.modelFile,
-                      inpaintStatus.phase,
-                      inpaintStatus.speedBytesPerSec,
-                      inpaintStatus.activeMirrorHost,
-                      inpaintStatus.mirrorIndex,
-                      inpaintStatus.mirrorTotal,
-                    )}
                 </div>
               </SettingRow>
             </Card>
