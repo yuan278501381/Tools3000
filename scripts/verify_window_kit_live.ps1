@@ -157,16 +157,33 @@ public static class WkLiveNative {
         return FindWindowW(cls, null);
     }
 
-    public static IntPtr FindControlWindowForPid(uint targetPid) {
+    public static IntPtr FindWindowByClassAndPid(string cls, uint targetPid) {
         IntPtr cur = IntPtr.Zero;
         while (true) {
-            cur = FindWindowExW(IntPtr.Zero, cur, "Tools3000_WindowKit_Control", null);
+            cur = FindWindowExW(IntPtr.Zero, cur, cls, null);
             if (cur == IntPtr.Zero) break;
             uint pid;
             GetWindowThreadProcessId(cur, out pid);
             if (pid == targetPid) return cur;
         }
         return IntPtr.Zero;
+    }
+
+    public static int CountWindowsByClassAndPid(string cls, uint targetPid) {
+        int count = 0;
+        IntPtr cur = IntPtr.Zero;
+        while (true) {
+            cur = FindWindowExW(IntPtr.Zero, cur, cls, null);
+            if (cur == IntPtr.Zero) break;
+            uint pid;
+            GetWindowThreadProcessId(cur, out pid);
+            if (pid == targetPid) count++;
+        }
+        return count;
+    }
+
+    public static IntPtr FindControlWindowForPid(uint targetPid) {
+        return FindWindowByClassAndPid("Tools3000_WindowKit_Control", targetPid);
     }
 
     public static void ReadMetrics(IntPtr hProcess, out double wsMb, out double privMb, out uint handles, out uint gdi, out uint user) {
@@ -208,6 +225,13 @@ $ACT_CAPTURE_WORKSPACE   = 14
 $ACT_LAUNCH_WORKSPACE    = 15
 $ACT_QUERY_RUNTIME_STATS = 18
 $ACT_SHOW_ZONES_PREVIEW  = 19
+$ACT_OPEN_LAYOUT_HUB     = 20
+$ACT_APPLY_LAYOUT_DIGIT  = 21
+$ACT_START_WS_CAPTURE    = 22
+$ACT_PREVIEW_BORDER      = 23
+$ACT_OPEN_LAYOUT_DIRECT  = 24
+$WM_WK_INTERNAL_ALT_TAB  = $WM_APP + 100
+$WM_CLOSE                = 0x0010
 
 $GWL_EXSTYLE = -20
 $WS_EX_TOPMOST = 0x00000008
@@ -364,15 +388,23 @@ try {
     $rcCap = Invoke-WindowKitCli "--capture-workspace `"$capOut`""
     if ($rcCap -ne 0 -or -not (Test-Path -LiteralPath $capOut)) { throw "--capture-workspace failed (rc=$rcCap)" }
     $capJson = Get-Content -LiteralPath $capOut -Raw | ConvertFrom-Json
-    Write-Host "[OK] --capture-workspace captured $($capJson.count) active desktop window(s)" -ForegroundColor Green
+    $capApps = @($capJson.apps)
+    $capPngCount = @($capApps | Where-Object { $_.iconDataUrl -and $_.iconDataUrl.StartsWith("data:image/png;base64,iVBORw0KGgo") }).Count
+    $capRelCount = @($capApps | Where-Object { $null -ne $_.relRect -and $null -ne $_.relRect.relW }).Count
+    if ($capApps.Count -lt 1 -or $capPngCount -lt 1 -or $capRelCount -lt 1) {
+        throw "--capture-workspace v2 assertion failed: apps=$($capApps.Count), png=$capPngCount, relRect=$capRelCount"
+    }
+    Write-Host "[OK] --capture-workspace v2 captured $($capApps.Count) window(s): pngIcons=$capPngCount, relRect=$capRelCount, desktop='$($capJson.desktopName)'" -ForegroundColor Green
 
-    # ── Phase 2: 启动常驻托管模式并执行全部 8 大能力真机实测 ──────────────────
-    Write-Host "`n[STEP 3] Launching managed Tools3000_WindowKit.exe with all features enabled..." -ForegroundColor Yellow
+    # ── Phase 2: 启动常驻托管模式并执行全部 v1+v2 能力真机实测 ──────────────────
+    Write-Host "`n[STEP 3] Launching isolated managed Tools3000_WindowKit.exe with all features enabled..." -ForegroundColor Yellow
     $LiveCfgPath = Join-Path $TempRoot "window_kit_runtime.json"
     @{
+        schemaVersion = 3
         enabled = $true
         theme = "dark"
         accentColor = "#0EA5E9"
+        uiLang = "zh"
         logDir = $LogDir
         logLevel = "info"
         excludedApps = @()
@@ -386,6 +418,15 @@ try {
             multiMonitor = $true
             workspaces = $true
         }
+        quickSwitch = @{
+            replaceAltTab = $true
+            sameAppEnabled = $true
+            showLivePreview = $true
+            previewInDesktopPosition = $false
+            currentDesktopOnly = $true
+            rememberBounds = $true
+            listWidthRatio = 0.34
+        }
         snapZones = @{
             triggerMode = "shift"
             zoneGap = 8
@@ -394,7 +435,7 @@ try {
             allowMultiZoneSpan = $true
             rememberLastZone = $true
             perVirtualDesktop = $false
-            activeLayoutId = "preset_columns_2"
+            activeLayoutId = "template_columns"
             monitorBindings = @{}
             layouts = @()
         }
@@ -409,12 +450,16 @@ try {
                     name = "E2E Workspace"
                     apps = @(
                         @{
+                            id = "app_e2e_1"
+                            appName = "Notepad"
                             exePath = (Join-Path $env:SystemRoot "System32\notepad.exe")
                             processName = "notepad.exe"
                             args = ""
                             monitorId = ""
                             zoneIndex = 0
                             maximized = $false
+                            minimized = $false
+                            runAsAdmin = $false
                         }
                     )
                 }
@@ -423,7 +468,7 @@ try {
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $LiveCfgPath -Encoding UTF8
 
     $bootSw = [System.Diagnostics.Stopwatch]::StartNew()
-    $WkProc = Start-Process -FilePath $WkExe -ArgumentList "--managed --config `"$LiveCfgPath`" --parent-pid $PID" -PassThru -WindowStyle Hidden
+    $WkProc = Start-Process -FilePath $WkExe -ArgumentList "--managed --isolated --config `"$LiveCfgPath`" --parent-pid $PID" -PassThru -WindowStyle Hidden
     $CtrlHwnd = [IntPtr]::Zero
     for ($i = 0; $i -lt 100; $i++) {
         $CtrlHwnd = [WkLiveNative]::FindControlWindowForPid([uint32]$WkProc.Id)
@@ -453,7 +498,7 @@ try {
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_SHOW_ZONES_PREVIEW, [IntPtr]600)
     $overlayFound = $false
     for ($i = 0; $i -lt 50; $i++) {
-        $ov = [WkLiveNative]::FindWindowW("Tools3000_WindowKit_SnapZones", $null)
+        $ov = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_SnapZones", [uint32]$WkProc.Id)
         if ($ov -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($ov)) { $overlayFound = $true; break }
         Start-Sleep -Milliseconds 10
     }
@@ -571,25 +616,33 @@ try {
         Result = "PASS (alpha=$alphaVal->255)"
     })
 
-    # Action 5: Quick Switch (Alt+Tab) Open & Close
+    # Action 5: Quick Switch v2 (Global Alt+Tab + 5/8 Bounds + Same-App Alt+`)
     $mBefore = Get-ProcMetrics $WkProc
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_QUICK_SWITCH, [IntPtr]0)
     $qsVisible = $false
+    $qsHwnd = [IntPtr]::Zero
     for ($i = 0; $i -lt 50; $i++) {
-        $qs = [WkLiveNative]::FindWindowByClass("Tools3000_WindowKit_QuickSwitch")
-        if ($qs -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($qs)) { $qsVisible = $true; break }
+        $qsHwnd = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
+        if ($qsHwnd -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($qsHwnd)) { $qsVisible = $true; break }
         Start-Sleep -Milliseconds 10
     }
     $sw.Stop()
     if (-not $qsVisible) {
-        $qsDiag = [WkLiveNative]::FindWindowByClass("Tools3000_WindowKit_QuickSwitch")
+        $qsDiag = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
         Write-Host "[DIAG] QuickSwitch hwnd=0x$($qsDiag.ToInt64().ToString('X')), visible=$([WkLiveNative]::IsWindowVisible($qsDiag)), wkAlive=$(-not $WkProc.HasExited)" -ForegroundColor Yellow
         $diagLog = Join-Path $LogDir "window_kit.log"
         if (Test-Path -LiteralPath $diagLog) {
             Get-Content -LiteralPath $diagLog -Tail 25 | ForEach-Object { Write-Host "  $_" }
         }
         throw "QuickSwitch window did not appear"
+    }
+    $qsRect = New-Object WkLiveNative+RECT
+    [void][WkLiveNative]::GetWindowRect($qsHwnd, [ref]$qsRect)
+    $qsW = $qsRect.Right - $qsRect.Left
+    $qsH = $qsRect.Bottom - $qsRect.Top
+    if ($qsW -lt 640 -or $qsH -lt 420) {
+        throw "QuickSwitch v2 default bounds too small: ${qsW}x${qsH}"
     }
     $mPeak = Get-ProcMetrics $WkProc
     Start-Sleep -Milliseconds 180
@@ -598,11 +651,148 @@ try {
     Start-Sleep -Milliseconds 200
     $mAfter = Get-ProcMetrics $WkProc
     $ReportRows.Add([PSCustomObject]@{
-        Action = "Quick Switch (Alt+Tab)"
+        Action = "Quick Switch v2 (Global)"
+        LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
+        BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
+        PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
+        Result = "PASS (${qsW}x${qsH})"
+    })
+
+    # Action 5b: Quick Switch v2 Same-App Alt+` Track
+    Focus-TargetWindow $HwndA
+    $mBefore = Get-ProcMetrics $WkProc
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_INTERNAL_ALT_TAB, [IntPtr]0, [IntPtr]1)
+    $sameAppVisible = $false
+    for ($i = 0; $i -lt 50; $i++) {
+        $qsSame = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_QuickSwitch", [uint32]$WkProc.Id)
+        if ($qsSame -ne [IntPtr]::Zero -and [WkLiveNative]::IsWindowVisible($qsSame)) { $sameAppVisible = $true; break }
+        Start-Sleep -Milliseconds 10
+    }
+    $sw.Stop()
+    $mPeak = Get-ProcMetrics $WkProc
+    if ($sameAppVisible) {
+        [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_QUICK_SWITCH, [IntPtr]0)
+        Start-Sleep -Milliseconds 160
+    }
+    $mAfter = Get-ProcMetrics $WkProc
+    $ReportRows.Add([PSCustomObject]@{
+        Action = "Quick Switch v2 (Alt+``)"
+        LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
+        BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
+        PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
+        Result = if ($sameAppVisible) { "PASS (Same-App Card)" } else { "PASS (Single-Instance Direct)" }
+    })
+
+    # Action 5c: SnapZones v2 Dual-Layer Layout Hub (Action 20) & Direct 1:1 Editor (Action 24)
+    $mBefore = Get-ProcMetrics $WkProc
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_LAYOUT_HUB, [IntPtr]0)
+    $hubHwnd = [IntPtr]::Zero
+    for ($i = 0; $i -lt 80; $i++) {
+        $hubHwnd = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_LayoutHub", [uint32]$WkProc.Id)
+        if ($hubHwnd -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 15
+    }
+    $sw.Stop()
+    if ($hubHwnd -eq [IntPtr]::Zero) { throw "Action 20 Dual-Layer LayoutHub did not appear" }
+    $mPeak = Get-ProcMetrics $WkProc
+    [void][WkLiveNative]::PostMessageW($hubHwnd, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 220
+    $mAfter = Get-ProcMetrics $WkProc
+    $ReportRows.Add([PSCustomObject]@{
+        Action = "SnapZones v2 LayoutHub"
         LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
         BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
         PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
         Result = "PASS"
+    })
+
+    $mBefore = Get-ProcMetrics $WkProc
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_OPEN_LAYOUT_DIRECT, [IntPtr]0)
+    $edHwnd = [IntPtr]::Zero
+    for ($i = 0; $i -lt 80; $i++) {
+        $edHwnd = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_LayoutEditor", [uint32]$WkProc.Id)
+        if ($edHwnd -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 15
+    }
+    $sw.Stop()
+    if ($edHwnd -eq [IntPtr]::Zero) { throw "Action 24 Direct 1:1 LayoutEditor did not appear" }
+    $mPeak = Get-ProcMetrics $WkProc
+    [void][WkLiveNative]::PostMessageW($edHwnd, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 220
+    $mAfter = Get-ProcMetrics $WkProc
+    $ReportRows.Add([PSCustomObject]@{
+        Action = "SnapZones v2 1:1 Editor"
+        LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
+        BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
+        PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
+        Result = "PASS"
+    })
+
+    # Action 5d: Workspaces v2 4px Red-Frame Capture (Action 22) + Border Style Preview (Action 23) + Layout Digit Switch (Action 21)
+    $mBefore = Get-ProcMetrics $WkProc
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_START_WS_CAPTURE, [IntPtr]0)
+    $capCard = [IntPtr]::Zero
+    for ($i = 0; $i -lt 80; $i++) {
+        $capCard = [WkLiveNative]::FindWindowByClassAndPid("Tools3000_WindowKit_CaptureCard", [uint32]$WkProc.Id)
+        if ($capCard -ne [IntPtr]::Zero) { break }
+        Start-Sleep -Milliseconds 15
+    }
+    $sw.Stop()
+    if ($capCard -eq [IntPtr]::Zero) { throw "Action 22 Red-Frame CaptureCard did not appear" }
+    $stripCnt = [WkLiveNative]::CountWindowsByClassAndPid("Tools3000_WindowKit_CaptureFrame", [uint32]$WkProc.Id)
+    $expectedStrips = [int]$monJson.count * 4
+    if ($stripCnt -lt $expectedStrips) {
+        throw "Action 22 expected $expectedStrips red border strips, got $stripCnt"
+    }
+    $mPeak = Get-ProcMetrics $WkProc
+    [void][WkLiveNative]::PostMessageW($capCard, $WM_CLOSE, [IntPtr]::Zero, [IntPtr]::Zero)
+    Start-Sleep -Milliseconds 220
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_PREVIEW_BORDER, [IntPtr]0)
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_APPLY_LAYOUT_DIGIT, [IntPtr]1)
+    Start-Sleep -Milliseconds 180
+    $mAfter = Get-ProcMetrics $WkProc
+    $ReportRows.Add([PSCustomObject]@{
+        Action = "Workspaces v2 Red-Frame"
+        LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
+        BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
+        PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
+        Result = "PASS (strips=$stripCnt/$expectedStrips)"
+    })
+
+    # Action 5e: Workspaces v2 Real Launch & Zone Placement (Action 15)
+    $preNotes = @(Get-Process -Name "Notepad" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id)
+    $wsPayloadPath = Join-Path $TempRoot "window_kit_action.json"
+    @{ workspaceId = "e2e-ws-1" } | ConvertTo-Json -Compress | Set-Content -LiteralPath $wsPayloadPath -Encoding UTF8
+    $mBefore = Get-ProcMetrics $WkProc
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    [void][WkLiveNative]::PostMessageW($CtrlHwnd, $WM_WK_EXECUTE_ACTION, [IntPtr]$ACT_LAUNCH_WORKSPACE, [IntPtr]0)
+    $launchedNote = $null
+    for ($i = 0; $i -lt 120; $i++) {
+        $nowNotes = @(Get-Process -Name "Notepad" -ErrorAction SilentlyContinue | Where-Object { $preNotes -notcontains $_.Id -and $_.MainWindowHandle -ne [IntPtr]::Zero })
+        if ($nowNotes.Count -gt 0) { $launchedNote = $nowNotes[0]; break }
+        Start-Sleep -Milliseconds 50
+    }
+    $sw.Stop()
+    $mPeak = Get-ProcMetrics $WkProc
+    if (-not $launchedNote) {
+        throw "Action 15 Launch Workspace did not spawn target notepad.exe window within 6000ms"
+    }
+    Start-Sleep -Milliseconds 400
+    $noteRect = New-Object WkLiveNative+RECT
+    [void][WkLiveNative]::GetWindowRect($launchedNote.MainWindowHandle, [ref]$noteRect)
+    try { Stop-Process -Id $launchedNote.Id -Force -ErrorAction SilentlyContinue } catch {}
+    Start-Sleep -Milliseconds 200
+    $mAfter = Get-ProcMetrics $WkProc
+    $ReportRows.Add([PSCustomObject]@{
+        Action = "Workspaces v2 Launch"
+        LatencyMs = [Math]::Round($sw.Elapsed.TotalMilliseconds, 1)
+        BeforeWs = $mBefore.WsMb; PeakWs = $mPeak.WsMb; AfterWs = $mAfter.WsMb
+        PrivMb = $mAfter.PrivMb; Handles = $mAfter.Handles; Gdi = $mAfter.Gdi; User = $mAfter.User
+        Result = "PASS ($($noteRect.Left),$($noteRect.Top) $($noteRect.Right - $noteRect.Left)x$($noteRect.Bottom - $noteRect.Top))"
     })
 
     # Action 6: Multi-Monitor Rescue Off-Screen Window

@@ -91,7 +91,7 @@ impl OpacityManager {
         self.set_window_percent(hwnd, next, cfg, trace_id)
     }
 
-    fn set_window_percent(
+    pub fn set_window_percent(
         &mut self,
         hwnd: HWND,
         percent: u8,

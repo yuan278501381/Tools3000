@@ -40,6 +40,8 @@ namespace tools3000::core {
 inline constexpr wchar_t kWindowKitExeName[] = L"Tools3000_WindowKit.exe";
 inline constexpr wchar_t kWindowKitControlClassName[] = L"Tools3000_WindowKit_Control";
 inline constexpr wchar_t kWindowKitEditorResultMsgName[] = L"Tools3000_WindowKit_EditorResult";
+inline constexpr wchar_t kWindowKitWorkspaceCaptureResultMsgName[] = L"Tools3000_WindowKit_WorkspaceCaptureResult";
+inline constexpr wchar_t kWindowKitQuickSwitchBoundsMsgName[] = L"Tools3000_WindowKit_QuickSwitchBounds";
 
 inline constexpr UINT kWindowKitMsgReloadConfig = WM_APP + 1;
 inline constexpr UINT kWindowKitMsgExecAction = WM_APP + 2;
@@ -66,6 +68,10 @@ inline constexpr WPARAM kWindowKitActionQueryMonitors = 17;
 inline constexpr WPARAM kWindowKitActionQueryRuntimeStats = 18;
 inline constexpr WPARAM kWindowKitActionShowZonesPreview = 19;
 inline constexpr WPARAM kWindowKitActionOpenLayoutEditor = 20;
+inline constexpr WPARAM kWindowKitActionApplyLayoutHotkeyDigit = 21;
+inline constexpr WPARAM kWindowKitActionStartWorkspaceCapture = 22;
+inline constexpr WPARAM kWindowKitActionPreviewBorderStyle = 23;
+inline constexpr WPARAM kWindowKitActionOpenLayoutEditorDirect = 24;
 
 class TOOLS3000CORE_API WindowKitController {
 public:
@@ -107,8 +113,32 @@ public:
     /// 读取 Windows 注册表枚举全部虚拟桌面 GUID、用户自定义名称与当前活跃桌面
     nlohmann::json getVirtualDesktopsJson() const;
 
-    /// 消费全屏布局编辑器保存回写文件并持久化到 ConfigManager、热重载 Rust 与推送前端刷新
+    /// 消费全屏布局编辑器 / 双层布局管理器保存回写文件并持久化到 ConfigManager、热重载 Rust 与推送前端刷新
     bool handleLayoutEditorResult(bool saved);
+
+    /// 消费工作区正红细边摆拍捕获结果并推送给 React 工作台
+    bool handleWorkspaceCaptureResult(bool captured);
+
+    /// 消费 Quick Switch v2 自由拖缩位置记忆回写（静默落盘）
+    bool handleQuickSwitchBoundsResult();
+
+    /// 启动全多屏 4px 正红细边工作区摆拍捕获（可选传入 targetWorkspaceId / restoreSettingsHwnd）
+    nlohmann::json startWorkspaceCapture(const nlohmann::json& params = nlohmann::json::object());
+
+    /// 在当前用户桌面创建指向 Tools3000.exe --launch-workspace "<id>" 的原生 .lnk 快捷方式
+    nlohmann::json createWorkspaceShortcutJson(const std::string& workspaceId, const std::string& name = "");
+
+    /// 审计 SnapZones 绑定中的离线显示器与已删除虚拟桌面（只读报告，绝不自动破坏性删用户数据）
+    nlohmann::json auditBindingsJson();
+
+    /// 按用户显式确认清理离线显示器与/或已删除虚拟桌面绑定
+    nlohmann::json cleanStaleBindingsJson(bool cleanOfflineMonitors, bool cleanRemovedDesktops);
+
+    /// 在前台窗口外沿实时亮框预览边框样式（1.2s 自动收起，支持焦点边框与置顶边框）
+    nlohmann::json previewBorderStyle(const nlohmann::json& params);
+
+    /// 按工作区 ID 直接启动场景工作区（供 CLI --launch-workspace 桌面快捷方式与 IPC 复用）
+    nlohmann::json launchWorkspaceById(const std::string& workspaceId);
 
     /// 捕获当前桌面所有应用窗口为工作区快照（有限超时 one-shot CLI）
     nlohmann::json captureWorkspaceJson(const std::string& name = "");
@@ -122,13 +152,13 @@ public:
     /// 供 Alt+Space 搜索框枚举已启用的场景工作区
     nlohmann::json listSearchableWorkspacesJson() const;
 
-    /// 构建出厂默认 WindowManagerSettings JSON（全开关默认 false + 内置分区预设）
+    /// 构建出厂默认 WindowManagerSettings JSON（全开关默认 false + 6 大参数化模板）
     static nlohmann::json buildDefaultSettingsJson();
 
     /// 判断给定配置对象是否需要拉起子进程（enabled && 至少 1 个 features.* 为 true）
     static bool hasAnyActiveFeature(bool masterEnabled, const nlohmann::json& settings) noexcept;
 
-    /// 将动作名（支持 snake_case 与 camelCase）映射为 WindowKit 1..19 控制消息码
+    /// 将动作名（支持 snake_case 与 camelCase）映射为 WindowKit 1..24 控制消息码
     static WPARAM resolveActionCode(const std::string& actionName) noexcept;
 
 private:
@@ -142,6 +172,8 @@ private:
     std::filesystem::path resolveRuntimeConfigPath() const;
     std::filesystem::path resolveActionPayloadPath() const;
     std::filesystem::path resolveEditorResultPath() const;
+    std::filesystem::path resolveWorkspaceCaptureResultPath() const;
+    std::filesystem::path resolveQuickSwitchBoundsPath() const;
 
     void loadFromConfigLocked();
     void saveToConfigLocked() const;
@@ -155,7 +187,8 @@ private:
     void stopManagedProcessLocked(DWORD gracefulTimeoutMs);
     bool isProcessAliveLocked() const noexcept;
     HWND findManagedControlWindowLocked() const noexcept;
-    void postControlMessageLocked(UINT msg, WPARAM wp, LPARAM lp) const noexcept;
+    HWND waitForManagedControlWindowLocked(DWORD maxWaitMs) const noexcept;
+    void postControlMessageLocked(UINT msg, WPARAM wp, LPARAM lp, bool waitIfJustStarted = false) const noexcept;
 
     void startWatchdogLocked();
     void stopWatchdog();

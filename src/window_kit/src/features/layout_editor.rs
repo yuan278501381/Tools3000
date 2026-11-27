@@ -52,7 +52,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, ReleaseCapture, SetCapture, SetFocus, VK_BACK, VK_CONTROL, VK_DELETE,
-    VK_DOWN, VK_ESCAPE, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_UP,
+    VK_DOWN, VK_ESCAPE, VK_LEFT, VK_MENU, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, FindWindowW, GetCursorPos, IsWindow,
@@ -594,8 +594,51 @@ fn clamp_canvas_zone(mut z: NormalizedZone) -> NormalizedZone {
 }
 
 fn snapshot_from_layout(layout: &ZoneLayout, default_gap: i32) -> EditorSnapshot {
-    let gap = layout.gap.unwrap_or(default_gap).clamp(0, 48);
+    let gap = layout.effective_gap(default_gap).clamp(0, 48);
     match layout.layout_type {
+        ZoneLayoutType::None => EditorSnapshot {
+            mode: ZoneLayoutType::Grid,
+            zone_gap: gap,
+            rows: 1,
+            columns: 2,
+            row_weights: vec![100.0],
+            col_weights: vec![50.0, 50.0],
+            cell_map: vec![vec![0, 1]],
+            canvas_zones: vec![
+                NormalizedZone { index: 0, x: 0.0, y: 0.0, width: 0.5, height: 1.0 },
+                NormalizedZone { index: 1, x: 0.5, y: 0.0, width: 0.5, height: 1.0 },
+            ],
+        },
+        ZoneLayoutType::Focus => {
+            let ref_work = RectI::new(0, 0, 2000, 1200);
+            let resolved = crate::core::geometry::resolve_focus_zones(
+                ref_work,
+                layout.zone_count.max(1),
+                gap,
+            );
+            let zones: Vec<NormalizedZone> = resolved
+                .into_iter()
+                .map(|z| {
+                    clamp_canvas_zone(NormalizedZone {
+                        index: z.index,
+                        x: z.rect.left as f64 / 2000.0,
+                        y: z.rect.top as f64 / 1200.0,
+                        width: z.rect.width() as f64 / 2000.0,
+                        height: z.rect.height() as f64 / 1200.0,
+                    })
+                })
+                .collect();
+            EditorSnapshot {
+                mode: ZoneLayoutType::Canvas,
+                zone_gap: gap,
+                rows: 1,
+                columns: 2,
+                row_weights: vec![100.0],
+                col_weights: vec![50.0, 50.0],
+                cell_map: vec![vec![0, 1]],
+                canvas_zones: zones,
+            }
+        }
         ZoneLayoutType::Grid => {
             let rows = layout.rows.clamp(1, MAX_GRID_DIM);
             let columns = layout.columns.clamp(1, MAX_GRID_DIM);
@@ -743,6 +786,12 @@ fn grid_snapshot_to_canvas_zones(
 impl EditorSnapshot {
     pub fn resolve(&self, work_area: RectI) -> Vec<ResolvedZone> {
         match self.mode {
+            ZoneLayoutType::None => Vec::new(),
+            ZoneLayoutType::Focus => crate::core::geometry::resolve_focus_zones(
+                work_area,
+                self.canvas_zones.len().max(1),
+                self.zone_gap,
+            ),
             ZoneLayoutType::Grid => resolve_grid_zones(
                 work_area,
                 self.rows,
@@ -760,32 +809,22 @@ impl EditorSnapshot {
 
     pub fn to_zone_layout(&self, id: String, name: String, built_in: bool) -> ZoneLayout {
         match self.mode {
-            ZoneLayoutType::Grid => ZoneLayout {
+            ZoneLayoutType::Grid | ZoneLayoutType::None => ZoneLayout::new_grid(
                 id,
                 name,
-                layout_type: ZoneLayoutType::Grid,
                 built_in,
-                gap: Some(self.zone_gap),
-                rows: self.rows,
-                columns: self.columns,
-                row_weights: normalize_weights_to_100(&self.row_weights, self.rows),
-                col_weights: normalize_weights_to_100(&self.col_weights, self.columns),
-                cell_child_map: compact_cell_map(&self.cell_map),
-                zones: Vec::new(),
-            },
-            ZoneLayoutType::Canvas => ZoneLayout {
+                self.rows,
+                self.columns,
+                normalize_weights_to_100(&self.row_weights, self.rows),
+                normalize_weights_to_100(&self.col_weights, self.columns),
+                compact_cell_map(&self.cell_map),
+                Some(self.zone_gap),
+            ),
+            ZoneLayoutType::Canvas | ZoneLayoutType::Focus => ZoneLayout::new_canvas(
                 id,
                 name,
-                layout_type: ZoneLayoutType::Canvas,
                 built_in,
-                gap: Some(self.zone_gap),
-                rows: 0,
-                columns: 0,
-                row_weights: Vec::new(),
-                col_weights: Vec::new(),
-                cell_child_map: Vec::new(),
-                zones: self
-                    .canvas_zones
+                self.canvas_zones
                     .iter()
                     .enumerate()
                     .map(|(i, z)| {
@@ -794,7 +833,8 @@ impl EditorSnapshot {
                         c
                     })
                     .collect(),
-            },
+                Some(self.zone_gap),
+            ),
         }
     }
 
@@ -1158,6 +1198,16 @@ pub struct OpenEditorRequest {
     pub layout_id: Option<String>,
     pub restore_settings_hwnd: Option<isize>,
     pub ui_lang: String,
+    pub return_to_hub: bool,
+    pub initial_mode: Option<ZoneLayoutType>,
+    pub custom_name: Option<String>,
+    pub is_new_custom: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorCloseOutcome {
+    StillOpen,
+    Closed { saved: bool, return_to_hub: bool },
 }
 
 struct EditorSession {
@@ -1170,6 +1220,12 @@ struct EditorSession {
     source_layout_id: String,
     source_layout_name: String,
     source_built_in: bool,
+    source_show_spacing: bool,
+    source_highlight_distance: Option<i32>,
+    source_hotkey_digit: Option<u8>,
+    return_to_hub: bool,
+    #[allow(dead_code)]
+    is_new_custom: bool,
     dirty: bool,
     zh_ui: bool,
     dark_theme: bool,
@@ -1276,22 +1332,71 @@ impl LayoutEditorManager {
             .and_then(get_virtual_desktop_name)
             .unwrap_or_default();
 
-        // 3. 解析待编辑布局
-        let chosen_layout = req
-            .layout_id
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .and_then(|lid| cfg.find_layout(lid))
-            .unwrap_or_else(|| {
-                cfg.layout_for_monitor(
-                    &mon.id,
-                    if cfg.snap_zones.per_virtual_desktop {
-                        desktop_id.as_deref()
+        // 3. 解析待编辑布局（支持从 Hub 新建网格/画布自定义布局或编辑既有布局）
+        let zh_ui = !req.ui_lang.trim().to_ascii_lowercase().starts_with("en");
+        let chosen_layout: ZoneLayout = if req.is_new_custom {
+            let mode = match req.initial_mode {
+                Some(ZoneLayoutType::Canvas) => ZoneLayoutType::Canvas,
+                _ => ZoneLayoutType::Grid,
+            };
+            let ts = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let name = req
+                .custom_name
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| {
+                    if zh_ui {
+                        "自定义布局".to_string()
                     } else {
-                        None
-                    },
+                        "Custom Layout".to_string()
+                    }
+                });
+            if mode == ZoneLayoutType::Canvas {
+                ZoneLayout::new_canvas(
+                    format!("custom_{ts}"),
+                    name,
+                    false,
+                    vec![NormalizedZone {
+                        index: 0,
+                        x: 0.28,
+                        y: 0.18,
+                        width: 0.44,
+                        height: 0.62,
+                    }],
+                    Some(cfg.snap_zones.zone_gap),
                 )
-            });
+            } else {
+                ZoneLayout::new_grid(
+                    format!("custom_{ts}"),
+                    name,
+                    false,
+                    1,
+                    2,
+                    vec![100.0],
+                    vec![50.0, 50.0],
+                    vec![vec![0, 1]],
+                    Some(cfg.snap_zones.zone_gap),
+                )
+            }
+        } else {
+            req.layout_id
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .and_then(|lid| cfg.find_layout(lid))
+                .unwrap_or_else(|| {
+                    cfg.resolve_layout_for_monitor(
+                        &mon,
+                        if cfg.snap_zones.per_virtual_desktop {
+                            desktop_id.as_deref()
+                        } else {
+                            None
+                        },
+                    )
+                })
+                .clone()
+        };
 
         let work = mon.work_rect;
         let w = work.width();
@@ -1320,9 +1425,8 @@ impl LayoutEditorManager {
             return false;
         };
 
-        let zh_ui = !req.ui_lang.trim().to_ascii_lowercase().starts_with("en");
         let scale = (mon.dpi as f32 / 96.0).max(1.0);
-        let state = snapshot_from_layout(chosen_layout, cfg.snap_zones.zone_gap);
+        let state = snapshot_from_layout(&chosen_layout, chosen_layout.effective_gap(cfg.snap_zones.zone_gap));
         let selected_zone = if state.mode == ZoneLayoutType::Canvas && !state.canvas_zones.is_empty() {
             Some(0)
         } else {
@@ -1339,7 +1443,12 @@ impl LayoutEditorManager {
             source_layout_id: chosen_layout.id.clone(),
             source_layout_name: chosen_layout.name.clone(),
             source_built_in: chosen_layout.built_in,
-            dirty: false,
+            source_show_spacing: chosen_layout.show_spacing,
+            source_highlight_distance: chosen_layout.highlight_distance,
+            source_hotkey_digit: chosen_layout.hotkey_digit,
+            return_to_hub: req.return_to_hub,
+            is_new_custom: req.is_new_custom,
+            dirty: req.is_new_custom,
             zh_ui,
             dark_theme: cfg.is_dark_theme(),
             accent_rgb: parse_hex_color(&cfg.accent_color, [0.23, 0.51, 0.96]),
@@ -1389,17 +1498,58 @@ impl LayoutEditorManager {
         true
     }
 
-    /// 处理由窗口过程转发来的交互事件；返回 true 表示编辑器刚关闭（触发冷路径内存收缩）
+    /// 多屏拔插、旋转或分辨率变化时原地重建 Surface 并自适应重排，避免花屏或卡死
+    pub fn on_topology_changed(&mut self, gfx: Option<&SharedGraphics>) {
+        let (Some(sess), Some(g)) = (self.session.as_mut(), gfx) else {
+            return;
+        };
+        let monitors = enumerate_monitors();
+        if monitors.is_empty() {
+            return;
+        }
+        let next_mon = monitors
+            .iter()
+            .find(|m| m.id.eq_ignore_ascii_case(&sess.monitor.id))
+            .cloned()
+            .unwrap_or_else(|| monitors[0].clone());
+        let w = next_mon.work_rect.width();
+        let h = next_mon.work_rect.height();
+        if w < 200 || h < 160 {
+            return;
+        }
+        if next_mon.work_rect != sess.monitor.work_rect || next_mon.dpi != sess.monitor.dpi {
+            if let Ok(new_surface) = EditorSurface::new(g, w, h) {
+                sess.surface = new_surface;
+                sess.monitor = next_mon.clone();
+                sess.rebuild_dock_geometry(true);
+                unsafe {
+                    let _ = SetWindowPos(
+                        sess.hwnd,
+                        HWND_TOPMOST,
+                        next_mon.work_rect.left,
+                        next_mon.work_rect.top,
+                        w,
+                        h,
+                        Default::default(),
+                    );
+                }
+                sess.render(g);
+            }
+        }
+    }
+
+    /// 处理由窗口过程转发来的交互事件
     pub fn handle_event(
         &mut self,
         evt: usize,
         payload: isize,
+        cfg: &mut WindowKitConfig,
         config_dir: &Path,
         gfx: Option<&SharedGraphics>,
         trace_id: &str,
-    ) -> bool {
+    ) -> EditorCloseOutcome {
         let Some(sess) = self.session.as_mut() else {
-            return false;
+            return EditorCloseOutcome::StillOpen;
         };
 
         let mut need_render = false;
@@ -1437,7 +1587,6 @@ impl LayoutEditorManager {
                 need_render = sess.on_lbutton_dblclk(lx, ly);
             }
             ED_EVT_RBUTTONDOWN => {
-                // 右键空白处快速退出编辑或取消当前拖拽
                 if sess.drag.is_some() {
                     sess.drag = None;
                     sess.active_guides.clear();
@@ -1481,8 +1630,7 @@ impl LayoutEditorManager {
         }
 
         if let Some(save) = finish_action {
-            self.finish_and_close(save, config_dir, trace_id);
-            return true;
+            return self.finish_and_close(save, cfg, config_dir, trace_id);
         }
 
         if need_render {
@@ -1490,19 +1638,26 @@ impl LayoutEditorManager {
                 sess.render(g);
             }
         }
-        false
+        EditorCloseOutcome::StillOpen
     }
 
     pub fn close_discard(&mut self, trace_id: &str) {
         if let Some(sess) = self.session.take() {
-            destroy_editor_session(sess, false, trace_id);
+            destroy_editor_session(sess, false, false, trace_id);
         }
     }
 
-    fn finish_and_close(&mut self, save: bool, config_dir: &Path, trace_id: &str) {
+    fn finish_and_close(
+        &mut self,
+        save: bool,
+        cfg: &mut WindowKitConfig,
+        config_dir: &Path,
+        trace_id: &str,
+    ) -> EditorCloseOutcome {
         let Some(sess) = self.session.take() else {
-            return;
+            return EditorCloseOutcome::StillOpen;
         };
+        let return_to_hub = sess.return_to_hub;
         let mut actually_saved = false;
         if save {
             let (out_id, out_name, out_builtin) = if sess.source_built_in && sess.dirty {
@@ -1524,7 +1679,30 @@ impl LayoutEditorManager {
                 )
             };
 
-            let final_layout = sess.state.to_zone_layout(out_id, out_name, out_builtin);
+            let mut final_layout = sess.state.to_zone_layout(out_id, out_name, out_builtin);
+            final_layout.show_spacing = sess.source_show_spacing || sess.state.zone_gap > 0;
+            final_layout.highlight_distance = sess.source_highlight_distance;
+            final_layout.hotkey_digit = sess.source_hotkey_digit;
+
+            // 即刻同步进运行期内存配置，回 Hub 时 0 延迟立即可见并预览！
+            if let Some(existing) = cfg
+                .snap_zones
+                .layouts
+                .iter_mut()
+                .find(|l| l.id == final_layout.id)
+            {
+                *existing = final_layout.clone();
+            } else {
+                cfg.snap_zones.layouts.push(final_layout.clone());
+            }
+            let bind_desktop = if sess.per_virtual_desktop {
+                sess.desktop_id.as_deref().unwrap_or("")
+            } else {
+                ""
+            };
+            cfg.snap_zones
+                .bind_monitor_layout(&sess.monitor.id, bind_desktop, &final_layout.id);
+
             let mut root = JsonValue::object();
             root.insert("saved", JsonValue::Bool(true));
             root.insert("monitorId", JsonValue::String(sess.monitor.id.clone()));
@@ -1567,7 +1745,11 @@ impl LayoutEditorManager {
         } else {
             wk_debug!(trace_id, "layoutEditor", "closed editor without saving");
         }
-        destroy_editor_session(sess, actually_saved, trace_id);
+        destroy_editor_session(sess, actually_saved, !return_to_hub, trace_id);
+        EditorCloseOutcome::Closed {
+            saved: actually_saved,
+            return_to_hub,
+        }
     }
 }
 
@@ -1577,9 +1759,18 @@ impl Drop for LayoutEditorManager {
     }
 }
 
-fn destroy_editor_session(sess: EditorSession, saved: bool, trace_id: &str) {
+fn destroy_editor_session(
+    sess: EditorSession,
+    saved: bool,
+    allow_restore_settings: bool,
+    trace_id: &str,
+) {
     let hwnd = sess.hwnd;
-    let restore_flag = if sess.restore_settings_hwnd.is_some() { 1isize } else { 0isize };
+    let restore_flag = if allow_restore_settings && sess.restore_settings_hwnd.is_some() {
+        1isize
+    } else {
+        0isize
+    };
     // 先释放 D2D Surface（Drop），再销毁窗口
     drop(sess);
     unsafe {
@@ -2337,7 +2528,24 @@ impl EditorSession {
             return ClickOutcome::Redraw;
         }
 
-        // 3. Canvas 模式：命中缩放边/角或区内部开始移动
+        // 3. Canvas 模式：先检查右上角圆形 x 快捷删除按钮，再检测 8 向缩放边/角或区内部移动
+        if self.state.canvas_zones.len() > 1 {
+            let zones = self.resolved_zones();
+            let s = self.scale();
+            let btn_sz = (24.0 * s).round() as i32;
+            let pad = (8.0 * s).round() as i32;
+            for z in zones.iter().rev() {
+                let lr = self.local_rect(z.rect);
+                if lr.width() >= btn_sz * 2 + pad && lr.height() >= btn_sz * 2 + pad {
+                    let close_rc = RectI::from_xywh(lr.right - pad - btn_sz, lr.top + pad, btn_sz, btn_sz);
+                    if close_rc.contains_point(lx, ly) {
+                        self.selected_zone = Some(z.index);
+                        let _ = self.delete_selected_zone();
+                        return ClickOutcome::Redraw;
+                    }
+                }
+            }
+        }
         if let Some((idx, handle)) = self.hit_test_canvas_handle(lx, ly) {
             self.selected_zone = Some(idx);
             let orig_zone = self.state.canvas_zones[idx].clone();
@@ -2492,33 +2700,61 @@ impl EditorSession {
             }
             return ClickOutcome::None;
         }
-        // Canvas 模式方向键 1% 精细微调（按住 Shift 调整宽高）
+        // Ctrl+Tab 在 Canvas 区域间循环切换焦点（复刻 FancyZones 图 6 快捷键）
+        if self.state.mode == ZoneLayoutType::Canvas && ctrl && vk == VK_TAB.0 {
+            let total = self.state.canvas_zones.len();
+            if total > 0 {
+                let next = match self.selected_zone {
+                    Some(cur) => {
+                        if self.shift_down {
+                            (cur + total - 1) % total
+                        } else {
+                            (cur + 1) % total
+                        }
+                    }
+                    None => 0,
+                };
+                self.selected_zone = Some(next);
+                return ClickOutcome::Redraw;
+            }
+        }
+        // Canvas 模式精准物理像素微调（复刻 FancyZones 图 6）：
+        // 方向键 = 移动 10px，Ctrl+方向键 = 移动 1px；
+        // Shift+方向键 = 改大小 10px，Ctrl+Shift+方向键 = 改大小 2px。
         if self.state.mode == ZoneLayoutType::Canvas
             && matches!(vk, x if x == VK_LEFT.0 || x == VK_RIGHT.0 || x == VK_UP.0 || x == VK_DOWN.0)
         {
             if let Some(sel) = self.selected_zone {
                 if sel < self.state.canvas_zones.len() {
-                    let step = 0.01;
+                    let px_step = if self.shift_down {
+                        if ctrl { 2.0 } else { 10.0 }
+                    } else if ctrl {
+                        1.0
+                    } else {
+                        10.0
+                    };
+                    let step_x = px_step / self.work_w().max(1) as f64;
+                    let step_y = px_step / self.work_h().max(1) as f64;
                     self.push_undo();
                     let z = &mut self.state.canvas_zones[sel];
                     if self.shift_down {
                         if vk == VK_LEFT.0 {
-                            z.width -= step;
+                            z.width -= step_x;
                         } else if vk == VK_RIGHT.0 {
-                            z.width += step;
+                            z.width += step_x;
                         } else if vk == VK_UP.0 {
-                            z.height -= step;
+                            z.height -= step_y;
                         } else if vk == VK_DOWN.0 {
-                            z.height += step;
+                            z.height += step_y;
                         }
                     } else if vk == VK_LEFT.0 {
-                        z.x -= step;
+                        z.x -= step_x;
                     } else if vk == VK_RIGHT.0 {
-                        z.x += step;
+                        z.x += step_x;
                     } else if vk == VK_UP.0 {
-                        z.y -= step;
+                        z.y -= step_y;
                     } else if vk == VK_DOWN.0 {
-                        z.y += step;
+                        z.y += step_y;
                     }
                     *z = clamp_canvas_zone(z.clone());
                     self.rebuild_dock_geometry(false);
@@ -2789,11 +3025,11 @@ impl EditorSession {
             unsafe { gfx.d2d_factory.CreateStrokeStyle(&dash_props, None).ok() };
 
         let _ = self.surface.render(self.hwnd, work.left, work.top, |rt| unsafe {
-            // 1. 极淡全局透视幕布（~14% 暗幕，底层所有真实窗口与任务栏清晰可辨）
+            // 1. 极轻柔全局透视幕布（复刻 FancyZones 图 6/12 通透质感，底层软件窗口保持清晰明亮）
             let scrim = if dark {
-                rgba(0.03, 0.05, 0.09, 0.20)
+                rgba(0.03, 0.05, 0.09, 0.14)
             } else {
-                rgba(0.05, 0.08, 0.14, 0.14)
+                rgba(0.05, 0.08, 0.14, 0.06)
             };
             if let Ok(b_scrim) = rt.CreateSolidColorBrush(&scrim, None) {
                 rt.FillRectangle(&rect_f(0.0, 0.0, w, h), &b_scrim);
@@ -2801,20 +3037,16 @@ impl EditorSession {
 
             // 通用笔刷
             let snap_cyan = rgba(0.02, 0.78, 0.90, 0.96);
-            let real_win_outline = rgba(0.02, 0.78, 0.90, 0.28);
-            let real_win_tag_bg = rgba(0.06, 0.09, 0.14, 0.64);
+            let real_win_outline = rgba(0.02, 0.78, 0.90, 0.24);
+            let real_win_tag_bg = rgba(0.06, 0.09, 0.14, 0.60);
             let zone_idle_fill = if dark {
-                rgba(0.08, 0.11, 0.17, 0.34)
+                rgba(0.08, 0.11, 0.17, 0.42)
             } else {
-                rgba(0.97, 0.98, 1.0, 0.38)
+                rgba(0.98, 0.985, 0.995, 0.56)
             };
-            let zone_hover_fill = rgb_a(accent, 0.20);
-            let zone_sel_fill = rgb_a(accent, 0.28);
-            let zone_idle_stroke = if dark {
-                rgba(1.0, 1.0, 1.0, 0.34)
-            } else {
-                rgba(0.10, 0.16, 0.28, 0.36)
-            };
+            let zone_hover_fill = rgb_a(accent, 0.18);
+            let zone_sel_fill = rgb_a(accent, 0.24);
+            let zone_idle_stroke = rgb_a(accent, if dark { 0.76 } else { 0.70 });
             let accent_solid = rgb_a(accent, 0.96);
             let accent_glow = rgb_a(accent, 0.26);
             let card_bg = if dark {
@@ -3014,29 +3246,45 @@ impl EditorSession {
                     }
                 }
 
-                // Canvas 模式下为选中区绘制 8 向缩放控制手柄
-                if self.state.mode == ZoneLayoutType::Canvas && (is_sel || is_hov) {
-                    let hs = 5.5 * s;
-                    let handles = [
-                        (rf.left, rf.top),
-                        ((rf.left + rf.right) * 0.5, rf.top),
-                        (rf.right, rf.top),
-                        (rf.right, (rf.top + rf.bottom) * 0.5),
-                        (rf.right, rf.bottom),
-                        ((rf.left + rf.right) * 0.5, rf.bottom),
-                        (rf.left, rf.bottom),
-                        (rf.left, (rf.top + rf.bottom) * 0.5),
-                    ];
-                    for (hx, hy) in handles {
-                        let hr = rect_f(hx - hs, hy - hs, hx + hs, hy + hs);
-                        let hrr = rounded_rect(hr, 3.0 * s);
-                        rt.FillRoundedRectangle(&hrr, &b_white);
-                        rt.DrawRoundedRectangle(&hrr, &b_accent, 1.8 * s, None);
+                // Canvas 模式下：右上角快捷关闭圆钮（图 6/7）+ 选中区 8 向缩放控制手柄
+                if self.state.mode == ZoneLayoutType::Canvas {
+                    if self.state.canvas_zones.len() > 1 {
+                        let btn_sz = 24.0 * s;
+                        let pad = 8.0 * s;
+                        if (rf.right - rf.left) >= btn_sz * 2.0 + pad && (rf.bottom - rf.top) >= btn_sz * 2.0 + pad {
+                            let xr = rect_f(rf.right - pad - btn_sz, rf.top + pad, rf.right - pad, rf.top + pad + btn_sz);
+                            rt.FillRoundedRectangle(&rounded_rect(xr, btn_sz * 0.5), &b_card_bg);
+                            rt.DrawRoundedRectangle(&rounded_rect(xr, btn_sz * 0.5), &b_card_border, 1.0 * s, None);
+                            let xcx = (xr.left + xr.right) * 0.5;
+                            let xcy = (xr.top + xr.bottom) * 0.5;
+                            let xs = 4.2 * s;
+                            rt.DrawLine(D2D_POINT_2F { x: xcx - xs, y: xcy - xs }, D2D_POINT_2F { x: xcx + xs, y: xcy + xs }, &b_text, 1.4 * s, None);
+                            rt.DrawLine(D2D_POINT_2F { x: xcx + xs, y: xcy - xs }, D2D_POINT_2F { x: xcx - xs, y: xcy + xs }, &b_text, 1.4 * s, None);
+                        }
+                    }
+                    if is_sel || is_hov {
+                        let hs = 5.5 * s;
+                        let handles = [
+                            (rf.left, rf.top),
+                            ((rf.left + rf.right) * 0.5, rf.top),
+                            (rf.right, rf.top),
+                            (rf.right, (rf.top + rf.bottom) * 0.5),
+                            (rf.right, rf.bottom),
+                            ((rf.left + rf.right) * 0.5, rf.bottom),
+                            (rf.left, rf.bottom),
+                            (rf.left, (rf.top + rf.bottom) * 0.5),
+                        ];
+                        for (hx, hy) in handles {
+                            let hr = rect_f(hx - hs, hy - hs, hx + hs, hy + hs);
+                            let hrr = rounded_rect(hr, 3.0 * s);
+                            rt.FillRoundedRectangle(&hrr, &b_white);
+                            rt.DrawRoundedRectangle(&hrr, &b_accent, 1.8 * s, None);
+                        }
                     }
                 }
             }
 
-            // 4. Grid 模式下绘制可见分割手柄 + 鼠标悬停区内的实时切分虚线预览
+            // 4. Grid 模式下绘制 FancyZones 标志性圆形 (||)/(=) 主题色拖动手柄 + 实线切割预览（图 12/13）
             if self.state.mode == ZoneLayoutType::Grid {
                 for d in &dividers {
                     let is_active = self.hovered_divider == Some(*d)
@@ -3046,22 +3294,10 @@ impl EditorSession {
                                 if is_vertical == d.is_vertical && track_index == d.track_index
                         );
                     let mid = ((d.span_start_px + d.span_end_px) as f32) * 0.5;
-                    let grip_len = (28.0 * s).min(((d.span_end_px - d.span_start_px) as f32) * 0.45);
-                    let grip_thick = if is_active { 5.0 * s } else { 3.5 * s };
-                    let gr = if d.is_vertical {
-                        rect_f(
-                            d.local_px as f32 - grip_thick,
-                            mid - grip_len,
-                            d.local_px as f32 + grip_thick,
-                            mid + grip_len,
-                        )
+                    let (cx, cy) = if d.is_vertical {
+                        (d.local_px as f32, mid)
                     } else {
-                        rect_f(
-                            mid - grip_len,
-                            d.local_px as f32 - grip_thick,
-                            mid + grip_len,
-                            d.local_px as f32 + grip_thick,
-                        )
+                        (mid, d.local_px as f32)
                     };
                     if is_active {
                         let p0 = if d.is_vertical {
@@ -3074,21 +3310,25 @@ impl EditorSession {
                         } else {
                             D2D_POINT_2F { x: d.span_end_px as f32, y: d.local_px as f32 }
                         };
-                        rt.DrawLine(p0, p1, &b_accent, 2.5 * s, None);
+                        rt.DrawLine(p0, p1, &b_accent, 2.6 * s, None);
                     }
-                    rt.FillRoundedRectangle(
-                        &rounded_rect(gr, grip_thick),
-                        if is_active { &b_accent } else { &b_card_bg },
-                    );
-                    rt.DrawRoundedRectangle(
-                        &rounded_rect(gr, grip_thick),
-                        if is_active { &b_white } else { &b_accent },
-                        1.2 * s,
-                        None,
-                    );
+                    // 圆形主题色拖动手柄 + 两条白色平行纹 (||) 或 (=)
+                    let hr = if is_active { 14.5 * s } else { 12.5 * s };
+                    let hbox = rect_f(cx - hr, cy - hr, cx + hr, cy + hr);
+                    rt.FillRoundedRectangle(&rounded_rect(hbox, hr), &b_accent);
+                    rt.DrawRoundedRectangle(&rounded_rect(hbox, hr), &b_white, 1.6 * s, None);
+                    let bar_off = 2.6 * s;
+                    let bar_half = 4.6 * s;
+                    if d.is_vertical {
+                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_off, y: cy - bar_half }, D2D_POINT_2F { x: cx - bar_off, y: cy + bar_half }, &b_white, 1.6 * s, None);
+                        rt.DrawLine(D2D_POINT_2F { x: cx + bar_off, y: cy - bar_half }, D2D_POINT_2F { x: cx + bar_off, y: cy + bar_half }, &b_white, 1.6 * s, None);
+                    } else {
+                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_half, y: cy - bar_off }, D2D_POINT_2F { x: cx + bar_half, y: cy - bar_off }, &b_white, 1.6 * s, None);
+                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_half, y: cy + bar_off }, D2D_POINT_2F { x: cx + bar_half, y: cy + bar_off }, &b_white, 1.6 * s, None);
+                    }
                 }
 
-                // 悬停在网格分区内部且未拖拽/未悬停分割线时：绘制实时虚线切分引导线
+                // 悬停在网格分区内部且未拖拽/未悬停分割线时：绘制清晰主题色实线切割预览（按 Shift 切 90°）
                 if self.drag.is_none() && self.hovered_divider.is_none() && self.hovered_dock_btn.is_none() {
                     if let Some(hz) = self.hovered_zone {
                         if let Some(z) = zones.iter().find(|item| item.index == hz) {
@@ -3097,16 +3337,17 @@ impl EditorSession {
                             if lr.contains_point(cx, cy) {
                                 let (p0, p1) = if self.shift_down {
                                     (
-                                        D2D_POINT_2F { x: lr.left as f32 + 4.0, y: cy as f32 },
-                                        D2D_POINT_2F { x: lr.right as f32 - 4.0, y: cy as f32 },
+                                        D2D_POINT_2F { x: lr.left as f32 + 2.0, y: cy as f32 },
+                                        D2D_POINT_2F { x: lr.right as f32 - 2.0, y: cy as f32 },
                                     )
                                 } else {
                                     (
-                                        D2D_POINT_2F { x: cx as f32, y: lr.top as f32 + 4.0 },
-                                        D2D_POINT_2F { x: cx as f32, y: lr.bottom as f32 - 4.0 },
+                                        D2D_POINT_2F { x: cx as f32, y: lr.top as f32 + 2.0 },
+                                        D2D_POINT_2F { x: cx as f32, y: lr.bottom as f32 - 2.0 },
                                     )
                                 };
-                                rt.DrawLine(p0, p1, &b_cyan, 2.2 * s, dashed_style.as_ref());
+                                rt.DrawLine(p0, p1, &b_accent_glow, 6.0 * s, None);
+                                rt.DrawLine(p0, p1, &b_accent, 2.2 * s, None);
                             }
                         }
                     }

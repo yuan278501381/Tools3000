@@ -16,6 +16,7 @@ use crate::core::config::{
 use crate::core::constants::*;
 use crate::core::json::parse_json;
 use crate::core::logger::{configure_logger, flush_logger, next_trace_id, LogLevel};
+use crate::core::topology::VirtualDesktopRegWatcher;
 use crate::core::win_utils::{
     default_powertoys_layouts_path, emergency_restore_all_tray_windows, enumerate_monitors,
     install_crash_recovery_guards, monitors_to_json, query_runtime_stats_json, to_wide,
@@ -24,12 +25,21 @@ use crate::core::win_utils::{
 use crate::features::alt_drag::AltDragManager;
 use crate::features::always_on_top::AlwaysOnTopManager;
 use crate::features::focus_border::FocusBorderManager;
-use crate::features::layout_editor::{LayoutEditorManager, OpenEditorRequest};
+use crate::features::layout_editor::{EditorCloseOutcome, LayoutEditorManager, OpenEditorRequest};
+use crate::features::layout_hub::{
+    notify_host_hub_sync, HubEventOutcome, LayoutHubManager, OpenHubRequest,
+};
 use crate::features::multi_monitor::MultiMonitorManager;
 use crate::features::opacity::OpacityManager;
-use crate::features::quick_switch::{QuickSwitchManager, QUICK_SWITCH_IS_OPEN};
+use crate::features::quick_switch::{
+    QuickSwitchDelegatedAction, QuickSwitchManager, QUICK_SWITCH_IS_OPEN,
+};
 use crate::features::snap_zones::SnapZonesManager;
-use crate::features::workspaces::{capture_workspace_json, launch_workspace_async};
+use crate::features::workspace_capture::{StartCaptureRequest, WorkspaceCaptureManager};
+use crate::features::workspaces::{
+    capture_workspace_json, capture_workspace_v2_json, drain_workspace_runtime_events,
+    launch_workspace_async, WorkspaceProgressOverlay, WorkspaceRuntimeEvent,
+};
 use crate::render::d2d::SharedGraphics;
 use std::cell::RefCell;
 use std::ffi::c_void;
@@ -43,26 +53,29 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{
-    CreateMutexW, OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE,
+    CreateMutexW, OpenProcess, WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_RMENU, VK_RWIN, VK_SHIFT, VK_TAB,
+    GetAsyncKeyState, VK_CONTROL, VK_LMENU, VK_LWIN, VK_MENU, VK_OEM_3, VK_RMENU, VK_RWIN,
+    VK_SHIFT, VK_TAB,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
-    GetMessageW, KillTimer, LoadCursorW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    RegisterWindowMessageW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE, EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND,
-    EVENT_SYSTEM_MINIMIZEEND, EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND,
-    EVENT_SYSTEM_MOVESIZESTART, HHOOK, IDC_ARROW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG,
-    MSLLHOOKSTRUCT, OBJID_WINDOW, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
-    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
-    WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+    KillTimer, LoadCursorW, MsgWaitForMultipleObjectsEx, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassExW, RegisterWindowMessageW, SetTimer, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, EVENT_OBJECT_DESTROY, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
+    EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, HHOOK,
+    IDC_ARROW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, MSLLHOOKSTRUCT, MWMO_INPUTAVAILABLE,
+    OBJID_WINDOW, PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_CLOSE, WM_DISPLAYCHANGE, WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
+    WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,6 +85,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 static HOOK_CONTROL_HWND: AtomicIsize = AtomicIsize::new(0);
 static HOOK_MUTED: AtomicBool = AtomicBool::new(false);
 static HOOK_QUICK_SWITCH_ENABLED: AtomicBool = AtomicBool::new(false);
+static HOOK_SAME_APP_SWITCH_ENABLED: AtomicBool = AtomicBool::new(false);
 static HOOK_ALT_DRAG_ENABLED: AtomicBool = AtomicBool::new(false);
 static HOOK_ALT_DRAG_REQUIRE_CTRL: AtomicBool = AtomicBool::new(false);
 static HOOK_ALT_DRAG_ACTIVE: AtomicU32 = AtomicU32::new(0); // 0=空闲, 1=移动, 2=缩放
@@ -116,24 +130,45 @@ unsafe extern "system" fn low_level_keyboard_proc(
             let vk = kb.vkCode as u16;
             let ctrl_hwnd = HWND(ctrl_raw as *mut c_void);
 
-            if !HOOK_MUTED.load(Ordering::Acquire)
-                && HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire)
-            {
-                // 拦截 Alt+Tab / Alt+Shift+Tab（不干扰 Ctrl+Alt+Tab 或 Win 组合）
-                if (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN) && vk == VK_TAB.0 {
-                    let alt_down = (kb.flags.0 & LLKHF_ALTDOWN.0) != 0 || async_key_down(VK_MENU.0);
-                    let ctrl_down = async_key_down(VK_CONTROL.0);
-                    let win_down = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
-                    if alt_down && !ctrl_down && !win_down {
-                        let reverse = if async_key_down(VK_SHIFT.0) { 1usize } else { 0usize };
-                        let _ = PostMessageW(
-                            ctrl_hwnd,
-                            WM_WK_INTERNAL_ALT_TAB,
-                            WPARAM(reverse),
-                            LPARAM(0),
-                        );
-                        return LRESULT(1);
-                    }
+            if !HOOK_MUTED.load(Ordering::Acquire) {
+                let alt_down = (kb.flags.0 & LLKHF_ALTDOWN.0) != 0 || async_key_down(VK_MENU.0);
+                let ctrl_down = async_key_down(VK_CONTROL.0);
+                let win_down = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
+
+                // 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（仅在 replace_alt_tab 开启时拦截，绝不干扰原生 Ctrl+Alt+Tab）
+                if HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire)
+                    && (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN)
+                    && vk == VK_TAB.0
+                    && alt_down
+                    && !ctrl_down
+                    && !win_down
+                {
+                    let reverse = if async_key_down(VK_SHIFT.0) { 1usize } else { 0usize };
+                    let _ = PostMessageW(
+                        ctrl_hwnd,
+                        WM_WK_INTERNAL_ALT_TAB,
+                        WPARAM(reverse),
+                        LPARAM(0), // 0 = 全局 Alt+Tab
+                    );
+                    return LRESULT(1);
+                }
+
+                // 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`（可不接管原生 Alt+Tab 独立启用！）
+                if HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire)
+                    && (msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN)
+                    && vk == VK_OEM_3.0
+                    && alt_down
+                    && !ctrl_down
+                    && !win_down
+                {
+                    let reverse = if async_key_down(VK_SHIFT.0) { 1usize } else { 0usize };
+                    let _ = PostMessageW(
+                        ctrl_hwnd,
+                        WM_WK_INTERNAL_ALT_TAB,
+                        WPARAM(reverse),
+                        LPARAM(1), // 1 = 同应用 Alt+`
+                    );
+                    return LRESULT(1);
                 }
             }
 
@@ -295,7 +330,10 @@ struct ManagedRuntime {
     winevent_show: Option<HWINEVENTHOOK>,
     quick_switch: QuickSwitchManager,
     snap_zones: SnapZonesManager,
+    layout_hub: LayoutHubManager,
     layout_editor: LayoutEditorManager,
+    workspace_capture: WorkspaceCaptureManager,
+    workspace_progress: WorkspaceProgressOverlay,
     always_on_top: AlwaysOnTopManager,
     opacity: OpacityManager,
     alt_drag: AltDragManager,
@@ -343,7 +381,10 @@ impl ManagedRuntime {
             winevent_show: None,
             quick_switch: QuickSwitchManager::new(control_hwnd),
             snap_zones: SnapZonesManager::new(),
+            layout_hub: LayoutHubManager::new(control_hwnd),
             layout_editor: LayoutEditorManager::new(control_hwnd),
+            workspace_capture: WorkspaceCaptureManager::new(control_hwnd),
+            workspace_progress: WorkspaceProgressOverlay::new(),
             always_on_top: AlwaysOnTopManager::new(),
             opacity: OpacityManager::new(),
             alt_drag: AltDragManager::new(),
@@ -407,7 +448,10 @@ impl ManagedRuntime {
     fn reconcile_hooks(&mut self, trace_id: &str) {
         let f = self.config.features.clone();
 
-        HOOK_QUICK_SWITCH_ENABLED.store(f.quick_switch, Ordering::Release);
+        let qs_global = f.quick_switch && self.config.quick_switch.replace_alt_tab;
+        let qs_same_app = f.quick_switch && self.config.quick_switch.same_app_enabled;
+        HOOK_QUICK_SWITCH_ENABLED.store(qs_global, Ordering::Release);
+        HOOK_SAME_APP_SWITCH_ENABLED.store(qs_same_app, Ordering::Release);
         HOOK_ALT_DRAG_ENABLED.store(f.alt_drag, Ordering::Release);
         HOOK_ALT_DRAG_REQUIRE_CTRL.store(self.config.alt_drag.require_ctrl, Ordering::Release);
         HOOK_OPACITY_WHEEL_ENABLED.store(
@@ -419,7 +463,7 @@ impl ManagedRuntime {
             Ordering::Release,
         );
 
-        let need_kbd = f.quick_switch;
+        let need_kbd = qs_global || qs_same_app;
         let need_mouse = f.alt_drag
             || (f.opacity && self.config.opacity.alt_wheel_enabled)
             || (f.snap_zones && self.config.snap_zones.trigger_mode == SnapTriggerMode::RightClick);
@@ -601,7 +645,9 @@ impl ManagedRuntime {
                 &self.config,
                 self.gfx.as_ref(),
                 self.is_muted(),
-                self.quick_switch.is_open() || self.layout_editor.is_open(),
+                self.quick_switch.is_open()
+                    || self.layout_editor.is_open()
+                    || self.layout_hub.is_visible(),
             );
         }
 
@@ -780,7 +826,9 @@ impl ManagedRuntime {
                     return;
                 }
                 12 => {
+                    let tray_list = self.multi_monitor.list_tray_windows();
                     let closed = self.quick_switch.toggle_programmatic(
+                        &tray_list,
                         &self.config,
                         self.gfx.as_ref(),
                         trace_id,
@@ -893,7 +941,9 @@ impl ManagedRuntime {
                 if !self.quick_switch.is_open() {
                     self.ensure_gfx();
                 }
+                let tray_list = self.multi_monitor.list_tray_windows();
                 let closed = self.quick_switch.toggle_programmatic(
+                    &tray_list,
                     &self.config,
                     self.gfx.as_ref(),
                     trace_id,
@@ -904,7 +954,7 @@ impl ManagedRuntime {
                 self.ensure_animation_timer();
             }
             ACTION_CAPTURE_WORKSPACE => {
-                let json = capture_workspace_json(&self.config.excluded_apps);
+                let json = capture_workspace_v2_json(&self.config, None);
                 let out_path = self.config_dir.join(FILE_CAPTURE_WORKSPACE);
                 if let Err(e) = write_text_file_atomic(&out_path, &json.to_string_pretty()) {
                     wk_error!(trace_id, "workspaces", "capture write failed: {}", e);
@@ -912,7 +962,7 @@ impl ManagedRuntime {
                     wk_info!(
                         trace_id,
                         "workspaces",
-                        "captured workspace to {}",
+                        "captured workspace v2 to {}",
                         out_path.display()
                     );
                 }
@@ -984,30 +1034,98 @@ impl ManagedRuntime {
                 self.dispatch_zones_preview(arg, trace_id);
             }
             ACTION_OPEN_LAYOUT_EDITOR => {
-                // 打开 1:1 全屏原生布局编辑器前先收起可能遮挡的浮层并解析可选参数
+                // 打开双层共视布局管理器（或按 directEditor / layoutId 直入 1:1 全屏编辑区域）
                 self.snap_zones.hide_preview_overlay();
                 self.focus_border.hide();
-                let mut req = OpenEditorRequest {
-                    monitor_id: None,
-                    desktop_id: None,
-                    layout_id: None,
+                let mut monitor_id: Option<String> = None;
+                let mut desktop_id: Option<String> = None;
+                let mut layout_id: Option<String> = None;
+                let mut direct_editor = false;
+                let mut restore_settings_hwnd = if arg > 0x100 { Some(arg) } else { None };
+                let mut ui_lang = "zh".to_string();
+
+                let payload_path = self.config_dir.join(FILE_ACTION_PAYLOAD);
+                if let Ok(raw) = std::fs::read_to_string(&payload_path) {
+                    if let Ok(val) = parse_json(&raw) {
+                        let mid = val.get_str("monitorId", "").trim().to_string();
+                        if !mid.is_empty() {
+                            monitor_id = Some(mid);
+                        }
+                        let did = val.get_str("desktopId", "").trim().to_string();
+                        if !did.is_empty() {
+                            desktop_id = Some(did);
+                        }
+                        let lid = val.get_str("layoutId", "").trim().to_string();
+                        if !lid.is_empty() {
+                            layout_id = Some(lid);
+                        }
+                        direct_editor = val.get_bool("directEditor", false);
+                        if let Some(rh) = val.get("restoreSettingsHwnd").and_then(|v| v.as_f64()) {
+                            let raw_h = rh as isize;
+                            if raw_h > 0x100 {
+                                restore_settings_hwnd = Some(raw_h);
+                            }
+                        }
+                        let lang = val.get_str("uiLang", "").trim().to_string();
+                        if !lang.is_empty() {
+                            ui_lang = lang;
+                        }
+                    }
+                }
+                self.ensure_gfx();
+                if direct_editor || layout_id.is_some() {
+                    let req = OpenEditorRequest {
+                        monitor_id,
+                        desktop_id,
+                        layout_id,
+                        restore_settings_hwnd,
+                        ui_lang,
+                        return_to_hub: false,
+                        initial_mode: None,
+                        custom_name: None,
+                        is_new_custom: false,
+                    };
+                    let _ = self
+                        .layout_editor
+                        .open(req, &self.config, self.gfx.as_ref(), trace_id);
+                } else {
+                    let req = OpenHubRequest {
+                        monitor_id,
+                        desktop_id,
+                        restore_settings_hwnd,
+                        ui_lang,
+                    };
+                    let _ = self
+                        .layout_hub
+                        .open(req, &self.config, self.gfx.as_ref(), trace_id);
+                }
+            }
+            ACTION_APPLY_LAYOUT_HOTKEY_DIGIT => {
+                if (0..=9).contains(&arg) {
+                    if self
+                        .snap_zones
+                        .apply_layout_by_hotkey_digit(arg as u8, &mut self.config, trace_id)
+                        .is_some()
+                    {
+                        notify_host_hub_sync(&self.config, &self.config_dir, true, false, trace_id);
+                        self.dispatch_zones_preview(1200, trace_id);
+                    }
+                }
+            }
+            ACTION_START_WORKSPACE_CAPTURE => {
+                self.snap_zones.hide_preview_overlay();
+                self.focus_border.hide();
+                let mut req = StartCaptureRequest {
+                    workspace_id: None,
                     restore_settings_hwnd: if arg > 0x100 { Some(arg) } else { None },
                     ui_lang: "zh".to_string(),
                 };
                 let payload_path = self.config_dir.join(FILE_ACTION_PAYLOAD);
                 if let Ok(raw) = std::fs::read_to_string(&payload_path) {
                     if let Ok(val) = parse_json(&raw) {
-                        let mid = val.get_str("monitorId", "").trim().to_string();
-                        if !mid.is_empty() {
-                            req.monitor_id = Some(mid);
-                        }
-                        let did = val.get_str("desktopId", "").trim().to_string();
-                        if !did.is_empty() {
-                            req.desktop_id = Some(did);
-                        }
-                        let lid = val.get_str("layoutId", "").trim().to_string();
-                        if !lid.is_empty() {
-                            req.layout_id = Some(lid);
+                        let wid = val.get_str("workspaceId", "").trim().to_string();
+                        if !wid.is_empty() {
+                            req.workspace_id = Some(wid);
                         }
                         if let Some(rh) = val.get("restoreSettingsHwnd").and_then(|v| v.as_f64()) {
                             let raw_h = rh as isize;
@@ -1021,6 +1139,82 @@ impl ManagedRuntime {
                         }
                     }
                 }
+                self.ensure_gfx();
+                let _ = self
+                    .workspace_capture
+                    .start(req, &self.config, self.gfx.as_ref(), trace_id);
+            }
+            ACTION_PREVIEW_BORDER_STYLE => {
+                // arg == 1 预览置顶边框；其余预览焦点边框；可通过 action payload 传入实时未保存颜色/粗细
+                let mut color_hex = if arg == 1 {
+                    self.config.always_on_top.border_color.clone()
+                } else {
+                    self.config.focus_border.border_color.clone()
+                };
+                let mut width_px = if arg == 1 {
+                    self.config.always_on_top.border_width
+                } else {
+                    self.config.focus_border.border_width
+                };
+                let mut radius = self.config.focus_border.corner_radius;
+                let mut opacity = if arg == 1 {
+                    0.95
+                } else {
+                    self.config.focus_border.opacity
+                };
+                let payload_path = self.config_dir.join(FILE_ACTION_PAYLOAD);
+                if let Ok(raw) = std::fs::read_to_string(&payload_path) {
+                    if let Ok(val) = parse_json(&raw) {
+                        let c = val.get_str("borderColor", "").trim().to_string();
+                        if !c.is_empty() {
+                            color_hex = c;
+                        }
+                        let w_val = val.get_i32("borderWidth", -1);
+                        if w_val > 0 {
+                            width_px = w_val;
+                        }
+                        let r_val = val.get_i32("cornerRadius", -1);
+                        if r_val >= 0 {
+                            radius = r_val;
+                        }
+                        if let Some(op) = val.get("opacity").and_then(|v| v.as_f64()) {
+                            opacity = op as f32;
+                        }
+                    }
+                }
+                self.ensure_gfx();
+                if self.focus_border.preview_style_on_foreground(
+                    &color_hex,
+                    width_px,
+                    radius,
+                    opacity,
+                    &self.config,
+                    self.gfx.as_ref(),
+                ) {
+                    unsafe {
+                        let _ = SetTimer(
+                            self.control_hwnd,
+                            TIMER_BORDER_PREVIEW_HIDE,
+                            BORDER_STYLE_PREVIEW_MS,
+                            None,
+                        );
+                    }
+                }
+            }
+            ACTION_OPEN_LAYOUT_EDITOR_DIRECT => {
+                self.snap_zones.hide_preview_overlay();
+                self.focus_border.hide();
+                let req = OpenEditorRequest {
+                    monitor_id: None,
+                    desktop_id: None,
+                    layout_id: None,
+                    restore_settings_hwnd: if arg > 0x100 { Some(arg) } else { None },
+                    ui_lang: "zh".to_string(),
+                    return_to_hub: false,
+                    initial_mode: None,
+                    custom_name: None,
+                    is_new_custom: false,
+                };
                 self.ensure_gfx();
                 let _ = self
                     .layout_editor
@@ -1163,6 +1357,29 @@ impl ManagedRuntime {
         }
     }
 
+    fn handle_topology_changed(&mut self, trace_id: &str) {
+        if self.shutting_down {
+            return;
+        }
+        wk_debug!(trace_id, "topology", "display or virtual desktop topology changed, healing active layers");
+        self.snap_zones.on_topology_changed(&self.config, self.gfx.as_ref());
+        self.layout_hub.on_topology_changed(&self.config, self.gfx.as_ref());
+        self.layout_editor.on_topology_changed(self.gfx.as_ref());
+        self.workspace_capture.on_topology_changed(&self.config, self.gfx.as_ref());
+        self.quick_switch.on_topology_changed(&self.config, self.gfx.as_ref());
+        self.always_on_top
+            .sync_borders(&self.config, self.gfx.as_ref(), self.is_muted());
+        self.focus_border.refresh(
+            &self.config,
+            self.gfx.as_ref(),
+            self.is_muted(),
+            self.quick_switch.is_open()
+                || self.layout_editor.is_open()
+                || self.layout_hub.is_visible(),
+        );
+        self.ensure_animation_timer();
+    }
+
     fn graceful_shutdown(&mut self, trace_id: &str) {
         if self.shutting_down {
             return;
@@ -1180,6 +1397,9 @@ impl ManagedRuntime {
                 TIMER_ZONES_PREVIEW_HIDE,
                 TIMER_BORDER_RECONCILE,
                 TIMER_ANIMATION_FRAME,
+                TIMER_DISPLAY_CHANGE_DEBOUNCE,
+                TIMER_BORDER_PREVIEW_HIDE,
+                TIMER_WORKSPACE_PROGRESS_HIDE,
             ] {
                 let _ = KillTimer(self.control_hwnd, timer_id);
             }
@@ -1213,6 +1433,9 @@ impl ManagedRuntime {
         self.opacity.restore_all();
         self.quick_switch.destroy();
         self.layout_editor.close_discard(trace_id);
+        let _ = self.layout_hub.close(trace_id);
+        self.workspace_capture.cancel_and_close(trace_id);
+        self.workspace_progress.hide_and_destroy();
         self.snap_zones.cancel_and_cleanup();
         self.always_on_top.cleanup_overlays();
         self.focus_border.destroy();
@@ -1290,30 +1513,81 @@ unsafe extern "system" fn control_wnd_proc(
             WM_WK_INTERNAL_ALT_TAB => {
                 let trace = next_trace_id("qs");
                 let reverse = wparam.0 != 0;
+                let same_app = lparam.0 != 0;
                 rt.ensure_gfx();
-                rt.quick_switch
-                    .on_alt_tab_step(reverse, &rt.config, rt.gfx.as_ref(), &trace);
+                if same_app {
+                    rt.quick_switch
+                        .on_same_app_step(reverse, &rt.config, rt.gfx.as_ref(), &trace);
+                } else {
+                    let tray_list = rt.multi_monitor.list_tray_windows();
+                    rt.quick_switch.on_alt_tab_step(
+                        reverse,
+                        &tray_list,
+                        &rt.config,
+                        rt.gfx.as_ref(),
+                        &trace,
+                    );
+                }
                 rt.ensure_animation_timer();
                 true
             }
             WM_WK_INTERNAL_ALT_RELEASED => {
                 let trace = next_trace_id("qs");
-                if rt.quick_switch.on_alt_released(&trace) {
-                    rt.schedule_cold_path_trim();
+                match rt.quick_switch.on_alt_released(&trace) {
+                    QuickSwitchDelegatedAction::Closed => {
+                        rt.schedule_cold_path_trim();
+                    }
+                    QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        let _ = rt
+                            .multi_monitor
+                            .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
+                        rt.schedule_cold_path_trim();
+                    }
+                    _ => {}
                 }
                 rt.ensure_animation_timer();
                 true
             }
             WM_WK_INTERNAL_QUICK_SWITCH_KEY => {
                 let trace = next_trace_id("qs");
-                if rt.quick_switch.handle_card_event(
+                let action = rt.quick_switch.handle_card_event(
                     wparam.0,
                     lparam.0,
-                    &rt.config,
+                    &mut rt.config,
+                    &rt.config_dir,
                     rt.gfx.as_ref(),
                     &trace,
-                ) {
-                    rt.schedule_cold_path_trim();
+                );
+                match action {
+                    QuickSwitchDelegatedAction::None => {}
+                    QuickSwitchDelegatedAction::Closed => {
+                        rt.schedule_cold_path_trim();
+                    }
+                    QuickSwitchDelegatedAction::TogglePinWindow(raw) => {
+                        let _guard = ActionTargetOverrideGuard::enter(Some(HWND(raw as *mut c_void)));
+                        rt.ensure_gfx();
+                        rt.always_on_top
+                            .toggle_foreground(&rt.config, rt.gfx.as_ref(), &trace);
+                    }
+                    QuickSwitchDelegatedAction::MoveWindowToNextZone(raw) => {
+                        let _guard = ActionTargetOverrideGuard::enter(Some(HWND(raw as *mut c_void)));
+                        let _ = rt
+                            .snap_zones
+                            .move_foreground_relative(1, &rt.config, &trace);
+                    }
+                    QuickSwitchDelegatedAction::MinimizeWindowToTray(raw) => {
+                        let _ = rt.multi_monitor.minimize_hwnd_to_tray(
+                            HWND(raw as *mut c_void),
+                            &rt.config,
+                            &trace,
+                        );
+                    }
+                    QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        let _ = rt
+                            .multi_monitor
+                            .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
+                        rt.schedule_cold_path_trim();
+                    }
                 }
                 rt.ensure_animation_timer();
                 true
@@ -1389,15 +1663,90 @@ unsafe extern "system" fn control_wnd_proc(
                 rt.multi_monitor.handle_tray_callback(uid, mouse_msg, &trace);
                 true
             }
-            WM_WK_INTERNAL_WORKSPACE_DONE => {
-                rt.schedule_cold_path_trim();
+            WM_WK_INTERNAL_WORKSPACE_PROGRESS => {
+                let trace = next_trace_id("ws");
+                for ev in drain_workspace_runtime_events() {
+                    match ev {
+                        WorkspaceRuntimeEvent::BindSnapLayout {
+                            monitor_id,
+                            desktop_id,
+                            layout_id,
+                        } => {
+                            rt.config.snap_zones.bind_monitor_layout(
+                                &monitor_id,
+                                &desktop_id,
+                                &layout_id,
+                            );
+                            notify_host_hub_sync(&rt.config, &rt.config_dir, true, false, &trace);
+                        }
+                        WorkspaceRuntimeEvent::MinimizeWindowToTray { hwnd_raw } => {
+                            let target = HWND(hwnd_raw as *mut c_void);
+                            let _ = rt
+                                .multi_monitor
+                                .minimize_hwnd_to_tray(target, &rt.config, &trace);
+                        }
+                        WorkspaceRuntimeEvent::ApplySceneWindowState {
+                            hwnd_raw,
+                            always_on_top,
+                            opacity_percent,
+                        } => {
+                            let target = HWND(hwnd_raw as *mut c_void);
+                            if always_on_top {
+                                rt.ensure_gfx();
+                                let _ = rt.always_on_top.ensure_pinned_hwnd(
+                                    target,
+                                    &rt.config,
+                                    rt.gfx.as_ref(),
+                                    &trace,
+                                );
+                                rt.ensure_animation_timer();
+                            }
+                            if opacity_percent < 100 {
+                                let _ = rt.opacity.set_window_percent(
+                                    target,
+                                    opacity_percent,
+                                    &rt.config,
+                                    &trace,
+                                );
+                            }
+                        }
+                        WorkspaceRuntimeEvent::Progress {
+                            workspace_name,
+                            placed,
+                            total,
+                            collapsed_screens,
+                            finished,
+                        } => {
+                            rt.ensure_gfx();
+                            rt.workspace_progress.show_progress(
+                                &workspace_name,
+                                placed,
+                                total,
+                                collapsed_screens,
+                                finished,
+                                &rt.config,
+                                rt.gfx.as_ref(),
+                            );
+                            if finished {
+                                let _ = SetTimer(
+                                    hwnd,
+                                    TIMER_WORKSPACE_PROGRESS_HIDE,
+                                    1600,
+                                    None,
+                                );
+                            }
+                        }
+                    }
+                }
                 true
             }
-            WM_WK_INTERNAL_EDITOR_EVENT => {
-                let trace = next_trace_id("edit");
-                let closed = rt.layout_editor.handle_event(
+            WM_WK_INTERNAL_CAPTURE_EVENT => {
+                let trace = next_trace_id("cap");
+                rt.ensure_gfx();
+                let closed = rt.workspace_capture.handle_event(
                     wparam.0,
                     lparam.0,
+                    &rt.config,
                     &rt.config_dir,
                     rt.gfx.as_ref(),
                     &trace,
@@ -1413,17 +1762,95 @@ unsafe extern "system" fn control_wnd_proc(
                 }
                 true
             }
+            WM_WK_INTERNAL_WORKSPACE_DONE => {
+                rt.schedule_cold_path_trim();
+                true
+            }
+            WM_WK_INTERNAL_HUB_EVENT => {
+                let trace = next_trace_id("hub");
+                rt.ensure_gfx();
+                match rt.layout_hub.handle_event(
+                    wparam.0,
+                    lparam.0,
+                    &mut rt.config,
+                    &rt.config_dir,
+                    rt.gfx.as_ref(),
+                    &trace,
+                ) {
+                    HubEventOutcome::None | HubEventOutcome::ConfigMutated => {}
+                    HubEventOutcome::Closed { .. } => {
+                        rt.focus_border.refresh(
+                            &rt.config,
+                            rt.gfx.as_ref(),
+                            rt.is_muted(),
+                            rt.quick_switch.is_open(),
+                        );
+                        rt.schedule_cold_path_trim();
+                    }
+                    HubEventOutcome::LaunchFullEditor(req) => {
+                        rt.ensure_gfx();
+                        let _ = rt
+                            .layout_editor
+                            .open(req, &rt.config, rt.gfx.as_ref(), &trace);
+                    }
+                }
+                true
+            }
+            WM_WK_INTERNAL_EDITOR_EVENT => {
+                let trace = next_trace_id("edit");
+                match rt.layout_editor.handle_event(
+                    wparam.0,
+                    lparam.0,
+                    &mut rt.config,
+                    &rt.config_dir,
+                    rt.gfx.as_ref(),
+                    &trace,
+                ) {
+                    EditorCloseOutcome::StillOpen => {}
+                    EditorCloseOutcome::Closed { return_to_hub, .. } => {
+                        if return_to_hub && rt.layout_hub.is_open() {
+                            rt.ensure_gfx();
+                            rt.layout_hub.resume_from_editor(&rt.config, rt.gfx.as_ref());
+                        } else {
+                            rt.focus_border.refresh(
+                                &rt.config,
+                                rt.gfx.as_ref(),
+                                rt.is_muted(),
+                                rt.quick_switch.is_open(),
+                            );
+                            rt.schedule_cold_path_trim();
+                        }
+                    }
+                }
+                true
+            }
+            WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
+                let _ = SetTimer(
+                    hwnd,
+                    TIMER_DISPLAY_CHANGE_DEBOUNCE,
+                    DISPLAY_CHANGE_DEBOUNCE_MS,
+                    None,
+                );
+                false
+            }
             WM_TIMER => {
                 match wparam.0 {
                     TIMER_PARENT_WATCH => {
                         rt.check_parent_alive();
                         rt.multi_monitor.prune_closed_tray_windows();
                     }
+                    TIMER_DISPLAY_CHANGE_DEBOUNCE => {
+                        let _ = KillTimer(hwnd, TIMER_DISPLAY_CHANGE_DEBOUNCE);
+                        let trace = next_trace_id("topo");
+                        rt.handle_topology_changed(&trace);
+                    }
                     TIMER_COLD_PATH_TRIM => {
                         let _ = KillTimer(hwnd, TIMER_COLD_PATH_TRIM);
-                        // 仅在真正处于冷态（未拖拽、未开启速切卡片、未开启全屏布局编辑器、无活跃动效）时释放 D2D 工厂并收缩工作集
+                        // 仅在真正处于冷态（未拖拽、未开启速切卡片、未开启布局管理器/编辑器/工作区捕获、无活跃动效）时释放 D2D 工厂并收缩工作集
                         if !rt.quick_switch.is_open()
                             && !rt.layout_editor.is_open()
+                            && !rt.layout_hub.is_open()
+                            && !rt.workspace_capture.is_open()
                             && !rt.snap_zones.is_dragging()
                             && !rt.alt_drag.is_active()
                             && !rt.anim_timer_active
@@ -1431,6 +1858,24 @@ unsafe extern "system" fn control_wnd_proc(
                             rt.gfx = None;
                             trim_working_set_cold_path();
                         }
+                    }
+                    TIMER_BORDER_PREVIEW_HIDE => {
+                        let _ = KillTimer(hwnd, TIMER_BORDER_PREVIEW_HIDE);
+                        rt.focus_border.hide();
+                        if rt.config.features.focus_border && !rt.is_muted() {
+                            rt.focus_border.refresh(
+                                &rt.config,
+                                rt.gfx.as_ref(),
+                                false,
+                                rt.quick_switch.is_open(),
+                            );
+                        }
+                        rt.schedule_cold_path_trim();
+                    }
+                    TIMER_WORKSPACE_PROGRESS_HIDE => {
+                        let _ = KillTimer(hwnd, TIMER_WORKSPACE_PROGRESS_HIDE);
+                        rt.workspace_progress.hide_and_destroy();
+                        rt.schedule_cold_path_trim();
                     }
                     TIMER_SNAP_DRAG_POLL => {
                         rt.ensure_gfx();
@@ -1504,6 +1949,7 @@ enum CliMode {
     Managed {
         config_path: PathBuf,
         parent_pid: Option<u32>,
+        isolated: bool,
     },
     DumpMonitors {
         out_path: PathBuf,
@@ -1523,6 +1969,7 @@ enum CliMode {
 fn parse_cli_args() -> Result<CliMode, String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut managed = false;
+    let mut isolated = false;
     let mut config_path: Option<PathBuf> = None;
     let mut parent_pid: Option<u32> = None;
     let mut dump_monitors: Option<PathBuf> = None;
@@ -1536,6 +1983,7 @@ fn parse_cli_args() -> Result<CliMode, String> {
     while i < args.len() {
         match args[i].as_str() {
             "--managed" => managed = true,
+            "--isolated" => isolated = true,
             "--self-test" => {
                 self_test = true;
                 if let Some(next) = args.get(i + 1) {
@@ -1606,6 +2054,7 @@ fn parse_cli_args() -> Result<CliMode, String> {
         return Ok(CliMode::Managed {
             config_path: cfg,
             parent_pid,
+            isolated,
         });
     }
     Err("missing mode flag (--managed | --dump-monitors | --capture-workspace | --import-powertoys | --self-test)".to_string())
@@ -1673,7 +2122,7 @@ fn run_self_test(out_path: Option<&Path>) -> i32 {
     if d2d_ok { 0 } else { 1 }
 }
 
-fn run_managed(config_path: PathBuf, parent_pid: Option<u32>) -> i32 {
+fn run_managed(config_path: PathBuf, parent_pid: Option<u32>, isolated: bool) -> i32 {
     let cfg = match WindowKitConfig::load_from_file(&config_path) {
         Ok(c) => c,
         Err(_) => WindowKitConfig::default(),
@@ -1693,9 +2142,13 @@ fn run_managed(config_path: PathBuf, parent_pid: Option<u32>) -> i32 {
         return 0;
     }
 
-    // 单实例互斥保护：如已有常驻实例则通知其热重载配置并优雅退出
-    let mutex_name = to_wide("Local\\Tools3000_WindowKit_SingleInstance");
-    let mutex_handle = unsafe { CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr())) };
+    // 单实例互斥保护：常规模式严守唯一常驻实例；--isolated 隔离验证模式独立互斥避免干扰本机已装正式版
+    let mutex_handle = if isolated {
+        Err(windows::core::Error::empty())
+    } else {
+        let mutex_name = to_wide("Local\\Tools3000_WindowKit_SingleInstance");
+        unsafe { CreateMutexW(None, false, PCWSTR(mutex_name.as_ptr())) }
+    };
     if let Ok(mh) = mutex_handle {
         if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
             let cls = to_wide(CONTROL_WINDOW_CLASS);
@@ -1744,7 +2197,9 @@ fn run_managed(config_path: PathBuf, parent_pid: Option<u32>) -> i32 {
 
     let mut runtime = ManagedRuntime::new(control_hwnd, config_path, parent_handle, cfg);
     runtime.quick_switch.set_control_hwnd(control_hwnd);
+    runtime.layout_hub.set_control_hwnd(control_hwnd);
     runtime.layout_editor.set_control_hwnd(control_hwnd);
+    runtime.workspace_capture.set_control_hwnd(control_hwnd);
     runtime.multi_monitor.set_control_hwnd(control_hwnd);
     runtime.reconcile_hooks(&trace_id);
 
@@ -1761,21 +2216,56 @@ fn run_managed(config_path: PathBuf, parent_pid: Option<u32>) -> i32 {
         );
     }
 
+    // 零轮询虚拟桌面变更注册表异步监听器（直接产出内核 Event HANDLE 挂入主线程等待，0 额外线程 / 0 CPU）
+    let vd_watcher = VirtualDesktopRegWatcher::try_new();
     wk_info!(
         &trace_id,
         "runtime",
-        "Tools3000 WindowKit v{} started (ctrl=0x{:x}, parentPid={:?})",
+        "Tools3000 WindowKit v{} started (ctrl=0x{:x}, parentPid={:?}, vdWatcher={})",
         APP_VERSION,
         control_hwnd.0 as isize,
-        parent_pid
+        parent_pid,
+        vd_watcher.is_some()
     );
 
-    // 主消息循环
+    // 主消息循环：MsgWaitForMultipleObjectsEx 同时等待 Win32 消息与虚拟桌面注册表内核事件
     let mut msg = MSG::default();
+    let mut quit_received = false;
     unsafe {
-        while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            let _ = DispatchMessageW(&msg);
+        while !quit_received {
+            while PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_REMOVE).as_bool() {
+                if msg.message == WM_QUIT {
+                    quit_received = true;
+                    break;
+                }
+                let _ = TranslateMessage(&msg);
+                let _ = DispatchMessageW(&msg);
+            }
+            if quit_received {
+                break;
+            }
+            let wait_res = if let Some(ref w) = vd_watcher {
+                let handles = [w.event_handle()];
+                MsgWaitForMultipleObjectsEx(
+                    Some(&handles),
+                    INFINITE,
+                    QS_ALLINPUT,
+                    MWMO_INPUTAVAILABLE,
+                )
+            } else {
+                MsgWaitForMultipleObjectsEx(None, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+            };
+            if vd_watcher.is_some() && wait_res == WAIT_OBJECT_0 {
+                if let Some(ref w) = vd_watcher {
+                    w.rearm();
+                }
+                let _ = SetTimer(
+                    control_hwnd,
+                    TIMER_DISPLAY_CHANGE_DEBOUNCE,
+                    DISPLAY_CHANGE_DEBOUNCE_MS,
+                    None,
+                );
+            }
         }
     }
 
@@ -1862,7 +2352,8 @@ fn main() {
         Ok(CliMode::Managed {
             config_path,
             parent_pid,
-        }) => run_managed(config_path, parent_pid),
+            isolated,
+        }) => run_managed(config_path, parent_pid, isolated),
         Err(_) => 2,
     };
 

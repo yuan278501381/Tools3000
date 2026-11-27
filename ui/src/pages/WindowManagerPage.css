@@ -670,9 +670,118 @@
     grid-template-columns: 1fr;
   }
 
+  .wm-hotkeys-grid {
+    grid-template-columns: 1fr;
+  }
+
   .wm-hero,
   .wm-feature-head {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* ── v2 离线绑定治理条、QuickSwitch 速查与快捷键矩阵 ─────────────────────── */
+
+.wm-stale-audit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 0.9rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid color-mix(in srgb, var(--primary) 35%, var(--card-border));
+  background: color-mix(in srgb, var(--primary) 10%, var(--well-bg));
+}
+
+.wm-stale-audit-bar__text {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.45;
+  color: var(--text-primary);
+}
+
+.wm-stale-audit-bar__text svg {
+  color: var(--primary);
+  flex-shrink: 0;
+}
+
+.wm-bounds-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.wm-qs-cheatsheet {
+  display: flex;
+  flex-direction: column;
+  gap: 0.72rem;
+}
+
+.wm-qs-cheatsheet__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.wm-qs-cheatsheet__title svg {
+  color: var(--primary);
+}
+
+.wm-qs-cheatsheet__grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.wm-qs-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.24rem 0.55rem;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.wm-hotkeys-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem 1rem;
+}
+
+.wm-hotkey-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: var(--radius-sm);
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+}
+
+.wm-hotkey-item.is-inactive {
+  opacity: 0.72;
+}
+
+.wm-hotkey-item__label {
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-primary);
+  min-width: 0;
 }

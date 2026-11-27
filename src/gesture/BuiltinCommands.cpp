@@ -348,6 +348,12 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::ToggleSearch:
         case BuiltinCommand::PasteAsPin:
         case BuiltinCommand::QuickTranslate:
+        case BuiltinCommand::WindowKitNextZone:
+        case BuiltinCommand::WindowKitPrevZone:
+        case BuiltinCommand::WindowKitRestoreZone:
+        case BuiltinCommand::WindowKitMoveNextMonitor:
+        case BuiltinCommand::WindowKitMinimizeToTray:
+        case BuiltinCommand::WindowKitQuickSwitch:
             dispatchAppCommand(cmd);
             break;
     }

@@ -7,7 +7,9 @@
 //                          - 记住上次分区、虚拟桌面独立绑定、键盘循环切区与实时预览
 // ─────────────────────────────────────────────────────────────────────────────
 
-use crate::core::config::{parse_hex_color, SnapTriggerMode, WindowKitConfig, ZoneLayout};
+use crate::core::config::{
+    parse_hex_color, SnapTriggerMode, WindowKitConfig, ZoneLayout, ZoneLayoutType,
+};
 use crate::core::constants::{
     ANIM_SNAP_OVERLAY_FADE_MS, SNAP_MULTI_ZONE_EDGE_THRESHOLD_PX, SNAP_TOP_EDGE_CANCEL_PX,
     SNAP_TOP_EDGE_TRIGGER_PX, SNAP_UNSNAP_RESTORE_DRAG_PX, SNAP_ZONES_WINDOW_CLASS,
@@ -51,6 +53,8 @@ struct DragSession {
     monitors: Vec<MonitorInfo>,
     active_monitor_id: String,
     active_layout_name: String,
+    active_highlight_distance_px: i32,
+    active_layout_is_none: bool,
     active_zones: Vec<ResolvedZone>,
     hovered_indices: Vec<usize>,
     /// 按住 Ctrl 拖动框选多区时的起始锚点分区索引（复刻 FancyZones Ctrl 多区跨选）
@@ -152,6 +156,8 @@ impl SnapZonesManager {
             monitors,
             active_monitor_id: String::new(),
             active_layout_name: String::new(),
+            active_highlight_distance_px: SNAP_MULTI_ZONE_EDGE_THRESHOLD_PX,
+            active_layout_is_none: false,
             active_zones: Vec::new(),
             hovered_indices: Vec::new(),
             ctrl_anchor_zone: None,
@@ -287,20 +293,32 @@ impl SnapZonesManager {
             return;
         }
 
-        // 切换显示器或首次激活时重新求解分区布局
-        if drag.active_monitor_id != mon.id || drag.active_zones.is_empty() {
+        // 切换显示器或首次激活时重新求解分区布局（4 级解析：含虚拟桌面、横/竖屏默认与无布局静默）
+        if drag.active_monitor_id != mon.id || (drag.active_zones.is_empty() && !drag.active_layout_is_none) {
             let desktop_id = if cfg.snap_zones.per_virtual_desktop {
                 resolve_window_or_current_desktop_id(drag.dragged_hwnd)
             } else {
                 None
             };
-            let layout = cfg.layout_for_monitor(&mon.id, desktop_id.as_deref());
+            let layout = cfg.resolve_layout_for_monitor(&mon, desktop_id.as_deref());
             drag.active_monitor_id = mon.id.clone();
             drag.active_layout_name = layout.name.clone();
-            drag.active_zones = layout.resolve(mon.work_rect, cfg.snap_zones.zone_gap);
+            drag.active_highlight_distance_px =
+                layout.effective_highlight_distance(cfg.snap_zones.edge_threshold_px);
+            drag.active_layout_is_none = layout.layout_type == ZoneLayoutType::None;
+            let gap = layout.effective_gap(cfg.snap_zones.zone_gap);
+            drag.active_zones = layout.resolve(mon.work_rect, gap);
             drag.zone_weights = vec![0.0; drag.active_zones.len()];
             drag.ctrl_anchor_zone = None;
             drag.last_render_key = (String::new(), Vec::new());
+        }
+
+        // 若该屏显式配置为「无布局」，保持完全静默不干扰原生拖拽
+        if drag.active_layout_is_none || drag.active_zones.is_empty() {
+            if drag.overlay_visible {
+                self.hide_overlay_only();
+            }
+            return;
         }
 
         if !drag.overlay_visible {
@@ -308,9 +326,8 @@ impl SnapZonesManager {
             drag.last_anim_tick = Instant::now();
         }
 
-        let base_edge = cfg
-            .snap_zones
-            .edge_threshold_px
+        let base_edge = drag
+            .active_highlight_distance_px
             .max(SNAP_MULTI_ZONE_EDGE_THRESHOLD_PX / 2);
         let edge_px = ((base_edge as f32) * dpi_scale).round() as i32;
         // 严格遵守 allow_multi_zone_span 开关：关闭后彻底禁用接缝跨区与按住 Ctrl 框选跨区合并
@@ -494,8 +511,12 @@ impl SnapZonesManager {
         } else {
             None
         };
-        let layout = cfg.layout_for_monitor(&mon.id, desktop_id.as_deref());
-        let zones = layout.resolve(mon.work_rect, cfg.snap_zones.zone_gap);
+        let layout = cfg.resolve_layout_for_monitor(&mon, desktop_id.as_deref());
+        if layout.layout_type == ZoneLayoutType::None {
+            return false;
+        }
+        let gap = layout.effective_gap(cfg.snap_zones.zone_gap);
+        let zones = layout.resolve(mon.work_rect, gap);
         let Some(rect) = resolve_zone_by_index(&zones, last_zone) else {
             return false;
         };
@@ -550,8 +571,12 @@ impl SnapZonesManager {
         } else {
             None
         };
-        let layout = cfg.layout_for_monitor(&mon.id, desktop_id.as_deref());
-        let zones = layout.resolve(mon.work_rect, cfg.snap_zones.zone_gap);
+        let layout = cfg.resolve_layout_for_monitor(&mon, desktop_id.as_deref());
+        if layout.layout_type == ZoneLayoutType::None {
+            return false;
+        }
+        let gap = layout.effective_gap(cfg.snap_zones.zone_gap);
+        let zones = layout.resolve(mon.work_rect, gap);
         if zones.is_empty() {
             return false;
         }
@@ -599,8 +624,12 @@ impl SnapZonesManager {
         } else {
             None
         };
-        let layout = cfg.layout_for_monitor(&mon.id, desktop_id.as_deref());
-        let zones = layout.resolve(mon.work_rect, cfg.snap_zones.zone_gap);
+        let layout = cfg.resolve_layout_for_monitor(&mon, desktop_id.as_deref());
+        if layout.layout_type == ZoneLayoutType::None {
+            return false;
+        }
+        let gap = layout.effective_gap(cfg.snap_zones.zone_gap);
+        let zones = layout.resolve(mon.work_rect, gap);
         let Some(rect) = resolve_zone_by_index(&zones, zone_index) else {
             return false;
         };
@@ -665,8 +694,12 @@ impl SnapZonesManager {
         } else {
             None
         };
-        let layout = cfg.layout_for_monitor(&mon.id, desktop_id.as_deref());
-        let zones = layout.resolve(mon.work_rect, cfg.snap_zones.zone_gap);
+        let layout = cfg.resolve_layout_for_monitor(&mon, desktop_id.as_deref());
+        if layout.layout_type == ZoneLayoutType::None {
+            return false;
+        }
+        let gap = layout.effective_gap(cfg.snap_zones.zone_gap);
+        let zones = layout.resolve(mon.work_rect, gap);
         if zones.is_empty() {
             return false;
         }
@@ -698,6 +731,63 @@ impl SnapZonesManager {
             );
         }
         ok
+    }
+
+    /// Action 21: 通过布局快捷数字键 (0..=9) 瞬切当前显示器(+虚拟桌面)的活动分屏布局
+    pub fn apply_layout_by_hotkey_digit(
+        &mut self,
+        digit: u8,
+        cfg: &mut WindowKitConfig,
+        trace_id: &str,
+    ) -> Option<(String, Option<String>, String)> {
+        if digit > 9 {
+            return None;
+        }
+        let layout_id = cfg
+            .snap_zones
+            .layouts
+            .iter()
+            .find(|l| l.hotkey_digit == Some(digit))
+            .map(|l| l.id.clone())?;
+        let monitors = enumerate_monitors();
+        let fg = resolve_foreground_or_target_hwnd();
+        let mon = if !fg.0.is_null() {
+            monitor_for_hwnd(fg, &monitors)
+        } else {
+            monitors.first().cloned()
+        }?;
+        let desktop_id = if cfg.snap_zones.per_virtual_desktop {
+            resolve_window_or_current_desktop_id(fg)
+        } else {
+            None
+        };
+        cfg.snap_zones.bind_monitor_layout(
+            &mon.id,
+            desktop_id.as_deref().unwrap_or(""),
+            &layout_id,
+        );
+        wk_info!(
+            trace_id,
+            "snapZones",
+            "switched monitor '{}' (desktop={:?}) to layout '{}' via hotkey digit {}",
+            mon.id,
+            desktop_id,
+            layout_id,
+            digit
+        );
+        Some((mon.id, desktop_id, layout_id))
+    }
+
+    /// 多屏拔插、旋转或虚拟桌面变更时自动自愈，避免遗留旧分辨率半屏叠加层
+    pub fn on_topology_changed(&mut self, cfg: &WindowKitConfig, gfx: Option<&SharedGraphics>) {
+        if let Some(drag) = self.drag.as_mut() {
+            drag.monitors = enumerate_monitors();
+            drag.active_monitor_id.clear();
+            drag.active_zones.clear();
+            drag.last_render_key = (String::new(), Vec::new());
+        } else if self.preview_state.is_some() {
+            let _ = self.show_preview_overlay(cfg, gfx, true, "topo");
+        }
     }
 
     pub fn hide_preview_overlay(&mut self) {
@@ -833,18 +923,19 @@ impl SnapZonesManager {
 
         let render_res =
             render_layered_window_d2d_alpha(gfx, oh, work.left, work.top, w, h, source_alpha, |rt| unsafe {
-            let idle_rgb = if dark { [0.08, 0.10, 0.14] } else { [0.95, 0.96, 0.98] };
-            let idle_base_a = if dark { 0.42 } else { 0.50 };
-            let stroke_idle_rgb = if dark { [1.0, 1.0, 1.0] } else { [0.10, 0.15, 0.24] };
+            // 对标 FancyZones 图 2 高通透克制美学：极浅磨砂白/暗玻璃 + 极细主题色描边，绝不盖脏底层真实应用内容
+            let idle_rgb = if dark { [0.08, 0.11, 0.16] } else { [0.97, 0.98, 0.99] };
+            let idle_base_a = if dark { 0.34 } else { 0.38 };
+            let stroke_idle_rgb = accent;
             let badge_fill_col = if dark {
                 rgba(0.085, 0.105, 0.155, 0.88 * master_a)
             } else {
-                rgba(1.0, 1.0, 1.0, 0.92 * master_a)
+                rgba(1.0, 1.0, 1.0, 0.94 * master_a)
             };
             let text_col = if dark {
-                rgba(0.96, 0.98, 1.0, 0.96 * master_a)
+                rgba(0.96, 0.98, 1.0, 0.94 * master_a)
             } else {
-                rgba(0.08, 0.11, 0.16, 0.95 * master_a)
+                rgba(0.10, 0.13, 0.19, 0.92 * master_a)
             };
             let white_col = rgba(1.0, 1.0, 1.0, 0.98 * master_a);
 
@@ -854,14 +945,12 @@ impl SnapZonesManager {
                 Ok(b_white),
                 Ok(b_hi_stroke),
                 Ok(b_hi_glow),
-                Ok(b_idle_stroke),
             ) = (
                 rt.CreateSolidColorBrush(&badge_fill_col, None),
                 rt.CreateSolidColorBrush(&text_col, None),
                 rt.CreateSolidColorBrush(&white_col, None),
-                rt.CreateSolidColorBrush(&rgb_a(accent, 0.96 * master_a), None),
-                rt.CreateSolidColorBrush(&rgb_a(accent, 0.26 * master_a), None),
-                rt.CreateSolidColorBrush(&rgb_a(stroke_idle_rgb, 0.24 * master_a), None),
+                rt.CreateSolidColorBrush(&rgb_a(accent, 0.94 * master_a), None),
+                rt.CreateSolidColorBrush(&rgb_a(accent, 0.24 * master_a), None),
             ) else {
                 return;
             };
@@ -873,20 +962,20 @@ impl SnapZonesManager {
                     .unwrap_or_else(|| if hovered.contains(&z.index) { 1.0 } else { 0.0 })
                     .clamp(0.0, 1.0);
 
-                // 按权重在闲置态与高亮态之间平滑插值填充色、描边色、线宽与中心编号胶囊半径
+                // 按权重在清透磨砂态与主题色高亮态之间丝滑插值
                 let fill_col = rgba(
                     lerp_f32(idle_rgb[0], accent[0], wt),
                     lerp_f32(idle_rgb[1], accent[1], wt),
                     lerp_f32(idle_rgb[2], accent[2], wt),
-                    lerp_f32(idle_base_a, hi_alpha.max(0.26), wt) * master_a,
+                    lerp_f32(idle_base_a, hi_alpha.clamp(0.32, 0.56), wt) * master_a,
                 );
                 let stroke_col = rgba(
                     lerp_f32(stroke_idle_rgb[0], accent[0], wt),
                     lerp_f32(stroke_idle_rgb[1], accent[1], wt),
                     lerp_f32(stroke_idle_rgb[2], accent[2], wt),
-                    lerp_f32(0.24, 0.96, wt) * master_a,
+                    lerp_f32(0.46, 0.96, wt) * master_a,
                 );
-                let stroke_w = lerp_f32(1.5, 2.8, wt) * scale;
+                let stroke_w = lerp_f32(1.25, 2.4, wt) * scale;
 
                 let lr = rect_f(
                     (z.rect.left - work.left) as f32 + 1.0,
@@ -894,14 +983,14 @@ impl SnapZonesManager {
                     (z.rect.right - work.left) as f32 - 1.0,
                     (z.rect.bottom - work.top) as f32 - 1.0,
                 );
-                let rr = rounded_rect(lr, radius);
+                let rr = rounded_rect(lr, radius * 0.5);
 
                 if let Ok(bf) = rt.CreateSolidColorBrush(&fill_col, None) {
                     rt.FillRoundedRectangle(&rr, &bf);
                 }
                 if wt > 0.15 {
-                    if let Ok(bglow) = rt.CreateSolidColorBrush(&rgb_a(accent, 0.18 * wt * master_a), None) {
-                        rt.DrawRoundedRectangle(&rr, &bglow, stroke_w + 3.0 * scale, None);
+                    if let Ok(bglow) = rt.CreateSolidColorBrush(&rgb_a(accent, 0.16 * wt * master_a), None) {
+                        rt.DrawRoundedRectangle(&rr, &bglow, stroke_w + 2.6 * scale, None);
                     }
                 }
                 if let Ok(bs) = rt.CreateSolidColorBrush(&stroke_col, None) {
@@ -911,20 +1000,15 @@ impl SnapZonesManager {
                 if show_numbers {
                     let cx = (lr.left + lr.right) * 0.5;
                     let cy = (lr.top + lr.bottom) * 0.5;
-                    let pill_r = lerp_f32(21.0, 25.0, wt) * scale;
-                    let pr = rect_f(cx - pill_r, cy - pill_r, cx + pill_r, cy + pill_r);
-                    let prr = rounded_rect(pr, pill_r);
-                    if wt > 0.5 {
-                        rt.FillRoundedRectangle(&prr, &b_hi_stroke);
-                    } else {
-                        rt.FillRoundedRectangle(&prr, &b_badge_fill);
+                    let box_r = lerp_f32(28.0, 34.0, wt) * scale;
+                    let pr = rect_f(cx - box_r, cy - box_r, cx + box_r, cy + box_r);
+
+                    // 复刻图 2 纯净无厚重外圈的数字居中排版，高亮时辅以极轻柔主题色光晕
+                    if wt > 0.45 {
+                        let halo_r = 22.0 * scale;
+                        let hr = rect_f(cx - halo_r, cy - halo_r, cx + halo_r, cy + halo_r);
+                        rt.FillRoundedRectangle(&rounded_rect(hr, halo_r), &b_hi_stroke);
                     }
-                    rt.DrawRoundedRectangle(
-                        &prr,
-                        if wt > 0.3 { &b_hi_stroke } else { &b_idle_stroke },
-                        lerp_f32(1.0, 1.8, wt) * scale,
-                        None,
-                    );
 
                     if let Some(fmt) = &num_fmt {
                         let label = to_wide(&(z.index + 1).to_string());
@@ -933,7 +1017,7 @@ impl SnapZonesManager {
                             label_no_nul,
                             fmt,
                             &pr,
-                            if wt > 0.5 { &b_white } else { &b_text },
+                            if wt > 0.45 { &b_white } else { &b_text },
                             D2D1_DRAW_TEXT_OPTIONS_CLIP,
                             windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
                         );
@@ -949,47 +1033,47 @@ impl SnapZonesManager {
                     (merged.right - work.left) as f32 - 2.0,
                     (merged.bottom - work.top) as f32 - 2.0,
                 );
-                let mrr = rounded_rect(mr, radius);
-                rt.DrawRoundedRectangle(&mrr, &b_hi_glow, 7.0 * scale, None);
-                rt.DrawRoundedRectangle(&mrr, &b_hi_stroke, 3.2 * scale, None);
+                let mrr = rounded_rect(mr, radius * 0.6);
+                rt.DrawRoundedRectangle(&mrr, &b_hi_glow, 6.0 * scale, None);
+                rt.DrawRoundedRectangle(&mrr, &b_hi_stroke, 2.8 * scale, None);
             }
 
-            // 顶部居中布局状态胶囊（清晰显示合并区号或交互指引）
-            if let Some(fmt) = &title_fmt {
-                let banner_text = if hovered.len() >= 2 {
-                    let mut nums: Vec<usize> = hovered.iter().map(|i| i + 1).collect();
-                    nums.sort_unstable();
-                    let joined = nums
-                        .iter()
-                        .map(|n| n.to_string())
-                        .collect::<Vec<_>>()
-                        .join(" + ");
-                    format!("{layout_name}  |  Merge Zones {joined}")
-                } else if is_preview {
-                    format!("{layout_name}  |  {} Zones Preview", zones.len())
-                } else {
-                    format!("{layout_name}  |  Hold Ctrl to span  |  Esc to cancel")
-                };
-                let bw = ((banner_text.chars().count() as f32 * 8.2 + 36.0) * scale)
-                    .clamp(240.0 * scale, w as f32 * 0.72);
-                let bh = 32.0 * scale;
-                let bx = (w as f32 - bw) * 0.5;
-                let by = 14.0 * scale;
-                let br = rect_f(bx, by, bx + bw, by + bh);
-                let brr = rounded_rect(br, bh * 0.5);
-                rt.FillRoundedRectangle(&brr, &b_badge_fill);
-                rt.DrawRoundedRectangle(&brr, &b_hi_stroke, 1.3 * scale, None);
+            // 仅在跨区合并或主动预览时呈现克制顶部状态微胶囊，常规拖拽保持极致干净无干扰
+            if (hovered.len() >= 2 || is_preview) && title_fmt.is_some() {
+                if let Some(fmt) = &title_fmt {
+                    let banner_text = if hovered.len() >= 2 {
+                        let mut nums: Vec<usize> = hovered.iter().map(|i| i + 1).collect();
+                        nums.sort_unstable();
+                        let joined = nums
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(" + ");
+                        format!("{layout_name}  ·  {joined}")
+                    } else {
+                        format!("{layout_name}  ·  {} Zones", zones.len())
+                    };
+                    let bw = ((banner_text.chars().count() as f32 * 8.6 + 34.0) * scale)
+                        .clamp(180.0 * scale, w as f32 * 0.62);
+                    let bh = 30.0 * scale;
+                    let bx = (w as f32 - bw) * 0.5;
+                    let by = 14.0 * scale;
+                    let br = rect_f(bx, by, bx + bw, by + bh);
+                    let brr = rounded_rect(br, bh * 0.5);
+                    rt.FillRoundedRectangle(&brr, &b_badge_fill);
+                    rt.DrawRoundedRectangle(&brr, &b_hi_stroke, 1.3 * scale, None);
 
-                let wide = to_wide(&banner_text);
-                let slice = &wide[..wide.len().saturating_sub(1)];
-                rt.DrawText(
-                    slice,
-                    fmt,
-                    &br,
-                    &b_text,
-                    D2D1_DRAW_TEXT_OPTIONS_CLIP,
-                    windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
-                );
+                    let wide = to_wide(&banner_text);
+                    let slice = &wide[..wide.len().saturating_sub(1)];
+                    rt.DrawText(
+                        slice,
+                        fmt,
+                        &br,
+                        &b_text,
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        windows::Win32::Graphics::DirectWrite::DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
         });
 

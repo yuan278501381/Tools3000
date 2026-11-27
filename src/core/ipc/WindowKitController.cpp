@@ -13,10 +13,14 @@
 #include "core/utils/WinUtils.h"
 
 #include <psapi.h>
+#include <shlobj.h>
+#include <shobjidl.h>
 
 #include <algorithm>
+#include <cmath>
 #include <fstream>
 #include <sstream>
+#include <unordered_set>
 
 namespace {
 
@@ -28,14 +32,122 @@ const char* const kWindowKitHotkeyNames[] = {
     "WindowKit: Toggle Always on Top",
     "WindowKit: Move Next Zone",
     "WindowKit: Move Prev Zone",
+    "WindowKit: Restore From Zone",
     "WindowKit: Move Next Monitor",
     "WindowKit: Rescue Offscreen",
     "WindowKit: Minimize To Tray",
+    "WindowKit: Restore All Tray",
     "WindowKit: Opacity Up",
     "WindowKit: Opacity Down",
     "WindowKit: Opacity Reset",
     "WindowKit: Open Layout Editor",
+    "WindowKit: Open Quick Switch",
 };
+
+std::string toLowerAsciiCopy(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    return s;
+}
+
+std::string sanitizeShortcutFileName(const std::string& rawName) {
+    std::string cleaned;
+    cleaned.reserve(rawName.size());
+    for (unsigned char c : rawName) {
+        if (c < 0x20 || c == '<' || c == '>' || c == ':' || c == '"' ||
+            c == '/' || c == '\\' || c == '|' || c == '?' || c == '*') {
+            cleaned.push_back('_');
+        } else {
+            cleaned.push_back(static_cast<char>(c));
+        }
+    }
+    while (!cleaned.empty() && (cleaned.front() == ' ' || cleaned.front() == '.')) {
+        cleaned.erase(cleaned.begin());
+    }
+    while (!cleaned.empty() && (cleaned.back() == ' ' || cleaned.back() == '.')) {
+        cleaned.pop_back();
+    }
+    if (cleaned.empty()) {
+        cleaned = "Tools3000 Workspace";
+    }
+    if (cleaned.size() > 80) {
+        cleaned.resize(80);
+    }
+    return cleaned;
+}
+
+std::string mapLegacyBuiltinLayoutId(const std::string& id) {
+    if (id == "builtin-columns-2" || id == "preset_columns_2" || id == "preset_columns_3") {
+        return "template_columns";
+    }
+    if (id == "builtin-priority-3" || id == "builtin-focus-split" ||
+        id == "preset_ultrawide_121" || id == "preset_priority_grid") {
+        return "template_priority_grid";
+    }
+    if (id == "builtin-grid-2x2" || id == "preset_quad") {
+        return "template_grid";
+    }
+    if (id == "preset_vertical_3") {
+        return "template_rows";
+    }
+    return id;
+}
+
+nlohmann::json normalizeRectToXywh(const nlohmann::json& r) {
+    if (!r.is_object()) {
+        return {{"x", 0}, {"y", 0}, {"w", 0}, {"h", 0}};
+    }
+    const int left = r.value("left", r.value("x", 0));
+    const int top = r.value("top", r.value("y", 0));
+    const int width = r.contains("w")
+        ? r.value("w", 0)
+        : (r.contains("width") ? r.value("width", 0) : (r.value("right", left) - left));
+    const int height = r.contains("h")
+        ? r.value("h", 0)
+        : (r.contains("height") ? r.value("height", 0) : (r.value("bottom", top) - top));
+    return {
+        {"x", left},
+        {"y", top},
+        {"w", std::max(0, width)},
+        {"h", std::max(0, height)}
+    };
+}
+
+nlohmann::json normalizeWorkspaceAppForUi(const nlohmann::json& w, size_t seq) {
+    nlohmann::json entry = {
+        {"id", w.value("id", "app_" + std::to_string(seq + 1))},
+        {"appName", w.value("appName", w.value("processName", std::string{}))},
+        {"exePath", w.value("exePath", std::string{})},
+        {"processName", w.value("processName", std::string{})},
+        {"args", w.value("args", std::string{})},
+        {"titleHint", w.value("titleHint", w.value("title", std::string{}))},
+        {"aumid", w.value("aumid", std::string{})},
+        {"iconDataUrl", w.value("iconDataUrl", std::string{})},
+        {"monitorId", w.value("monitorId", std::string{})},
+        {"monitorFriendly", w.value("monitorFriendly", std::string{})},
+        {"monitorOrientation", w.value("monitorOrientation", std::string("landscape"))},
+        {"monitorIndex", w.value("monitorIndex", 0)},
+        {"maximized", w.value("maximized", false)},
+        {"minimized", w.value("minimized", false)},
+        {"runAsAdmin", w.value("runAsAdmin", false)},
+        {"alwaysOnTop", w.value("alwaysOnTop", false)},
+        {"opacityPercent", w.value("opacityPercent", 100)}
+    };
+    if (w.contains("rect") && w["rect"].is_object()) {
+        entry["rect"] = normalizeRectToXywh(w["rect"]);
+    }
+    if (w.contains("relRect") && w["relRect"].is_object()) {
+        entry["relRect"] = w["relRect"];
+    }
+    if (w.contains("zoneIndex") && w["zoneIndex"].is_number_integer()) {
+        entry["zoneIndex"] = w["zoneIndex"];
+    }
+    if (w.contains("zoneIndices") && w["zoneIndices"].is_array()) {
+        entry["zoneIndices"] = w["zoneIndices"];
+    }
+    return entry;
+}
 
 std::string formatGuidBytesLower(const uint8_t* b) {
     if (!b) return {};
@@ -117,48 +229,102 @@ std::string readFileUtf8(const std::filesystem::path& p) {
 nlohmann::json buildBuiltinZoneLayouts() {
     return nlohmann::json::array({
         {
-            {"id", "builtin-columns-2"},
-            {"name", "2 Columns"},
-            {"type", "grid"},
+            {"id", "template_none"},
+            {"name", "No layout"},
+            {"type", "none"},
             {"builtin", true},
-            {"rows", 1},
-            {"columns", 2},
-            {"rowPercents", {100}},
-            {"colPercents", {50, 50}},
-            {"cellMap", {{0, 1}}}
+            {"templateKind", "none"},
+            {"zoneCount", 0},
+            {"showSpacing", false},
+            {"gap", 0},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", false},
+            {"defaultVertical", false}
         },
         {
-            {"id", "builtin-priority-3"},
+            {"id", "template_focus"},
+            {"name", "Focus"},
+            {"type", "focus"},
+            {"builtin", true},
+            {"templateKind", "focus"},
+            {"zoneCount", 3},
+            {"showSpacing", true},
+            {"gap", 16},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", false},
+            {"defaultVertical", false}
+        },
+        {
+            {"id", "template_columns"},
+            {"name", "Columns"},
+            {"type", "grid"},
+            {"builtin", true},
+            {"templateKind", "columns"},
+            {"zoneCount", 3},
+            {"showSpacing", true},
+            {"gap", 16},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", false},
+            {"defaultVertical", false},
+            {"rows", 1},
+            {"columns", 3},
+            {"rowPercents", {100}},
+            {"colPercents", {33.3, 33.4, 33.3}},
+            {"cellMap", {{0, 1, 2}}}
+        },
+        {
+            {"id", "template_rows"},
+            {"name", "Rows"},
+            {"type", "grid"},
+            {"builtin", true},
+            {"templateKind", "rows"},
+            {"zoneCount", 3},
+            {"showSpacing", true},
+            {"gap", 16},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", false},
+            {"defaultVertical", true},
+            {"rows", 3},
+            {"columns", 1},
+            {"rowPercents", {33.3, 33.4, 33.3}},
+            {"colPercents", {100}},
+            {"cellMap", {{0}, {1}, {2}}}
+        },
+        {
+            {"id", "template_grid"},
+            {"name", "Grid"},
+            {"type", "grid"},
+            {"builtin", true},
+            {"templateKind", "grid"},
+            {"zoneCount", 3},
+            {"showSpacing", true},
+            {"gap", 16},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", false},
+            {"defaultVertical", false},
+            {"rows", 1},
+            {"columns", 3},
+            {"rowPercents", {100}},
+            {"colPercents", {33.3, 33.4, 33.3}},
+            {"cellMap", {{0, 1, 2}}}
+        },
+        {
+            {"id", "template_priority_grid"},
             {"name", "Priority Grid"},
             {"type", "grid"},
             {"builtin", true},
+            {"templateKind", "priority_grid"},
+            {"zoneCount", 3},
+            {"showSpacing", true},
+            {"gap", 16},
+            {"highlightDistance", 20},
+            {"defaultHorizontal", true},
+            {"defaultVertical", false},
             {"rows", 1},
             {"columns", 3},
             {"rowPercents", {100}},
             {"colPercents", {25, 50, 25}},
             {"cellMap", {{0, 1, 2}}}
-        },
-        {
-            {"id", "builtin-grid-2x2"},
-            {"name", "2x2 Grid"},
-            {"type", "grid"},
-            {"builtin", true},
-            {"rows", 2},
-            {"columns", 2},
-            {"rowPercents", {50, 50}},
-            {"colPercents", {50, 50}},
-            {"cellMap", {{0, 1}, {2, 3}}}
-        },
-        {
-            {"id", "builtin-focus-split"},
-            {"name", "Main + Stack"},
-            {"type", "grid"},
-            {"builtin", true},
-            {"rows", 2},
-            {"columns", 2},
-            {"rowPercents", {50, 50}},
-            {"colPercents", {60, 40}},
-            {"cellMap", {{0, 1}, {0, 2}}}
         }
     });
 }
@@ -178,7 +344,7 @@ void deepMergeJson(nlohmann::json& target, const nlohmann::json& patch) {
     }
 }
 
-/// 将前端 SnapZoneLayout 转换为 Rust config.rs 精确识别的布局 JSON（无缝兼容 Grid & Canvas）
+/// 将前端 SnapZoneLayout 转换为 Rust config.rs Schema v3 精确识别的布局 JSON（无缝兼容 None/Focus/Grid/Canvas）
 nlohmann::json translateLayoutToRust(const nlohmann::json& uiLayout) {
     if (!uiLayout.is_object()) return nlohmann::json::object();
     nlohmann::json out = nlohmann::json::object();
@@ -187,8 +353,37 @@ nlohmann::json translateLayoutToRust(const nlohmann::json& uiLayout) {
     const std::string kind = uiLayout.value("type", std::string("grid"));
     out["type"] = kind;
     out["builtIn"] = uiLayout.value("builtin", uiLayout.value("builtIn", false));
+    if (uiLayout.contains("templateKind") && uiLayout["templateKind"].is_string() &&
+        !uiLayout["templateKind"].get<std::string>().empty()) {
+        out["templateKind"] = uiLayout["templateKind"];
+    }
+    if (uiLayout.contains("zoneCount") && uiLayout["zoneCount"].is_number_integer()) {
+        out["zoneCount"] = uiLayout["zoneCount"];
+    }
+    if (uiLayout.contains("showSpacing") && uiLayout["showSpacing"].is_boolean()) {
+        out["showSpacing"] = uiLayout["showSpacing"];
+    }
     if (uiLayout.contains("gap") && uiLayout["gap"].is_number_integer()) {
         out["gap"] = uiLayout["gap"];
+    }
+    if (uiLayout.contains("highlightDistance") && uiLayout["highlightDistance"].is_number_integer()) {
+        out["highlightDistance"] = uiLayout["highlightDistance"];
+    }
+    if (uiLayout.contains("hotkeyDigit") && uiLayout["hotkeyDigit"].is_number_integer()) {
+        const int d = uiLayout["hotkeyDigit"].get<int>();
+        if (d >= 0 && d <= 9) {
+            out["hotkeyDigit"] = d;
+        }
+    }
+    if (uiLayout.contains("defaultHorizontal") && uiLayout["defaultHorizontal"].is_boolean()) {
+        out["defaultHorizontal"] = uiLayout["defaultHorizontal"];
+    }
+    if (uiLayout.contains("defaultVertical") && uiLayout["defaultVertical"].is_boolean()) {
+        out["defaultVertical"] = uiLayout["defaultVertical"];
+    }
+
+    if (kind == "none" || kind == "focus") {
+        return out;
     }
 
     if (kind == "canvas") {
@@ -201,7 +396,6 @@ nlohmann::json translateLayoutToRust(const nlohmann::json& uiLayout) {
                 double y = z.value("y", 0.0);
                 double w = z.value("w", z.value("width", 0.5));
                 double h = z.value("h", z.value("height", 1.0));
-                // 兼容 0..100 百分比或 0..1 归一化坐标
                 if (w > 1.0 || h > 1.0 || x > 1.0 || y > 1.0) {
                     x /= 100.0;
                     y /= 100.0;
@@ -232,7 +426,7 @@ nlohmann::json translateLayoutToRust(const nlohmann::json& uiLayout) {
     return out;
 }
 
-/// 将 Rust 导入的 PowerToys 布局转换为前端 ZoneLayoutEditor 精确识别的 SnapZoneLayout
+/// 将 Rust 输出的 Schema v3 布局转换为前端精确识别的 SnapZoneLayout
 nlohmann::json translateRustLayoutToUi(const nlohmann::json& rustLayout) {
     if (!rustLayout.is_object()) return nlohmann::json::object();
     const std::string kind = rustLayout.value("type", std::string("grid"));
@@ -240,8 +434,40 @@ nlohmann::json translateRustLayoutToUi(const nlohmann::json& rustLayout) {
         {"id", rustLayout.value("id", std::string("imported"))},
         {"name", rustLayout.value("name", std::string("Imported Layout"))},
         {"type", kind},
-        {"builtin", rustLayout.value("builtIn", false)}
+        {"builtin", rustLayout.value("builtIn", rustLayout.value("builtin", false))}
     };
+    if (rustLayout.contains("templateKind") && rustLayout["templateKind"].is_string()) {
+        out["templateKind"] = rustLayout["templateKind"];
+    }
+    if (rustLayout.contains("zoneCount") && rustLayout["zoneCount"].is_number_integer()) {
+        out["zoneCount"] = rustLayout["zoneCount"];
+    }
+    if (rustLayout.contains("showSpacing") && rustLayout["showSpacing"].is_boolean()) {
+        out["showSpacing"] = rustLayout["showSpacing"];
+    }
+    if (rustLayout.contains("gap") && rustLayout["gap"].is_number_integer()) {
+        out["gap"] = rustLayout["gap"];
+    }
+    if (rustLayout.contains("highlightDistance") && rustLayout["highlightDistance"].is_number_integer()) {
+        out["highlightDistance"] = rustLayout["highlightDistance"];
+    }
+    if (rustLayout.contains("hotkeyDigit") && rustLayout["hotkeyDigit"].is_number_integer()) {
+        const int d = rustLayout["hotkeyDigit"].get<int>();
+        if (d >= 0 && d <= 9) {
+            out["hotkeyDigit"] = d;
+        }
+    }
+    if (rustLayout.contains("defaultHorizontal") && rustLayout["defaultHorizontal"].is_boolean()) {
+        out["defaultHorizontal"] = rustLayout["defaultHorizontal"];
+    }
+    if (rustLayout.contains("defaultVertical") && rustLayout["defaultVertical"].is_boolean()) {
+        out["defaultVertical"] = rustLayout["defaultVertical"];
+    }
+
+    if (kind == "none" || kind == "focus") {
+        return out;
+    }
+
     if (kind == "canvas") {
         nlohmann::json zones = nlohmann::json::array();
         if (rustLayout.contains("zones") && rustLayout["zones"].is_array()) {
@@ -341,26 +567,44 @@ nlohmann::json WindowKitController::buildDefaultSettingsJson() {
         }},
         {"snapZones", {
             {"triggerMode", "shift"},
+            {"edgeThresholdPx", 20},
             {"spanMultipleZones", true},
             {"showZoneNumbers", true},
-            {"zoneGap", 8},
+            {"zoneGap", 16},
             {"overlayOpacity", 70},
             {"rememberLastZone", true},
+            {"restoreOriginalSize", true},
             {"perVirtualDesktop", false},
+            {"showOnAllMonitors", false},
+            {"overrideWinArrows", false},
+            {"moveByPosition", false},
+            {"activeLayoutId", "template_priority_grid"},
             {"excludedApps", nlohmann::json::array()},
             {"layouts", buildBuiltinZoneLayouts()},
             {"monitorBindings", nlohmann::json::object()}
         }},
         {"workspaces", {
             {"minimizeUnrelated", false},
+            {"unrelatedAction", "keep"},
             {"items", nlohmann::json::array()}
         }},
         {"quickSwitch", {
+            {"replaceAltTab", true},
+            {"sameAppEnabled", false},
+            {"sameAppHotkey", "Alt+`"},
             {"currentMonitorOnly", false},
+            {"currentDesktopOnly", true},
             {"showPreview", true},
+            {"previewInDesktopPosition", false},
             {"showNumbers", true},
+            {"showAppNames", false},
+            {"largeIcons", true},
+            {"visibleBorders", true},
             {"density", "comfortable"},
-            {"enablePinyinSearch", true}
+            {"enablePinyinSearch", true},
+            {"rememberBounds", true},
+            {"listWidthRatio", 0.34},
+            {"customMonitorId", ""}
         }},
         {"alwaysOnTop", {
             {"showBorder", true},
@@ -393,13 +637,16 @@ nlohmann::json WindowKitController::buildDefaultSettingsJson() {
             {"toggleAlwaysOnTop", "Ctrl+Win+T"},
             {"moveNextZone", "Win+Alt+Right"},
             {"movePrevZone", "Win+Alt+Left"},
+            {"restoreFromZone", "Win+Alt+Down"},
             {"moveNextMonitor", "Ctrl+Win+Right"},
             {"rescueOffscreen", "Ctrl+Win+G"},
             {"minimizeToTray", "Ctrl+Win+Down"},
+            {"restoreAllTray", "Ctrl+Win+Shift+Down"},
             {"opacityUp", "Ctrl+Win+Up"},
             {"opacityDown", "Ctrl+Win+PageDown"},
             {"opacityReset", "Ctrl+Win+0"},
-            {"openLayoutEditor", "Win+Shift+~"}
+            {"openLayoutEditor", "Win+Shift+~"},
+            {"openQuickSwitch", ""}
         }}
     };
 }
@@ -436,14 +683,18 @@ WPARAM WindowKitController::resolveActionCode(const std::string& actionName) noe
     if (actionName == "move_next_monitor" || actionName == "moveNextMonitor") return kWindowKitActionMoveNextMonitor;
     if (actionName == "minimize_to_tray" || actionName == "minimizeToTray") return kWindowKitActionMinimizeToTray;
     if (actionName == "restore_all_tray" || actionName == "restoreAllTray") return kWindowKitActionRestoreAllTray;
-    if (actionName == "open_quick_switch" || actionName == "showQuickSwitch") return kWindowKitActionOpenQuickSwitch;
+    if (actionName == "open_quick_switch" || actionName == "showQuickSwitch" || actionName == "openQuickSwitch") return kWindowKitActionOpenQuickSwitch;
     if (actionName == "capture_workspace" || actionName == "captureWorkspace") return kWindowKitActionCaptureWorkspace;
     if (actionName == "launch_workspace" || actionName == "launchWorkspace") return kWindowKitActionLaunchWorkspace;
     if (actionName == "import_powertoys_zones") return kWindowKitActionImportPowerToysZones;
     if (actionName == "query_monitors") return kWindowKitActionQueryMonitors;
     if (actionName == "query_runtime_stats") return kWindowKitActionQueryRuntimeStats;
     if (actionName == "show_zones_preview" || actionName == "showZoneOverlayPreview") return kWindowKitActionShowZonesPreview;
-    if (actionName == "open_layout_editor" || actionName == "openLayoutEditor") return kWindowKitActionOpenLayoutEditor;
+    if (actionName == "open_layout_editor" || actionName == "openLayoutEditor" || actionName == "open_layout_hub" || actionName == "openLayoutHub") return kWindowKitActionOpenLayoutEditor;
+    if (actionName == "apply_layout_hotkey_digit" || actionName == "applyLayoutHotkeyDigit") return kWindowKitActionApplyLayoutHotkeyDigit;
+    if (actionName == "start_workspace_capture" || actionName == "startWorkspaceCapture") return kWindowKitActionStartWorkspaceCapture;
+    if (actionName == "preview_border_style" || actionName == "previewBorderStyle") return kWindowKitActionPreviewBorderStyle;
+    if (actionName == "open_layout_editor_direct" || actionName == "openLayoutEditorDirect") return kWindowKitActionOpenLayoutEditorDirect;
     return 0;
 }
 
@@ -461,6 +712,14 @@ std::filesystem::path WindowKitController::resolveActionPayloadPath() const {
 
 std::filesystem::path WindowKitController::resolveEditorResultPath() const {
     return WinUtils::getConfigDirectory() / L"window_kit_layout_editor_result.json";
+}
+
+std::filesystem::path WindowKitController::resolveWorkspaceCaptureResultPath() const {
+    return WinUtils::getConfigDirectory() / L"window_kit_workspace_capture_result.json";
+}
+
+std::filesystem::path WindowKitController::resolveQuickSwitchBoundsPath() const {
+    return WinUtils::getConfigDirectory() / L"window_kit_quickswitch_bounds.json";
 }
 
 bool WindowKitController::isBinaryInstalled() const {
@@ -511,10 +770,39 @@ void WindowKitController::loadFromConfigLocked() {
     if (!m_settings.contains("snapZones") || !m_settings["snapZones"].is_object()) {
         m_settings["snapZones"] = buildDefaultSettingsJson()["snapZones"];
     }
-    if (!m_settings["snapZones"].contains("layouts") ||
-        !m_settings["snapZones"]["layouts"].is_array() ||
-        m_settings["snapZones"]["layouts"].empty()) {
-        m_settings["snapZones"]["layouts"] = buildBuiltinZoneLayouts();
+    auto& sz = m_settings["snapZones"];
+    if (!sz.contains("layouts") || !sz["layouts"].is_array() || sz["layouts"].empty()) {
+        sz["layouts"] = buildBuiltinZoneLayouts();
+    } else {
+        // 无感升级老版本 4 内置布局至 6 大参数化模板，100% 保留用户已有自定义布局与绑定
+        bool hasNewTemplates = false;
+        for (const auto& l : sz["layouts"]) {
+            if (l.is_object() && l.value("id", std::string{}).rfind("template_", 0) == 0) {
+                hasNewTemplates = true;
+                break;
+            }
+        }
+        if (!hasNewTemplates) {
+            nlohmann::json upgraded = buildBuiltinZoneLayouts();
+            for (const auto& l : sz["layouts"]) {
+                if (!l.is_object()) continue;
+                const bool isBuiltin = l.value("builtin", l.value("builtIn", false));
+                if (!isBuiltin) {
+                    upgraded.push_back(l);
+                }
+            }
+            sz["layouts"] = std::move(upgraded);
+            if (sz.contains("monitorBindings") && sz["monitorBindings"].is_object()) {
+                for (auto& [_, val] : sz["monitorBindings"].items()) {
+                    if (val.is_string()) {
+                        val = mapLegacyBuiltinLayoutId(val.get<std::string>());
+                    }
+                }
+            }
+            if (sz.contains("activeLayoutId") && sz["activeLayoutId"].is_string()) {
+                sz["activeLayoutId"] = mapLegacyBuiltinLayoutId(sz["activeLayoutId"].get<std::string>());
+            }
+        }
     }
 }
 
@@ -629,55 +917,86 @@ nlohmann::json WindowKitController::buildRustRuntimePayloadLocked(const std::str
     const nlohmann::json snapExcluded = sanitizeExcluded(sz.value("excludedApps", nlohmann::json::array()));
     const nlohmann::json altDragExcluded = sanitizeExcluded(ad.value("excludedApps", nlohmann::json::array()));
 
-    // 转换 SnapZones 布局列表为 Rust 精确格式
+    // 转换 SnapZones 布局列表为 Rust Schema v3 精确格式
     nlohmann::json rustLayouts = nlohmann::json::array();
-    std::string firstLayoutId = "builtin-columns-2";
+    std::string firstLayoutId = "template_priority_grid";
     if (sz.contains("layouts") && sz["layouts"].is_array()) {
         for (const auto& l : sz["layouts"]) {
             auto translated = translateLayoutToRust(l);
             if (translated.is_object() && !translated.value("id", std::string{}).empty()) {
-                if (rustLayouts.empty()) firstLayoutId = translated["id"].get<std::string>();
+                if (rustLayouts.empty() && translated.value("type", std::string{}) != "none") {
+                    firstLayoutId = translated["id"].get<std::string>();
+                }
                 rustLayouts.push_back(std::move(translated));
             }
         }
     }
+    const std::string configuredActiveLayout = sz.value("activeLayoutId", std::string{});
+    const std::string activeLayoutId = configuredActiveLayout.empty() ? firstLayoutId : configuredActiveLayout;
 
     std::string triggerMode = sz.value("triggerMode", std::string("shift"));
     if (triggerMode == "edge") triggerMode = "top_edge";
 
     const double overlayOpacityPct = sz.value("overlayOpacity", 70.0);
-    const double highlightOpacity = std::clamp(overlayOpacityPct / 100.0 * 0.55, 0.10, 0.80);
+    const double highlightOpacity = std::clamp(overlayOpacityPct / 100.0 * 0.45, 0.08, 0.80);
+
+    nlohmann::json rustQuickSwitch = {
+        {"replaceAltTab", qs.value("replaceAltTab", true)},
+        {"sameAppEnabled", qs.value("sameAppEnabled", false)},
+        {"sameAppHotkey", qs.value("sameAppHotkey", std::string("Alt+`"))},
+        {"showLivePreview", qs.value("showPreview", true)},
+        {"previewInDesktopPosition", qs.value("previewInDesktopPosition", false)},
+        {"showAllMonitors", !qs.value("currentMonitorOnly", false)},
+        {"currentDesktopOnly", qs.value("currentDesktopOnly", true)},
+        {"showProcessBadge", true},
+        {"showAppNames", qs.value("showAppNames", false)},
+        {"showNumbers", qs.value("showNumbers", true)},
+        {"density", qs.value("density", std::string("comfortable"))},
+        {"largeIcons", qs.value("largeIcons", true)},
+        {"visibleBorders", qs.value("visibleBorders", true)},
+        {"enablePinyinSearch", qs.value("enablePinyinSearch", true)},
+        {"includeMinimized", true},
+        {"rememberBounds", qs.value("rememberBounds", true)},
+        {"listWidthRatio", qs.value("listWidthRatio", 0.34)},
+        {"customMonitorId", qs.value("customMonitorId", std::string{})}
+    };
+    if (qs.contains("customWidthDip") && qs["customWidthDip"].is_number()) {
+        rustQuickSwitch["customWidthDip"] = qs["customWidthDip"];
+    }
+    if (qs.contains("customHeightDip") && qs["customHeightDip"].is_number()) {
+        rustQuickSwitch["customHeightDip"] = qs["customHeightDip"];
+    }
+    if (qs.contains("customRelRect") && qs["customRelRect"].is_object()) {
+        rustQuickSwitch["customRelRect"] = qs["customRelRect"];
+    }
 
     return {
-        {"schemaVersion", 2},
+        {"schemaVersion", 3},
         {"traceId", traceId},
         {"enabled", m_masterEnabled},
         {"theme", theme},
         {"accentColor", accentColor},
+        {"uiLang", resolveEffectiveUiLangShort()},
         {"logDir", WinUtils::pathToUtf8(WinUtils::getLogDirectory())},
         {"logLevel", logLevel},
         {"excludedApps", globalExcluded},
         {"features", features},
-        {"quickSwitch", {
-            {"showLivePreview", qs.value("showPreview", true)},
-            {"showAllMonitors", !qs.value("currentMonitorOnly", false)},
-            {"showProcessBadge", true},
-            {"showNumbers", qs.value("showNumbers", true)},
-            {"density", qs.value("density", std::string("comfortable"))},
-            {"enablePinyinSearch", qs.value("enablePinyinSearch", true)},
-            {"includeMinimized", true}
-        }},
+        {"quickSwitch", std::move(rustQuickSwitch)},
         {"snapZones", {
             {"triggerMode", triggerMode},
-            {"zoneGap", sz.value("zoneGap", 8)},
+            {"edgeThresholdPx", sz.value("edgeThresholdPx", 20)},
+            {"zoneGap", sz.value("zoneGap", 16)},
             {"highlightOpacity", highlightOpacity},
             {"showZoneNumbers", sz.value("showZoneNumbers", true)},
             {"allowMultiZoneSpan", sz.value("spanMultipleZones", true)},
             {"rememberLastZone", sz.value("rememberLastZone", true)},
             {"restoreOriginalSize", sz.value("restoreOriginalSize", true)},
             {"perVirtualDesktop", sz.value("perVirtualDesktop", false)},
+            {"showOnAllMonitors", sz.value("showOnAllMonitors", false)},
+            {"overrideWinArrows", sz.value("overrideWinArrows", false)},
+            {"moveByPosition", sz.value("moveByPosition", false)},
             {"excludedApps", snapExcluded},
-            {"activeLayoutId", firstLayoutId},
+            {"activeLayoutId", activeLayoutId},
             {"monitorBindings", sz.value("monitorBindings", nlohmann::json::object())},
             {"layouts", rustLayouts}
         }},
@@ -710,6 +1029,7 @@ nlohmann::json WindowKitController::buildRustRuntimePayloadLocked(const std::str
         }},
         {"workspaces", {
             {"minimizeUnrelated", ws.value("minimizeUnrelated", false)},
+            {"unrelatedAction", ws.value("unrelatedAction", std::string(ws.value("minimizeUnrelated", false) ? "minimize" : "keep"))},
             {"items", ws.value("items", nlohmann::json::array())}
         }}
     };
@@ -749,9 +1069,21 @@ HWND WindowKitController::findManagedControlWindowLocked() const noexcept {
     return nullptr;
 }
 
-void WindowKitController::postControlMessageLocked(UINT msg, WPARAM wp, LPARAM lp) const noexcept {
-    if (!isProcessAliveLocked()) return;
+HWND WindowKitController::waitForManagedControlWindowLocked(DWORD maxWaitMs) const noexcept {
     HWND ctrl = findManagedControlWindowLocked();
+    if (ctrl && IsWindow(ctrl)) return ctrl;
+    const ULONGLONG deadline = GetTickCount64() + maxWaitMs;
+    while (GetTickCount64() < deadline && isProcessAliveLocked()) {
+        Sleep(10);
+        ctrl = findManagedControlWindowLocked();
+        if (ctrl && IsWindow(ctrl)) return ctrl;
+    }
+    return nullptr;
+}
+
+void WindowKitController::postControlMessageLocked(UINT msg, WPARAM wp, LPARAM lp, bool waitIfJustStarted) const noexcept {
+    if (!isProcessAliveLocked()) return;
+    HWND ctrl = waitIfJustStarted ? waitForManagedControlWindowLocked(450) : findManagedControlWindowLocked();
     if (ctrl && IsWindow(ctrl)) {
         // 铁律：永远仅用异步 PostMessageW，绝不调用 SendMessageW 造成宿主阻塞连坐
         PostMessageW(ctrl, msg, wp, lp);
@@ -969,11 +1301,22 @@ void WindowKitController::unregisterAllHotkeys() {
     for (const char* name : kWindowKitHotkeyNames) {
         hm.unregisterHotkey(name);
     }
+    for (int d = 0; d <= 9; ++d) {
+        hm.unregisterHotkey("WindowKit: Layout Hotkey " + std::to_string(d));
+    }
+    for (const auto& [regName, _] : m_registeredHotkeys) {
+        hm.unregisterHotkey(regName);
+    }
     m_registeredHotkeys.clear();
 }
 
 void WindowKitController::syncHotkeysLocked() {
-    std::map<std::string, std::pair<std::string, std::string>> desired;
+    struct DesiredHotkey {
+        std::string binding;
+        std::string action;
+        nlohmann::json arg;
+    };
+    std::map<std::string, DesiredHotkey> desired;
     if (hasAnyActiveFeature(m_masterEnabled, m_settings)) {
         const auto& features = m_settings["features"];
         const auto hotkeys = m_settings.value("hotkeys", nlohmann::json::object());
@@ -982,25 +1325,44 @@ void WindowKitController::syncHotkeysLocked() {
             if (!features.value(featureKey, false)) return;
             const std::string binding = hotkeys.value(hkKey, std::string{});
             if (binding.empty()) return;
-            desired.emplace(regName, std::make_pair(binding, std::string(actionName)));
+            desired.emplace(regName, DesiredHotkey{binding, std::string(actionName), nullptr});
         };
 
         collectIfEnabled("alwaysOnTop", "toggleAlwaysOnTop", kWindowKitHotkeyNames[0], "toggle_always_on_top");
         collectIfEnabled("snapZones", "moveNextZone", kWindowKitHotkeyNames[1], "move_next_zone");
         collectIfEnabled("snapZones", "movePrevZone", kWindowKitHotkeyNames[2], "move_prev_zone");
-        collectIfEnabled("multiMonitor", "moveNextMonitor", kWindowKitHotkeyNames[3], "move_next_monitor");
-        collectIfEnabled("multiMonitor", "rescueOffscreen", kWindowKitHotkeyNames[4], "rescue_offscreen");
-        collectIfEnabled("multiMonitor", "minimizeToTray", kWindowKitHotkeyNames[5], "minimize_to_tray");
-        collectIfEnabled("opacity", "opacityUp", kWindowKitHotkeyNames[6], "opacity_up");
-        collectIfEnabled("opacity", "opacityDown", kWindowKitHotkeyNames[7], "opacity_down");
-        collectIfEnabled("opacity", "opacityReset", kWindowKitHotkeyNames[8], "opacity_reset");
-        collectIfEnabled("snapZones", "openLayoutEditor", kWindowKitHotkeyNames[9], "open_layout_editor");
+        collectIfEnabled("snapZones", "restoreFromZone", kWindowKitHotkeyNames[3], "restore_from_zone");
+        collectIfEnabled("multiMonitor", "moveNextMonitor", kWindowKitHotkeyNames[4], "move_next_monitor");
+        collectIfEnabled("multiMonitor", "rescueOffscreen", kWindowKitHotkeyNames[5], "rescue_offscreen");
+        collectIfEnabled("multiMonitor", "minimizeToTray", kWindowKitHotkeyNames[6], "minimize_to_tray");
+        collectIfEnabled("multiMonitor", "restoreAllTray", kWindowKitHotkeyNames[7], "restore_all_tray");
+        collectIfEnabled("opacity", "opacityUp", kWindowKitHotkeyNames[8], "opacity_up");
+        collectIfEnabled("opacity", "opacityDown", kWindowKitHotkeyNames[9], "opacity_down");
+        collectIfEnabled("opacity", "opacityReset", kWindowKitHotkeyNames[10], "opacity_reset");
+        collectIfEnabled("snapZones", "openLayoutEditor", kWindowKitHotkeyNames[11], "open_layout_editor");
+        collectIfEnabled("quickSwitch", "openQuickSwitch", kWindowKitHotkeyNames[12], "open_quick_switch");
+
+        // 为绑定了 0..9 快捷数字的自定义布局动态注册 Win+Ctrl+Alt+{digit}
+        if (features.value("snapZones", false) &&
+            m_settings.contains("snapZones") && m_settings["snapZones"].is_object() &&
+            m_settings["snapZones"].contains("layouts") && m_settings["snapZones"]["layouts"].is_array()) {
+            for (const auto& lay : m_settings["snapZones"]["layouts"]) {
+                if (!lay.is_object() || !lay.contains("hotkeyDigit") || !lay["hotkeyDigit"].is_number_integer()) {
+                    continue;
+                }
+                const int digit = lay["hotkeyDigit"].get<int>();
+                if (digit < 0 || digit > 9) continue;
+                const std::string regName = "WindowKit: Layout Hotkey " + std::to_string(digit);
+                const std::string binding = "Ctrl+Alt+Win+" + std::to_string(digit);
+                desired[regName] = DesiredHotkey{binding, "apply_layout_hotkey_digit", nlohmann::json(digit)};
+            }
+        }
     }
 
     // 快照 Diff 去重：若目标热键集合与当前已注册集合 100% 一致，直接跳过，避免调滑块/切开关狂刷热键日志
     std::map<std::string, std::string> nextSnapshot;
-    for (const auto& [regName, pair] : desired) {
-        nextSnapshot.emplace(regName, pair.first);
+    for (const auto& [regName, info] : desired) {
+        nextSnapshot.emplace(regName, info.binding);
     }
     if (nextSnapshot == m_registeredHotkeys) {
         return;
@@ -1016,18 +1378,19 @@ void WindowKitController::syncHotkeysLocked() {
     }
     // 2. 仅注册新增或快捷键变更的条目
     std::map<std::string, std::string> actualSnapshot;
-    for (const auto& [regName, pair] : desired) {
+    for (const auto& [regName, info] : desired) {
         const auto oldIt = m_registeredHotkeys.find(regName);
-        if (oldIt != m_registeredHotkeys.end() && oldIt->second == pair.first) {
-            actualSnapshot.emplace(regName, pair.first);
+        if (oldIt != m_registeredHotkeys.end() && oldIt->second == info.binding) {
+            actualSnapshot.emplace(regName, info.binding);
             continue;
         }
-        if (auto parsed = HotkeyDef::fromString(pair.first)) {
-            const std::string act = pair.second;
-            hm.registerHotkey(regName, *parsed, [act]() {
-                WindowKitController::instance().execAction(act);
+        if (auto parsed = HotkeyDef::fromString(info.binding)) {
+            const std::string act = info.action;
+            const nlohmann::json argCopy = info.arg;
+            hm.registerHotkey(regName, *parsed, [act, argCopy]() {
+                WindowKitController::instance().execAction(act, argCopy);
             });
-            actualSnapshot.emplace(regName, pair.first);
+            actualSnapshot.emplace(regName, info.binding);
         }
     }
     m_registeredHotkeys = std::move(actualSnapshot);
@@ -1184,56 +1547,132 @@ nlohmann::json WindowKitController::execAction(const std::string& actionName, co
         lParam = 2500;  // 默认展示 2.5 秒分区预览蒙层
     }
 
-    std::lock_guard lock(m_mutex);
-    if (!isProcessAliveLocked()) {
-        if (m_shouldRun.load(std::memory_order_acquire) && !m_circuitBreakerTripped) {
-            launchManagedProcessLocked(TraceId::generate());
-        }
+    bool shouldPushEvents = false;
+    bool justLaunched = false;
+    {
+        std::lock_guard lock(m_mutex);
         if (!isProcessAliveLocked()) {
-            return {{"success", false}, {"error", "window kit is not running"}};
+            if (m_shouldRun.load(std::memory_order_acquire) && !m_circuitBreakerTripped) {
+                justLaunched = launchManagedProcessLocked(TraceId::generate());
+            }
+            if (!isProcessAliveLocked()) {
+                return {{"success", false}, {"error", "window kit is not running"}};
+            }
         }
+
+        if (code == kWindowKitActionOpenLayoutEditor || code == kWindowKitActionOpenLayoutEditorDirect) {
+            nlohmann::json payload = {
+                {"uiLang", resolveEffectiveUiLangShort()}
+            };
+            if (arg.is_object()) {
+                if (arg.contains("monitorId") && arg["monitorId"].is_string()) {
+                    payload["monitorId"] = arg["monitorId"].get<std::string>();
+                }
+                if (arg.contains("desktopId") && arg["desktopId"].is_string()) {
+                    payload["desktopId"] = arg["desktopId"].get<std::string>();
+                }
+                if (arg.contains("layoutId") && arg["layoutId"].is_string()) {
+                    payload["layoutId"] = arg["layoutId"].get<std::string>();
+                }
+                if (arg.contains("directEditor") && arg["directEditor"].is_boolean()) {
+                    payload["directEditor"] = arg["directEditor"].get<bool>();
+                }
+                if (arg.contains("restoreSettingsHwnd") && arg["restoreSettingsHwnd"].is_number_integer()) {
+                    const auto rh = arg["restoreSettingsHwnd"].get<int64_t>();
+                    payload["restoreSettingsHwnd"] = rh;
+                    lParam = static_cast<LPARAM>(rh);
+                }
+            }
+            WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
+        }
+
+        if (code == kWindowKitActionStartWorkspaceCapture) {
+            nlohmann::json payload = {
+                {"uiLang", resolveEffectiveUiLangShort()}
+            };
+            if (arg.is_object()) {
+                if (arg.contains("workspaceId") && arg["workspaceId"].is_string()) {
+                    payload["workspaceId"] = arg["workspaceId"].get<std::string>();
+                }
+                if (arg.contains("restoreSettingsHwnd") && arg["restoreSettingsHwnd"].is_number_integer()) {
+                    const auto rh = arg["restoreSettingsHwnd"].get<int64_t>();
+                    payload["restoreSettingsHwnd"] = rh;
+                    lParam = static_cast<LPARAM>(rh);
+                }
+            }
+            WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
+        }
+
+        if (code == kWindowKitActionPreviewBorderStyle) {
+            nlohmann::json payload = nlohmann::json::object();
+            if (arg.is_object()) {
+                const std::string kind = arg.value("kind", std::string("focus"));
+                lParam = (kind == "alwaysOnTop" || kind == "pin") ? 1 : 0;
+                if (arg.contains("borderColor") && arg["borderColor"].is_string()) {
+                    payload["borderColor"] = arg["borderColor"].get<std::string>();
+                } else if (arg.contains("color") && arg["color"].is_string()) {
+                    payload["borderColor"] = arg["color"].get<std::string>();
+                }
+                if (arg.contains("borderWidth") && arg["borderWidth"].is_number_integer()) {
+                    payload["borderWidth"] = arg["borderWidth"].get<int>();
+                } else if (arg.contains("thickness") && arg["thickness"].is_number_integer()) {
+                    payload["borderWidth"] = arg["thickness"].get<int>();
+                } else if (arg.contains("borderThickness") && arg["borderThickness"].is_number_integer()) {
+                    payload["borderWidth"] = arg["borderThickness"].get<int>();
+                }
+                if (arg.contains("cornerRadius") && arg["cornerRadius"].is_number_integer()) {
+                    payload["cornerRadius"] = arg["cornerRadius"].get<int>();
+                }
+                if (arg.contains("opacity") && arg["opacity"].is_number()) {
+                    payload["opacity"] = arg["opacity"].get<double>();
+                }
+            }
+            WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
+        }
+
+        if (code == kWindowKitActionApplyLayoutHotkeyDigit) {
+            if (arg.is_object() && arg.contains("digit") && arg["digit"].is_number_integer()) {
+                lParam = static_cast<LPARAM>(arg["digit"].get<int64_t>());
+            }
+        }
+
+        if (code == kWindowKitActionLaunchWorkspace) {
+            if (workspaceId.empty() && m_settings.contains("workspaces") &&
+                m_settings["workspaces"].contains("items") && m_settings["workspaces"]["items"].is_array()) {
+                const auto& items = m_settings["workspaces"]["items"];
+                const size_t idx = (lParam >= 0) ? static_cast<size_t>(lParam) : 0;
+                if (idx < items.size() && items[idx].is_object()) {
+                    workspaceId = items[idx].value("id", std::string{});
+                }
+            }
+            if (workspaceId.empty()) {
+                return {{"success", false}, {"error", "workspaceId is required"}};
+            }
+            // 更新该工作区的 lastLaunchedAt（Unix 秒），驱动列表页上次启动时间与排序
+            if (m_settings.contains("workspaces") &&
+                m_settings["workspaces"].contains("items") && m_settings["workspaces"]["items"].is_array()) {
+                const auto nowSec = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch()).count());
+                for (auto& item : m_settings["workspaces"]["items"]) {
+                    if (item.is_object() && item.value("id", std::string{}) == workspaceId) {
+                        item["lastLaunchedAt"] = nowSec;
+                        saveToConfigLocked();
+                        shouldPushEvents = true;
+                        break;
+                    }
+                }
+            }
+            const nlohmann::json payload = {{"workspaceId", workspaceId}};
+            WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
+        }
+
+        postControlMessageLocked(kWindowKitMsgExecAction, code, lParam, justLaunched);
     }
 
-    if (code == kWindowKitActionOpenLayoutEditor) {
-        nlohmann::json payload = {
-            {"uiLang", resolveEffectiveUiLangShort()}
-        };
-        if (arg.is_object()) {
-            if (arg.contains("monitorId") && arg["monitorId"].is_string()) {
-                payload["monitorId"] = arg["monitorId"].get<std::string>();
-            }
-            if (arg.contains("desktopId") && arg["desktopId"].is_string()) {
-                payload["desktopId"] = arg["desktopId"].get<std::string>();
-            }
-            if (arg.contains("layoutId") && arg["layoutId"].is_string()) {
-                payload["layoutId"] = arg["layoutId"].get<std::string>();
-            }
-            if (arg.contains("restoreSettingsHwnd") && arg["restoreSettingsHwnd"].is_number_integer()) {
-                const auto rh = arg["restoreSettingsHwnd"].get<int64_t>();
-                payload["restoreSettingsHwnd"] = rh;
-                lParam = static_cast<LPARAM>(rh);
-            }
-        }
-        WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
+    if (shouldPushEvents) {
+        pushStateChangedEvents();
     }
-
-    if (code == kWindowKitActionLaunchWorkspace) {
-        if (workspaceId.empty() && m_settings.contains("workspaces") &&
-            m_settings["workspaces"].contains("items") && m_settings["workspaces"]["items"].is_array()) {
-            const auto& items = m_settings["workspaces"]["items"];
-            const size_t idx = (lParam >= 0) ? static_cast<size_t>(lParam) : 0;
-            if (idx < items.size() && items[idx].is_object()) {
-                workspaceId = items[idx].value("id", std::string{});
-            }
-        }
-        if (workspaceId.empty()) {
-            return {{"success", false}, {"error", "workspaceId is required"}};
-        }
-        const nlohmann::json payload = {{"workspaceId", workspaceId}};
-        WinUtils::atomicWriteFileWithFlush(resolveActionPayloadPath().wstring(), payload.dump());
-    }
-
-    postControlMessageLocked(kWindowKitMsgExecAction, code, lParam);
     return {{"success", true}, {"action", actionName}};
 }
 
@@ -1381,6 +1820,39 @@ nlohmann::json WindowKitController::getVirtualDesktopsJson() const {
     nlohmann::json desktops = nlohmann::json::array();
     std::string currentDesktopId;
 
+    auto readGuidValue = [](HKEY root, const wchar_t* subKey, const wchar_t* valueName) -> std::string {
+        HKEY hk = nullptr;
+        if (RegOpenKeyExW(root, subKey, 0, KEY_READ, &hk) != ERROR_SUCCESS) {
+            return {};
+        }
+        DWORD type = 0;
+        uint8_t buf[16]{};
+        DWORD cb = sizeof(buf);
+        const LONG rc = RegQueryValueExW(hk, valueName, nullptr, &type, buf, &cb);
+        RegCloseKey(hk);
+        if (rc == ERROR_SUCCESS && type == REG_BINARY && cb == 16) {
+            return formatGuidBytesLower(buf);
+        }
+        return {};
+    };
+
+    // 1. 优先读 Win11 / Server 2025 根目录 CurrentVirtualDesktop
+    currentDesktopId = readGuidValue(
+        HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops",
+        L"CurrentVirtualDesktop");
+
+    // 2. 兼容 Win10 (1809+) / Server 2019 / Server 2022 的 SessionInfo\{SessionId}\VirtualDesktops
+    if (currentDesktopId.empty()) {
+        DWORD sessionId = 0;
+        if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId)) {
+            const std::wstring sessionKey =
+                L"Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\SessionInfo\\" +
+                std::to_wstring(sessionId) + L"\\VirtualDesktops";
+            currentDesktopId = readGuidValue(HKEY_CURRENT_USER, sessionKey.c_str(), L"CurrentVirtualDesktop");
+        }
+    }
+
     HKEY hKey = nullptr;
     if (RegOpenKeyExW(
             HKEY_CURRENT_USER,
@@ -1388,14 +1860,6 @@ nlohmann::json WindowKitController::getVirtualDesktopsJson() const {
             0,
             KEY_READ,
             &hKey) == ERROR_SUCCESS) {
-        DWORD curType = 0;
-        uint8_t curBuf[16]{};
-        DWORD curSize = sizeof(curBuf);
-        if (RegQueryValueExW(hKey, L"CurrentVirtualDesktop", nullptr, &curType, curBuf, &curSize) == ERROR_SUCCESS &&
-            curType == REG_BINARY && curSize == 16) {
-            currentDesktopId = formatGuidBytesLower(curBuf);
-        }
-
         DWORD listType = 0;
         DWORD listSize = 0;
         if (RegQueryValueExW(hKey, L"VirtualDesktopIDs", nullptr, &listType, nullptr, &listSize) == ERROR_SUCCESS &&
@@ -1458,8 +1922,74 @@ bool WindowKitController::handleLayoutEditorResult(bool saved) {
         LOG_ERROR("[WindowKit] Failed to parse layout editor result JSON: {}", e.what());
         return false;
     }
-    if (!payload.is_object() || !payload.value("saved", false) ||
-        !payload.contains("layout") || !payload["layout"].is_object()) {
+    if (!payload.is_object() || !payload.value("saved", false)) {
+        return false;
+    }
+
+    // 1. 双层共视布局管理器全量同步 (action == "hubSync")
+    if (payload.value("action", std::string{}) == "hubSync") {
+        {
+            std::lock_guard lock(m_mutex);
+            if (!m_initialized) {
+                loadFromConfigLocked();
+                m_initialized = true;
+            }
+            auto& sz = m_settings["snapZones"];
+            if (!sz.is_object()) {
+                sz = buildDefaultSettingsJson()["snapZones"];
+            }
+            if (payload.contains("layouts") && payload["layouts"].is_array() && !payload["layouts"].empty()) {
+                nlohmann::json uiLayouts = nlohmann::json::array();
+                for (const auto& l : payload["layouts"]) {
+                    auto translated = translateRustLayoutToUi(l);
+                    if (translated.is_object() && !translated.value("id", std::string{}).empty()) {
+                        uiLayouts.push_back(std::move(translated));
+                    }
+                }
+                if (!uiLayouts.empty()) {
+                    sz["layouts"] = std::move(uiLayouts);
+                }
+            }
+            if (payload.contains("monitorBindings")) {
+                nlohmann::json bindingsMap = nlohmann::json::object();
+                if (payload["monitorBindings"].is_array()) {
+                    for (const auto& b : payload["monitorBindings"]) {
+                        if (!b.is_object()) continue;
+                        const std::string mid = b.value("monitorId", std::string{});
+                        const std::string did = b.value("desktopId", std::string{});
+                        const std::string lid = b.value("layoutId", std::string{});
+                        if (mid.empty() || lid.empty()) continue;
+                        const std::string key = did.empty() ? mid : (mid + "@" + did);
+                        bindingsMap[key] = lid;
+                    }
+                } else if (payload["monitorBindings"].is_object()) {
+                    bindingsMap = payload["monitorBindings"];
+                }
+                sz["monitorBindings"] = std::move(bindingsMap);
+            }
+            if (payload.contains("activeLayoutId") && payload["activeLayoutId"].is_string() &&
+                !payload["activeLayoutId"].get<std::string>().empty()) {
+                sz["activeLayoutId"] = payload["activeLayoutId"];
+            }
+            if (payload.contains("zoneGap") && payload["zoneGap"].is_number_integer()) {
+                const int g = payload["zoneGap"].get<int>();
+                if (g >= 0 && g <= 64) {
+                    sz["zoneGap"] = g;
+                }
+            }
+
+            saveToConfigLocked();
+            syncHotkeysLocked();
+            writeRuntimeConfigAtomicLocked(TraceId::generate());
+        }
+
+        pushStateChangedEvents();
+        LOG_INFO("[WindowKit] Synced layout hub snapshot to host config");
+        return true;
+    }
+
+    // 2. 传统单布局 1:1 全屏编辑器保存回写
+    if (!payload.contains("layout") || !payload["layout"].is_object()) {
         return false;
     }
 
@@ -1497,7 +2027,7 @@ bool WindowKitController::handleLayoutEditorResult(bool saved) {
         if (!updatedExisting) {
             sz["layouts"].push_back(uiLayout);
         }
-        if (zoneGap >= 0 && zoneGap <= 48) {
+        if (zoneGap >= 0 && zoneGap <= 64) {
             sz["zoneGap"] = zoneGap;
         }
         if (!sz.contains("monitorBindings") || !sz["monitorBindings"].is_object()) {
@@ -1519,6 +2049,406 @@ bool WindowKitController::handleLayoutEditorResult(bool saved) {
     return true;
 }
 
+bool WindowKitController::handleWorkspaceCaptureResult(bool captured) {
+    const auto resultPath = resolveWorkspaceCaptureResultPath();
+    auto& mb = MessageBridge::instance();
+    if (!captured) {
+        std::error_code ec;
+        std::filesystem::remove(resultPath, ec);
+        const nlohmann::json cancelEvt = {{"captured", false}};
+        mb.pushEvent("windowManager.workspaceCaptured", cancelEvt);
+        mb.pushEvent("windowManager:workspaceCaptured", cancelEvt);
+        return false;
+    }
+
+    const std::string raw = readFileUtf8(resultPath);
+    std::error_code ec;
+    std::filesystem::remove(resultPath, ec);
+    if (raw.empty()) {
+        LOG_WARN("[WindowKit] Workspace capture result file was empty");
+        const nlohmann::json emptyEvt = {{"captured", false}};
+        mb.pushEvent("windowManager.workspaceCaptured", emptyEvt);
+        mb.pushEvent("windowManager:workspaceCaptured", emptyEvt);
+        return false;
+    }
+
+    nlohmann::json parsed;
+    try {
+        parsed = nlohmann::json::parse(raw);
+    } catch (const std::exception& e) {
+        LOG_ERROR("[WindowKit] Failed to parse workspace capture JSON: {}", e.what());
+        return false;
+    }
+
+    nlohmann::json apps = nlohmann::json::array();
+    const auto& rawApps = (parsed.contains("apps") && parsed["apps"].is_array())
+        ? parsed["apps"]
+        : (parsed.contains("windows") && parsed["windows"].is_array()
+               ? parsed["windows"]
+               : nlohmann::json::array());
+    size_t seq = 0;
+    for (const auto& w : rawApps) {
+        if (!w.is_object()) continue;
+        apps.push_back(normalizeWorkspaceAppForUi(w, seq++));
+    }
+
+    nlohmann::json monitors = nlohmann::json::array();
+    if (parsed.contains("monitors") && parsed["monitors"].is_array()) {
+        int idx = 1;
+        for (const auto& m : parsed["monitors"]) {
+            if (!m.is_object()) continue;
+            const auto rect = m.contains("rect") ? normalizeRectToXywh(m["rect"]) : nlohmann::json{{"x", 0}, {"y", 0}, {"w", m.value("width", 1920)}, {"h", m.value("height", 1080)}};
+            const auto work = m.contains("workArea") ? normalizeRectToXywh(m["workArea"]) : rect;
+            monitors.push_back({
+                {"id", m.value("id", "MONITOR-" + std::to_string(idx))},
+                {"name", m.value("name", m.value("friendlyName", "Screen " + std::to_string(idx)))},
+                {"width", rect.value("w", 1920)},
+                {"height", rect.value("h", 1080)},
+                {"rect", rect},
+                {"workArea", work},
+                {"dpi", m.value("dpi", 96)},
+                {"isPrimary", m.value("isPrimary", idx == 1)}
+            });
+            ++idx;
+        }
+    }
+
+    const std::string targetWsId = parsed.value("targetWorkspaceId", std::string{});
+    const std::string wsId = targetWsId.empty() ? ("ws-" + std::to_string(GetTickCount64())) : targetWsId;
+    const nlohmann::json eventPayload = {
+        {"captured", true},
+        {"targetWorkspaceId", targetWsId},
+        {"monitors", monitors},
+        {"workspace", {
+            {"id", wsId},
+            {"name", ""},
+            {"boundLayoutId", parsed.value("boundLayoutId", std::string{})},
+            {"desktopId", parsed.value("desktopId", std::string{})},
+            {"desktopName", parsed.value("desktopName", std::string{})},
+            {"moveExistingWindows", true},
+            {"unrelatedAction", "keep"},
+            {"createDesktopShortcut", false},
+            {"apps", apps}
+        }}
+    };
+    mb.pushEvent("windowManager.workspaceCaptured", eventPayload);
+    mb.pushEvent("windowManager:workspaceCaptured", eventPayload);
+    LOG_INFO("[WindowKit] Delivered workspace capture snapshot (apps={}, targetWs='{}')",
+             apps.size(), targetWsId);
+    return true;
+}
+
+bool WindowKitController::handleQuickSwitchBoundsResult() {
+    const auto boundsPath = resolveQuickSwitchBoundsPath();
+    const std::string raw = readFileUtf8(boundsPath);
+    std::error_code ec;
+    std::filesystem::remove(boundsPath, ec);
+    if (raw.empty()) {
+        return false;
+    }
+
+    nlohmann::json parsed;
+    try {
+        parsed = nlohmann::json::parse(raw);
+    } catch (const std::exception& e) {
+        LOG_WARN("[WindowKit] Failed to parse quickswitch bounds JSON: {}", e.what());
+        return false;
+    }
+    if (!parsed.is_object()) return false;
+
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_initialized) {
+            loadFromConfigLocked();
+            m_initialized = true;
+        }
+        auto& qs = m_settings["quickSwitch"];
+        if (!qs.is_object()) {
+            qs = buildDefaultSettingsJson()["quickSwitch"];
+        }
+        if (parsed.contains("customWidthDip") && parsed["customWidthDip"].is_number()) {
+            qs["customWidthDip"] = parsed["customWidthDip"];
+        } else {
+            qs.erase("customWidthDip");
+        }
+        if (parsed.contains("customHeightDip") && parsed["customHeightDip"].is_number()) {
+            qs["customHeightDip"] = parsed["customHeightDip"];
+        } else {
+            qs.erase("customHeightDip");
+        }
+        if (parsed.contains("listWidthRatio") && parsed["listWidthRatio"].is_number()) {
+            qs["listWidthRatio"] = std::clamp(parsed["listWidthRatio"].get<double>(), 0.22, 0.60);
+        }
+        if (parsed.contains("customMonitorId") && parsed["customMonitorId"].is_string()) {
+            qs["customMonitorId"] = parsed["customMonitorId"];
+        }
+        if (parsed.contains("customRelRect") && parsed["customRelRect"].is_object()) {
+            qs["customRelRect"] = parsed["customRelRect"];
+        } else {
+            qs.erase("customRelRect");
+        }
+        saveToConfigLocked();
+        writeRuntimeConfigAtomicLocked(TraceId::generate());
+    }
+    LOG_DEBUG("[WindowKit] Persisted Quick Switch v2 custom bounds silently");
+    return true;
+}
+
+nlohmann::json WindowKitController::startWorkspaceCapture(const nlohmann::json& params) {
+    return execAction("start_workspace_capture", params);
+}
+
+nlohmann::json WindowKitController::createWorkspaceShortcutJson(
+    const std::string& workspaceId,
+    const std::string& name) {
+    if (workspaceId.empty()) {
+        return {{"success", false}, {"error", "workspaceId is required"}};
+    }
+
+    std::string resolvedName = name;
+    {
+        std::lock_guard lock(m_mutex);
+        if (resolvedName.empty() && m_settings.contains("workspaces") &&
+            m_settings["workspaces"].contains("items") && m_settings["workspaces"]["items"].is_array()) {
+            for (const auto& item : m_settings["workspaces"]["items"]) {
+                if (item.is_object() && item.value("id", std::string{}) == workspaceId) {
+                    resolvedName = item.value("name", std::string{});
+                    break;
+                }
+            }
+        }
+    }
+    if (resolvedName.empty()) {
+        resolvedName = workspaceId;
+    }
+
+    PWSTR desktopPathRaw = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktopPathRaw)) || !desktopPathRaw) {
+        return {{"success", false}, {"error", "failed to resolve user Desktop folder"}};
+    }
+    std::filesystem::path desktopDir(desktopPathRaw);
+    CoTaskMemFree(desktopPathRaw);
+
+    const std::string safeName = sanitizeShortcutFileName(resolvedName);
+    const std::filesystem::path lnkPath = desktopDir / (WinUtils::utf8ToWstring(safeName) + L".lnk");
+    const std::filesystem::path exePath = WinUtils::getExePath();
+    if (exePath.empty()) {
+        return {{"success", false}, {"error", "failed to resolve host executable path"}};
+    }
+
+    const HRESULT coHr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool needUninit = SUCCEEDED(coHr);
+
+    IShellLinkW* pLink = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW,
+                                  reinterpret_cast<void**>(&pLink));
+    if (FAILED(hr) || !pLink) {
+        if (needUninit) CoUninitialize();
+        return {{"success", false}, {"error", "failed to create IShellLinkW COM object"}};
+    }
+
+    const std::wstring wId = WinUtils::utf8ToWstring(workspaceId);
+    const std::wstring wArgs = L"--launch-workspace \"" + wId + L"\"";
+    const std::wstring wDesc = L"Tools3000 Workspace: " + WinUtils::utf8ToWstring(resolvedName);
+
+    pLink->SetPath(exePath.c_str());
+    pLink->SetArguments(wArgs.c_str());
+    pLink->SetWorkingDirectory(exePath.parent_path().c_str());
+    pLink->SetIconLocation(exePath.c_str(), 0);
+    pLink->SetDescription(wDesc.c_str());
+
+    IPersistFile* pFile = nullptr;
+    hr = pLink->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&pFile));
+    if (SUCCEEDED(hr) && pFile) {
+        hr = pFile->Save(lnkPath.c_str(), TRUE);
+        pFile->Release();
+    }
+    pLink->Release();
+    if (needUninit) CoUninitialize();
+
+    if (FAILED(hr)) {
+        return {{"success", false}, {"error", "failed to save desktop shortcut .lnk file"}};
+    }
+
+    LOG_INFO("[WindowKit] Created desktop workspace shortcut: {} (id={})",
+             WinUtils::pathToUtf8(lnkPath), workspaceId);
+    return {
+        {"success", true},
+        {"shortcutPath", WinUtils::pathToUtf8(lnkPath)}
+    };
+}
+
+nlohmann::json WindowKitController::auditBindingsJson() {
+    std::unordered_set<std::string> liveMonitors;
+    const auto monRes = getMonitorsJson();
+    if (monRes.value("success", false) && monRes.contains("monitors") && monRes["monitors"].is_array()) {
+        for (const auto& m : monRes["monitors"]) {
+            if (m.is_object()) {
+                const std::string id = m.value("id", std::string{});
+                if (!id.empty()) liveMonitors.insert(toLowerAsciiCopy(id));
+            }
+        }
+    }
+    // 单元测试或离线环境无子进程时，退回 Win32 EnumDisplayMonitors 获取当前屏幕设备名
+    if (liveMonitors.empty()) {
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR hMon, HDC, LPRECT, LPARAM lp) -> BOOL {
+                auto* set = reinterpret_cast<std::unordered_set<std::string>*>(lp);
+                MONITORINFOEXW mi{};
+                mi.cbSize = sizeof(mi);
+                if (GetMonitorInfoW(hMon, &mi)) {
+                    set->insert(toLowerAsciiCopy(WinUtils::wstringToUtf8(mi.szDevice)));
+                }
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&liveMonitors));
+    }
+
+    std::unordered_set<std::string> liveDesktops;
+    const auto vdRes = getVirtualDesktopsJson();
+    if (vdRes.contains("desktops") && vdRes["desktops"].is_array()) {
+        for (const auto& d : vdRes["desktops"]) {
+            if (d.is_object()) {
+                const std::string id = d.value("id", std::string{});
+                if (!id.empty()) liveDesktops.insert(toLowerAsciiCopy(id));
+            }
+        }
+    }
+
+    nlohmann::json offlineMonitors = nlohmann::json::array();
+    nlohmann::json removedDesktops = nlohmann::json::array();
+    size_t totalBindings = 0;
+
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_initialized) {
+            loadFromConfigLocked();
+            m_initialized = true;
+        }
+        if (m_settings.contains("snapZones") && m_settings["snapZones"].is_object() &&
+            m_settings["snapZones"].contains("monitorBindings") &&
+            m_settings["snapZones"]["monitorBindings"].is_object()) {
+            for (const auto& [rawKey, val] : m_settings["snapZones"]["monitorBindings"].items()) {
+                if (!val.is_string()) continue;
+                ++totalBindings;
+                std::string monId = rawKey;
+                std::string deskId;
+                const auto atPos = rawKey.rfind('@');
+                if (atPos != std::string::npos && atPos > 0 && atPos + 1 < rawKey.size()) {
+                    monId = rawKey.substr(0, atPos);
+                    deskId = rawKey.substr(atPos + 1);
+                }
+                if (!liveMonitors.empty() && !liveMonitors.contains(toLowerAsciiCopy(monId))) {
+                    offlineMonitors.push_back({
+                        {"key", rawKey},
+                        {"monitorId", monId},
+                        {"desktopId", deskId},
+                        {"layoutId", val.get<std::string>()}
+                    });
+                }
+                if (!deskId.empty() && !liveDesktops.empty() &&
+                    !liveDesktops.contains(toLowerAsciiCopy(deskId))) {
+                    removedDesktops.push_back({
+                        {"key", rawKey},
+                        {"monitorId", monId},
+                        {"desktopId", deskId},
+                        {"layoutId", val.get<std::string>()}
+                    });
+                }
+            }
+        }
+    }
+
+    return {
+        {"success", true},
+        {"totalBindings", totalBindings},
+        {"offlineMonitorCount", offlineMonitors.size()},
+        {"removedDesktopCount", removedDesktops.size()},
+        {"offlineMonitorBindings", offlineMonitors},
+        {"removedDesktopBindings", removedDesktops}
+    };
+}
+
+nlohmann::json WindowKitController::cleanStaleBindingsJson(
+    bool cleanOfflineMonitors,
+    bool cleanRemovedDesktops) {
+    const auto audit = auditBindingsJson();
+    if (!audit.value("success", false)) {
+        return audit;
+    }
+
+    std::unordered_set<std::string> keysToRemove;
+    if (cleanOfflineMonitors && audit.contains("offlineMonitorBindings")) {
+        for (const auto& item : audit["offlineMonitorBindings"]) {
+            if (item.is_object() && item.contains("key")) {
+                keysToRemove.insert(item["key"].get<std::string>());
+            }
+        }
+    }
+    if (cleanRemovedDesktops && audit.contains("removedDesktopBindings")) {
+        for (const auto& item : audit["removedDesktopBindings"]) {
+            if (item.is_object() && item.contains("key")) {
+                keysToRemove.insert(item["key"].get<std::string>());
+            }
+        }
+    }
+
+    size_t removedCount = 0;
+    if (!keysToRemove.empty()) {
+        std::lock_guard lock(m_mutex);
+        if (m_settings.contains("snapZones") && m_settings["snapZones"].is_object() &&
+            m_settings["snapZones"].contains("monitorBindings") &&
+            m_settings["snapZones"]["monitorBindings"].is_object()) {
+            auto& bindings = m_settings["snapZones"]["monitorBindings"];
+            for (const auto& k : keysToRemove) {
+                if (bindings.contains(k)) {
+                    bindings.erase(k);
+                    ++removedCount;
+                }
+            }
+            if (removedCount > 0) {
+                saveToConfigLocked();
+                reconcileProcessStateLocked(false);
+            }
+        }
+    }
+
+    if (removedCount > 0) {
+        pushStateChangedEvents();
+        LOG_INFO("[WindowKit] Cleaned {} stale monitor/desktop layout binding(s)", removedCount);
+    }
+    return {
+        {"success", true},
+        {"removedCount", removedCount}
+    };
+}
+
+nlohmann::json WindowKitController::previewBorderStyle(const nlohmann::json& params) {
+    return execAction("preview_border_style", params);
+}
+
+nlohmann::json WindowKitController::launchWorkspaceById(const std::string& workspaceId) {
+    if (workspaceId.empty()) {
+        return {{"success", false}, {"error", "workspaceId is required"}};
+    }
+    // 允许从桌面快捷方式冷启动已保存的工作区：若当前未启子进程，确保 master & workspaces 有效后拉起
+    {
+        std::lock_guard lock(m_mutex);
+        if (!m_initialized) {
+            loadFromConfigLocked();
+            m_initialized = true;
+        }
+        if (!m_masterEnabled || !m_settings["features"].value("workspaces", false)) {
+            m_masterEnabled = true;
+            m_settings["features"]["workspaces"] = true;
+            saveToConfigLocked();
+            reconcileProcessStateLocked(true);
+        }
+    }
+    return execAction("launch_workspace", {{"workspaceId", workspaceId}});
+}
+
 nlohmann::json WindowKitController::captureWorkspaceJson(const std::string& name) {
     const auto outFile = WinUtils::getConfigDirectory() /
         (L"wk_capture_" + std::to_wstring(GetTickCount64()) + L".json");
@@ -1527,35 +2457,32 @@ nlohmann::json WindowKitController::captureWorkspaceJson(const std::string& name
         return res;
     }
     nlohmann::json apps = nlohmann::json::array();
-    if (res["data"].is_object() && res["data"].contains("windows") && res["data"]["windows"].is_array()) {
-        for (const auto& w : res["data"]["windows"]) {
-            if (!w.is_object()) continue;
-            nlohmann::json entry = {
-                {"exePath", w.value("exePath", std::string{})},
-                {"processName", w.value("processName", std::string{})},
-                {"args", w.value("args", std::string{})},
-                {"monitorId", w.value("monitorId", std::string{})},
-                {"maximized", w.value("maximized", false)}
-            };
-            if (w.contains("rect") && w["rect"].is_object()) {
-                const auto& r = w["rect"];
-                const int left = r.value("left", r.value("x", 0));
-                const int top = r.value("top", r.value("y", 0));
-                const int width = r.contains("w") ? r.value("w", 0) : (r.value("right", left) - left);
-                const int height = r.contains("h") ? r.value("h", 0) : (r.value("bottom", top) - top);
-                entry["rect"] = {{"x", left}, {"y", top}, {"w", std::max(0, width)}, {"h", std::max(0, height)}};
-            }
-            apps.push_back(std::move(entry));
-        }
+    const auto& data = res["data"];
+    const auto& rawApps = (data.is_object() && data.contains("apps") && data["apps"].is_array())
+        ? data["apps"]
+        : (data.is_object() && data.contains("windows") && data["windows"].is_array()
+               ? data["windows"]
+               : nlohmann::json::array());
+    size_t seq = 0;
+    for (const auto& w : rawApps) {
+        if (!w.is_object()) continue;
+        apps.push_back(normalizeWorkspaceAppForUi(w, seq++));
     }
 
     const std::string wsId = "ws-" + std::to_string(GetTickCount64());
     const std::string wsName = name.empty() ? ("Workspace " + std::to_string(GetTickCount64() % 1000)) : name;
     return {
         {"success", true},
+        {"monitors", data.is_object() ? data.value("monitors", nlohmann::json::array()) : nlohmann::json::array()},
         {"workspace", {
             {"id", wsId},
             {"name", wsName},
+            {"boundLayoutId", data.is_object() ? data.value("boundLayoutId", std::string{}) : std::string{}},
+            {"desktopId", data.is_object() ? data.value("desktopId", std::string{}) : std::string{}},
+            {"desktopName", data.is_object() ? data.value("desktopName", std::string{}) : std::string{}},
+            {"moveExistingWindows", true},
+            {"unrelatedAction", "keep"},
+            {"createDesktopShortcut", false},
             {"apps", apps}
         }}
     };

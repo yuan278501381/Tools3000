@@ -6,6 +6,23 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-27] WindowKit v2 世界级全栈重塑：双层布局管理器、正红摆拍工作区、自由拖缩 Alt+Tab 与独立 Alt+`、Win10/Server 2019–2025 拓扑自愈 (`feat/window-kit-v2`)
+- **全栈范围与出厂零占用铁律**：
+  - 全量覆盖 `src/window_kit/**`（纯 Rust 独立引擎，Release 仅 **`725 KB`**，0 WebView2）、`WindowKitController.{h,cpp}` / `MessageBridge.cpp` / `main.cpp`（C++ 宿主 Schema v3 桥接、5 项异步 IPC、3 条跨权限 `ChangeWindowMessageFilterEx` 回传消息、`--launch-workspace` 单实例静默转发、COM `IShellLinkW` 桌面快捷方式）、`src/gesture/**`（新增 6 项 WindowKit 内置手势命令 32–37，`kMaxBuiltinCommand = 37`）、以及前端 `WorkspaceWorkbench.{tsx,css}` / `WindowManagerPage.{tsx,css}` / `ZoneLayoutEditor.tsx` 与 8 国多语言（`zh`/`zh-TW`/`en`/`ja`/`ko`/`es`/`pt-BR`/`ru`，+101 `windowManager` 键 +6 `gestureEditor.builtin` 键）；
+  - 出厂全特性维持默认关闭：**0 进程 / 0 线程 / 0 钩子 / 0 热键 / 0 MB**。
+- **四大核心模块突破**：
+  1. **SnapZones v2（`layout_hub.rs`, `layout_editor.rs`, `snap_zones.rs`）**：纯 Rust Direct2D **双层共视布局管理器**（底层全屏半透明实时分区透视 + 顶层悬浮卡片控制台，支持横竖屏默认绑定、0–9 布局热键冲突消解、复制/编辑/删除、即时调节分区数与间距开关）+ 6 大参数化模板（无布局/焦点/列/行/网格/优先级网格）+ 1:1 全屏 WYSIWYG 编辑器 + 离线显示器保留 / 已删除虚拟桌面绑定安全清理；
+  2. **Workspaces v2（`workspace_capture.rs`, `workspaces.rs`, `WorkspaceWorkbench.{tsx,css}`）**：每屏 4 条 `4px` 正红纯色细边（`RGB(220, 38, 38)`，非洋红，纯 GDI 零大位图，4K 捕获增量仅 `+6.01 MB`）+ 真实 32px PNG 图标/PEB 启动参数/TokenElevation 管理员识别/UWP AUMID/最小化窗 `GetWindowPlacement` 还原坐标/SnapZones 分区识别 + 前端双层交互式微缩桌面与任务栏舞台（双向悬停联动预览 + 手风琴精调）+ 桌面 `.lnk` 一键启动 + 4 级缺屏自适应折叠 + 原生轻量进度浮窗；
+  3. **Quick Switch v2（`quick_switch.rs`）**：双独立轨道——全局增强 `Alt+Tab` 自由拖缩双栏中枢（默认约工作区 `5/8` 面积、8 向边角缩放、顶栏拖移、分割线调宽、跨屏与拔屏自愈位置记忆、桌面原位投影预览、中文拼音首字母过滤、F4–F9/P/Z/T 窗口控制与系统托盘窗捞回）+ 独立同应用 `Alt+\`` 切窗（可不替换系统原生 `Alt+Tab` 单独启用）；
+  4. **跨 OS 与热插拔拓扑自愈（`topology.rs`）**：全面兼容 Win10 1809 (Build 17763+) / Win11 / Windows Server 2019 / 2022 / 2025 / RDP / x64 & ARM64；4 级显示器指纹匹配（精确 PnP -> 型号+分辨率 -> 方向+分辨率 -> 主屏归一化折叠）、注册表无轮询 `RegNotifyChangeKeyValue` 虚拟桌面内核事件监听（含 Win10/Server `SessionInfo\{SessionId}` 兼容路径）。
+- **4K 实机验收捕获并根治的 3 个深层 Win32 暗坑**：
+  1. **WIC PNG 编码容器 GUID 陷阱 (`win_utils.rs::hicon_to_png_data_url`)**：`IWICImagingFactory::CreateEncoder` 首参必须传 **`GUID_ContainerFormatPng`**，误传 `CLSID_WICPngEncoder` 会恒返 `WINCODEC_ERR_COMPONENTNOTFOUND`；且 `CreateBitmapFromHICON` 在 Win11 MSIX（如新版记事本）跨进程图标上易失败。终局采用 **32bpp Top-Down DIB (`CreateDIBSection`) + `DrawIconEx` + 无 Alpha 通道兜底补全 + 线程 COM 作用域自愈 + `GUID_ContainerFormatPng` `WritePixels` + 窗口/UWP Shell/EXE Shell 三级兜底**，并新增 `hicon_to_png_data_url_encodes_valid_png_signature` 单测强断言 `iVBORw0KGgo` PNG 文件头；
+  2. **跨权限/UWP 窗口 `IsWindowOnCurrentVirtualDesktop` 误报 (`topology.rs`)**：仅当 `GetWindowDesktopId` 明确返回非零 GUID 且不等于当前活跃桌面 GUID 时才判定为其他虚拟桌面，杜绝漏捕本桌面提权/MSIX 窗口；
+  3. **生产实例共存隔离验证 (`main.rs` `--isolated`)**：新增显式 `--isolated` CLI 参数供开发/QA 在本机运行正式版 `Tools3000_WindowKit.exe` 时做完全隔离的真机验收（不抢占生产单实例互斥锁、不干扰已装实例）。
+- **4K 真机实测数据（3456×2160 @ 150% DPI）与全套门禁结果**：
+  - 二进制体积 **`725 KB`**；`--capture-workspace` 实测 **`113 ms`** 捕获含真实 32px PNG 图标（`1390 B`）+ `relRect` + `runAsAdmin` + 虚拟桌面名；托管冷启动 **`62 ms`**（`WS=13.16 MB, Priv=2.75 MB, GDI=0`）；Action 20 `LayoutHub` `WS=16.76 MB`；Action 22 `4px` 正红四细边 `strips=4` 增量仅 **`+6.01 MB`**；Action 13 `QuickSwitch v2` 默认落位 `1440×870 px`；2.6s 冷路径 `trimWorkingSet` 后物理工作集回落至 **`0.48 MB`**；优雅退场 **`32 ms` (`exit=0`)**，`window_kit.log` **`0 ERROR`**；
+  - 全套自动化测试与门禁 100% 通过：Rust **`39/39`**（0 warning）、C++ `Tools3000Tests.exe` 定向套件 **`36/36`**、前端 Vitest 全库 **`48 文件 / 303/303`**、ESLint + **7 重并发静态门禁全绿**。
+
 ### [2026-11-27] 聚光灯 `FadeOut` 退场放大特效满帧零掉帧根治：消除 4 重卡顿链 (Issue `#33 @LiangDongXing-cn`, `fix/spotlight-fadeout-zero-drop`)
 - **实机逐帧微秒溯源（Issue `#33` 实机视频 + `T3000_TRACE_FRAMES` 微秒探针）**：
   1. **双源 VSync 串行叠加锁半帧**：`MouseFeedbackOverlayBase::baseRenderLoop` 此前对 `FrameLatencyWaitable` 与 `DwmFlush()` 无条件串行调用，一旦渲染略逼近 VBlank 边沿即跨过下一刷新沿，强行空等整个下一周期导致 `60Hz -> 30Hz / 144Hz -> 72Hz` 腰斩；

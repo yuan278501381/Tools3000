@@ -9,6 +9,9 @@ use crate::core::constants::{TRAY_ICON_UID_BASE, WM_WK_INTERNAL_TRAY_CALLBACK};
 use crate::core::geometry::{
     is_window_offscreen, rescue_rect_into_work_area, transform_rect_between_monitors, RectI,
 };
+use crate::core::topology::{
+    is_window_on_current_virtual_desktop, move_window_to_current_virtual_desktop,
+};
 use crate::core::win_utils::{
     activate_window, enumerate_monitors, enumerate_user_windows, get_window_icon_safe,
     get_window_process_info, get_window_title_safe, get_window_visual_rect, is_hung_window,
@@ -259,14 +262,23 @@ impl MultiMonitorManager {
             return false;
         }
         let fg = resolve_foreground_or_target_hwnd();
-        if fg.0.is_null()
+        self.minimize_hwnd_to_tray(fg, cfg, trace_id)
+    }
+
+    /// 将指定窗口收纳到系统托盘（供快捷键、Workspaces 三态清场与 Quick Switch 原地操作共用）
+    pub fn minimize_hwnd_to_tray(
+        &mut self,
+        target: HWND,
+        cfg: &WindowKitConfig,
+        trace_id: &str,
+    ) -> bool {
+        if target.0.is_null()
             || self.control_hwnd.0.is_null()
-            || !is_manageable_window(fg, false, &cfg.excluded_apps)
+            || !is_manageable_window(target, false, &cfg.excluded_apps)
         {
             return false;
         }
-        // 避免重复收纳同一个句柄
-        if self.tray_entries.values().any(|e| e.target_hwnd == fg) {
+        if self.tray_entries.values().any(|e| e.target_hwnd == target) {
             return false;
         }
         // MECE 安全门禁：若当前桌面不存在 Shell_TrayWnd（如 Explorer 重启或无外壳隔离桌面），
@@ -276,39 +288,38 @@ impl MultiMonitorManager {
                 trace_id,
                 "multiMonitor",
                 "skipped minimize-to-tray for hwnd=0x{:x}: Shell_TrayWnd not present on current desktop (protecting user window from being hidden without tray access)",
-                fg.0 as isize
+                target.0 as isize
             );
             return false;
         }
 
-        let title = get_window_title_safe(fg);
-        let (_, proc_name, exe_path) = get_window_process_info(fg);
+        let title = get_window_title_safe(target);
+        let (_, proc_name, exe_path) = get_window_process_info(target);
         let tip = if title.is_empty() {
             format!("Tools3000 Tray - {proc_name}")
         } else {
             title
         };
 
-        let icon_guard = get_window_icon_safe(fg, &exe_path, false);
+        let icon_guard = get_window_icon_safe(target, &exe_path, false);
         let uid = self.next_uid;
         self.next_uid = self.next_uid.wrapping_add(1).max(TRAY_ICON_UID_BASE);
 
-        if !self.register_tray_icon(uid, &tip, icon_guard.as_ref(), trace_id, fg) {
+        if !self.register_tray_icon(uid, &tip, icon_guard.as_ref(), trace_id, target) {
             return false;
         }
 
-        let was_maximized = unsafe { IsZoomed(fg).as_bool() };
-        // 先登记至无锁崩溃兜底阵列，再隐藏窗口，保障任何极端中断都不会丢窗口
-        register_tray_recovery_hwnd(fg);
+        let was_maximized = unsafe { IsZoomed(target).as_bool() };
+        register_tray_recovery_hwnd(target);
         unsafe {
-            let _ = ShowWindow(fg, SW_HIDE);
+            let _ = ShowWindow(target, SW_HIDE);
         }
 
         self.tray_entries.insert(
             uid,
             TrayMinimizedEntry {
                 uid,
-                target_hwnd: fg,
+                target_hwnd: target,
                 tip,
                 icon_guard,
                 was_maximized,
@@ -318,11 +329,32 @@ impl MultiMonitorManager {
             trace_id,
             "multiMonitor",
             "minimized hwnd=0x{:x} proc={} to tray uid={}",
-            fg.0 as isize,
+            target.0 as isize,
             proc_name,
             uid
         );
         true
+    }
+
+    /// 根据句柄恢复某个已收纳到托盘的窗口（供 Quick Switch 直接一键捞回托盘窗）
+    pub fn restore_by_hwnd(&mut self, hwnd: HWND, trace_id: &str) -> bool {
+        let uid = self
+            .tray_entries
+            .iter()
+            .find_map(|(&u, e)| (e.target_hwnd == hwnd).then_some(u));
+        match uid {
+            Some(u) => self.restore_by_uid(u, trace_id),
+            None => false,
+        }
+    }
+
+    /// 列出所有当前收纳在系统托盘的窗口摘要（hwnd, tip），供 Quick Switch 窗口中枢联动展示
+    pub fn list_tray_windows(&self) -> Vec<(HWND, String)> {
+        self.tray_entries
+            .values()
+            .filter(|e| unsafe { IsWindow(e.target_hwnd).as_bool() })
+            .map(|e| (e.target_hwnd, e.tip.clone()))
+            .collect()
     }
 
     /// 响应 Explorer 重启广播的 TaskbarCreated 消息：自动重建所有已收纳窗口的托盘图标
@@ -556,6 +588,9 @@ fn restore_single_window(entry: &TrayMinimizedEntry) -> bool {
     unsafe {
         if !IsWindow(entry.target_hwnd).as_bool() || is_hung_window(entry.target_hwnd) {
             return false;
+        }
+        if !is_window_on_current_virtual_desktop(entry.target_hwnd) {
+            let _ = move_window_to_current_virtual_desktop(entry.target_hwnd);
         }
         let _ = ShowWindow(entry.target_hwnd, SW_SHOW);
         if entry.was_maximized {

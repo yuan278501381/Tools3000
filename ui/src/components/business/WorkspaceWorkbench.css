@@ -1,0 +1,625 @@
+/* ─────────────────────────────────────────────────────────────────────────────
+ * WorkspaceWorkbench.css — Workspaces v2 双层交互式桌面舞台样式 (@container 自适应)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+.ws-workbench-list,
+.ws-workbench-editor {
+  container-type: inline-size;
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+  font-family: var(--font-sans);
+}
+
+/* ── 列表工具栏与卡片 ─────────────────────────────────────────────────────── */
+
+.ws-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.85rem;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.ws-toolbar__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.ws-toolbar__search-icon {
+  position: absolute;
+  left: 0.65rem;
+  color: var(--text-muted);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.ws-toolbar__search input {
+  padding-left: 2rem;
+}
+
+.ws-toolbar__right {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.ws-sort-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ws-sort-label {
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ws-card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.ws-list-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.ws-list-card__main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.48rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.ws-list-card__top {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ws-icon-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.ws-icon-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-secondary);
+}
+
+.ws-icon-tile.is-minimized {
+  opacity: 0.68;
+}
+
+.ws-icon-tile__img {
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+}
+
+.ws-icon-strip__count {
+  margin-left: 0.3rem;
+  font-size: 0.84rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ws-list-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ws-list-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+/* ── 编辑工作台顶栏与双层交互式微缩桌面舞台 ──────────────────────────────── */
+
+.ws-editor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+}
+
+.ws-editor-breadcrumb {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.ws-editor-breadcrumb__sep {
+  font-size: 0.88rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-muted);
+}
+
+.ws-editor-breadcrumb__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.ws-editor-header__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ws-stage-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  background: var(--well-bg);
+}
+
+.ws-stage-monitors {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.45rem 0.25rem;
+}
+
+.ws-stage-screen-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.38rem;
+  width: min(290px, 100%);
+}
+
+.ws-stage-screen {
+  position: relative;
+  width: 100%;
+  min-height: 132px;
+  border-radius: 10px;
+  border: 2px solid var(--card-border-hover);
+  background: color-mix(in srgb, var(--primary) 7%, var(--card-bg));
+  overflow: hidden;
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--text-primary) 10%, transparent);
+}
+
+.ws-stage-empty-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: var(--text-muted);
+}
+
+.ws-stage-window {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--card-border-hover);
+  background: color-mix(in srgb, var(--card-bg) 88%, transparent);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast),
+    background var(--transition-fast), opacity var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ws-stage-window:hover,
+.ws-stage-window.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 18%, var(--card-bg));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 42%, transparent);
+  transform: scale(1.015);
+}
+
+.ws-stage-window.is-dimmed {
+  opacity: 0.42;
+}
+
+.ws-stage-window__icon {
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.ws-stage-hover-caption {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  z-index: 60;
+  padding: 0.16rem 0.48rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--card-bg) 92%, transparent);
+  border: 1px solid var(--primary);
+  color: var(--text-primary);
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.ws-stage-taskbar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  min-width: 140px;
+  max-width: 100%;
+  padding: 0.24rem 0.55rem;
+  border-radius: 7px;
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.ws-stage-taskbar.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 12%, var(--card-bg));
+}
+
+.ws-stage-taskbar__item {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: transform var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.ws-stage-taskbar__item:hover,
+.ws-stage-taskbar__item.is-active {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 20%, var(--card-bg));
+  transform: scale(1.18);
+}
+
+.ws-stage-taskbar__icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+}
+
+.ws-stage-screen-label {
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums lining-nums;
+}
+
+.ws-stage-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.ws-stage-hint {
+  font-size: 0.83rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.ws-stage-footer__btns {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+/* ── 元数据配置与分组手风琴应用列表 ──────────────────────────────────────── */
+
+.ws-meta-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.ws-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.ws-meta-checks {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--card-border);
+}
+
+.ws-inline-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.ws-app-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.ws-app-group__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0 0.2rem;
+  font-size: 0.88rem;
+  font-weight: 650;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.ws-app-group__title svg {
+  color: var(--primary);
+}
+
+.ws-app-group__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.ws-app-row {
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--card-border);
+  background: var(--card-bg);
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.ws-app-row.is-hovered {
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 6%, var(--card-bg));
+}
+
+.ws-app-row__summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  padding: 0.58rem 0.78rem;
+}
+
+.ws-app-row__summary-trigger {
+  display: flex;
+  align-items: center;
+  gap: 0.68rem;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ws-app-row__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--well-bg);
+  border: 1px solid var(--well-border);
+  color: var(--text-secondary);
+  flex-shrink: 0;
+}
+
+.ws-app-row__icon-img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.ws-app-row__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.ws-app-row__name {
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ws-app-row__meta-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.ws-admin-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.22rem;
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--success);
+}
+
+.ws-app-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.ws-app-row__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.ws-app-row__chevron:hover {
+  background: var(--ghost-hover-bg);
+  color: var(--text-primary);
+}
+
+.ws-app-row__details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.78rem;
+  padding: 0.78rem 0.9rem 0.88rem;
+  border-top: 1px solid var(--card-border);
+  background: var(--well-bg);
+  border-bottom-left-radius: var(--radius-sm);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.ws-app-detail-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+}
+
+.ws-app-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.ws-detail-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+  min-width: 0;
+}
+
+.ws-detail-field--wide {
+  grid-column: 1 / -1;
+}
+
+.ws-detail-label {
+  font-size: 0.83rem;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+.ws-opacity-slider-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.ws-coords-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.ws-coords-inputs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+
+.ws-coord-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  font-size: 0.83rem;
+  font-weight: 550;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+
+@container (max-width: 720px) {
+  .ws-meta-grid,
+  .ws-app-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ws-coords-inputs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .ws-list-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

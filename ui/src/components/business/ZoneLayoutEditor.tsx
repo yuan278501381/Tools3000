@@ -192,6 +192,30 @@ function compactCellMapIds(map: number[][]): number[][] {
 }
 
 function computeLayoutZoneBoxes(layout: SnapZoneLayout): NormalizedZoneBox[] {
+  if (layout.type === 'none') {
+    return [];
+  }
+
+  if (layout.type === 'focus') {
+    const count = clamp(layout.zoneCount ?? 3, 1, 16);
+    const baseW = 58;
+    const baseH = 66;
+    const stepX = count > 1 ? Math.min(8, (100 - baseW - 8) / (count - 1)) : 0;
+    const stepY = count > 1 ? Math.min(7, (100 - baseH - 8) / (count - 1)) : 0;
+    const totalW = baseW + stepX * (count - 1);
+    const totalH = baseH + stepY * (count - 1);
+    const startX = Math.max(2, (100 - totalW) / 2);
+    const startY = Math.max(2, (100 - totalH) / 2);
+    return Array.from({ length: count }, (_, idx) => ({
+      zoneId: idx,
+      displayNumber: idx + 1,
+      x: startX + stepX * idx,
+      y: startY + stepY * idx,
+      w: baseW,
+      h: baseH,
+    }));
+  }
+
   if (layout.type === 'canvas') {
     const zones = Array.isArray(layout.zones) ? layout.zones : [];
     const scale = detectCanvasScale(zones);
