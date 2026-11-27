@@ -18,7 +18,7 @@
         },
         "sections": [
           {
-            "title": "分屏布局 v2：双层共视布局管理器与 6 大参数化模板",
+            "title": "分屏布局 v2（FancyZones）：双层共视布局管理器与 6 大参数化模板",
             "category": "feature",
             "items": [
               "全新上线 **双层共视布局管理器**（支持从 `设置 -> 窗口管理` 或全局热键一键唤起）：底层直接全屏实时透视当前分屏分区，顶层悬浮卡片控制台实时切换布局、增减分区数量或开关分区间距，所见即所得；",
@@ -64,7 +64,7 @@
         },
         "sections": [
           {
-            "title": "SnapZones v2: Dual-Layer Visual Layout Hub & 6 Parametric Templates",
+            "title": "SnapZones v2 (FancyZones): Dual-Layer Visual Layout Hub & 6 Parametric Templates",
             "category": "improvement",
             "items": [
               "Launch the new **Dual-Layer Layout Manager** directly from `Settings -> Window Manager` or via hotkey (`Win+Shift+~`): see semi-transparent snap zones live across your full desktop while adjusting templates, zone counts, and spacing right on top.",

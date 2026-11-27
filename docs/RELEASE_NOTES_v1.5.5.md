@@ -8,7 +8,7 @@
 
 Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release delivers a comprehensive **Window Manager v2** upgrade — still **completely disabled by default** (zero background processes, zero hooks, zero RAM until you opt in) — bringing a dual-layer visual layout manager, red-frame workspace capture with interactive desktop & taskbar previews, a freely resizable `Alt+Tab` switcher plus standalone same-app `Alt+\`` switching, and seamless multi-monitor / virtual-desktop resilience across Windows 10, Windows 11, and Windows Server 2019–2025:
 
-1. **SnapZones v2: Dual-Layer Visual Layout Hub & 6 Parametric Templates**
+1. **SnapZones v2 (FancyZones): Dual-Layer Visual Layout Hub & 6 Parametric Templates**
    - Launch the new **Dual-Layer Layout Manager** directly from `Settings -> Window Manager` or via hotkey (`Win+Shift+~`): see semi-transparent snap zones live across your full desktop while adjusting templates, zone counts, and spacing right on top.
    - Ships with **6 built-in parametric templates** (No Layout, Focus, Columns, Rows, Grid, and Priority Grid), custom layout duplication & 1:1 fullscreen visual editing, **0–9 instant layout hotkeys** with conflict protection, and automatic landscape/portrait defaults per monitor.
    - Offline monitors are safely preserved instead of lost when docking/undocking, and bindings for deleted virtual desktops can be audited and cleaned up in one click.
@@ -31,7 +31,7 @@ Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release deli
 
 欢迎升级至 **Tools3000 v1.5.5**。本版本以已正式发布的 **v1.5.4** 为对比基线，带来全新进化的 **窗口管理套件 v2.0**（延续出厂默认全关闭设计，未开启时零进程、零钩子、零内存占用），全面重构分屏布局、工作区一键快照与增强 `Alt+Tab` 切换体验，并针对多显示器热插拔、虚拟桌面及 Windows 10 / Windows 11 / Windows Server 2019–2025 全场景做了系统级加固：
 
-### 1. 分屏布局 v2：双层共视布局管理器与 6 大参数化模板
+### 1. 分屏布局 v2（FancyZones）：双层共视布局管理器与 6 大参数化模板
 - 全新上线 **双层共视布局管理器**（支持从 `设置 -> 窗口管理` 或全局热键一键唤起）：底层直接全屏实时透视当前分屏分区，顶层悬浮卡片控制台实时切换布局、增减分区数量或开关分区间距，所见即所得；
 - 内置 **6 套参数化模板**（无布局、焦点、列、行、网格、优先级网格），支持自定义布局复制与 1:1 全屏精细编辑、**0–9 数字布局快捷键**一键切换与冲突自动消解，以及横屏/竖屏默认布局自适应；
 - 新增**多屏与虚拟桌面拓扑自愈**：外接显示器拔出时自动保留历史绑定配置（插回即恢复），已删除的虚拟桌面绑定支持在设置页一键扫描并安全清理。
