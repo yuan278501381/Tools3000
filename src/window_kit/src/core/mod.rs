@@ -5,4 +5,5 @@ pub mod geometry;
 pub mod json;
 pub mod logger;
 pub mod pinyin;
+pub mod topology;
 pub mod win_utils;

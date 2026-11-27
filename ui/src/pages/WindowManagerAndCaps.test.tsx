@@ -218,7 +218,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       fireEvent.click(mmToggle);
     });
     await act(async () => {
-      fireEvent.click(screen.getByText('Rescue Off-Screen Windows'));
+      fireEvent.click(screen.getByRole('button', { name: 'Rescue Off-Screen Windows' }));
     });
     expect(requestSpy).toHaveBeenCalledWith(
       'windowManager.execAction',
@@ -244,12 +244,25 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       },
     ];
     currentState.settings.snapZones.monitorBindings = {
-      'MON-1': 'builtin-columns-2',
+      'MON-1': 'template_columns',
       'MON-1@desk-routine': 'overflow-canvas',
     };
 
     const requestSpy = vi.spyOn(bridge, 'bridgeRequest').mockImplementation(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'windowManager.getSettings') return currentState;
+      if (method === 'windowManager.auditBindings') {
+        return {
+          success: true,
+          totalBindings: 2,
+          offlineMonitorCount: 1,
+          removedDesktopCount: 0,
+          offlineMonitorBindings: [{ key: 'OLD-MON', monitorId: 'OLD-MON', desktopId: '', layoutId: 'template_grid' }],
+          removedDesktopBindings: [],
+        };
+      }
+      if (method === 'windowManager.cleanStaleBindings') {
+        return { success: true, removedCount: 1 };
+      }
       if (method === 'windowManager.getMonitors') {
         return {
           monitors: [
@@ -288,17 +301,28 @@ describe('WindowManagerPage & CapsLayerPage', () => {
     expect(canvasBlocks[0].style.top).toContain('65%');
     expect(canvasBlocks[0].style.height).toContain('35%');
 
-    // 3. Per-virtual-desktop bar lists all desktops including indexed fallback for unnamed desktop 3
+    // 3. Stale offline monitor binding audit notice & one-click clean
+    expect(await screen.findByText(/Clean Stale Bindings/i)).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Clean Stale Bindings/i }));
+    });
+    expect(requestSpy).toHaveBeenCalledWith(
+      'windowManager.cleanStaleBindings',
+      { cleanOfflineMonitors: true, cleanRemovedDesktops: true },
+      { silent: true },
+    );
+
+    // 4. Per-virtual-desktop bar lists all desktops including indexed fallback for unnamed desktop 3
     expect(screen.getByText('Routine')).toBeTruthy();
     expect(screen.getByText('VM')).toBeTruthy();
     expect(screen.getByText('Desktop 3')).toBeTruthy();
 
-    // 4. Switch to VM desktop and bind 2x2 Grid -> writes composite key MON-1@desk-vm
+    // 5. Switch to VM desktop and bind Priority Grid -> writes composite key MON-1@desk-vm
     await act(async () => {
       fireEvent.click(screen.getByRole('tab', { name: /VM/i }));
     });
     await act(async () => {
-      fireEvent.click(screen.getAllByText('2x2 Grid')[0]);
+      fireEvent.click(screen.getAllByText('Priority Grid')[0]);
     });
     expect(requestSpy).toHaveBeenCalledWith(
       'windowManager.updateSettings',
@@ -306,7 +330,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
         settings: expect.objectContaining({
           snapZones: expect.objectContaining({
             monitorBindings: expect.objectContaining({
-              'MON-1@desk-vm': 'builtin-grid-2x2',
+              'MON-1@desk-vm': 'template_priority_grid',
             }),
           }),
         }),
@@ -314,7 +338,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       { silent: true },
     );
 
-    // 5. Launch 1:1 fullscreen editor forwards exact monitorId, desktopId, and layoutId
+    // 6. Launch 1:1 fullscreen editor forwards exact monitorId, desktopId, and layoutId
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /1:1 Fullscreen Editor/i }));
     });
@@ -324,16 +348,131 @@ describe('WindowManagerPage & CapsLayerPage', () => {
         action: 'open_layout_editor',
         monitorId: 'MON-1',
         desktopId: 'desk-vm',
-        layoutId: 'builtin-grid-2x2',
+        layoutId: 'template_priority_grid',
       }),
       { silent: true },
     );
 
-    // 6. Follow Default clears the per-desktop override key
+    // 7. Follow Default clears the per-desktop override key
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /Follow Default/i }));
     });
     expect(currentState.settings.snapZones.monitorBindings['MON-1@desk-vm']).toBeUndefined();
+  });
+
+  it('supports WindowKit v2 dual-track Quick Switch, red-border Workspace capture, interactive workbench stage, and desktop shortcuts', async () => {
+    let currentState: WindowManagerResponse = structuredClone(DEFAULT_WINDOW_MANAGER_RESPONSE);
+    currentState.enabled = true;
+    currentState.running = true;
+    currentState.settings.features.workspaces = true;
+    currentState.settings.features.quickSwitch = true;
+
+    let capturedCallback: ((payload: unknown) => void) | null = null;
+    vi.spyOn(bridge, 'useBridgeEvent').mockImplementation((event: string, cb: (payload: unknown) => void) => {
+      if (event === 'windowManager.workspaceCaptured') {
+        capturedCallback = cb;
+      }
+    });
+
+    const requestSpy = vi.spyOn(bridge, 'bridgeRequest').mockImplementation(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'windowManager.getSettings') return currentState;
+      if (method === 'windowManager.getMonitors') {
+        return {
+          monitors: [{ id: 'MON-4K', name: '4K Display', width: 3456, height: 2160, dpi: 144, isPrimary: true }],
+        };
+      }
+      if (method === 'windowManager.updateSettings') {
+        const patch = (params ?? {}) as Partial<WindowManagerResponse>;
+        if (patch.settings) currentState = { ...currentState, settings: patch.settings };
+        return currentState;
+      }
+      if (method === 'windowManager.startWorkspaceCapture') return { success: true };
+      if (method === 'windowManager.createWorkspaceShortcut') {
+        return { success: true, shortcutPath: 'C:\\Users\\Test\\Desktop\\Coding.lnk' };
+      }
+      return { success: true };
+    });
+
+    await act(async () => {
+      render(<WindowManagerPage />);
+    });
+
+    // 1. Quick Switch v2 independent dual-track toggle (disable global Alt+Tab, enable Same-App Alt+`)
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /Quick Switch/i }));
+    });
+    const replaceAltTab = document.getElementById('wm-qs-replace-alttab') as HTMLInputElement;
+    const sameApp = document.getElementById('wm-qs-same-app') as HTMLInputElement;
+    expect(replaceAltTab.checked).toBe(true);
+    expect(sameApp.checked).toBe(false);
+    await act(async () => {
+      fireEvent.click(sameApp);
+    });
+    expect(currentState.settings.quickSwitch.sameAppEnabled).toBe(true);
+
+    // 2. Workspaces v2 red-border capture -> live event opens interactive stage workbench -> save + shortcut
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /Workspaces/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Create workspace/i }));
+    });
+    expect(requestSpy).toHaveBeenCalledWith('windowManager.startWorkspaceCapture', {}, { silent: true });
+
+    expect(capturedCallback).not.toBeNull();
+    await act(async () => {
+      capturedCallback?.({
+        captured: true,
+        workspace: {
+          id: 'ws-live-1',
+          name: 'Coding',
+          apps: [
+            {
+              id: 'app_1',
+              appName: 'Visual Studio Code',
+              processName: 'Code.exe',
+              exePath: 'C:\\Code.exe',
+              args: '',
+              monitorId: 'MON-4K',
+              monitorIndex: 0,
+              runAsAdmin: true,
+              maximized: false,
+              minimized: false,
+              relRect: { x: 0.1, y: 0.1, w: 0.6, h: 0.8 },
+            },
+            {
+              id: 'app_2',
+              appName: 'Tools3000',
+              processName: 'Tools3000.exe',
+              exePath: 'C:\\Tools3000.exe',
+              args: '',
+              monitorId: 'MON-4K',
+              monitorIndex: 0,
+              minimized: true,
+            },
+          ],
+        },
+      });
+    });
+
+    // Interactive workbench renders Screen 1 & Minimized apps group + Admin badge
+    expect(screen.getByText('Visual Studio Code')).toBeTruthy();
+    expect(screen.getByText('Administrator')).toBeTruthy();
+    expect(screen.getByText('Minimized apps')).toBeTruthy();
+
+    // Enable desktop shortcut & save
+    const shortcutToggle = document.getElementById('ws-edit-create-shortcut') as HTMLInputElement;
+    await act(async () => {
+      fireEvent.click(shortcutToggle);
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    });
+    expect(requestSpy).toHaveBeenCalledWith(
+      'windowManager.createWorkspaceShortcut',
+      { workspaceId: 'ws-live-1', name: 'Coding' },
+      { silent: true },
+    );
   });
 
   it('renders CapsLayerPage default-OFF, applies presets, and manages per-app profiles via RunningWindowPicker', async () => {

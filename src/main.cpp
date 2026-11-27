@@ -121,6 +121,11 @@ void preloadSettingsWindow(HINSTANCE hInstance);
 static HANDLE g_singleInstanceMutex = nullptr;
 static UINT g_wmTaskbarCreated = 0;
 static UINT g_wmWindowKitEditorResult = 0;
+static UINT g_wmWindowKitWorkspaceCaptureResult = 0;
+static UINT g_wmWindowKitQuickSwitchBounds = 0;
+static UINT g_wmLaunchWorkspaceRequest = 0;
+static constexpr wchar_t kLaunchWorkspaceBroadcastName[] = L"Tools3000_LaunchWorkspace_Request";
+static std::optional<std::wstring> extractLaunchWorkspaceArg();
 static std::optional<std::filesystem::path> g_performanceScenarioOutput;
 static std::atomic<bool> g_restartLaunchStarted{false};
 static HPOWERNOTIFY g_powerNotify = nullptr;
@@ -857,8 +862,17 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     g_powerNotify = RegisterSuspendResumeNotification(hwndMessage, DEVICE_NOTIFY_WINDOW_HANDLE);
 
     // ── 7. 初始化其他子系统 ──────────────────────────────────────────────
-    const bool silentStart = hasCommandLineFlag(L"--silent") || hasCommandLineFlag(L"--autostart");
+    const auto cliLaunchWorkspace = extractLaunchWorkspaceArg();
+    const bool silentStart = hasCommandLineFlag(L"--silent") ||
+                             hasCommandLineFlag(L"--autostart") ||
+                             cliLaunchWorkspace.has_value();
     initializeSubsystems(hwndMessage, false);
+    if (cliLaunchWorkspace.has_value() && !cliLaunchWorkspace->empty()) {
+        const std::string wsIdUtf8 = tools3000::core::WinUtils::wstringToUtf8(*cliLaunchWorkspace);
+        tools3000::core::MainThreadDispatcher::instance().post([wsIdUtf8]() {
+            tools3000::core::WindowKitController::instance().launchWorkspaceById(wsIdUtf8);
+        });
+    }
     tools3000::core::PerformanceMonitor::instance().recordLatency(
         "startup.core",
         std::chrono::duration<double, std::milli>(
@@ -1022,6 +1036,26 @@ bool checkSingleInstance() {
         }
     }
 
+    // 若携带 --launch-workspace 参数，通过受控文件信号 + 注册消息通知已有运行实例直接拉起工作区（不唤醒设置窗口）
+    if (const auto wsArg = extractLaunchWorkspaceArg(); wsArg.has_value() && !wsArg->empty()) {
+        const auto cfgDir = tools3000::core::WinUtils::getConfigDirectory();
+        std::error_code ec;
+        std::filesystem::create_directories(cfgDir, ec);
+        const auto reqPath = cfgDir / L"window_kit_cli_launch.json";
+        const nlohmann::json payload = {
+            {"workspaceId", tools3000::core::WinUtils::wstringToUtf8(*wsArg)}
+        };
+        tools3000::core::WinUtils::atomicWriteFileWithFlush(reqPath.wstring(), payload.dump());
+        const UINT msgLaunch = RegisterWindowMessageW(kLaunchWorkspaceBroadcastName);
+        HWND existing = FindWindowW(WINDOW_CLASS_NAME, nullptr);
+        if (existing && msgLaunch != 0) {
+            PostMessageW(existing, msgLaunch, 0, 0);
+        } else if (msgLaunch != 0) {
+            PostMessageW(HWND_BROADCAST, msgLaunch, 0, 0);
+        }
+        return false;
+    }
+
     // 允许现有后台实例将窗口置顶于前台
     AllowSetForegroundWindow(ASFW_ANY);
 
@@ -1090,6 +1124,24 @@ std::optional<std::wstring> commandLineStringValue(std::wstring_view prefix) {
     return std::nullopt;
 }
 
+std::optional<std::wstring> extractLaunchWorkspaceArg() {
+    const auto& args = ParsedCommandLine::instance().args;
+    for (size_t i = 1; i < args.size(); ++i) {
+        std::wstring_view arg(args[i]);
+        constexpr std::wstring_view kPrefix = L"--launch-workspace=";
+        if (arg.size() > kPrefix.size() &&
+            _wcsnicmp(arg.data(), kPrefix.data(), static_cast<int>(kPrefix.size())) == 0) {
+            return std::wstring(arg.substr(kPrefix.size()));
+        }
+        if (_wcsicmp(args[i].c_str(), L"--launch-workspace") == 0 && i + 1 < args.size()) {
+            if (!args[i + 1].empty()) {
+                return args[i + 1];
+            }
+        }
+    }
+    return std::nullopt;
+}
+
 HWND createMessageWindow(HINSTANCE hInstance) {
     WNDCLASSEXW wcex = { sizeof(WNDCLASSEXW) };
     wcex.style       = CS_DBLCLKS;
@@ -1124,6 +1176,18 @@ HWND createMessageWindow(HINSTANCE hInstance) {
         g_wmWindowKitEditorResult = RegisterWindowMessageW(tools3000::core::kWindowKitEditorResultMsgName);
         if (g_wmWindowKitEditorResult != 0) {
             ChangeWindowMessageFilterEx(hwnd, g_wmWindowKitEditorResult, MSGFLT_ALLOW, nullptr);
+        }
+        g_wmWindowKitWorkspaceCaptureResult = RegisterWindowMessageW(tools3000::core::kWindowKitWorkspaceCaptureResultMsgName);
+        if (g_wmWindowKitWorkspaceCaptureResult != 0) {
+            ChangeWindowMessageFilterEx(hwnd, g_wmWindowKitWorkspaceCaptureResult, MSGFLT_ALLOW, nullptr);
+        }
+        g_wmWindowKitQuickSwitchBounds = RegisterWindowMessageW(tools3000::core::kWindowKitQuickSwitchBoundsMsgName);
+        if (g_wmWindowKitQuickSwitchBounds != 0) {
+            ChangeWindowMessageFilterEx(hwnd, g_wmWindowKitQuickSwitchBounds, MSGFLT_ALLOW, nullptr);
+        }
+        g_wmLaunchWorkspaceRequest = RegisterWindowMessageW(kLaunchWorkspaceBroadcastName);
+        if (g_wmLaunchWorkspaceRequest != 0) {
+            ChangeWindowMessageFilterEx(hwnd, g_wmLaunchWorkspaceRequest, MSGFLT_ALLOW, nullptr);
         }
     }
 
@@ -2717,6 +2781,33 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             const std::string name = params.is_object() ? params.value("name", std::string{}) : std::string{};
             return tools3000::core::WindowKitController::instance().captureWorkspaceJson(name);
         });
+        mb.registerHostHandler("windowManager.startWorkspaceCapture", [](const nlohmann::json& params) -> nlohmann::json {
+            nlohmann::json arg = params.is_object() ? params : nlohmann::json::object();
+            auto& settingsWnd = tools3000::ui::SettingsWindow::instance();
+            if (settingsWnd.isVisible() && settingsWnd.hwnd()) {
+                arg["restoreSettingsHwnd"] = reinterpret_cast<int64_t>(settingsWnd.hwnd());
+                tools3000::core::MainThreadDispatcher::instance().post([]() {
+                    tools3000::ui::SettingsWindow::instance().hide();
+                });
+            }
+            return tools3000::core::WindowKitController::instance().startWorkspaceCapture(arg);
+        });
+        mb.registerHostHandler("windowManager.createWorkspaceShortcut", [](const nlohmann::json& params) -> nlohmann::json {
+            const std::string wsId = params.is_object() ? params.value("workspaceId", std::string{}) : std::string{};
+            const std::string name = params.is_object() ? params.value("name", std::string{}) : std::string{};
+            return tools3000::core::WindowKitController::instance().createWorkspaceShortcutJson(wsId, name);
+        });
+        mb.registerHostHandler("windowManager.auditBindings", [](const nlohmann::json&) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().auditBindingsJson();
+        });
+        mb.registerHostHandler("windowManager.cleanStaleBindings", [](const nlohmann::json& params) -> nlohmann::json {
+            const bool cleanMonitors = params.is_object() ? params.value("cleanOfflineMonitors", true) : true;
+            const bool cleanDesktops = params.is_object() ? params.value("cleanRemovedDesktops", true) : true;
+            return tools3000::core::WindowKitController::instance().cleanStaleBindingsJson(cleanMonitors, cleanDesktops);
+        });
+        mb.registerHostHandler("windowManager.previewBorderStyle", [](const nlohmann::json& params) -> nlohmann::json {
+            return tools3000::core::WindowKitController::instance().previewBorderStyle(params);
+        });
         mb.registerHostHandler("windowManager.importPowerToysLayouts", [](const nlohmann::json& params) -> nlohmann::json {
             const std::string src = params.is_object() ? params.value("sourcePath", std::string{}) : std::string{};
             return tools3000::core::WindowKitController::instance().importPowerToysLayoutsJson(src);
@@ -3283,6 +3374,40 @@ LRESULT CALLBACK MessageWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         tools3000::core::WindowKitController::instance().handleLayoutEditorResult(saved);
         if (restoreSettings) {
             showSettingsWindow();
+        }
+        return 0;
+    }
+
+    if (g_wmWindowKitWorkspaceCaptureResult != 0 && msg == g_wmWindowKitWorkspaceCaptureResult) {
+        const bool captured = (wParam != 0);
+        const bool restoreSettings = (lParam != 0);
+        tools3000::core::WindowKitController::instance().handleWorkspaceCaptureResult(captured);
+        if (restoreSettings) {
+            showSettingsWindow();
+        }
+        return 0;
+    }
+
+    if (g_wmWindowKitQuickSwitchBounds != 0 && msg == g_wmWindowKitQuickSwitchBounds) {
+        tools3000::core::WindowKitController::instance().handleQuickSwitchBoundsResult();
+        return 0;
+    }
+
+    if (g_wmLaunchWorkspaceRequest != 0 && msg == g_wmLaunchWorkspaceRequest) {
+        const auto reqPath = tools3000::core::WinUtils::getConfigDirectory() / L"window_kit_cli_launch.json";
+        std::ifstream ifs(reqPath, std::ios::binary);
+        std::string raw((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        ifs.close();
+        std::error_code ec;
+        std::filesystem::remove(reqPath, ec);
+        if (!raw.empty()) {
+            const auto parsed = nlohmann::json::parse(raw, nullptr, false);
+            if (parsed.is_object()) {
+                const std::string wsId = parsed.value("workspaceId", std::string{});
+                if (!wsId.empty()) {
+                    tools3000::core::WindowKitController::instance().launchWorkspaceById(wsId);
+                }
+            }
         }
         return 0;
     }

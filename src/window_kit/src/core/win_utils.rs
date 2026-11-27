@@ -23,8 +23,7 @@ use windows::Win32::Devices::Display::{
 use windows::Win32::Foundation::{CloseHandle, BOOL, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
-    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-    DWMWCP_ROUNDSMALL,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DWMWCP_ROUNDSMALL,
 };
 use windows::Win32::Graphics::Gdi::{
     EnumDisplayMonitors, GetMonitorInfoW, MonitorFromPoint, MonitorFromWindow, HDC, HMONITOR,
@@ -39,8 +38,8 @@ use windows::Win32::System::ProcessStatus::{
     GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
 };
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_BINARY,
-    REG_SZ, REG_VALUE_TYPE,
+    RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_SZ,
+    REG_VALUE_TYPE,
 };
 use windows::Win32::System::Threading::{
     AttachThreadInput, GetCurrentProcess, GetCurrentProcessId, GetCurrentThreadId, GetGuiResources,
@@ -517,6 +516,7 @@ pub struct WindowInfo {
     pub hwnd: HWND,
     pub pid: u32,
     pub title: String,
+    #[allow(dead_code)]
     pub class_name: String,
     pub process_name: String,
     pub exe_path: String,
@@ -527,6 +527,7 @@ pub struct WindowInfo {
 }
 
 impl WindowInfo {
+    #[allow(dead_code)]
     pub fn to_workspace_json(&self) -> JsonValue {
         let mut obj = JsonValue::object();
         obj.insert("hwnd", JsonValue::from_i64(self.hwnd.0 as isize as i64));
@@ -701,7 +702,694 @@ pub fn get_window_icon_safe(hwnd: HWND, exe_path: &str, large: bool) -> Option<S
         }
     }
 
-    get_exe_shell_icon(exe_path, large)
+    get_exe_shell_icon(exe_path, large).or_else(|| {
+        get_window_aumid(hwnd).and_then(|aumid| get_uwp_shell_icon(&aumid))
+    })
+}
+
+/// 通过 Windows PropertyStore 获取 UWP / 打包应用的 System.AppUserModel.ID
+pub fn get_window_aumid(hwnd: HWND) -> Option<String> {
+    use windows::core::BSTR;
+    use windows::Win32::UI::Shell::PropertiesSystem::{
+        IPropertyStore, PSGetPropertyKeyFromName, SHGetPropertyStoreForWindow, PROPERTYKEY,
+    };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    unsafe {
+        let store: IPropertyStore = SHGetPropertyStoreForWindow(hwnd).ok()?;
+        let mut key = PROPERTYKEY::default();
+        let name = to_wide("System.AppUserModel.ID");
+        PSGetPropertyKeyFromName(PCWSTR(name.as_ptr()), &mut key).ok()?;
+        let val = store.GetValue(&key).ok()?;
+        let s = BSTR::try_from(&val).ok()?.to_string();
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+}
+
+/// 参考 AltTabio：通过 `shell:AppsFolder\{AUMID}` 与 `IExtractIconW` 提取 48px 原生 UWP 图标
+pub fn get_uwp_shell_icon(aumid: &str) -> Option<SafeIcon> {
+    use windows::Win32::UI::Shell::{
+        BHID_SFUIObject, IExtractIconW, IShellItem, SHCreateItemFromParsingName,
+    };
+    let clean = aumid.trim();
+    if clean.is_empty() || clean.contains('\0') {
+        return None;
+    }
+    let path = to_wide(&format!("shell:AppsFolder\\{clean}"));
+    unsafe {
+        let item: IShellItem =
+            SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None).ok()?;
+        let extractor: IExtractIconW = item.BindToHandler(None, &BHID_SFUIObject).ok()?;
+        let mut location = vec![0u16; 1024];
+        let mut index = 0i32;
+        let mut flags = 0u32;
+        extractor
+            .GetIconLocation(0, &mut location, &mut index, &mut flags)
+            .ok()?;
+        let mut icon = HICON::default();
+        let res = extractor.Extract(
+            PCWSTR(location.as_ptr()),
+            index as u32,
+            Some(&mut icon),
+            None,
+            48,
+        );
+        if res.is_ok() && !icon.is_invalid() {
+            Some(SafeIcon::owned(icon))
+        } else {
+            if !icon.is_invalid() {
+                let _ = DestroyIcon(icon);
+            }
+            None
+        }
+    }
+}
+
+/// 将任意 Win32 HICON（含 1/4/8/32bpp、高 DPI、MSIX/UWP）通过 32bpp DIB + DrawIconEx + WIC WritePixels
+/// 100% 无损编码为紧凑 `data:image/png;base64,...`（供前端工作区微缩舞台展示真实彩色图标）
+pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
+    use windows::Win32::Graphics::Gdi::{
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
+        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+    };
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
+        IWICBitmapEncoder, IWICImagingFactory, WICBitmapEncoderNoCache,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        CreateStreamOnHGlobal, GetHGlobalFromStream,
+    };
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        STATFLAG_NONAME, STATSTG,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    use windows::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL};
+
+    struct ComScope(bool);
+    impl Drop for ComScope {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+    }
+
+    if hicon.is_invalid() {
+        return None;
+    }
+    let sz = target_px.clamp(16, 64);
+    let stride = sz * 4;
+    let byte_len = (stride * sz) as usize;
+
+    unsafe {
+        // 1. 通过 32bpp Top-Down DIB + DrawIconEx 光栅化任意位深/跨进程 HICON，彻底规避 CreateBitmapFromHICON 兼容性失败
+        let hdc = CreateCompatibleDC(None);
+        if hdc.is_invalid() {
+            return None;
+        }
+        let bmi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: sz as i32,
+                biHeight: -(sz as i32), // top-down
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let hbmp = match CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(b) if !b.is_invalid() && !bits.is_null() => b,
+            _ => {
+                let _ = DeleteDC(hdc);
+                return None;
+            }
+        };
+        std::ptr::write_bytes(bits as *mut u8, 0, byte_len);
+        let old = SelectObject(hdc, hbmp);
+        let drawn = DrawIconEx(
+            hdc,
+            0,
+            0,
+            hicon,
+            sz as i32,
+            sz as i32,
+            0,
+            None,
+            DI_NORMAL,
+        )
+        .is_ok();
+        let mut pixels = vec![0u8; byte_len];
+        if drawn {
+            std::ptr::copy_nonoverlapping(bits as *const u8, pixels.as_mut_ptr(), byte_len);
+        }
+        SelectObject(hdc, old);
+        let _ = DeleteObject(hbmp);
+        let _ = DeleteDC(hdc);
+        if !drawn {
+            return None;
+        }
+
+        // 若旧式图标仅绘制了 RGB 未写入 Alpha 通道（全部 alpha==0 但存在非零像素），补全不透明 Alpha=255
+        let any_alpha = pixels.chunks_exact(4).any(|px| px[3] != 0);
+        if !any_alpha {
+            let mut any_rgb = false;
+            for px in pixels.chunks_exact_mut(4) {
+                if px[0] != 0 || px[1] != 0 || px[2] != 0 {
+                    px[3] = 255;
+                    any_rgb = true;
+                }
+            }
+            if !any_rgb {
+                return None;
+            }
+        }
+
+        // 2. 使用 WIC PNG Container Format (GUID_ContainerFormatPng) + WritePixels 编码为内存流
+        //    自动兜底线程 COM 初始化（S_OK/S_FALSE 成对卸载；RPC_E_CHANGED_MODE 沿用已有 MTA）
+        let _com = ComScope(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
+        let wic: IWICImagingFactory =
+            CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        let stream = CreateStreamOnHGlobal(
+            windows::Win32::Foundation::HGLOBAL(std::ptr::null_mut()),
+            true,
+        )
+        .ok()?;
+        let encoder: IWICBitmapEncoder = wic
+            .CreateEncoder(&GUID_ContainerFormatPng, std::ptr::null())
+            .ok()?;
+        encoder.Initialize(&stream, WICBitmapEncoderNoCache).ok()?;
+        let mut frame = None;
+        encoder.CreateNewFrame(&mut frame, std::ptr::null_mut()).ok()?;
+        let frame = frame?;
+        frame.Initialize(None).ok()?;
+        frame.SetSize(sz, sz).ok()?;
+        let mut fmt = GUID_WICPixelFormat32bppBGRA;
+        frame.SetPixelFormat(&mut fmt).ok()?;
+        frame.WritePixels(sz, stride, &pixels).ok()?;
+        frame.Commit().ok()?;
+        encoder.Commit().ok()?;
+
+        let mut stat = STATSTG::default();
+        stream.Stat(&mut stat, STATFLAG_NONAME).ok()?;
+        let len = (stat.cbSize as usize).min(64 * 1024);
+        if len == 0 {
+            return None;
+        }
+        let hglobal = GetHGlobalFromStream(&stream).ok()?;
+        let ptr = GlobalLock(hglobal);
+        if ptr.is_null() {
+            return None;
+        }
+        let bytes = std::slice::from_raw_parts(ptr as *const u8, len).to_vec();
+        let _ = GlobalUnlock(hglobal);
+
+        Some(format!("data:image/png;base64,{}", encode_base64(&bytes)))
+    }
+}
+
+/// 窗口图标 PNG 三级兜底抽取链：窗口自身 HICON -> UWP/MSIX Shell AppsFolder -> EXE Shell Icon
+pub fn extract_window_icon_png_data_url(
+    hwnd: HWND,
+    exe_path: &str,
+    aumid: &str,
+    target_px: u32,
+) -> Option<String> {
+    if let Some(ico) = get_window_icon_safe(hwnd, exe_path, true) {
+        if let Some(png) = hicon_to_png_data_url(ico.hicon, target_px) {
+            return Some(png);
+        }
+    }
+    if !aumid.trim().is_empty() {
+        if let Some(ico) = get_uwp_shell_icon(aumid) {
+            if let Some(png) = hicon_to_png_data_url(ico.hicon, target_px) {
+                return Some(png);
+            }
+        }
+    }
+    if !exe_path.trim().is_empty() {
+        if let Some(ico) = get_exe_shell_icon(exe_path, true) {
+            if let Some(png) = hicon_to_png_data_url(ico.hicon, target_px) {
+                return Some(png);
+            }
+        }
+    }
+    None
+}
+
+/// 零依赖标准 RFC4648 Base64 编码器
+pub fn encode_base64(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(((input.len() + 2) / 3) * 4);
+    let mut i = 0;
+    while i + 3 <= input.len() {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8) | (input[i + 2] as u32);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push(TABLE[(n & 63) as usize] as char);
+        i += 3;
+    }
+    let rem = input.len() - i;
+    if rem == 1 {
+        let n = (input[i] as u32) << 16;
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push('=');
+        out.push('=');
+    } else if rem == 2 {
+        let n = ((input[i] as u32) << 16) | ((input[i + 1] as u32) << 8);
+        out.push(TABLE[((n >> 18) & 63) as usize] as char);
+        out.push(TABLE[((n >> 12) & 63) as usize] as char);
+        out.push(TABLE[((n >> 6) & 63) as usize] as char);
+        out.push('=');
+    }
+    out
+}
+
+/// 探测指定 PID 进程是否以管理员权限运行（若因高完整性级别 UIPI 拒绝访问则视为管理员）
+pub fn is_process_elevated(pid: u32) -> bool {
+    use windows::Win32::Foundation::{GetLastError, ERROR_ACCESS_DENIED, HANDLE};
+    use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
+    use windows::Win32::System::Threading::OpenProcessToken;
+
+    if pid <= 4 {
+        return true;
+    }
+    unsafe {
+        let proc = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+            Ok(h) => h,
+            Err(_) => {
+                return GetLastError() == ERROR_ACCESS_DENIED;
+            }
+        };
+        let mut token = HANDLE::default();
+        let opened = OpenProcessToken(proc, TOKEN_QUERY, &mut token).is_ok();
+        let _ = CloseHandle(proc);
+        if !opened {
+            return GetLastError() == ERROR_ACCESS_DENIED;
+        }
+        let mut elev = TOKEN_ELEVATION::default();
+        let mut ret_len = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenElevation,
+            Some(&mut elev as *mut TOKEN_ELEVATION as *mut c_void),
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut ret_len,
+        )
+        .is_ok();
+        let _ = CloseHandle(token);
+        ok && elev.TokenIsElevated != 0
+    }
+}
+
+/// 安全读取同位宽可读进程 PEB 命令行并剥离首个可执行文件路径，提取启动 CLI 参数
+/// 对受保护进程/提权跨权进程/异常结构安全降级返回空串，绝不崩溃
+pub fn query_process_command_line_args(pid: u32) -> String {
+    use windows::Win32::System::Diagnostics::Debug::ReadProcessMemory;
+    use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows::Win32::System::Threading::PROCESS_VM_READ;
+
+    if pid <= 4 {
+        return String::new();
+    }
+
+    #[repr(C)]
+    struct ProcessBasicInfo {
+        reserved1: usize,
+        peb_base_address: usize,
+        reserved2: [usize; 2],
+        unique_process_id: usize,
+        reserved3: usize,
+    }
+    #[repr(C)]
+    struct UnicodeString {
+        length: u16,
+        max_length: u16,
+        #[cfg(target_pointer_width = "64")]
+        _pad: u32,
+        buffer: usize,
+    }
+
+    type NtQueryInfoFn = unsafe extern "system" fn(
+        windows::Win32::Foundation::HANDLE,
+        u32,
+        *mut c_void,
+        u32,
+        *mut u32,
+    ) -> i32;
+
+    unsafe {
+        let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, false, pid)
+        else {
+            return String::new();
+        };
+        let ntdll = to_wide("ntdll.dll");
+        let query_fn: Option<NtQueryInfoFn> = GetModuleHandleW(PCWSTR(ntdll.as_ptr()))
+            .ok()
+            .and_then(|m| GetProcAddress(m, windows::core::s!("NtQueryInformationProcess")))
+            .map(|p| std::mem::transmute(p));
+        let Some(nt_query) = query_fn else {
+            let _ = CloseHandle(proc);
+            return String::new();
+        };
+
+        let mut pbi = ProcessBasicInfo {
+            reserved1: 0,
+            peb_base_address: 0,
+            reserved2: [0; 2],
+            unique_process_id: 0,
+            reserved3: 0,
+        };
+        let mut ret = 0u32;
+        let status = nt_query(
+            proc,
+            0, // ProcessBasicInformation
+            &mut pbi as *mut ProcessBasicInfo as *mut c_void,
+            size_of::<ProcessBasicInfo>() as u32,
+            &mut ret,
+        );
+        if status != 0 || pbi.peb_base_address == 0 {
+            let _ = CloseHandle(proc);
+            return String::new();
+        }
+
+        // 64 位 Windows (x64 & ARM64) PEB->ProcessParameters 偏移恒为 0x20；RTL_USER_PROCESS_PARAMETERS->CommandLine 偏移恒为 0x70
+        #[cfg(target_pointer_width = "64")]
+        const PEB_PARAMS_OFFSET: usize = 0x20;
+        #[cfg(target_pointer_width = "64")]
+        const PARAMS_CMDLINE_OFFSET: usize = 0x70;
+        #[cfg(target_pointer_width = "32")]
+        const PEB_PARAMS_OFFSET: usize = 0x10;
+        #[cfg(target_pointer_width = "32")]
+        const PARAMS_CMDLINE_OFFSET: usize = 0x40;
+
+        let mut params_addr: usize = 0;
+        let ok1 = ReadProcessMemory(
+            proc,
+            (pbi.peb_base_address + PEB_PARAMS_OFFSET) as *const c_void,
+            &mut params_addr as *mut usize as *mut c_void,
+            size_of::<usize>(),
+            None,
+        )
+        .is_ok();
+        if !ok1 || params_addr == 0 {
+            let _ = CloseHandle(proc);
+            return String::new();
+        }
+
+        let mut cmd_us = UnicodeString {
+            length: 0,
+            max_length: 0,
+            #[cfg(target_pointer_width = "64")]
+            _pad: 0,
+            buffer: 0,
+        };
+        let ok2 = ReadProcessMemory(
+            proc,
+            (params_addr + PARAMS_CMDLINE_OFFSET) as *const c_void,
+            &mut cmd_us as *mut UnicodeString as *mut c_void,
+            size_of::<UnicodeString>(),
+            None,
+        )
+        .is_ok();
+        if !ok2 || cmd_us.length == 0 || cmd_us.buffer == 0 {
+            let _ = CloseHandle(proc);
+            return String::new();
+        }
+
+        let char_count = ((cmd_us.length as usize) / 2).min(2048);
+        let mut buf = vec![0u16; char_count];
+        let ok3 = ReadProcessMemory(
+            proc,
+            cmd_us.buffer as *const c_void,
+            buf.as_mut_ptr() as *mut c_void,
+            char_count * 2,
+            None,
+        )
+        .is_ok();
+        let _ = CloseHandle(proc);
+        if !ok3 {
+            return String::new();
+        }
+        let full = String::from_utf16_lossy(&buf);
+        strip_executable_from_cmdline(&full)
+    }
+}
+
+/// 从完整命令行字符串剥离首段程序路径，保留纯净参数
+pub fn strip_executable_from_cmdline(cmdline: &str) -> String {
+    let trimmed = cmdline.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(rest) = trimmed.strip_prefix('"') {
+        if let Some(end_q) = rest.find('"') {
+            return rest[end_q + 1..].trim().to_string();
+        }
+        return String::new();
+    }
+    if let Some(sp) = trimmed.find(char::is_whitespace) {
+        trimmed[sp + 1..].trim().to_string()
+    } else {
+        String::new()
+    }
+}
+
+/// 读取窗口的还原位置矩形（支持最小化窗真实桌面位置捕获与原位预览）
+pub fn get_window_normal_placement_rect(hwnd: HWND) -> Option<RectI> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowPlacement, WINDOWPLACEMENT};
+    if hwnd.0.is_null() {
+        return None;
+    }
+    unsafe {
+        let mut wp = WINDOWPLACEMENT {
+            length: size_of::<WINDOWPLACEMENT>() as u32,
+            ..Default::default()
+        };
+        if GetWindowPlacement(hwnd, &mut wp).is_ok() {
+            let r = rect_from_win32(wp.rcNormalPosition);
+            if r.is_valid() {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+/// 参考 AltTabio：优先经未提权 Windows Explorer 进程 Token 降权启动普通应用；仅当 run_as_admin=true 时提权运行
+pub fn spawn_process_with_elevation_policy(
+    exe_path: &str,
+    args: &str,
+    aumid: &str,
+    run_as_admin: bool,
+) -> bool {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::{
+        DuplicateTokenEx, GetTokenInformation, SecurityImpersonation, TokenElevation, TokenPrimary,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION, TOKEN_QUERY,
+    };
+    use windows::Win32::System::Threading::{
+        CreateProcessWithTokenW, OpenProcessToken, LOGON_WITH_PROFILE, PROCESS_CREATION_FLAGS,
+        PROCESS_INFORMATION, STARTUPINFOW,
+    };
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, SW_SHOWNORMAL};
+
+    let clean_aumid = aumid.trim();
+    let is_uwp_shell = !clean_aumid.is_empty()
+        && (exe_path.trim().is_empty()
+            || exe_path
+                .to_ascii_lowercase()
+                .ends_with("applicationframehost.exe"));
+    let target_file = if is_uwp_shell {
+        format!("shell:AppsFolder\\{clean_aumid}")
+    } else {
+        exe_path.trim().to_string()
+    };
+    if target_file.is_empty() {
+        return false;
+    }
+
+    // 1. 非管理员目标且当前宿主处于提权态：经桌面 Explorer 未提权令牌降权拉起（防止子应用继承管理员权限导致无法拖放文件）
+    if !run_as_admin && !is_uwp_shell && is_process_elevated(unsafe { GetCurrentProcessId() }) {
+        let token_launched = unsafe {
+            (|| -> Option<()> {
+                let shell_hwnd = GetShellWindow();
+                if shell_hwnd.0.is_null() {
+                    return None;
+                }
+                let mut shell_pid = 0u32;
+                let _ = GetWindowThreadProcessId(shell_hwnd, Some(&mut shell_pid));
+                if shell_pid == 0 {
+                    return None;
+                }
+                let shell_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, shell_pid).ok()?;
+                let mut raw_token = HANDLE::default();
+                let open_ok = OpenProcessToken(
+                    shell_proc,
+                    TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY,
+                    &mut raw_token,
+                )
+                .is_ok();
+                let _ = CloseHandle(shell_proc);
+                if !open_ok {
+                    return None;
+                }
+
+                // 确认 Explorer 令牌本身未提权
+                let mut elev = TOKEN_ELEVATION::default();
+                let mut ret_len = 0u32;
+                let elev_ok = GetTokenInformation(
+                    raw_token,
+                    TokenElevation,
+                    Some(&mut elev as *mut TOKEN_ELEVATION as *mut c_void),
+                    size_of::<TOKEN_ELEVATION>() as u32,
+                    &mut ret_len,
+                )
+                .is_ok();
+                if elev_ok && elev.TokenIsElevated != 0 {
+                    let _ = CloseHandle(raw_token);
+                    return None;
+                }
+
+                let mut primary_token = HANDLE::default();
+                let dup_ok = DuplicateTokenEx(
+                    raw_token,
+                    TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
+                    None,
+                    SecurityImpersonation,
+                    TokenPrimary,
+                    &mut primary_token,
+                )
+                .is_ok();
+                let _ = CloseHandle(raw_token);
+                if !dup_ok {
+                    return None;
+                }
+
+                let app_w = to_wide(&target_file);
+                let mut cmd_w = if args.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    to_wide(&format!("\"{}\" {}", target_file, args.trim()))
+                };
+                let cmd_pwstr = if cmd_w.is_empty() {
+                    PWSTR::null()
+                } else {
+                    PWSTR(cmd_w.as_mut_ptr())
+                };
+                let mut si = STARTUPINFOW {
+                    cb: size_of::<STARTUPINFOW>() as u32,
+                    ..Default::default()
+                };
+                let mut pi = PROCESS_INFORMATION::default();
+                let created = CreateProcessWithTokenW(
+                    primary_token,
+                    LOGON_WITH_PROFILE,
+                    PCWSTR(app_w.as_ptr()),
+                    cmd_pwstr,
+                    PROCESS_CREATION_FLAGS::default(),
+                    None,
+                    PCWSTR::null(),
+                    &mut si,
+                    &mut pi,
+                )
+                .is_ok();
+                let _ = CloseHandle(primary_token);
+                if created {
+                    let _ = CloseHandle(pi.hThread);
+                    let _ = CloseHandle(pi.hProcess);
+                    Some(())
+                } else {
+                    None
+                }
+            })()
+            .is_some()
+        };
+        if token_launched {
+            return true;
+        }
+    }
+
+    // 2. 管理员提权启动、UWP 协议启动、非提权宿主直接启动或安全回退
+    let verb = to_wide(if run_as_admin && !is_uwp_shell {
+        "runas"
+    } else {
+        "open"
+    });
+    let file = to_wide(&target_file);
+    let params = to_wide(args.trim());
+    let params_ptr = if args.trim().is_empty() || is_uwp_shell {
+        PCWSTR::null()
+    } else {
+        PCWSTR(params.as_ptr())
+    };
+    let res = unsafe {
+        ShellExecuteW(
+            HWND::default(),
+            PCWSTR(verb.as_ptr()),
+            PCWSTR(file.as_ptr()),
+            params_ptr,
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    (res.0 as isize) > 32
+}
+
+/// 参考 AltTabio：读取进程创建时间用于防 PID 复用误杀校验
+pub fn query_process_creation_time(pid: u32) -> u64 {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+    if pid == 0 {
+        return 0;
+    }
+    unsafe {
+        let Ok(proc) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return 0;
+        };
+        let mut created = FILETIME::default();
+        let mut exit = FILETIME::default();
+        let mut kernel = FILETIME::default();
+        let mut user = FILETIME::default();
+        let ok = GetProcessTimes(proc, &mut created, &mut exit, &mut kernel, &mut user).is_ok();
+        let _ = CloseHandle(proc);
+        if ok {
+            ((created.dwHighDateTime as u64) << 32) | (created.dwLowDateTime as u64)
+        } else {
+            0
+        }
+    }
+}
+
+/// 参考 AltTabio：自动寻址目标窗口最前活跃模态子窗并异步恢复激活（杜绝激活被模态对话框阻塞的父窗）
+pub fn activate_window_or_popup(hwnd: HWND) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetLastActivePopup;
+    if hwnd.0.is_null() || is_hung_window(hwnd) {
+        return false;
+    }
+    let target = unsafe {
+        let popup = GetLastActivePopup(hwnd);
+        if !popup.0.is_null() && IsWindow(popup).as_bool() && IsWindowVisible(popup).as_bool() {
+            popup
+        } else {
+            hwnd
+        }
+    };
+    activate_window(target)
 }
 
 pub fn get_exe_shell_icon(exe_path: &str, large: bool) -> Option<SafeIcon> {
@@ -1045,27 +1733,36 @@ pub fn kill_window_process_safe(hwnd: HWND) -> bool {
     false
 }
 
-/// 为顶层卡片窗口应用 Windows 11 硬件圆角、深浅色标题栏与精致边缘色（Win10 下静默降级无报错）
+/// 为顶层卡片窗口应用跨 Win10 / Server 2019+ / Win11 硬件圆角与深浅色标题栏属性
+#[allow(dead_code)]
 pub fn apply_win11_card_chrome(hwnd: HWND, dark_mode: bool, small_radius: bool) {
+    use crate::core::topology::windows_build_info;
+    use windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE;
+
+    let os = windows_build_info();
     unsafe {
-        let pref = if small_radius {
-            DWMWCP_ROUNDSMALL
-        } else {
-            DWMWCP_ROUND
-        };
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_WINDOW_CORNER_PREFERENCE,
-            &pref as *const _ as *const c_void,
-            size_of::<u32>() as u32,
-        );
-        let dark: BOOL = if dark_mode { TRUE } else { BOOL(0) };
-        let _ = DwmSetWindowAttribute(
-            hwnd,
-            DWMWA_USE_IMMERSIVE_DARK_MODE,
-            &dark as *const BOOL as *const c_void,
-            size_of::<BOOL>() as u32,
-        );
+        if let Some(attr) = os.dark_mode_attr() {
+            let dark: i32 = if dark_mode { 1 } else { 0 };
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWINDOWATTRIBUTE(attr.as_u32() as i32),
+                &dark as *const i32 as *const c_void,
+                size_of::<i32>() as u32,
+            );
+        }
+        if os.supports_win11_dwm_corners() {
+            let pref = if small_radius {
+                DWMWCP_ROUNDSMALL
+            } else {
+                DWMWCP_ROUND
+            };
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                &pref as *const _ as *const c_void,
+                size_of::<u32>() as u32,
+            );
+        }
     }
 }
 
@@ -1137,51 +1834,9 @@ fn format_guid_lower(guid: &GUID) -> String {
     )
 }
 
-/// 从 Windows 注册表读取当前活动虚拟桌面 GUID（与 IVirtualDesktopManager 格式 100% 一致）
+/// 从 Windows 注册表读取当前活动虚拟桌面 GUID（同时兼容 Win11 根目录与 Win10/Server 2019/2022 SessionInfo 路径）
 pub fn get_current_virtual_desktop_id() -> Option<String> {
-    unsafe {
-        let subkey = to_wide("Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VirtualDesktops");
-        let mut hkey = HKEY::default();
-        if RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            PCWSTR(subkey.as_ptr()),
-            0,
-            KEY_READ,
-            &mut hkey,
-        )
-        .is_err()
-        {
-            return None;
-        }
-        let val_name = to_wide("CurrentVirtualDesktop");
-        let mut reg_type = REG_VALUE_TYPE::default();
-        let mut buf = [0u8; 16];
-        let mut buf_len = buf.len() as u32;
-        let query_res = RegQueryValueExW(
-            hkey,
-            PCWSTR(val_name.as_ptr()),
-            None,
-            Some(&mut reg_type),
-            Some(buf.as_mut_ptr()),
-            Some(&mut buf_len),
-        );
-        let _ = RegCloseKey(hkey);
-        if query_res.is_err() || reg_type != REG_BINARY || buf_len != 16 {
-            return None;
-        }
-        let guid = GUID {
-            data1: u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]),
-            data2: u16::from_le_bytes([buf[4], buf[5]]),
-            data3: u16::from_le_bytes([buf[6], buf[7]]),
-            data4: [
-                buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
-            ],
-        };
-        if guid == GUID::zeroed() {
-            return None;
-        }
-        Some(format_guid_lower(&guid))
-    }
+    crate::core::topology::query_current_desktop_guid_cross_os()
 }
 
 /// 优先解析窗口所属虚拟桌面 GUID，若对提权/UWP/瞬态窗无返回则安全回退到当前活动虚拟桌面 GUID
@@ -1447,5 +2102,19 @@ mod tests {
         assert!(stats.get("workingSetBytes").and_then(|v| v.as_i64()).unwrap_or(0) > 0);
         assert_eq!(stats.get_i32("pinnedCount", -1), 2);
         assert_eq!(stats.get_i32("trayMinimizedCount", -1), 1);
+    }
+
+    #[test]
+    fn hicon_to_png_data_url_encodes_valid_png_signature() {
+        use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
+        let hicon = unsafe { LoadIconW(None, IDI_APPLICATION) }.expect("IDI_APPLICATION icon");
+        let data_url =
+            hicon_to_png_data_url(hicon, 32).expect("WIC PNG encoder must encode system HICON");
+        // PNG 文件头魔数 89 50 4E 47 0D 0A 1A 0A 经 Base64 编码后恒为 iVBORw0KGgo
+        assert!(
+            data_url.starts_with("data:image/png;base64,iVBORw0KGgo"),
+            "unexpected PNG data URL prefix: {}",
+            &data_url[..data_url.len().min(48)]
+        );
     }
 }

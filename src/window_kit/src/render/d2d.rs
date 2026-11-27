@@ -9,6 +9,7 @@ use crate::core::constants::{FONT_MONO_FAMILY, FONT_UI_FALLBACK, FONT_UI_FAMILY}
 use crate::core::win_utils::to_wide;
 use std::ffi::c_void;
 use std::mem::size_of;
+use std::sync::OnceLock;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
@@ -168,13 +169,72 @@ impl SharedGraphics {
         }
     }
 
+    /// 跨 Win10 / Server 2019 / Server 2022 / Win11 探测并缓存本机可用最佳界面字体族
+    fn resolve_ui_font_family(&self) -> &'static str {
+        static CACHED: OnceLock<&'static str> = OnceLock::new();
+        CACHED.get_or_init(|| {
+            let candidates = [FONT_UI_FAMILY, FONT_UI_FALLBACK, "Segoe UI"];
+            if let Ok(Some(col)) = unsafe {
+                let mut col = None;
+                self.dwrite_factory
+                    .GetSystemFontCollection(&mut col, false)
+                    .map(|()| col)
+            } {
+                for &fam in &candidates {
+                    let wide = to_wide(fam);
+                    let mut idx = 0u32;
+                    let mut exists = windows::Win32::Foundation::BOOL(0);
+                    if unsafe {
+                        col.FindFamilyName(PCWSTR(wide.as_ptr()), &mut idx, &mut exists)
+                            .is_ok()
+                    } && exists.as_bool()
+                    {
+                        return fam;
+                    }
+                }
+            }
+            FONT_UI_FALLBACK
+        })
+    }
+
+    /// 跨 Win10 / Server 2019 / Server 2022 / Win11 探测并缓存本机可用最佳等宽字体族
+    fn resolve_mono_font_family(&self) -> &'static str {
+        static CACHED: OnceLock<&'static str> = OnceLock::new();
+        CACHED.get_or_init(|| {
+            let candidates = [FONT_MONO_FAMILY, "Cascadia Code", "Consolas"];
+            if let Ok(Some(col)) = unsafe {
+                let mut col = None;
+                self.dwrite_factory
+                    .GetSystemFontCollection(&mut col, false)
+                    .map(|()| col)
+            } {
+                for &fam in &candidates {
+                    let wide = to_wide(fam);
+                    let mut idx = 0u32;
+                    let mut exists = windows::Win32::Foundation::BOOL(0);
+                    if unsafe {
+                        col.FindFamilyName(PCWSTR(wide.as_ptr()), &mut idx, &mut exists)
+                            .is_ok()
+                    } && exists.as_bool()
+                    {
+                        return fam;
+                    }
+                }
+            }
+            "Consolas"
+        })
+    }
+
     pub fn ui_text_format(&self, size_dip: f32, bold: bool, centered: bool) -> Result<IDWriteTextFormat, String> {
-        self.create_text_format(FONT_UI_FAMILY, size_dip, bold, !bold, centered)
+        let fam = self.resolve_ui_font_family();
+        self.create_text_format(fam, size_dip, bold, !bold, centered)
             .or_else(|_| self.create_text_format(FONT_UI_FALLBACK, size_dip, bold, !bold, centered))
     }
 
     pub fn mono_text_format(&self, size_dip: f32, bold: bool, centered: bool) -> Result<IDWriteTextFormat, String> {
-        self.create_text_format(FONT_MONO_FAMILY, size_dip, bold, false, centered)
+        let fam = self.resolve_mono_font_family();
+        self.create_text_format(fam, size_dip, bold, false, centered)
+            .or_else(|_| self.create_text_format("Consolas", size_dip, bold, false, centered))
     }
 
     /// 创建支持省略号自动截断与局部高亮着色的 DirectWrite TextLayout

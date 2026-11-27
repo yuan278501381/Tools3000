@@ -4,8 +4,8 @@
 
 use windows::Win32::UI::WindowsAndMessaging::WM_APP;
 
-/// 当前引擎版本号（与 Cargo.toml / window_kit.rc / window_kit.manifest 单一事实源对齐）
-pub const APP_VERSION: &str = "1.4.17";
+/// 当前引擎版本号（编译期直读 Cargo.toml，与 VERSION / window_kit.rc / window_kit.manifest 单一事实源自动对齐）
+pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// 宿主通讯隐藏控制窗口类名（供 Tools3000.exe 通过 FindWindowW 精准定位并 PostMessageW）
 pub const CONTROL_WINDOW_CLASS: &str = "Tools3000_WindowKit_Control";
@@ -14,12 +14,18 @@ pub const CONTROL_WINDOW_CLASS: &str = "Tools3000_WindowKit_Control";
 pub const QUICK_SWITCH_WINDOW_CLASS: &str = "Tools3000_WindowKit_QuickSwitch";
 pub const SNAP_ZONES_WINDOW_CLASS: &str = "Tools3000_WindowKit_SnapZones";
 pub const LAYOUT_EDITOR_WINDOW_CLASS: &str = "Tools3000_WindowKit_LayoutEditor";
+pub const LAYOUT_HUB_WINDOW_CLASS: &str = "Tools3000_WindowKit_LayoutHub";
+pub const WORKSPACE_CAPTURE_FRAME_CLASS: &str = "Tools3000_WindowKit_CaptureFrame";
+pub const WORKSPACE_CAPTURE_CARD_CLASS: &str = "Tools3000_WindowKit_CaptureCard";
+pub const WORKSPACE_PROGRESS_WINDOW_CLASS: &str = "Tools3000_WindowKit_WorkspaceProgress";
 pub const PIN_BORDER_WINDOW_CLASS: &str = "Tools3000_WindowKit_PinBorder";
 pub const FOCUS_BORDER_WINDOW_CLASS: &str = "Tools3000_WindowKit_FocusBorder";
 
-/// 宿主隐藏消息窗口类名与自定义回调消息（用于全屏布局编辑器保存/取消后零阻塞回传）
+/// 宿主隐藏消息窗口类名与自定义回调消息（用于编辑器/工作区摆拍捕获保存或取消后零阻塞回传）
 pub const HOST_MESSAGE_WINDOW_CLASS: &str = "Tools3000_MessageWindow";
 pub const HOST_EDITOR_RESULT_MSG_NAME: &str = "Tools3000_WindowKit_EditorResult";
+pub const HOST_WORKSPACE_CAPTURE_RESULT_MSG_NAME: &str = "Tools3000_WindowKit_WorkspaceCaptureResult";
+pub const HOST_QUICKSWITCH_BOUNDS_MSG_NAME: &str = "Tools3000_WindowKit_QuickSwitchBounds";
 
 /// 控制窗口自定义消息契约（宿主 <-> WindowKit）
 pub const WM_WK_RELOAD_CONFIG: u32 = WM_APP + 1;
@@ -37,6 +43,9 @@ pub const WM_WK_INTERNAL_SNAP_RIGHT_CLICK: u32 = WM_APP + 106;
 pub const WM_WK_INTERNAL_QUICK_SWITCH_KEY: u32 = WM_APP + 107;
 pub const WM_WK_INTERNAL_WORKSPACE_DONE: u32 = WM_APP + 109;
 pub const WM_WK_INTERNAL_EDITOR_EVENT: u32 = WM_APP + 110;
+pub const WM_WK_INTERNAL_HUB_EVENT: u32 = WM_APP + 111;
+pub const WM_WK_INTERNAL_CAPTURE_EVENT: u32 = WM_APP + 112;
+pub const WM_WK_INTERNAL_WORKSPACE_PROGRESS: u32 = WM_APP + 113;
 
 /// WM_WK_EXECUTE_ACTION (WM_APP + 2) 的 wParam 动作编码契约
 pub const ACTION_TOGGLE_ALWAYS_ON_TOP: usize = 1;
@@ -59,6 +68,10 @@ pub const ACTION_QUERY_MONITORS: usize = 17;
 pub const ACTION_QUERY_RUNTIME_STATS: usize = 18;
 pub const ACTION_SHOW_ZONES_PREVIEW: usize = 19;
 pub const ACTION_OPEN_LAYOUT_EDITOR: usize = 20;
+pub const ACTION_APPLY_LAYOUT_HOTKEY_DIGIT: usize = 21;
+pub const ACTION_START_WORKSPACE_CAPTURE: usize = 22;
+pub const ACTION_PREVIEW_BORDER_STYLE: usize = 23;
+pub const ACTION_OPEN_LAYOUT_EDITOR_DIRECT: usize = 24;
 
 /// 静音标志位（WM_APP + 3 的 wParam 位掩码）
 pub const MUTED_FLAG_FULLSCREEN: usize = 1 << 0;
@@ -72,6 +85,12 @@ pub const TIMER_ZONES_PREVIEW_HIDE: usize = 1004;
 pub const TIMER_BORDER_RECONCILE: usize = 1005;
 /// 按需驱动的 60~120Hz 丝滑动效帧定时器（仅存在活跃过渡动画时运行，收敛立即 KillTimer 保持静止 0% CPU）
 pub const TIMER_ANIMATION_FRAME: usize = 1006;
+/// 显示器热插拔/分辨率变更防抖定时器（防 Windows 单次插屏连发多条 WM_DISPLAYCHANGE）
+pub const TIMER_DISPLAY_CHANGE_DEBOUNCE: usize = 1007;
+/// FocusBorder / AlwaysOnTop 设置调参即时预览自动收起定时器
+pub const TIMER_BORDER_PREVIEW_HIDE: usize = 1008;
+/// Workspaces 启动进度浮窗自动收起定时器
+pub const TIMER_WORKSPACE_PROGRESS_HIDE: usize = 1009;
 
 /// 定时器周期与安全超时门限（严禁魔术字面量）
 pub const PARENT_WATCH_INTERVAL_MS: u32 = 1000;
@@ -79,6 +98,8 @@ pub const COLD_PATH_TRIM_DELAY_MS: u32 = 2000;
 pub const SNAP_DRAG_POLL_INTERVAL_MS: u32 = 12;
 pub const ANIMATION_FRAME_INTERVAL_MS: u32 = 12;
 pub const BORDER_RECONCILE_INTERVAL_MS: u32 = 120;
+pub const DISPLAY_CHANGE_DEBOUNCE_MS: u32 = 250;
+pub const BORDER_STYLE_PREVIEW_MS: u32 = 1200;
 pub const FOREIGN_SEND_TIMEOUT_MS: u32 = 100;
 pub const WORKSPACE_MATCH_TIMEOUT_MS: u64 = 8000;
 pub const WORKSPACE_POLL_INTERVAL_MS: u64 = 150;
@@ -104,6 +125,8 @@ pub const FILE_IMPORT_POWERTOYS: &str = "window_kit_import.json";
 pub const FILE_QUERY_MONITORS: &str = "window_kit_monitors.json";
 pub const FILE_RUNTIME_STATS: &str = "window_kit_stats.json";
 pub const FILE_LAYOUT_EDITOR_RESULT: &str = "window_kit_layout_editor_result.json";
+pub const FILE_WORKSPACE_CAPTURE_RESULT: &str = "window_kit_workspace_capture_result.json";
+pub const FILE_QUICKSWITCH_BOUNDS_RESULT: &str = "window_kit_quickswitch_bounds.json";
 
 /// 崩溃安全兜底数组容量（最多同时恢复 64 个最小化到托盘的用户窗口）
 pub const MAX_TRAY_RECOVERY_SLOTS: usize = 64;
@@ -127,8 +150,5 @@ pub const SNAP_TOP_EDGE_TRIGGER_PX: i32 = 10;
 pub const ALT_DRAG_MIN_WINDOW_WIDTH: i32 = 160;
 pub const ALT_DRAG_MIN_WINDOW_HEIGHT: i32 = 100;
 pub const QUICK_SWITCH_MAX_VISIBLE_ROWS: usize = 9;
-pub const QUICK_SWITCH_WIDTH_DIP: f32 = 880.0;
-pub const QUICK_SWITCH_HEIGHT_DIP: f32 = 532.0;
-pub const QUICK_SWITCH_LIST_WIDTH_DIP: f32 = 388.0;
 pub const QUICK_SWITCH_ROW_COMFORTABLE_DIP: f32 = 46.0;
 pub const QUICK_SWITCH_ROW_COMPACT_DIP: f32 = 38.0;

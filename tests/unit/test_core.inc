@@ -7251,6 +7251,103 @@ TEST(WindowKitControllerTest, HandleLayoutEditorResultPersistsLayoutAndPerDeskto
     }
 }
 
+TEST(WindowKitControllerTest, SchemaV3TemplatesHubSyncBoundsAndActionCodes) {
+    auto& cfg = ConfigManager::instance();
+    auto& ctrl = WindowKitController::instance();
+
+    const bool hadWm = cfg.has("/windowManager");
+    const nlohmann::json prevWm = cfg.get<nlohmann::json>("/windowManager", nlohmann::json::object());
+
+    // 1. 验证 Action 21..24 映射与 6 大参数化模板默认配置
+    EXPECT_EQ(WindowKitController::resolveActionCode("apply_layout_hotkey_digit"), kWindowKitActionApplyLayoutHotkeyDigit);
+    EXPECT_EQ(WindowKitController::resolveActionCode("start_workspace_capture"), kWindowKitActionStartWorkspaceCapture);
+    EXPECT_EQ(WindowKitController::resolveActionCode("preview_border_style"), kWindowKitActionPreviewBorderStyle);
+    EXPECT_EQ(WindowKitController::resolveActionCode("open_layout_editor_direct"), kWindowKitActionOpenLayoutEditorDirect);
+
+    const auto defaults = WindowKitController::buildDefaultSettingsJson();
+    ASSERT_TRUE(defaults["snapZones"]["layouts"].is_array());
+    EXPECT_EQ(defaults["snapZones"]["layouts"].size(), 6u);
+    EXPECT_EQ(defaults["snapZones"]["layouts"][0].value("id", ""), "template_none");
+    EXPECT_EQ(defaults["snapZones"]["layouts"][5].value("id", ""), "template_priority_grid");
+    EXPECT_TRUE(defaults["quickSwitch"].value("replaceAltTab", false));
+    EXPECT_FALSE(defaults["quickSwitch"].value("sameAppEnabled", true));
+
+    // 2. 验证 hubSync 全量写盘同步（含 0..9 快捷键与横竖屏默认星标）
+    const auto resultPath = WinUtils::getConfigDirectory() / L"window_kit_layout_editor_result.json";
+    const nlohmann::json hubSyncPayload = {
+        {"action", "hubSync"},
+        {"saved", true},
+        {"activeLayoutId", "custom_v2_hub"},
+        {"zoneGap", 14},
+        {"monitorBindings", {
+            {{"monitorId", "OFFLINE-MON-999"}, {"desktopId", "99999999-8888-7777-6666-555555555555"}, {"layoutId", "custom_v2_hub"}}
+        }},
+        {"layouts", {
+            {
+                {"id", "template_priority_grid"},
+                {"name", "Priority Grid"},
+                {"type", "grid"},
+                {"builtIn", true},
+                {"templateKind", "priority_grid"},
+                {"zoneCount", 4},
+                {"showSpacing", true},
+                {"gap", 14},
+                {"rows", 2},
+                {"columns", 3},
+                {"rowWeights", {50.0, 50.0}},
+                {"colWeights", {25.0, 50.0, 25.0}},
+                {"cellChildMap", {{0, 1, 2}, {0, 1, 3}}}
+            },
+            {
+                {"id", "custom_v2_hub"},
+                {"name", "Dev Ultrawide"},
+                {"type", "grid"},
+                {"builtIn", false},
+                {"showSpacing", false},
+                {"gap", 0},
+                {"highlightDistance", 28},
+                {"hotkeyDigit", 3},
+                {"defaultHorizontal", true},
+                {"rows", 1},
+                {"columns", 2},
+                {"rowWeights", {100.0}},
+                {"colWeights", {60.0, 40.0}},
+                {"cellChildMap", {{0, 1}}}
+            }
+        }}
+    };
+    ASSERT_TRUE(WinUtils::atomicWriteFileWithFlush(resultPath.wstring(), hubSyncPayload.dump(2)));
+    EXPECT_TRUE(ctrl.handleLayoutEditorResult(true));
+
+    // 3. 验证离线显示器与已删除虚拟桌面审计 + 按需清理
+    const auto audit = ctrl.auditBindingsJson();
+    EXPECT_TRUE(audit.value("success", false));
+    EXPECT_GE(audit.value("offlineMonitorCount", 0u), 1u);
+    const auto cleaned = ctrl.cleanStaleBindingsJson(true, true);
+    EXPECT_TRUE(cleaned.value("success", false));
+    EXPECT_GE(cleaned.value("removedCount", 0u), 1u);
+
+    // 4. 验证 Quick Switch v2 自由拖缩记忆静默落盘
+    const auto boundsPath = WinUtils::getConfigDirectory() / L"window_kit_quickswitch_bounds.json";
+    const nlohmann::json boundsPayload = {
+        {"customWidthDip", 1040.0},
+        {"customHeightDip", 640.0},
+        {"listWidthRatio", 0.38},
+        {"customMonitorId", "TEST-MON-1"},
+        {"customRelRect", {{"x", 0.15}, {"y", 0.12}, {"w", 0.55}, {"h", 0.62}}}
+    };
+    ASSERT_TRUE(WinUtils::atomicWriteFileWithFlush(boundsPath.wstring(), boundsPayload.dump(2)));
+    EXPECT_TRUE(ctrl.handleQuickSwitchBoundsResult());
+
+    const auto after = ctrl.getSettingsJson();
+    EXPECT_NEAR(after["settings"]["quickSwitch"].value("customWidthDip", 0.0), 1040.0, 0.1);
+    EXPECT_NEAR(after["settings"]["quickSwitch"].value("listWidthRatio", 0.0), 0.38, 0.001);
+
+    if (hadWm) {
+        cfg.set<nlohmann::json>("/windowManager", prevWm);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 全球双栈自适应离线模型下载引擎与翻译阶段名称回归测试
 // ─────────────────────────────────────────────────────────────────────────────

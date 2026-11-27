@@ -183,6 +183,81 @@ impl FocusBorderManager {
         self.visible = true;
     }
 
+    /// Action 23: 在目标窗口（默认前台设置窗）外沿即时亮框预览焦点边框或置顶边框参数（持续 1.2s 自动收起）
+    pub fn preview_style_on_foreground(
+        &mut self,
+        color_hex: &str,
+        width_px: i32,
+        corner_radius: i32,
+        opacity: f32,
+        cfg: &WindowKitConfig,
+        gfx: Option<&SharedGraphics>,
+    ) -> bool {
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.0.is_null() || unsafe { !IsWindow(fg).as_bool() || IsIconic(fg).as_bool() } {
+            return false;
+        }
+        let Some(rect) = get_window_visual_rect(fg) else {
+            return false;
+        };
+        if self.overlay_hwnd.is_none() {
+            self.overlay_hwnd = create_focus_border_window();
+        }
+        let (Some(bh), Some(g)) = (self.overlay_hwnd, gfx) else {
+            return false;
+        };
+
+        let accent = resolve_color_or_accent(color_hex, &cfg.accent_color, [0.23, 0.51, 0.96]);
+        let dpi = get_window_dpi(fg);
+        let scale = (dpi as f32 / 96.0).max(1.0);
+        let is_zoomed = unsafe { IsZoomed(fg).as_bool() };
+        let bw = (width_px.clamp(1, 8) as f32 * scale).round();
+        let radius = if is_zoomed {
+            0.0
+        } else {
+            corner_radius.clamp(0, 24) as f32 * scale
+        };
+        let pad = if is_zoomed {
+            0
+        } else {
+            bw.ceil() as i32 + (4.0 * scale).round() as i32
+        };
+        let bx = rect.left - pad;
+        let by = rect.top - pad;
+        let w = rect.width() + pad * 2;
+        let h = rect.height() + pad * 2;
+        let alpha = opacity.clamp(0.25, 1.0);
+
+        let res = render_layered_window_d2d_alpha(g, bh, bx, by, w, h, 255, |rt| unsafe {
+            let inset = if is_zoomed {
+                bw * 0.5
+            } else {
+                pad as f32 - bw * 0.5
+            };
+            let r = rect_f(inset, inset, w as f32 - inset, h as f32 - inset);
+            let rr = rounded_rect(r, radius);
+            if !is_zoomed {
+                if let Ok(glow) = rt.CreateSolidColorBrush(&rgb_a(accent, alpha * 0.30), None) {
+                    rt.DrawRoundedRectangle(&rr, &glow, bw + 3.0 * scale, None);
+                }
+            }
+            if let Ok(brush) = rt.CreateSolidColorBrush(&rgb_a(accent, alpha), None) {
+                rt.DrawRoundedRectangle(&rr, &brush, bw, None);
+            }
+        });
+        if res.is_err() {
+            return false;
+        }
+        unsafe {
+            let _ = SetWindowPos(bh, HWND_TOPMOST, bx, by, w, h, SWP_NOACTIVATE);
+            let _ = ShowWindow(bh, SW_SHOWNOACTIVATE);
+        }
+        self.visible = true;
+        self.last_target = 0; // 预览结束后刷新时重新评估
+        self.fade_started = None;
+        true
+    }
+
     pub fn hide(&mut self) {
         self.fade_started = None;
         if self.visible {

@@ -3617,17 +3617,23 @@ TEST(GestureAuditRegressionTest, B1_KeyStrokeOemPunctuationRoundTripAndModifierO
     EXPECT_EQ(invalidChar.virtualKey, 0);
 }
 
-TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To31) {
-    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 31);
+TEST(GestureAuditRegressionTest, B2_BuiltinCommandFullRangeValidation0To37) {
+    EXPECT_EQ(static_cast<int>(kMaxBuiltinCommand), 37);
     EXPECT_EQ(BuiltinCommand::PrevDesktop, BuiltinCommand::PrevVirtualDesktop);
     EXPECT_EQ(BuiltinCommand::NextDesktop, BuiltinCommand::NextVirtualDesktop);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitNextZone), 32);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitPrevZone), 33);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitRestoreZone), 34);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitMoveNextMonitor), 35);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitMinimizeToTray), 36);
+    EXPECT_EQ(static_cast<int>(BuiltinCommand::WindowKitQuickSwitch), 37);
 
-    for (int idx = 0; idx <= 31; ++idx) {
+    for (int idx = 0; idx <= 37; ++idx) {
         EXPECT_TRUE(isValidBuiltinCommandIndex(idx)) << "Expected valid index: " << idx;
         EXPECT_TRUE(isValidBuiltinCommandValue(idx)) << "Expected valid value: " << idx;
     }
     EXPECT_FALSE(isValidBuiltinCommandIndex(-1));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(32));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(38));
     EXPECT_FALSE(isValidBuiltinCommandValue(100));
 }
 
@@ -3952,7 +3958,9 @@ TEST(GestureAuditRegressionTest, TrailFadeActionHintAndNewBuiltinCommands) {
     EXPECT_TRUE(isValidBuiltinCommandIndex(29));
     EXPECT_TRUE(isValidBuiltinCommandIndex(30));
     EXPECT_TRUE(isValidBuiltinCommandIndex(31));
-    EXPECT_FALSE(isValidBuiltinCommandIndex(32));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(32));
+    EXPECT_TRUE(isValidBuiltinCommandIndex(37));
+    EXPECT_FALSE(isValidBuiltinCommandIndex(38));
 
     // 默认全局手势集应预置 L-R-D (象形 T) -> 划词翻译内置命令
     const GestureProfile defaultWithTranslate = GestureProfile::createDefaultGlobal();

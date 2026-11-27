@@ -62,13 +62,19 @@ enum class BuiltinCommand {
     BrightnessUp,             // 29: 调高屏幕亮度 (光标所在显示器)
     BrightnessDown,           // 30: 调低屏幕亮度 (光标所在显示器)
     QuickTranslate,           // 31: 划词与剪贴板快速翻译
+    WindowKitNextZone,        // 32: 窗口移至下一个 SnapZone 分区
+    WindowKitPrevZone,        // 33: 窗口移至上一个 SnapZone 分区
+    WindowKitRestoreZone,     // 34: 窗口脱离分区并恢复原大小
+    WindowKitMoveNextMonitor, // 35: 窗口移至下一台显示器
+    WindowKitMinimizeToTray,  // 36: 窗口最小化收纳至系统托盘
+    WindowKitQuickSwitch,     // 37: 唤出 Quick Switch 窗口切换器
     PrevDesktop = PrevVirtualDesktop,
     NextDesktop = NextVirtualDesktop,
     SwitchDesktopLeft = PrevVirtualDesktop,   // 上一个虚拟桌面别名
     SwitchDesktopRight = NextVirtualDesktop   // 下一个虚拟桌面别名
 };
 
-inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::QuickTranslate;
+inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::WindowKitQuickSwitch;
 
 /// 统一校验 BuiltinCommand 整数索引是否合法 (0 ~ kMaxBuiltinCommand)
 inline constexpr bool isValidBuiltinCommandIndex(int index) noexcept {

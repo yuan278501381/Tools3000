@@ -2,6 +2,7 @@
 #include "core/logger/Logger.h"
 #include "core/hotkey/KeyboardHook.h"
 #include "core/ipc/MessageBridge.h"
+#include "core/ipc/WindowKitController.h"
 #include "core/config/ConfigManager.h"
 #include "core/hotkey/HotkeyManager.h"
 #include "core/events/EventBus.h"
@@ -228,6 +229,24 @@ public:
                 tools3000::core::EventBus::instance().publish(
                     tools3000::core::ActionTriggerQuickTranslateEvent{cursorPt, fg});
             });
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitNextZone, []() {
+            tools3000::core::WindowKitController::instance().execAction("move_next_zone");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitPrevZone, []() {
+            tools3000::core::WindowKitController::instance().execAction("move_prev_zone");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitRestoreZone, []() {
+            tools3000::core::WindowKitController::instance().execAction("restore_from_zone");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitMoveNextMonitor, []() {
+            tools3000::core::WindowKitController::instance().execAction("move_next_monitor");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitMinimizeToTray, []() {
+            tools3000::core::WindowKitController::instance().execAction("minimize_to_tray");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitQuickSwitch, []() {
+            tools3000::core::WindowKitController::instance().execAction("open_quick_switch");
         });
 
         // 状态变化回调

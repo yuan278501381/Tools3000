@@ -1,31 +1,34 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * WindowManagerPage.tsx — 窗口管理总控与可视化布局工作台
+ * WindowManagerPage.tsx — 窗口管理 v2 总控与可视化工作台
  *
  * 架构设计:
  *   1. 默认全关、零开销承诺：顶部展示实时进程态（关闭时 0 MB / 0 进程，开启后实时 PID/内存/计数）
  *   2. 8 大独立子功能各自默认关闭，支持按需组合
- *   3. 4 枚精工分段工作台：SnapZones（矢量编辑器 + PowerToys 导入）/ Workspaces / Quick Switch / 轻量窗口工具
+ *   3. 4 枚精工分段工作台：
+ *      - SnapZones（双层共视布局管理器 + 1:1 全屏编辑器 + 离线/删桌面绑定治理 + 6 大模板）
+ *      - Workspaces（纯 Rust 正红 4px 细边摆拍 + 双层交互微缩桌面舞台 + 桌面快捷方式）
+ *      - Quick Switch（双独立轨道：全局 Alt+Tab 增强 + 独立同应用 Alt+` + 自由拖缩记忆）
+ *      - 轻量窗口工具（置顶/透明/Alt拖拽/焦点边框即时预览 + 13 项快捷键可视化录制中心）
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useCallback, useEffect, useMemo, useState, type FC } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import {
   Activity,
   AlertCircle,
   AppWindow,
-  Camera,
   Contrast,
   Download,
   Eye,
   Focus,
+  Keyboard,
   Layers,
   LayoutGrid,
   Loader2,
   Maximize2,
   Monitor,
   Move,
-  Pencil,
   Pin,
   Play,
   RefreshCw,
@@ -42,19 +45,18 @@ import {
   CodeBadge,
   ColorPickerInput,
   DisabledCascade,
-  Field,
-  Modal,
   NumberInput,
   PageSkeleton,
   Select,
   SettingGroup,
   SettingRow,
   Tabs,
-  TextInput,
   Toggle,
 } from '../components/UIKit';
+import { HotkeyRecorder } from '../components/HotkeyRecorder';
 import { HotkeyAppExclusionBar } from '../components/business/HotkeyAppExclusionBar';
 import { ZoneLayoutEditor } from '../components/business/ZoneLayoutEditor';
+import { WorkspaceWorkbench } from '../components/business/WorkspaceWorkbench';
 import {
   consumePendingDeepNavigation,
   type DeepNavigationPayload,
@@ -63,19 +65,24 @@ import {
 import { bridgeRequest, useBridgeEvent } from '../hooks/useBridge';
 import {
   BUILTIN_DEFAULT_LAYOUTS,
+  DEFAULT_WINDOW_MANAGER_HOTKEYS,
   DEFAULT_WINDOW_MANAGER_RESPONSE,
   DEFAULT_WINDOW_MANAGER_SETTINGS,
   type AltDragModifier,
+  type BindingAuditSummary,
   type MonitorDescriptor,
   type QuickSwitchDensity,
   type SnapTriggerMode,
   type SnapZoneLayout,
+  type UnrelatedWindowAction,
   type VirtualDesktopDescriptor,
   type WindowManagerActionName,
   type WindowManagerFeatures,
+  type WindowManagerHotkeys,
   type WindowManagerResponse,
   type WindowManagerRuntimeStats,
   type WindowManagerSettings,
+  type WorkspaceCapturedEventPayload,
   type WorkspaceItem,
 } from '../types/windowManager';
 import './WindowManagerPage.css';
@@ -114,6 +121,9 @@ function normalizeResponse(raw: unknown): WindowManagerResponse {
     workspaces: {
       ...DEFAULT_WINDOW_MANAGER_SETTINGS.workspaces,
       ...(rawSettings.workspaces ?? {}),
+      unrelatedAction:
+        rawSettings.workspaces?.unrelatedAction ??
+        (rawSettings.workspaces?.minimizeUnrelated ? 'minimize' : 'keep'),
       items: Array.isArray(rawSettings.workspaces?.items) ? rawSettings.workspaces.items : [],
     },
     quickSwitch: {
@@ -143,12 +153,17 @@ function normalizeResponse(raw: unknown): WindowManagerResponse {
       ...DEFAULT_WINDOW_MANAGER_SETTINGS.multiMonitor,
       ...(rawSettings.multiMonitor ?? {}),
     },
+    hotkeys: {
+      ...DEFAULT_WINDOW_MANAGER_HOTKEYS,
+      ...(rawSettings.hotkeys ?? {}),
+    },
   };
 
   return {
     enabled: Boolean(obj.enabled),
     running: Boolean(obj.running),
     exeAvailable: obj.exeAvailable !== false,
+    circuitBreakerTripped: Boolean(obj.circuitBreakerTripped),
     runtimeStats: obj.runtimeStats,
     settings,
   };
@@ -170,6 +185,29 @@ const VALID_SUBTABS = new Set<WindowManagerPageSubTab>([
   'utilities',
 ]);
 
+interface HotkeyFieldDescriptor {
+  key: keyof WindowManagerHotkeys;
+  feature: keyof WindowManagerFeatures;
+  labelKey: string;
+  fallback: string;
+}
+
+const HOTKEY_FIELDS: readonly HotkeyFieldDescriptor[] = [
+  { key: 'openLayoutEditor', feature: 'snapZones', labelKey: 'windowManager.hkOpenLayoutHub', fallback: 'Open SnapZones Layout Hub' },
+  { key: 'moveNextZone', feature: 'snapZones', labelKey: 'windowManager.hkMoveNextZone', fallback: 'Move Window to Next Zone' },
+  { key: 'movePrevZone', feature: 'snapZones', labelKey: 'windowManager.hkMovePrevZone', fallback: 'Move Window to Previous Zone' },
+  { key: 'restoreFromZone', feature: 'snapZones', labelKey: 'windowManager.hkRestoreZone', fallback: 'Unsnap & Restore Window Size' },
+  { key: 'openQuickSwitch', feature: 'quickSwitch', labelKey: 'windowManager.hkOpenQuickSwitch', fallback: 'Open Quick Switch Panel' },
+  { key: 'toggleAlwaysOnTop', feature: 'alwaysOnTop', labelKey: 'windowManager.hkToggleAlwaysOnTop', fallback: 'Toggle Always on Top' },
+  { key: 'opacityUp', feature: 'opacity', labelKey: 'windowManager.hkOpacityUp', fallback: 'Increase Window Opacity' },
+  { key: 'opacityDown', feature: 'opacity', labelKey: 'windowManager.hkOpacityDown', fallback: 'Decrease Window Opacity' },
+  { key: 'opacityReset', feature: 'opacity', labelKey: 'windowManager.hkOpacityReset', fallback: 'Reset Window Opacity' },
+  { key: 'moveNextMonitor', feature: 'multiMonitor', labelKey: 'windowManager.hkMoveNextMonitor', fallback: 'Move Window to Next Monitor' },
+  { key: 'rescueOffscreen', feature: 'multiMonitor', labelKey: 'windowManager.hkRescueOffscreen', fallback: 'Rescue Off-Screen Windows' },
+  { key: 'minimizeToTray', feature: 'multiMonitor', labelKey: 'windowManager.hkMinimizeToTray', fallback: 'Minimize Active Window to Tray' },
+  { key: 'restoreAllTray', feature: 'multiMonitor', labelKey: 'windowManager.hkRestoreAllTray', fallback: 'Restore All Tray Windows' },
+];
+
 export const WindowManagerPage: FC = () => {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -178,6 +216,7 @@ export const WindowManagerPage: FC = () => {
   const [selectedMonitorId, setSelectedMonitorId] = useState<string>('');
   const [virtualDesktops, setVirtualDesktops] = useState<VirtualDesktopDescriptor[]>([]);
   const [selectedDesktopId, setSelectedDesktopId] = useState<string>('');
+  const [bindingAudit, setBindingAudit] = useState<BindingAuditSummary | null>(null);
   const [activeTab, setActiveTab] = useState<WindowManagerPageSubTab>(() => {
     const pending = consumePendingDeepNavigation('window_manager');
     if (pending?.tabId && VALID_SUBTABS.has(pending.tabId as WindowManagerPageSubTab)) {
@@ -187,8 +226,25 @@ export const WindowManagerPage: FC = () => {
   });
   const [saving, setSaving] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [newWorkspaceName, setNewWorkspaceName] = useState('');
   const [editingWorkspace, setEditingWorkspace] = useState<WorkspaceItem | null>(null);
+  const [editingOriginalSnapshot, setEditingOriginalSnapshot] = useState<WorkspaceItem | null>(null);
+  const [isNewWorkspaceDraft, setIsNewWorkspaceDraft] = useState(false);
+  const borderPreviewTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const loadBindingAudit = useCallback(async () => {
+    try {
+      const res = await bridgeRequest<BindingAuditSummary>(
+        'windowManager.auditBindings',
+        undefined,
+        { silent: true },
+      );
+      if (res && typeof res === 'object' && res.success) {
+        setBindingAudit(res);
+      }
+    } catch {
+      // 审计接口不可用时静默忽略，绝不干扰主页面加载
+    }
+  }, []);
 
   const loadAll = useCallback(async () => {
     try {
@@ -224,13 +280,19 @@ export const WindowManagerPage: FC = () => {
           });
         }
       }
+      void loadBindingAudit();
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadBindingAudit]);
 
   useEffect(() => {
     void loadAll();
+    return () => {
+      if (borderPreviewTimerRef.current) {
+        clearTimeout(borderPreviewTimerRef.current);
+      }
+    };
   }, [loadAll]);
 
   // 深度搜索直达子页签
@@ -248,6 +310,7 @@ export const WindowManagerPage: FC = () => {
   useBridgeEvent('windowManager:stateChanged', (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'settings' in raw) {
       setData(normalizeResponse(raw));
+      void loadBindingAudit();
     } else {
       void loadAll();
     }
@@ -256,10 +319,60 @@ export const WindowManagerPage: FC = () => {
   useBridgeEvent('window_manager:stateChanged', (raw: unknown) => {
     if (raw && typeof raw === 'object' && 'settings' in raw) {
       setData(normalizeResponse(raw));
+      void loadBindingAudit();
     } else {
       void loadAll();
     }
   });
+
+  // 接收纯 Rust 4px 正红细边摆拍捕获回传，自动进入双层交互式编辑工作台
+  const handleCapturedPayload = useCallback(
+    (raw: unknown) => {
+      setBusyAction(null);
+      if (!raw || typeof raw !== 'object') return;
+      const payload = raw as WorkspaceCapturedEventPayload;
+      if (!payload.captured || !payload.workspace) return;
+
+      if (Array.isArray(payload.monitors) && payload.monitors.length > 0) {
+        setMonitors(payload.monitors);
+      }
+
+      const existingTarget = payload.targetWorkspaceId
+        ? data.settings.workspaces.items.find((w) => w.id === payload.targetWorkspaceId)
+        : undefined;
+
+      const defaultName =
+        existingTarget?.name ||
+        t('windowManager.defaultWorkspaceName', 'Workspace {{num}}', {
+          num: data.settings.workspaces.items.length + 1,
+        });
+
+      const draft: WorkspaceItem = {
+        ...payload.workspace,
+        id: existingTarget?.id || payload.workspace.id,
+        name: payload.workspace.name?.trim() ? payload.workspace.name : defaultName,
+        boundLayoutId: payload.workspace.boundLayoutId || existingTarget?.boundLayoutId || '',
+        moveExistingWindows: existingTarget?.moveExistingWindows ?? payload.workspace.moveExistingWindows ?? true,
+        unrelatedAction: existingTarget?.unrelatedAction ?? payload.workspace.unrelatedAction,
+        createDesktopShortcut: existingTarget?.createDesktopShortcut ?? false,
+        lastLaunchedAt: existingTarget?.lastLaunchedAt,
+      };
+
+      setActiveTab('workspaces');
+      setIsNewWorkspaceDraft(!existingTarget);
+      setEditingOriginalSnapshot(structuredClone(draft));
+      setEditingWorkspace(draft);
+      toast.success(
+        t('windowManager.workspaceCapturedToast', 'Captured workspace "{{name}}"', {
+          name: draft.name,
+        }),
+      );
+    },
+    [data.settings.workspaces.items, t],
+  );
+
+  useBridgeEvent('windowManager.workspaceCaptured', handleCapturedPayload);
+  useBridgeEvent('windowManager:workspaceCaptured', handleCapturedPayload);
 
   const commitPatch = useCallback(
     async (
@@ -333,6 +446,23 @@ export const WindowManagerPage: FC = () => {
     );
   };
 
+  const triggerBorderPreviewDebounced = useCallback(
+    (payload: {
+      kind: 'focus' | 'alwaysOnTop';
+      borderColor: string;
+      borderWidth: number;
+      cornerRadius?: number;
+    }) => {
+      if (borderPreviewTimerRef.current) {
+        clearTimeout(borderPreviewTimerRef.current);
+      }
+      borderPreviewTimerRef.current = setTimeout(() => {
+        void bridgeRequest('windowManager.previewBorderStyle', payload, { silent: true }).catch(() => {});
+      }, 120);
+    },
+    [],
+  );
+
   const handleRefreshStats = async () => {
     setBusyAction('stats');
     try {
@@ -359,7 +489,14 @@ export const WindowManagerPage: FC = () => {
 
   const handleExecAction = async (
     action: WindowManagerActionName,
-    extra?: { index?: number; workspaceId?: string; monitorId?: string; desktopId?: string; layoutId?: string },
+    extra?: {
+      index?: number;
+      workspaceId?: string;
+      monitorId?: string;
+      desktopId?: string;
+      layoutId?: string;
+      directEditor?: boolean;
+    },
   ) => {
     setBusyAction(action);
     try {
@@ -368,7 +505,7 @@ export const WindowManagerPage: FC = () => {
         { action, ...(extra ?? {}) },
         { silent: true },
       );
-      if (action !== 'open_layout_editor') {
+      if (action !== 'open_layout_editor' && action !== 'open_layout_editor_direct') {
         toast.success(t('windowManager.actionTriggered', 'Action executed'));
       }
     } catch (err) {
@@ -421,18 +558,64 @@ export const WindowManagerPage: FC = () => {
     }
   };
 
-  const handleCaptureWorkspace = async () => {
-    const trimmed = newWorkspaceName.trim() || t('windowManager.defaultWorkspaceName', 'Workspace {{num}}', {
-      num: data.settings.workspaces.items.length + 1,
-    });
+  const handleCleanStaleBindings = async () => {
+    setBusyAction('clean_bindings');
+    try {
+      const res = await bridgeRequest<{ success?: boolean; removedCount?: number }>(
+        'windowManager.cleanStaleBindings',
+        { cleanOfflineMonitors: true, cleanRemovedDesktops: true },
+        { silent: true },
+      );
+      const removed = res?.removedCount ?? 0;
+      toast.success(
+        t('windowManager.cleanedBindingsToast', 'Cleaned {{count}} stale binding(s)', {
+          count: removed,
+        }),
+      );
+      void loadAll();
+    } catch (err) {
+      toast.error(t('windowManager.saveFailed', 'Failed to save window manager settings'), {
+        description: String(err),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  // Workspaces 操作
+  const handleStartRedFrameCapture = async (targetWorkspaceId?: string) => {
+    setBusyAction('start_workspace_capture');
+    try {
+      await bridgeRequest(
+        'windowManager.startWorkspaceCapture',
+        targetWorkspaceId ? { workspaceId: targetWorkspaceId } : {},
+        { silent: true },
+      );
+    } catch (err) {
+      setBusyAction(null);
+      toast.error(t('windowManager.workspaceCaptureFailed', 'Failed to capture current desktop workspace'), {
+        description: String(err),
+      });
+    }
+  };
+
+  const handleQuickCaptureWorkspace = async (rawName: string) => {
+    const trimmed =
+      rawName.trim() ||
+      t('windowManager.defaultWorkspaceName', 'Workspace {{num}}', {
+        num: data.settings.workspaces.items.length + 1,
+      });
     setBusyAction('capture_workspace');
     try {
-      const res = await bridgeRequest<{ workspace?: WorkspaceItem }>(
+      const res = await bridgeRequest<{ workspace?: WorkspaceItem; monitors?: MonitorDescriptor[] }>(
         'windowManager.captureWorkspace',
         { name: trimmed },
         { silent: true },
       );
       if (res?.workspace) {
+        if (Array.isArray(res.monitors) && res.monitors.length > 0) {
+          setMonitors(res.monitors);
+        }
         const exists = data.settings.workspaces.items.some((w) => w.id === res.workspace!.id);
         const nextItems = exists
           ? data.settings.workspaces.items.map((w) => (w.id === res.workspace!.id ? res.workspace! : w))
@@ -441,7 +624,6 @@ export const WindowManagerPage: FC = () => {
           ...data.settings.workspaces,
           items: nextItems,
         });
-        setNewWorkspaceName('');
         toast.success(
           t('windowManager.workspaceCapturedToast', 'Captured workspace "{{name}}"', {
             name: res.workspace.name,
@@ -466,19 +648,67 @@ export const WindowManagerPage: FC = () => {
     toast.success(t('windowManager.workspaceDeletedToast', 'Workspace deleted'));
   };
 
+  const handleCreateDesktopShortcut = async (workspaceId: string, name: string) => {
+    setBusyAction('create_shortcut');
+    try {
+      const res = await bridgeRequest<{ success?: boolean; shortcutPath?: string; error?: string }>(
+        'windowManager.createWorkspaceShortcut',
+        { workspaceId, name },
+        { silent: true },
+      );
+      if (res?.success) {
+        toast.success(
+          t('windowManager.wsShortcutCreatedToast', 'Desktop shortcut created'),
+          res.shortcutPath ? { description: res.shortcutPath } : undefined,
+        );
+      } else {
+        toast.error(t('windowManager.wsShortcutFailedToast', 'Failed to create desktop shortcut'), {
+          description: res?.error,
+        });
+      }
+    } catch (err) {
+      toast.error(t('windowManager.wsShortcutFailedToast', 'Failed to create desktop shortcut'), {
+        description: String(err),
+      });
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   const handleSaveEditedWorkspace = () => {
     if (!editingWorkspace) return;
     const cleanName = editingWorkspace.name.trim();
     if (!cleanName) return;
-    const nextItems = data.settings.workspaces.items.map((item) =>
-      item.id === editingWorkspace.id ? { ...editingWorkspace, name: cleanName } : item,
-    );
+    const finalized: WorkspaceItem = { ...editingWorkspace, name: cleanName };
+    const exists = data.settings.workspaces.items.some((item) => item.id === finalized.id);
+    const nextItems = exists
+      ? data.settings.workspaces.items.map((item) => (item.id === finalized.id ? finalized : item))
+      : [...data.settings.workspaces.items, finalized];
+
     updateSettingsSection('workspaces', {
       ...data.settings.workspaces,
       items: nextItems,
     });
+    if (finalized.createDesktopShortcut) {
+      void handleCreateDesktopShortcut(finalized.id, finalized.name);
+    } else {
+      toast.success(t('general.toastSaved', 'Settings saved'));
+    }
     setEditingWorkspace(null);
-    toast.success(t('general.toastSaved', 'Settings saved'));
+    setEditingOriginalSnapshot(null);
+    setIsNewWorkspaceDraft(false);
+  };
+
+  const handleResetQuickSwitchBounds = () => {
+    updateSettingsSection('quickSwitch', {
+      ...data.settings.quickSwitch,
+      customWidthDip: undefined,
+      customHeightDip: undefined,
+      customMonitorId: '',
+      customRelRect: undefined,
+      listWidthRatio: 0.34,
+    });
+    toast.success(t('windowManager.qsBoundsResetToast', 'Quick Switch window size and position reset'));
   };
 
   const effectiveMonitorId = useMemo(() => {
@@ -513,10 +743,19 @@ export const WindowManagerPage: FC = () => {
     if (monitorBound && data.settings.snapZones.layouts.some((l) => l.id === monitorBound)) {
       return monitorBound;
     }
-    return data.settings.snapZones.layouts[0]?.id ?? '';
+    const globalActive = data.settings.snapZones.activeLayoutId;
+    if (globalActive && data.settings.snapZones.layouts.some((l) => l.id === globalActive)) {
+      return globalActive;
+    }
+    return (
+      data.settings.snapZones.layouts.find((l) => l.type !== 'none')?.id ??
+      data.settings.snapZones.layouts[0]?.id ??
+      ''
+    );
   }, [
     data.settings.snapZones.layouts,
     data.settings.snapZones.monitorBindings,
+    data.settings.snapZones.activeLayoutId,
     perDesktopEnabled,
     effectiveDesktopId,
     effectiveBindingKey,
@@ -558,6 +797,7 @@ export const WindowManagerPage: FC = () => {
           setSelectedDesktopId(res.currentDesktopId);
         }
       }
+      void loadBindingAudit();
     } finally {
       setBusyAction(null);
     }
@@ -574,6 +814,13 @@ export const WindowManagerPage: FC = () => {
       ...data.settings.snapZones,
       layouts: nextLayouts,
       monitorBindings: nextBindings,
+    });
+  };
+
+  const handleOpenDualLayerHub = () => {
+    void handleExecAction('open_layout_editor', {
+      monitorId: effectiveMonitorId,
+      desktopId: perDesktopEnabled ? effectiveDesktopId : undefined,
     });
   };
 
@@ -607,6 +854,8 @@ export const WindowManagerPage: FC = () => {
   const activeCount = countEnabledFeatures(settings.features);
   const stats = data.runtimeStats;
   const isRuntimeLive = data.enabled && (data.running || Boolean(stats?.running));
+  const staleBindingTotal =
+    (bindingAudit?.offlineMonitorCount ?? 0) + (bindingAudit?.removedDesktopCount ?? 0);
 
   return (
     <div className="wm-page">
@@ -791,7 +1040,7 @@ export const WindowManagerPage: FC = () => {
           </Card>
 
           <DisabledCascade disabled={!settings.features.snapZones} className="wm-cascade-stack">
-            {/* 显示器选择与 PowerToys 一键迁移栏 */}
+            {/* 显示器选择、双层共视管理器与 PowerToys 一键迁移栏 */}
             <SettingGroup
               title={t('windowManager.layoutEditorSection', 'Monitor & Visual Layout Editor')}
               icon={<Monitor size={16} aria-hidden="true" />}
@@ -832,11 +1081,20 @@ export const WindowManagerPage: FC = () => {
                       variant="primary"
                       size="sm"
                       disabled={busyAction === 'open_layout_editor'}
+                      onClick={handleOpenDualLayerHub}
+                    >
+                      <LayoutGrid size={14} aria-hidden="true" />
+                      <span>{t('windowManager.openLayoutHubBtn', 'Layout Hub')}</span>
+                      <CodeBadge variant="muted">{settings.hotkeys.openLayoutEditor || 'Win+Shift+~'}</CodeBadge>
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busyAction === 'open_layout_editor'}
                       onClick={handleOpenFullscreenEditor}
                     >
                       <Maximize2 size={14} aria-hidden="true" />
                       <span>{t('windowManager.launchFullscreenEditorBtn', '1:1 Fullscreen Editor')}</span>
-                      <CodeBadge variant="muted">Win+Shift+~</CodeBadge>
                     </Button>
                     <Button
                       variant="secondary"
@@ -863,7 +1121,7 @@ export const WindowManagerPage: FC = () => {
                   </div>
                 </div>
 
-                {/* 1:1 全屏原生透明编辑引导横幅（凸显真实桌面透视、自动磁吸真实窗口与一键捕获） */}
+                {/* 1:1 全屏双层共视管理器引导横幅 */}
                 <div className="wm-fullscreen-callout">
                   <div className="wm-fullscreen-callout__body">
                     <div className="wm-fullscreen-callout__title">
@@ -878,13 +1136,41 @@ export const WindowManagerPage: FC = () => {
                     <p className="wm-fullscreen-callout__desc">
                       {t(
                         'windowManager.fullscreenCalloutDesc',
-                        'Press Win+Shift+~ anytime to overlay your live desktop windows at exact pixel scale, snap zone edges to real open apps, or capture your current windows into zones in one click.',
+                        'Press Win+Shift+~ anytime to open the dual-layer Layout Hub over your live desktop: tune 6 parameterized templates live, bind 0-9 layout hotkeys, or enter 1:1 fullscreen grid/canvas editing.',
                       )}
                     </p>
                   </div>
                 </div>
 
-                {/* 按虚拟桌面独立绑定选择器（开启按虚拟桌面独立保存布局时呈现） */}
+                {/* 离线显示器 / 已删除虚拟桌面绑定治理条（仅存在残留时显式展示，绝不自动破坏性删用户数据） */}
+                {staleBindingTotal > 0 && bindingAudit && (
+                  <div className="wm-stale-audit-bar" role="status">
+                    <div className="wm-stale-audit-bar__text">
+                      <AlertCircle size={15} aria-hidden="true" />
+                      <span>
+                        {t(
+                          'windowManager.staleBindingsNotice',
+                          'Detected {{offline}} offline monitor binding(s) and {{desktops}} removed virtual desktop binding(s). Preserved automatically for reconnect.',
+                          {
+                            offline: bindingAudit.offlineMonitorCount,
+                            desktops: bindingAudit.removedDesktopCount,
+                          },
+                        )}
+                      </span>
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={busyAction === 'clean_bindings'}
+                      onClick={() => void handleCleanStaleBindings()}
+                    >
+                      <Trash2 size={13} aria-hidden="true" />
+                      <span>{t('windowManager.cleanStaleBindingsBtn', 'Clean Stale Bindings')}</span>
+                    </Button>
+                  </div>
+                )}
+
+                {/* 按虚拟桌面独立绑定选择器 */}
                 {perDesktopEnabled && (
                   <div className="wm-desktop-bar" role="region" aria-label={t('windowManager.virtualDesktopBarAria', 'Virtual Desktops')}>
                     <div className="wm-desktop-bar__head">
@@ -1014,6 +1300,23 @@ export const WindowManagerPage: FC = () => {
                 </SettingRow>
 
                 <SettingRow
+                  label={t('windowManager.edgeThresholdLabel', 'Boundary Span Sensitivity')}
+                  description={t('windowManager.edgeThresholdDesc', 'Distance to zone edges (px) that activates multi-zone spanning')}
+                >
+                  <NumberInput
+                    value={settings.snapZones.edgeThresholdPx}
+                    min={4}
+                    max={64}
+                    step={2}
+                    unit="px"
+                    ariaLabel={t('windowManager.edgeThresholdLabel', 'Boundary Span Sensitivity')}
+                    onChange={(val) =>
+                      updateSettingsSection('snapZones', { ...settings.snapZones, edgeThresholdPx: val })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
                   label={t('windowManager.showNumbersLabel', 'Show Zone Numbers')}
                   description={t('windowManager.showNumbersDesc', 'Display large zone index badges on the overlay for quick keyboard snapping')}
                 >
@@ -1081,6 +1384,32 @@ export const WindowManagerPage: FC = () => {
                 </SettingRow>
 
                 <SettingRow
+                  label={t('windowManager.restoreOrigSizeLabel', 'Restore Original Size on Unsnap')}
+                  description={t('windowManager.restoreOrigSizeDesc', 'Restore a window back to its pre-snapped size when dragged out of a zone')}
+                >
+                  <Toggle
+                    id="wm-snap-restore-size"
+                    checked={settings.snapZones.restoreOriginalSize}
+                    onChange={(checked) =>
+                      updateSettingsSection('snapZones', { ...settings.snapZones, restoreOriginalSize: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.showAllMonitorsLabel', 'Show Zones on All Monitors')}
+                  description={t('windowManager.showAllMonitorsDesc', 'Display zone overlays across every connected screen simultaneously while dragging')}
+                >
+                  <Toggle
+                    id="wm-snap-all-monitors"
+                    checked={settings.snapZones.showOnAllMonitors}
+                    onChange={(checked) =>
+                      updateSettingsSection('snapZones', { ...settings.snapZones, showOnAllMonitors: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
                   label={t('windowManager.perDesktopLabel', 'Separate Layout per Virtual Desktop')}
                   description={t('windowManager.perDesktopDesc', 'Allow each Windows virtual desktop to bind an independent layout')}
                 >
@@ -1113,7 +1442,7 @@ export const WindowManagerPage: FC = () => {
         </div>
       )}
 
-      {/* ── TAB 2: Workspaces 桌面工作区一键编排 ── */}
+      {/* ── TAB 2: Workspaces 双层交互式桌面工作区 ── */}
       {activeTab === 'workspaces' && (
         <div className="wm-tab-panel">
           <Card className="wm-feature-head-card">
@@ -1140,142 +1469,56 @@ export const WindowManagerPage: FC = () => {
           </Card>
 
           <DisabledCascade disabled={!settings.features.workspaces} className="wm-cascade-stack">
-            <Card>
-              <SettingRow
-                label={t('windowManager.minimizeUnrelatedLabel', 'Minimize Unrelated Windows on Launch')}
-                description={t('windowManager.minimizeUnrelatedDesc', 'Automatically minimize windows not listed in the launched workspace')}
-              >
-                <Toggle
-                  id="wm-ws-minimize-unrelated"
-                  checked={settings.workspaces.minimizeUnrelated}
-                  onChange={(checked) =>
-                    updateSettingsSection('workspaces', {
-                      ...settings.workspaces,
-                      minimizeUnrelated: checked,
-                    })
-                  }
-                />
-              </SettingRow>
-
-              <div className="wm-ws-capture-bar">
-                <div className="wm-ws-capture-bar__input">
-                  <TextInput
-                    value={newWorkspaceName}
-                    onChange={setNewWorkspaceName}
-                    placeholder={t('windowManager.workspaceNamePlaceholder', 'Workspace name (e.g. Deep Coding, Morning Briefing)')}
-                    ariaLabel={t('windowManager.workspaceNameAria', 'New workspace name')}
-                  />
-                </div>
-                <Button
-                  variant="primary"
-                  size="sm"
-                  disabled={busyAction === 'capture_workspace'}
-                  onClick={() => void handleCaptureWorkspace()}
-                >
-                  {busyAction === 'capture_workspace' ? (
-                    <Loader2 size={14} className="wm-spin" aria-hidden="true" />
-                  ) : (
-                    <Camera size={14} aria-hidden="true" />
-                  )}
-                  <span>{t('windowManager.captureDesktopBtn', 'Capture Current Desktop')}</span>
-                </Button>
-              </div>
-            </Card>
-
-            {settings.workspaces.items.length === 0 ? (
-              <Card>
-                <div className="wm-empty-state">
-                  <Layers size={28} aria-hidden="true" />
-                  <div className="wm-empty-state__title">
-                    {t('windowManager.workspacesEmptyTitle', 'No Saved Workspaces Yet')}
-                  </div>
-                  <p className="wm-empty-state__desc">
-                    {t(
-                      'windowManager.workspacesEmptyDesc',
-                      'Arrange your favorite apps across monitors, then click Capture Current Desktop above to save a reusable snapshot.',
-                    )}
-                  </p>
-                </div>
-              </Card>
-            ) : (
-              <div className="wm-ws-grid">
-                {settings.workspaces.items.map((ws) => (
-                  <Card key={ws.id} className="wm-ws-card">
-                    <div className="wm-ws-card__header">
-                      <div className="wm-ws-card__identity">
-                        <h3 className="wm-ws-card__title">{ws.name}</h3>
-                        <Badge
-                          variant="muted"
-                          text={t('windowManager.workspaceAppsCount', '{{count}} App(s)', {
-                            count: ws.apps.length,
-                          })}
-                        />
-                      </div>
-                      <div className="wm-ws-card__actions">
-                        <Button
-                          variant="primary"
-                          size="sm"
-                          disabled={busyAction === 'launch_workspace'}
-                          onClick={() =>
-                            void handleExecAction('launch_workspace', { workspaceId: ws.id })
-                          }
-                        >
-                          <Play size={13} aria-hidden="true" />
-                          <span>{t('windowManager.launchWorkspaceBtn', 'Launch')}</span>
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => setEditingWorkspace({ ...ws, apps: ws.apps.map((a) => ({ ...a })) })}
-                          ariaLabel={t('common.edit', 'Edit')}
-                          title={t('common.edit', 'Edit')}
-                        >
-                          <Pencil size={13} aria-hidden="true" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteWorkspace(ws.id)}
-                          ariaLabel={t('common.delete', 'Delete')}
-                          title={t('common.delete', 'Delete')}
-                        >
-                          <Trash2 size={13} aria-hidden="true" />
-                        </Button>
-                      </div>
-                    </div>
-
-                    <div className="wm-ws-card__apps">
-                      {ws.apps.length === 0 ? (
-                        <span className="wm-ws-card__empty-apps">
-                          {t('windowManager.workspaceNoApps', 'No applications recorded in this workspace')}
-                        </span>
-                      ) : (
-                        ws.apps.map((app, idx) => (
-                          <div key={`${app.processName}-${idx}`} className="wm-ws-app-chip">
-                            <CodeBadge>{app.processName || app.exePath}</CodeBadge>
-                            {typeof app.zoneIndex === 'number' && (
-                              <span className="wm-ws-app-meta">
-                                {t('windowManager.zoneBadge', 'Zone {{num}}', { num: app.zoneIndex + 1 })}
-                              </span>
-                            )}
-                            {app.maximized && (
-                              <span className="wm-ws-app-meta">
-                                {t('windowManager.maximizedBadge', 'Max')}
-                              </span>
-                            )}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  </Card>
-                ))}
-              </div>
-            )}
+            <WorkspaceWorkbench
+              items={settings.workspaces.items}
+              unrelatedAction={settings.workspaces.unrelatedAction}
+              minimizeUnrelated={settings.workspaces.minimizeUnrelated}
+              monitors={monitors}
+              layouts={settings.snapZones.layouts}
+              busyAction={busyAction}
+              editingWorkspace={editingWorkspace}
+              isNewDraft={isNewWorkspaceDraft}
+              onUpdateGlobalUnrelatedAction={(action: UnrelatedWindowAction) =>
+                updateSettingsSection('workspaces', {
+                  ...settings.workspaces,
+                  unrelatedAction: action,
+                  minimizeUnrelated: action === 'minimize',
+                })
+              }
+              onStartRedFrameCapture={(targetId) => void handleStartRedFrameCapture(targetId)}
+              onQuickCaptureDesktop={(name) => void handleQuickCaptureWorkspace(name)}
+              onLaunchWorkspace={(workspaceId) =>
+                void handleExecAction('launch_workspace', { workspaceId })
+              }
+              onDeleteWorkspace={handleDeleteWorkspace}
+              onCreateDesktopShortcut={(workspaceId, name) =>
+                void handleCreateDesktopShortcut(workspaceId, name)
+              }
+              onOpenEditor={(ws, isNew = false) => {
+                const cloned = structuredClone(ws);
+                setIsNewWorkspaceDraft(isNew);
+                setEditingOriginalSnapshot(structuredClone(cloned));
+                setEditingWorkspace(cloned);
+              }}
+              onChangeEditingWorkspace={setEditingWorkspace}
+              onSaveEditingWorkspace={handleSaveEditedWorkspace}
+              onCancelEditingWorkspace={() => {
+                setEditingWorkspace(null);
+                setEditingOriginalSnapshot(null);
+                setIsNewWorkspaceDraft(false);
+              }}
+              onRestoreEditingSnapshot={() => {
+                if (editingOriginalSnapshot) {
+                  setEditingWorkspace(structuredClone(editingOriginalSnapshot));
+                }
+              }}
+              canRestoreSnapshot={Boolean(editingOriginalSnapshot)}
+            />
           </DisabledCascade>
         </div>
       )}
 
-      {/* ── TAB 3: Quick Switch 毫秒级窗口速切器 ── */}
+      {/* ── TAB 3: Quick Switch v2 双独立切窗轨道 ── */}
       {activeTab === 'quick_switch' && (
         <div className="wm-tab-panel">
           <Card className="wm-feature-head-card">
@@ -1288,7 +1531,7 @@ export const WindowManagerPage: FC = () => {
                 <p className="wm-feature-head__desc">
                   {t(
                     'windowManager.quickSwitchDesc',
-                    'Keyboard-first window switcher with instant title/process filtering, Pinyin initials search, and 1-9 number jumping.',
+                    'Free-resizable Alt+Tab window hub with live desktop-position preview, Chinese Pinyin filtering, full window controls, and independent same-app Alt+` switching.',
                   )}
                 </p>
               </div>
@@ -1313,86 +1556,221 @@ export const WindowManagerPage: FC = () => {
           </Card>
 
           <DisabledCascade disabled={!settings.features.quickSwitch} className="wm-cascade-stack">
-            <Card>
-              <SettingRow
-                label={t('windowManager.qsCurrentMonitorLabel', 'Current Monitor Windows Only')}
-                description={t('windowManager.qsCurrentMonitorDesc', 'Show only windows located on the active display')}
-              >
-                <Toggle
-                  id="wm-qs-current-monitor"
-                  checked={settings.quickSwitch.currentMonitorOnly}
-                  onChange={(checked) =>
-                    updateSettingsSection('quickSwitch', { ...settings.quickSwitch, currentMonitorOnly: checked })
-                  }
-                />
-              </SettingRow>
+            {/* 双独立切窗轨道开关 */}
+            <SettingGroup
+              title={t('windowManager.qsTracksSection', 'Switching Modes (Independent Tracks)')}
+              icon={<Sparkles size={16} aria-hidden="true" />}
+            >
+              <Card>
+                <SettingRow
+                  label={t('windowManager.qsReplaceAltTabLabel', 'Enhance Global Alt+Tab Switcher')}
+                  description={t(
+                    'windowManager.qsReplaceAltTabDesc',
+                    'Take over Alt+Tab with the resizable dual-pane switcher, Pinyin filter, and tray window integration. Turn off to keep native Windows Alt+Tab.',
+                  )}
+                >
+                  <Toggle
+                    id="wm-qs-replace-alttab"
+                    checked={settings.quickSwitch.replaceAltTab}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, replaceAltTab: checked })
+                    }
+                  />
+                </SettingRow>
 
-              <SettingRow
-                label={t('windowManager.qsShowPreviewLabel', 'Show Live Window Preview')}
-                description={t('windowManager.qsShowPreviewDesc', 'Render DWM thumbnail preview of the highlighted window')}
-              >
-                <Toggle
-                  id="wm-qs-preview"
-                  checked={settings.quickSwitch.showPreview}
-                  onChange={(checked) =>
-                    updateSettingsSection('quickSwitch', { ...settings.quickSwitch, showPreview: checked })
-                  }
-                />
-              </SettingRow>
+                <SettingRow
+                  label={t('windowManager.qsSameAppLabel', 'Same-App Window Switcher (Alt + `)')}
+                  description={t(
+                    'windowManager.qsSameAppDesc',
+                    'Cycle only windows belonging to the active app (including minimized windows) via Alt+`. Works independently even if global Alt+Tab stays native.',
+                  )}
+                >
+                  <Toggle
+                    id="wm-qs-same-app"
+                    checked={settings.quickSwitch.sameAppEnabled}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, sameAppEnabled: checked })
+                    }
+                  />
+                </SettingRow>
+              </Card>
+            </SettingGroup>
 
-              <SettingRow
-                label={t('windowManager.qsShowNumbersLabel', 'Show 1-9 Quick Jump Badges')}
-                description={t('windowManager.qsShowNumbersDesc', 'Press Alt+1..9 or number keys to focus matching windows immediately')}
-              >
-                <Toggle
-                  id="wm-qs-numbers"
-                  checked={settings.quickSwitch.showNumbers}
-                  onChange={(checked) =>
-                    updateSettingsSection('quickSwitch', { ...settings.quickSwitch, showNumbers: checked })
-                  }
-                />
-              </SettingRow>
+            {/* 视图、预览与窗口自由度设置 */}
+            <SettingGroup title={t('windowManager.qsAppearanceSection', 'Preview, Scope & Window Geometry')}>
+              <Card>
+                <SettingRow
+                  label={t('windowManager.qsShowPreviewLabel', 'Show Live Window Preview')}
+                  description={t('windowManager.qsShowPreviewDesc', 'Render DWM thumbnail preview of the highlighted window')}
+                >
+                  <Toggle
+                    id="wm-qs-preview"
+                    checked={settings.quickSwitch.showPreview}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, showPreview: checked })
+                    }
+                  />
+                </SettingRow>
 
-              <SettingRow
-                label={t('windowManager.qsDensityLabel', 'List Density')}
-                description={t('windowManager.qsDensityDesc', 'Choose between dense multi-window view or relaxed spacing')}
-              >
-                <div className="wm-segmented" role="group" aria-label={t('windowManager.qsDensityLabel', 'List Density')}>
-                  {(['compact', 'comfortable'] as QuickSwitchDensity[]).map((mode) => (
-                    <button
-                      key={mode}
-                      type="button"
-                      className={`wm-segmented__btn ${settings.quickSwitch.density === mode ? 'is-active' : ''}`}
-                      onClick={() =>
-                        updateSettingsSection('quickSwitch', { ...settings.quickSwitch, density: mode })
+                <SettingRow
+                  label={t('windowManager.qsDesktopPosPreviewLabel', 'Preview in Real Desktop Position')}
+                  description={t(
+                    'windowManager.qsDesktopPosPreviewDesc',
+                    'Project the live DWM thumbnail at its true relative coordinates on your monitor instead of centered',
+                  )}
+                >
+                  <Toggle
+                    id="wm-qs-desktop-pos"
+                    checked={settings.quickSwitch.previewInDesktopPosition}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', {
+                        ...settings.quickSwitch,
+                        previewInDesktopPosition: checked,
+                      })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsCurrentDesktopLabel', 'Current Virtual Desktop Only')}
+                  description={t(
+                    'windowManager.qsCurrentDesktopDesc',
+                    'Limit window list to the active Windows virtual desktop to stay focused',
+                  )}
+                >
+                  <Toggle
+                    id="wm-qs-current-desktop"
+                    checked={settings.quickSwitch.currentDesktopOnly}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', {
+                        ...settings.quickSwitch,
+                        currentDesktopOnly: checked,
+                      })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsCurrentMonitorLabel', 'Current Monitor Windows Only')}
+                  description={t('windowManager.qsCurrentMonitorDesc', 'Show only windows located on the active display')}
+                >
+                  <Toggle
+                    id="wm-qs-current-monitor"
+                    checked={settings.quickSwitch.currentMonitorOnly}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, currentMonitorOnly: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsShowNumbersLabel', 'Show 1-9 Quick Jump Badges')}
+                  description={t('windowManager.qsShowNumbersDesc', 'Press Alt+1..9 or number keys to focus matching windows immediately')}
+                >
+                  <Toggle
+                    id="wm-qs-numbers"
+                    checked={settings.quickSwitch.showNumbers}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, showNumbers: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsLargeIconsLabel', 'Large App Icons')}
+                  description={t('windowManager.qsLargeIconsDesc', 'Use crisp 24px native icons for faster visual scanning')}
+                >
+                  <Toggle
+                    id="wm-qs-large-icons"
+                    checked={settings.quickSwitch.largeIcons}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, largeIcons: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsDensityLabel', 'List Density')}
+                  description={t('windowManager.qsDensityDesc', 'Choose between dense multi-window view or relaxed spacing')}
+                >
+                  <div className="wm-segmented" role="group" aria-label={t('windowManager.qsDensityLabel', 'List Density')}>
+                    {(['compact', 'comfortable'] as QuickSwitchDensity[]).map((mode) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        className={`wm-segmented__btn ${settings.quickSwitch.density === mode ? 'is-active' : ''}`}
+                        onClick={() =>
+                          updateSettingsSection('quickSwitch', { ...settings.quickSwitch, density: mode })
+                        }
+                      >
+                        {mode === 'compact'
+                          ? t('windowManager.densityCompact', 'Compact')
+                          : t('windowManager.densityComfortable', 'Comfortable')}
+                      </button>
+                    ))}
+                  </div>
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsPinyinLabel', 'Enable Pinyin Initials Search')}
+                  description={t('windowManager.qsPinyinDesc', 'Match Chinese window titles using Pinyin initials (e.g. "wx" for WeChat)')}
+                >
+                  <Toggle
+                    id="wm-qs-pinyin"
+                    checked={settings.quickSwitch.enablePinyinSearch}
+                    onChange={(checked) =>
+                      updateSettingsSection('quickSwitch', { ...settings.quickSwitch, enablePinyinSearch: checked })
+                    }
+                  />
+                </SettingRow>
+
+                <SettingRow
+                  label={t('windowManager.qsRememberBoundsLabel', 'Remember Window Size & Position')}
+                  description={t(
+                    'windowManager.qsRememberBoundsDesc',
+                    'Persist your dragged position, resized edges, and split-pane width across sessions',
+                  )}
+                >
+                  <div className="wm-bounds-control">
+                    <Toggle
+                      id="wm-qs-remember-bounds"
+                      checked={settings.quickSwitch.rememberBounds}
+                      onChange={(checked) =>
+                        updateSettingsSection('quickSwitch', { ...settings.quickSwitch, rememberBounds: checked })
                       }
-                    >
-                      {mode === 'compact'
-                        ? t('windowManager.densityCompact', 'Compact')
-                        : t('windowManager.densityComfortable', 'Comfortable')}
-                    </button>
-                  ))}
-                </div>
-              </SettingRow>
+                    />
+                    <Button variant="ghost" size="sm" onClick={handleResetQuickSwitchBounds}>
+                      <RotateCcw size={13} aria-hidden="true" />
+                      <span>{t('windowManager.qsResetBoundsBtn', 'Reset Position')}</span>
+                    </Button>
+                  </div>
+                </SettingRow>
+              </Card>
+            </SettingGroup>
 
-              <SettingRow
-                label={t('windowManager.qsPinyinLabel', 'Enable Pinyin Initials Search')}
-                description={t('windowManager.qsPinyinDesc', 'Match Chinese window titles using Pinyin initials (e.g. "wx" for WeChat)')}
-              >
-                <Toggle
-                  id="wm-qs-pinyin"
-                  checked={settings.quickSwitch.enablePinyinSearch}
-                  onChange={(checked) =>
-                    updateSettingsSection('quickSwitch', { ...settings.quickSwitch, enablePinyinSearch: checked })
-                  }
-                />
-              </SettingRow>
+            {/* 窗口管理中枢快捷键速查 */}
+            <Card className="wm-qs-cheatsheet">
+              <div className="wm-qs-cheatsheet__title">
+                <Keyboard size={15} aria-hidden="true" />
+                <span>{t('windowManager.qsHubShortcutsTitle', 'In-Switcher Window Control Shortcuts')}</span>
+              </div>
+              <div className="wm-qs-cheatsheet__grid">
+                <span className="wm-qs-chip"><CodeBadge>F4</CodeBadge><span>{t('windowManager.qsActClose', 'Close')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>F5</CodeBadge><span>{t('windowManager.qsActMinimize', 'Minimize')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>F6</CodeBadge><span>{t('windowManager.qsActMaximize', 'Maximize')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>F7</CodeBadge><span>{t('windowManager.qsActRestore', 'Restore')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>F8</CodeBadge><span>{t('windowManager.qsActKill', 'Terminate')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>F9</CodeBadge><span>{t('windowManager.qsActNewInstance', 'New Instance')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>P</CodeBadge><span>{t('windowManager.qsActPin', 'Pin Topmost')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>Z</CodeBadge><span>{t('windowManager.qsActNextZone', 'Next Zone')}</span></span>
+                <span className="wm-qs-chip"><CodeBadge>T</CodeBadge><span>{t('windowManager.qsActTray', 'Tray Tuck / Pop')}</span></span>
+              </div>
             </Card>
           </DisabledCascade>
         </div>
       )}
 
-      {/* ── TAB 4: 5 项轻量窗口工具（各自独立开关） ── */}
+      {/* ── TAB 4: 5 项轻量窗口工具 + 全部全局快捷键可视化录制中心 ── */}
       {activeTab === 'utilities' && (
         <div className="wm-tab-panel wm-utilities-stack">
           {/* 4.1 窗口置顶 Always on Top */}
@@ -1444,9 +1822,14 @@ export const WindowManagerPage: FC = () => {
                     step={1}
                     unit="px"
                     ariaLabel={t('windowManager.aotThicknessLabel', 'Border Thickness')}
-                    onChange={(val) =>
-                      updateSettingsSection('alwaysOnTop', { ...settings.alwaysOnTop, borderThickness: val })
-                    }
+                    onChange={(val) => {
+                      updateSettingsSection('alwaysOnTop', { ...settings.alwaysOnTop, borderThickness: val });
+                      triggerBorderPreviewDebounced({
+                        kind: 'alwaysOnTop',
+                        borderColor: settings.alwaysOnTop.borderColor,
+                        borderWidth: val,
+                      });
+                    }}
                   />
                 </SettingRow>
                 <SettingRow label={t('windowManager.aotColorLabel', 'Border Color')}>
@@ -1455,11 +1838,30 @@ export const WindowManagerPage: FC = () => {
                       value={settings.alwaysOnTop.borderColor}
                       ariaLabel={t('windowManager.aotColorLabel', 'Border Color')}
                       className="wm-color-swatch"
-                      onChange={(hex) =>
-                        updateSettingsSection('alwaysOnTop', { ...settings.alwaysOnTop, borderColor: hex })
-                      }
+                      onChange={(hex) => {
+                        updateSettingsSection('alwaysOnTop', { ...settings.alwaysOnTop, borderColor: hex });
+                        triggerBorderPreviewDebounced({
+                          kind: 'alwaysOnTop',
+                          borderColor: hex,
+                          borderWidth: settings.alwaysOnTop.borderThickness,
+                        });
+                      }}
                     />
                     <CodeBadge>{settings.alwaysOnTop.borderColor.toUpperCase()}</CodeBadge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        triggerBorderPreviewDebounced({
+                          kind: 'alwaysOnTop',
+                          borderColor: settings.alwaysOnTop.borderColor,
+                          borderWidth: settings.alwaysOnTop.borderThickness,
+                        })
+                      }
+                    >
+                      <Eye size={13} aria-hidden="true" />
+                      <span>{t('windowManager.previewBorderBtn', 'Preview')}</span>
+                    </Button>
                   </div>
                 </SettingRow>
               </div>
@@ -1633,9 +2035,15 @@ export const WindowManagerPage: FC = () => {
                     step={1}
                     unit="px"
                     ariaLabel={t('windowManager.focusThicknessLabel', 'Outline Thickness')}
-                    onChange={(val) =>
-                      updateSettingsSection('focusBorder', { ...settings.focusBorder, thickness: val })
-                    }
+                    onChange={(val) => {
+                      updateSettingsSection('focusBorder', { ...settings.focusBorder, thickness: val });
+                      triggerBorderPreviewDebounced({
+                        kind: 'focus',
+                        borderColor: settings.focusBorder.color,
+                        borderWidth: val,
+                        cornerRadius: settings.focusBorder.cornerRadius,
+                      });
+                    }}
                   />
                 </SettingRow>
                 <SettingRow label={t('windowManager.focusColorLabel', 'Outline Color')}>
@@ -1644,11 +2052,32 @@ export const WindowManagerPage: FC = () => {
                       value={settings.focusBorder.color}
                       ariaLabel={t('windowManager.focusColorLabel', 'Outline Color')}
                       className="wm-color-swatch"
-                      onChange={(hex) =>
-                        updateSettingsSection('focusBorder', { ...settings.focusBorder, color: hex })
-                      }
+                      onChange={(hex) => {
+                        updateSettingsSection('focusBorder', { ...settings.focusBorder, color: hex });
+                        triggerBorderPreviewDebounced({
+                          kind: 'focus',
+                          borderColor: hex,
+                          borderWidth: settings.focusBorder.thickness,
+                          cornerRadius: settings.focusBorder.cornerRadius,
+                        });
+                      }}
                     />
                     <CodeBadge>{settings.focusBorder.color.toUpperCase()}</CodeBadge>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        triggerBorderPreviewDebounced({
+                          kind: 'focus',
+                          borderColor: settings.focusBorder.color,
+                          borderWidth: settings.focusBorder.thickness,
+                          cornerRadius: settings.focusBorder.cornerRadius,
+                        })
+                      }
+                    >
+                      <Eye size={13} aria-hidden="true" />
+                      <span>{t('windowManager.previewBorderBtn', 'Preview')}</span>
+                    </Button>
                   </div>
                 </SettingRow>
                 <SettingRow label={t('windowManager.focusRadiusLabel', 'Corner Radius')}>
@@ -1659,9 +2088,15 @@ export const WindowManagerPage: FC = () => {
                     step={2}
                     unit="px"
                     ariaLabel={t('windowManager.focusRadiusLabel', 'Corner Radius')}
-                    onChange={(val) =>
-                      updateSettingsSection('focusBorder', { ...settings.focusBorder, cornerRadius: val })
-                    }
+                    onChange={(val) => {
+                      updateSettingsSection('focusBorder', { ...settings.focusBorder, cornerRadius: val });
+                      triggerBorderPreviewDebounced({
+                        kind: 'focus',
+                        borderColor: settings.focusBorder.color,
+                        borderWidth: settings.focusBorder.thickness,
+                        cornerRadius: val,
+                      });
+                    }}
                   />
                 </SettingRow>
               </div>
@@ -1751,79 +2186,43 @@ export const WindowManagerPage: FC = () => {
               </div>
             </DisabledCascade>
           </Card>
-        </div>
-      )}
 
-      {/* ── 编辑工作区弹窗 ─────────────────────────────────────────────────── */}
-      {editingWorkspace && (
-        <Modal
-          open
-          title={t('windowManager.editWorkspaceModalTitle', 'Edit Workspace')}
-          onClose={() => setEditingWorkspace(null)}
-          footer={
-            <>
-              <Button variant="ghost" onClick={() => setEditingWorkspace(null)}>
-                {t('common.cancel', 'Cancel')}
-              </Button>
-              <Button
-                variant="primary"
-                disabled={!editingWorkspace.name.trim()}
-                onClick={handleSaveEditedWorkspace}
-              >
-                {t('common.save', 'Save')}
-              </Button>
-            </>
-          }
-        >
-          <div className="wm-edit-ws-form">
-            <Field label={t('common.name', 'Name')}>
-              <TextInput
-                value={editingWorkspace.name}
-                onChange={(val) => setEditingWorkspace({ ...editingWorkspace, name: val })}
-              />
-            </Field>
-            <div className="wm-edit-ws-apps">
-              <div className="wm-edit-ws-apps__label">
-                {t('windowManager.workspaceAppsLabel', 'Included Applications')}
-              </div>
-              {editingWorkspace.apps.length === 0 ? (
-                <p className="wm-ws-card__empty-apps">
-                  {t('windowManager.workspaceNoApps', 'No applications recorded in this workspace')}
-                </p>
-              ) : (
-                editingWorkspace.apps.map((app, idx) => (
-                  <div key={`${app.processName}-${idx}`} className="wm-edit-ws-app-row">
-                    <div className="wm-edit-ws-app-row__meta">
-                      <CodeBadge>{app.processName || app.exePath}</CodeBadge>
-                      <TextInput
-                        value={app.args}
-                        placeholder={t('windowManager.launchArgsPlaceholder', 'Optional launch arguments')}
-                        ariaLabel={t('windowManager.launchArgsPlaceholder', 'Optional launch arguments')}
-                        onChange={(args) => {
-                          const nextApps = editingWorkspace.apps.map((a, i) =>
-                            i === idx ? { ...a, args } : a,
-                          );
-                          setEditingWorkspace({ ...editingWorkspace, apps: nextApps });
-                        }}
+          {/* 4.6 全局窗口管理快捷键可视化录制中心 */}
+          <SettingGroup
+            title={t('windowManager.hotkeysSectionTitle', 'Window Management Hotkeys')}
+            icon={<Keyboard size={16} aria-hidden="true" />}
+          >
+            <Card>
+              <div className="wm-hotkeys-grid">
+                {HOTKEY_FIELDS.map((item) => {
+                  const featureActive = settings.features[item.feature];
+                  return (
+                    <div
+                      key={item.key}
+                      className={`wm-hotkey-item ${featureActive ? '' : 'is-inactive'}`}
+                    >
+                      <div className="wm-hotkey-item__label">
+                        <span>{t(item.labelKey as never, item.fallback)}</span>
+                      </div>
+                      <HotkeyRecorder
+                        id={`wm-hk-${item.key}`}
+                        value={settings.hotkeys[item.key] || ''}
+                        disabled={!data.exeAvailable}
+                        ariaLabel={t(item.labelKey as never, item.fallback)}
+                        onChange={(combo) =>
+                          updateSettingsSection('hotkeys', {
+                            ...settings.hotkeys,
+                            [item.key]: combo,
+                          })
+                        }
                       />
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      ariaLabel={t('common.delete', 'Delete')}
-                      onClick={() => {
-                        const nextApps = editingWorkspace.apps.filter((_, i) => i !== idx);
-                        setEditingWorkspace({ ...editingWorkspace, apps: nextApps });
-                      }}
-                    >
-                      <Trash2 size={13} aria-hidden="true" />
-                    </Button>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </Modal>
+                  );
+                })}
+              </div>
+            </Card>
+          </SettingGroup>
+        </div>
       )}
     </div>
   );

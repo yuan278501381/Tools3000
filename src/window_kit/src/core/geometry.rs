@@ -435,6 +435,98 @@ pub fn rescue_rect_into_work_area(win_rect: RectI, target_work: RectI) -> RectI 
     RectI::from_xywh(left, top, w, h)
 }
 
+/// 焦点层叠模板求解器（对标 PowerToys FancyZones「焦点」模板：中央略偏移的层叠卡片区）
+pub fn resolve_focus_zones(work_area: RectI, count: usize, gap: i32) -> Vec<ResolvedZone> {
+    if !work_area.is_valid() || count == 0 {
+        return Vec::new();
+    }
+    let n = count.clamp(1, 16);
+    let pad = gap.max(12);
+    let usable_w = (work_area.width() - pad * 2).max(160);
+    let usable_h = (work_area.height() - pad * 2).max(120);
+
+    // 卡片默认占工作区 ~58% × 62%，多张时按阶梯斜向错开，并严格约束在工作区内
+    let base_w = ((usable_w as f64) * 0.58).round() as i32;
+    let base_h = ((usable_h as f64) * 0.62).round() as i32;
+    let max_step_x = if n > 1 {
+        ((usable_w - base_w).max(0) / ((n - 1) as i32)).min(56)
+    } else {
+        0
+    };
+    let max_step_y = if n > 1 {
+        ((usable_h - base_h).max(0) / ((n - 1) as i32)).min(42)
+    } else {
+        0
+    };
+    let span_w = base_w + max_step_x * ((n - 1) as i32);
+    let span_h = base_h + max_step_y * ((n - 1) as i32);
+    let origin_x = work_area.left + (work_area.width() - span_w) / 2;
+    let origin_y = work_area.top + (work_area.height() - span_h) / 2;
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let x = (origin_x + (i as i32) * max_step_x).clamp(work_area.left, work_area.right - 1);
+        let y = (origin_y + (i as i32) * max_step_y).clamp(work_area.top, work_area.bottom - 1);
+        let r = RectI::new(
+            x,
+            y,
+            (x + base_w).min(work_area.right),
+            (y + base_h).min(work_area.bottom),
+        );
+        if r.is_valid() {
+            out.push(ResolvedZone { index: i, rect: r });
+        }
+    }
+    out
+}
+
+/// 自动识别某真实窗口当前是否贴合于当前布局的某个单分区或相邻多区并集（供 Workspaces 捕获自动绑定槽位！）
+pub fn detect_matching_zone_indices(window_rect: RectI, zones: &[ResolvedZone]) -> Vec<usize> {
+    if !window_rect.is_valid() || zones.is_empty() {
+        return Vec::new();
+    }
+    let win_area = window_rect.area().max(1) as f64;
+
+    // 1. 优先精确匹配单分区（IoU >= 0.84）
+    let mut best_single: Option<(f64, usize)> = None;
+    for z in zones {
+        if let Some(inter) = window_rect.intersect(&z.rect) {
+            let inter_a = inter.area() as f64;
+            let union_a = (win_area + z.rect.area() as f64 - inter_a).max(1.0);
+            let iou = inter_a / union_a;
+            if iou >= 0.84 && best_single.map_or(true, |(b, _)| iou > b) {
+                best_single = Some((iou, z.index));
+            }
+        }
+    }
+    if let Some((_, idx)) = best_single {
+        return vec![idx];
+    }
+
+    // 2. 匹配跨多区合并停靠（窗口覆盖多个相邻分区，且并集与窗口 IoU >= 0.84）
+    let mut covered: Vec<usize> = Vec::new();
+    for z in zones {
+        if let Some(inter) = window_rect.intersect(&z.rect) {
+            let z_area = z.rect.area().max(1) as f64;
+            if (inter.area() as f64 / z_area) >= 0.72 {
+                covered.push(z.index);
+            }
+        }
+    }
+    if covered.len() >= 2 {
+        if let Some(merged) = merge_zone_rects(zones, &covered) {
+            if let Some(inter) = window_rect.intersect(&merged) {
+                let inter_a = inter.area() as f64;
+                let union_a = (win_area + merged.area() as f64 - inter_a).max(1.0);
+                if (inter_a / union_a) >= 0.82 {
+                    return covered;
+                }
+            }
+        }
+    }
+    Vec::new()
+}
+
 /// 根据工作区索引解析目标停靠矩形（供工作区启动器与键盘快捷键共用）
 pub fn resolve_zone_by_index(zones: &[ResolvedZone], zone_index: usize) -> Option<RectI> {
     zones

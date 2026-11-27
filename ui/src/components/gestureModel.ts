@@ -100,6 +100,9 @@ export const BUILTIN_COMMAND_KEYS = [
   'gestureEditor.builtin.nextDesktop', 'gestureEditor.builtin.deleteKey',
   'gestureEditor.builtin.backspaceKey', 'gestureEditor.builtin.brightnessUp',
   'gestureEditor.builtin.brightnessDown', 'gestureEditor.builtin.quickTranslate',
+  'gestureEditor.builtin.windowKitNextZone', 'gestureEditor.builtin.windowKitPrevZone',
+  'gestureEditor.builtin.windowKitRestoreZone', 'gestureEditor.builtin.windowKitMoveNextMonitor',
+  'gestureEditor.builtin.windowKitMinimizeToTray', 'gestureEditor.builtin.windowKitQuickSwitch',
 ] as const;
 
 export const CODE_TO_ARROWS: Record<string, string> = {

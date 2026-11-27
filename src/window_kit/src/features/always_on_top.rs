@@ -58,6 +58,52 @@ impl AlwaysOnTopManager {
         self.pinned.values().any(|e| e.pulse_started.is_some())
     }
 
+    /// 强制将指定窗口设为置顶状态（用于 Workspaces 场景态置顶叠加）
+    pub fn ensure_pinned_hwnd(
+        &mut self,
+        hwnd: HWND,
+        cfg: &WindowKitConfig,
+        gfx: Option<&SharedGraphics>,
+        trace_id: &str,
+    ) -> bool {
+        if hwnd.0.is_null() || !is_manageable_window(hwnd, false, &cfg.excluded_apps) {
+            return false;
+        }
+        let key = hwnd.0 as isize;
+        unsafe {
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        if !self.pinned.contains_key(&key) {
+            let border_hwnd = if cfg.always_on_top.show_border {
+                create_border_window()
+            } else {
+                None
+            };
+            self.pinned.insert(
+                key,
+                PinnedEntry {
+                    target: hwnd,
+                    border_hwnd,
+                    last_rect: RectI::default(),
+                    last_zoomed: false,
+                    last_visible: false,
+                    pulse_started: Some(Instant::now()),
+                },
+            );
+            wk_info!(trace_id, "alwaysOnTop", "workspace-pinned hwnd=0x{:x}", key);
+        }
+        self.sync_borders(cfg, gfx, false);
+        true
+    }
+
     /// 切换当前前台合法用户窗口的置顶状态
     pub fn toggle_foreground(
         &mut self,
