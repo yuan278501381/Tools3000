@@ -167,6 +167,7 @@ void syncForegroundFullscreenState(bool forceRefresh = false) {
         cur.iconic = IsIconic(fg) != FALSE;
         cur.zoomed = IsZoomed(fg) != FALSE;
     }
+    const bool hwndChanged = (!s_lastFingerprint.valid || cur.hwnd != s_lastFingerprint.hwnd);
     if (!forceRefresh && s_lastFingerprint.valid &&
         cur.hwnd == s_lastFingerprint.hwnd &&
         cur.style == s_lastFingerprint.style &&
@@ -177,6 +178,9 @@ void syncForegroundFullscreenState(bool forceRefresh = false) {
         return;
     }
     s_lastFingerprint = cur;
+    if (hwndChanged) {
+        tools3000::text_expander::TextExpanderManager::instance().notifyForegroundChanged();
+    }
 
     const bool gestureBypassEnabled =
         tools3000::core::ConfigManager::instance().get<bool>("/gesture/autoBypassFullscreen", true);
@@ -917,16 +921,19 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/,
     releaseHostHotkeysAndMessageWindow(hwndMessage);
     releaseSingleInstanceMutex();
 
-    // 防僵尸退场守护（必须在 CoUninitialize 之前启动！）：
-    // 此时全部配置落盘、云端备份、钩子卸载、单实例互斥体释放与日志刷盘均已 100% 完成；
-    // 若 CoUninitialize() 或后续 CRT 静态析构因 WebView2/COM STA 锁竞争阻塞 (>1200ms)，自动强杀清场，
-    // 彻底杜绝退出后留下无窗口僵尸进程锁死安装目录（导致应用内更新触发 Restart Manager 弹窗）。
+    // 防僵尸终结退场：
+    // 此时 shutdownSubsystems()、releaseHostHotkeysAndMessageWindow()、releaseSingleInstanceMutex()
+    // 及 CoUninitialize() 均已 100% 完成所有配置落盘、云端备份、钩子卸载、单实例互斥体释放与日志刷盘。
+    // Windows ExitProcess() 第一步会先终止所有后台线程（导致常规看门狗线程失效），随后单线程执行
+    // LdrShutdownProcess / CRT 静态析构，若底层第三方 DLL 或 COM STA 残留锁竞争将留下单线程无窗口僵尸进程
+    // 锁死安装目录。此处保留 CoUninitialize() 1200ms 熔断守护，并在 CoUninitialize() 返回后直接终结进程。
     std::thread([finalExitCode]() {
         Sleep(1200);
         TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
     }).detach();
 
     CoUninitialize();
+    TerminateProcess(GetCurrentProcess(), static_cast<UINT>(finalExitCode));
     return finalExitCode;
 }
 
@@ -2858,8 +2865,12 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
                     // 搜索框左右移动输入光标时不改变选中结果，无需触发预览刷新定时器
                     return false;
                 }
-                // 同一 HWND/ID 的 SetTimer 会重置截止时间，形成无阻塞防抖。
-                SetTimer(hwnd, TIMER_ID_QUICKLOOK_REFRESH, 35, nullptr);
+                // 键盘钩子运行在独立高优先级输入线程，跨线程投递回宿主 UI 线程重置防抖定时器，杜绝跨线程 SetTimer 竞态。
+                tools3000::core::MainThreadDispatcher::instance().postDeferred([hwnd]() {
+                    if (hwnd && IsWindow(hwnd)) {
+                        SetTimer(hwnd, TIMER_ID_QUICKLOOK_REFRESH, 35, nullptr);
+                    }
+                });
             }
         }
 
@@ -3015,10 +3026,11 @@ void shutdownSubsystems() {
     tools3000::ui::QuickLookWindow::instance().destroy();
     tools3000::ui::TrayWindow::instance().destroy();
     tools3000::text_expander::TextExpanderManager::instance().shutdown();
+    // 先卸载独立高优先级键盘钩子并回收输入线程，确保后续 CapsLayer/插件析构时零并发回调进入
+    tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::caps_layer::CapsLayerManager::instance().shutdown();
     tools3000::core::WindowKitController::instance().shutdown();
     tools3000::clipboard::ClipboardManager::instance().shutdown();
-    tools3000::core::KeyboardHook::instance().uninstall();
     tools3000::core::MouseHook::instance().setPreInterceptor(nullptr);
     tools3000::core::MouseHook::instance().uninstall();
     tools3000::ui::CinemaZoomEngine::instance().shutdown();

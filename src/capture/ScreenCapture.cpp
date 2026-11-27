@@ -88,17 +88,42 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         const cv::Mat deliverableImage = needsExportWatermark
             ? WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(markedImage)
             : markedImage;
+        const bool deliverableMatchesMarked =
+            (!deliverableImage.empty() && deliverableImage.data == markedImage.data);
 
-        if ((decision.shouldSaveExplicitly || decision.shouldSaveAutomatically) && !deliverableImage.empty()) {
-            const auto format = decision.shouldSaveExplicitly ? completion.format : activeOpts.format;
-            auto encoded = encodeImage(deliverableImage, format, activeOpts.quality);
-            if (!encoded.empty()) {
+        const bool wantsSave = (decision.shouldSaveExplicitly || decision.shouldSaveAutomatically) && !deliverableImage.empty();
+        const auto saveFormat = decision.shouldSaveExplicitly ? completion.format : activeOpts.format;
+        const bool isQuickSave = (completion.action == CaptureCompletionAction::QuickSave);
+
+        // 单次极速 PNG 编码复用管线：
+        // - 需同时写盘 (PNG) 与复制剪贴板时，只编码一次 sharedPngBytes 供文件保存、剪贴板 PNG/CF_HDROP 与历史记录共享；
+        // - 自动保存场景关闭阻塞式 FlushFileBuffers（仍保留完整重解析点校验与原子替换），让首帧交付与剪贴板写入毫秒直达；
+        // - 若自动保存为非 PNG 格式（JPG/WebP/BMP）且需复制剪贴板，优先写剪贴板并弹出 Toast，再写非 PNG 文件，不拖慢粘贴手感。
+        std::vector<uint8_t> sharedPngBytes;
+        const bool needsSharedPng =
+            !deliverableImage.empty() &&
+            (decision.shouldCopyToClipboard || (wantsSave && saveFormat == ImageFormat::PNG));
+        if (needsSharedPng) {
+            sharedPngBytes = encodeImage(deliverableImage, ImageFormat::PNG, activeOpts.quality);
+        }
+
+        const bool saveBeforeClipboard =
+            wantsSave && (decision.shouldSaveExplicitly || saveFormat == ImageFormat::PNG || !decision.shouldCopyToClipboard);
+        auto performDiskSave = [&]() {
+            std::vector<uint8_t> nonPngEncoded;
+            const std::vector<uint8_t>* encodedPtr = &sharedPngBytes;
+            if (saveFormat != ImageFormat::PNG) {
+                nonPngEncoded = encodeImage(deliverableImage, saveFormat, activeOpts.quality);
+                encodedPtr = &nonPngEncoded;
+            }
+            if (encodedPtr && !encodedPtr->empty()) {
                 const std::string path = decision.shouldSaveExplicitly
                     ? completion.filePath
                     : activeOpts.savePath.empty()
-                        ? generateSavePath(format)
+                        ? generateSavePath(saveFormat)
                         : activeOpts.savePath;
-                result.filePath = saveToFile(encoded, path, format);
+                const bool flushToDisk = decision.shouldSaveExplicitly;
+                result.filePath = saveToFile(*encodedPtr, path, saveFormat, flushToDisk);
                 if (decision.shouldSaveExplicitly) {
                     tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                         result.filePath.empty()
@@ -106,20 +131,28 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
                             : (tools3000::core::trWCstrFor(isZh, L"截图已保存", L"Screenshot saved"))});
                 }
             }
+        };
+
+        if (saveBeforeClipboard) {
+            performDiskSave();
         }
 
         // 复制到剪贴板：仅在显式复制 (Copy) 或用户开启了 copyToClipboard 时写入，绝不在关闭开关或快捷键 OCR 时污染剪贴板
-        const bool isQuickSave = (completion.action == CaptureCompletionAction::QuickSave);
         bool copiedOk = false;
         if (decision.shouldCopyToClipboard && !deliverableImage.empty()) {
             const std::wstring widePath = tools3000::core::WinUtils::utf8ToWstring(result.filePath);
             int padX = (deliverableImage.cols > region.width && region.width > 0) ? (deliverableImage.cols - region.width) / 2 : 0;
             int padY = (deliverableImage.rows > region.height && region.height > 0) ? (deliverableImage.rows - region.height) / 2 : 0;
-            copiedOk = copyToClipboard(deliverableImage, widePath, &region, padX, padY);
+            const std::vector<uint8_t>* preEncoded = sharedPngBytes.empty() ? nullptr : &sharedPngBytes;
+            copiedOk = copyToClipboard(deliverableImage, widePath, &region, padX, padY, preEncoded);
             if (!isQuickSave) {
                 tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{
                     tools3000::core::trWCstrFor(isZh, L"截图已复制到剪贴板", L"Screenshot copied to clipboard")});
             }
+        }
+
+        if (wantsSave && !saveBeforeClipboard) {
+            performDiskSave();
         }
         if (isQuickSave) {
             if (result.filePath.empty()) {
@@ -151,7 +184,9 @@ bool ScreenCapture::initialize(HINSTANCE hInstance) {
         }
 
         if (decision.shouldRecordHistory) {
-            CaptureHistory::instance().push(markedImage, region, result.filePath);
+            const std::vector<uint8_t>* historyPreEncoded =
+                (deliverableMatchesMarked && !sharedPngBytes.empty()) ? &sharedPngBytes : nullptr;
+            CaptureHistory::instance().push(markedImage, region, result.filePath, historyPreEncoded);
         }
 
         result.success = true;
@@ -386,26 +421,45 @@ void ScreenCapture::finishScrollCaptureDelivery(const cv::Mat& finalImage, int f
     const bool forceCopy = (action == ScrollFinishAction::Copy);
     const bool forceSave = (action == ScrollFinishAction::QuickSave);
     const bool shouldCopy = forceCopy || m_activeOptions.copyToClipboard;
-    bool copied = false;
-    if (shouldCopy) {
-        copied = copyToClipboard(finalImage);
+    const bool shouldSave = m_activeOptions.saveToFile || forceSave;
+    std::vector<uint8_t> sharedPngBytes;
+    if (shouldCopy || (shouldSave && m_activeOptions.format == ImageFormat::PNG)) {
+        sharedPngBytes = encodeImage(finalImage, ImageFormat::PNG, m_activeOptions.quality);
     }
 
     std::string savedPath;
-    if (m_activeOptions.saveToFile || forceSave) {
+    if (shouldSave && m_activeOptions.format == ImageFormat::PNG && !sharedPngBytes.empty()) {
+        std::string path = m_activeOptions.savePath.empty()
+            ? generateSavePath(m_activeOptions.format)
+            : m_activeOptions.savePath;
+        savedPath = saveToFile(sharedPngBytes, path, m_activeOptions.format, forceSave);
+    }
+
+    bool copied = false;
+    if (shouldCopy) {
+        const std::wstring wideSavedPath = tools3000::core::WinUtils::utf8ToWstring(savedPath);
+        const std::vector<uint8_t>* preEncoded = sharedPngBytes.empty() ? nullptr : &sharedPngBytes;
+        copied = copyToClipboard(finalImage, wideSavedPath, nullptr, 0, 0, preEncoded);
+    }
+
+    if (shouldSave && m_activeOptions.format != ImageFormat::PNG) {
         auto encoded = encodeImage(finalImage, m_activeOptions.format, m_activeOptions.quality);
         if (!encoded.empty()) {
             std::string path = m_activeOptions.savePath.empty()
                 ? generateSavePath(m_activeOptions.format)
                 : m_activeOptions.savePath;
-            savedPath = saveToFile(encoded, path, m_activeOptions.format);
+            savedPath = saveToFile(encoded, path, m_activeOptions.format, forceSave);
         }
     }
     CaptureRegion historyRegion{};
     historyRegion.width = finalImage.cols;
     historyRegion.height = finalImage.rows;
     if (m_activeOptions.recordHistory) {
-        CaptureHistory::instance().push(finalImage, historyRegion, savedPath);
+        CaptureHistory::instance().push(
+            finalImage,
+            historyRegion,
+            savedPath,
+            sharedPngBytes.empty() ? nullptr : &sharedPngBytes);
     }
 
     if (action == ScrollFinishAction::Pin) {
@@ -620,23 +674,41 @@ CaptureResult ScreenCapture::captureRegion(const CaptureRegion& region, const Ca
     result.imageWidth = image->cols;
     result.imageHeight = image->rows;
 
+    std::vector<uint8_t> sharedPngBytes;
+    if (options.copyToClipboard || (options.saveToFile && options.format == ImageFormat::PNG)) {
+        sharedPngBytes = encodeImage(*image, ImageFormat::PNG, options.quality);
+    }
+
+    // 保存到文件（PNG 格式先写盘到 OS 页缓存再供剪贴板 CF_HDROP 复用，0 重复编码）
+    if (options.saveToFile && options.format == ImageFormat::PNG && !sharedPngBytes.empty()) {
+        std::string path = options.savePath.empty()
+            ? generateSavePath(options.format)
+            : options.savePath;
+        result.filePath = saveToFile(sharedPngBytes, path, options.format, /*flushToDisk=*/false);
+        if (!result.filePath.empty()) {
+            LOG_INFO("截图已保存: path={}, size={}KB", result.filePath, sharedPngBytes.size() / 1024);
+        }
+    }
+
     // 复制到剪贴板
     if (options.copyToClipboard) {
-        if (copyToClipboard(*image, L"", &region)) {
+        const std::wstring widePath = tools3000::core::WinUtils::utf8ToWstring(result.filePath);
+        const std::vector<uint8_t>* preEncoded = sharedPngBytes.empty() ? nullptr : &sharedPngBytes;
+        if (copyToClipboard(*image, widePath, &region, 0, 0, preEncoded)) {
             LOG_DEBUG("截图已复制到剪贴板");
         } else {
             LOG_WARN("复制到剪贴板失败");
         }
     }
 
-    // 保存到文件
-    if (options.saveToFile) {
+    // 非 PNG 格式在复制到剪贴板后再编码落盘
+    if (options.saveToFile && options.format != ImageFormat::PNG) {
         auto encoded = encodeImage(*image, options.format, options.quality);
         if (!encoded.empty()) {
-            std::string path = options.savePath.empty() 
-                ? generateSavePath(options.format) 
+            std::string path = options.savePath.empty()
+                ? generateSavePath(options.format)
                 : options.savePath;
-            result.filePath = saveToFile(encoded, path, options.format);
+            result.filePath = saveToFile(encoded, path, options.format, /*flushToDisk=*/false);
             if (!result.filePath.empty()) {
                 LOG_INFO("截图已保存: path={}, size={}KB", result.filePath, encoded.size() / 1024);
             }
@@ -769,7 +841,8 @@ std::vector<uint8_t> ScreenCapture::encodeImage(const cv::Mat& image, ImageForma
 
     switch (format) {
         case ImageFormat::PNG:
-            params = { cv::IMWRITE_PNG_COMPRESSION, 6 };
+            // 无损极速压缩级别 1：比默认 level 6 快 3~5 倍，大幅压缩首次截图完成到剪贴板/落盘的同步延迟
+            params = { cv::IMWRITE_PNG_COMPRESSION, 1 };
             cv::imencode(".png", image, buffer, params);
             break;
 
@@ -795,8 +868,13 @@ std::vector<uint8_t> ScreenCapture::encodeImage(const cv::Mat& image, ImageForma
 // 剪贴板
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool ScreenCapture::copyToClipboard(const cv::Mat& image, const std::wstring& filePath, const CaptureRegion* sourceRegion, int padX, int padY) {
-    return ClipboardUtils::copyImageToClipboard(image, filePath, nullptr, sourceRegion, padX, padY);
+bool ScreenCapture::copyToClipboard(const cv::Mat& image,
+                                    const std::wstring& filePath,
+                                    const CaptureRegion* sourceRegion,
+                                    int padX,
+                                    int padY,
+                                    const std::vector<uint8_t>* preEncodedPng) {
+    return ClipboardUtils::copyImageToClipboard(image, filePath, nullptr, sourceRegion, padX, padY, preEncodedPng);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -805,7 +883,8 @@ bool ScreenCapture::copyToClipboard(const cv::Mat& image, const std::wstring& fi
 
 std::string ScreenCapture::saveToFile(const std::vector<uint8_t>& data, 
                                        const std::string& path,
-                                       [[maybe_unused]] ImageFormat format) {
+                                       [[maybe_unused]] ImageFormat format,
+                                       bool flushToDisk) {
     try {
         if (data.empty() || path.empty()) {
             LOG_ERROR("保存截图失败: 数据或路径为空");
@@ -823,7 +902,7 @@ std::string ScreenCapture::saveToFile(const std::vector<uint8_t>& data,
             }
         }
 
-        if (!tools3000::common::atomicWriteBinaryFileWithFlush(widePath, data.data(), data.size())) {
+        if (!tools3000::common::atomicWriteBinaryFileWithFlush(widePath, data.data(), data.size(), flushToDisk)) {
             LOG_ERROR("原子写入或刷新截图文件失败: {}", path);
             return "";
         }

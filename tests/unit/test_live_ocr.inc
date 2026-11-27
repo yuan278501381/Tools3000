@@ -2898,9 +2898,10 @@ TEST(LiveTextOcrTest, RealWorldOcrFixtureCatalogIntegrity) {
     const auto dir = resolveRealWorldOcrFixtureDir();
     ASSERT_FALSE(dir.empty()) << "Failed to locate tests/fixtures/ocr directory from executable or working dir";
 
-    // 统一合并后的 18 张真实场景 OCR & 原位翻译回归样本（均位于 tests/fixtures/ocr/）
+    // 统一合并后的 19 张真实场景 OCR & 原位翻译回归样本（均位于 tests/fixtures/ocr/）
     constexpr const char* kFixtures[] = {
         "sap_form_table.jpg",
+        "sap_b1_coa_small_text.jpg",
         "release_notes_dense_doc.png",
         "pda_screen_photo.jpg",
         "meeting_tv_photo.jpg",
@@ -4523,4 +4524,123 @@ TEST(LiveTextOcrTest, RealNetworkAllModelDownloadsEndToEndVerification) {
         Sleep(250);
     }
     ASSERT_TRUE(inpaintFinished) << "MI-GAN download timed out";
+}
+
+TEST(LiveTextOcrTest, WideDesktopImageScalingNo1680DownsampleAndSapCoaSmallTextRecall) {
+    using namespace tools3000::ocr;
+
+    // 1. 验证 Windows OCR 缩放策略彻底消除 1680px 硬截断误杀：
+    //    2559x1316 SAP 科目表宽图必须保持 >= 1.25x 放大且宽度 >= 2559，绝不压扁至 1680px
+    {
+        const auto planSap = OcrEngine::planWindowsOcrScaling(2559, 1316, 10000);
+        EXPECT_EQ(planSap.borderPad, 12);
+        EXPECT_GE(planSap.scaleFactor, 1.25f);
+        EXPECT_GT(planSap.targetWidth, 2559);
+        EXPECT_LE(planSap.targetWidth, 3960);
+        EXPECT_TRUE(planSap.applyUnsharpMask);
+
+        const auto plan1080 = OcrEngine::planWindowsOcrScaling(1920, 1080, 10000);
+        EXPECT_EQ(plan1080.borderPad, 12);
+        EXPECT_GE(plan1080.scaleFactor, 1.45f);
+        EXPECT_GT(plan1080.targetWidth, 1920);
+
+        // 4K 桌面截图保持 1.0x 原生像素直出（绝不降采样）
+        const auto plan4k = OcrEngine::planWindowsOcrScaling(3840, 2160, 10000);
+        EXPECT_FLOAT_EQ(plan4k.scaleFactor, 1.0f);
+        EXPECT_GE(plan4k.targetWidth, 3840);
+
+        // 仅宽度超过 4096 的超宽拼接图按比例下采样至 4096
+        const auto planUltraWide = OcrEngine::planWindowsOcrScaling(5120, 1440, 10000);
+        EXPECT_EQ(planUltraWide.borderPad, 0);
+        EXPECT_EQ(planUltraWide.targetWidth, 4096);
+        EXPECT_LT(planUltraWide.scaleFactor, 1.0f);
+
+        // 小尺寸选区维持最高 2.0x 放大 + 温和锐化
+        const auto planSmall = OcrEngine::planWindowsOcrScaling(400, 200, 10000);
+        EXPECT_EQ(planSmall.borderPad, 12);
+        EXPECT_GE(planSmall.scaleFactor, 1.9f);
+        EXPECT_TRUE(planSmall.applyUnsharpMask);
+    }
+
+    // 2. 加载真实的 2559x1316 SAP B1 财务科目表无损原图，端到端实测小号宋体密集文字召回
+    const cv::Mat sapCoa = loadRealWorldOcrFixture("sap_b1_coa_small_text.jpg");
+    ASSERT_FALSE(sapCoa.empty()) << "Failed to load tests/fixtures/ocr/sap_b1_coa_small_text.jpg";
+    EXPECT_GE(sapCoa.cols, 2400);
+    EXPECT_GE(sapCoa.rows, 1200);
+
+    auto& engine = OcrEngine::instance();
+    if (!engine.initialize() || !engine.isAvailable()) {
+        GTEST_SKIP() << "No local offline OCR engine available on this runner";
+    }
+
+    const auto page = engine.extractPage(sapCoa);
+    ASSERT_GT(page.lines.size(), 35u);
+
+    std::string combined;
+    size_t nonSpaceCodepoints = 0;
+    for (const auto& r : page.lines) {
+        combined += r.text;
+        combined.push_back('\n');
+        for (const auto& cp : OcrEngine::splitUtf8Codepoints(r.text)) {
+            if (cp != " " && cp != "\t" && cp != "\r" && cp != "\n") {
+                ++nonSpaceCodepoints;
+            }
+        }
+    }
+
+    // 旧版 1680px 误降采样仅识别 ~540 个有效字符且连「人民币」均漏识；修复后双通道均必须显著高召回
+    EXPECT_GE(nonSpaceCodepoints, 600u) << "Recognized non-space chars too low: " << nonSpaceCodepoints;
+    EXPECT_TRUE(combined.find("220203") != std::string::npos);
+    EXPECT_TRUE(combined.find("\xE5\xBA\x94\xE4\xBB\x98") != std::string::npos);                         // 应付
+    EXPECT_TRUE(combined.find("\xE4\xBA\xBA\xE6\xB0\x91\xE5\xB8\x81") != std::string::npos);             // 人民币
+    if (page.activeEngine != "windows") {
+        // PP-OCRv6 离线高精度引擎在 2559x1316 宽图上应达到 700+ 字符与全量科目代码/名称精确召回
+        EXPECT_GE(nonSpaceCodepoints, 700u);
+        EXPECT_TRUE(combined.find("20010101") != std::string::npos);
+        EXPECT_TRUE(combined.find("\xE5\xBA\x94\xE4\xBB\x98\xE8\xB4\xA6\xE6\xAC\xBE") != std::string::npos); // 应付账款
+    }
+
+    // 3. 隔离屏蔽 PP-OCRv6 模型目录，强制直测 Windows.Media.Ocr 通道在 2559x1316 宽图上的真实效果（防回退）
+    if (engine.isWindowsOcrAvailable()) {
+        auto& deep = DeepOcrEngine::instance();
+        const auto emptyModelDir = std::filesystem::temp_directory_path() /
+            (L"Tools3000WinOcrOnlyDir_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+             std::to_wstring(GetTickCount64()));
+        std::error_code ec;
+        std::filesystem::create_directories(emptyModelDir, ec);
+        struct RestoreDeepOcrDir {
+            DeepOcrEngine& eng;
+            std::filesystem::path dir;
+            ~RestoreDeepOcrDir() {
+                eng.setCustomModelDirectoryForTest({});
+                std::error_code remEc;
+                std::filesystem::remove_all(dir, remEc);
+            }
+        } restoreGuard{deep, emptyModelDir};
+
+        deep.setCustomModelDirectoryForTest(emptyModelDir);
+        const auto tWin0 = std::chrono::steady_clock::now();
+        const auto winPage = engine.extractPage(sapCoa);
+        const auto winMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tWin0).count();
+
+        EXPECT_EQ(winPage.activeEngine, "windows");
+        std::string winCombined;
+        size_t winChars = 0;
+        for (const auto& r : winPage.lines) {
+            winCombined += r.text;
+            winCombined.push_back('\n');
+            for (const auto& cp : OcrEngine::splitUtf8Codepoints(r.text)) {
+                if (cp != " " && cp != "\t" && cp != "\r" && cp != "\n") {
+                    ++winChars;
+                }
+            }
+        }
+        std::printf("[WIN-OCR-SAP] engine=%s lines=%zu nonSpaceChars=%zu elapsed=%lldms\n",
+                    winPage.activeEngine.c_str(), winPage.lines.size(), winChars, winMs);
+        EXPECT_GE(winChars, 600u) << "Windows.Media.Ocr wide-image recall regressed: " << winChars;
+        EXPECT_TRUE(winCombined.find("220203") != std::string::npos);
+        EXPECT_TRUE(winCombined.find("\xE5\xBA\x94\xE4\xBB\x98") != std::string::npos);                     // 应付
+        EXPECT_TRUE(winCombined.find("\xE4\xBA\xBA\xE6\xB0\x91\xE5\xB8\x81") != std::string::npos);         // 人民币
+    }
 }

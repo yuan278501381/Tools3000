@@ -8,6 +8,7 @@
 #include "core/config/ConfigManager.h"
 #include "core/events/EventBus.h"
 #include "core/hotkey/HotkeyManager.h"
+#include "core/hotkey/KeyboardHook.h"
 #include "core/ipc/MessageBridge.h"
 #include "core/logger/Logger.h"
 #include "core/utils/WinUtils.h"
@@ -786,39 +787,42 @@ void TextExpanderManager::startRuntimeWorkers() {
         m_workerThread = std::thread([this]() { expansionWorkerLoop(); });
     }
 
-    if (!m_hookThread.joinable()) {
-        HANDLE readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-        std::atomic<bool> hookReadyOk{false};
-        m_hookThread = std::thread([this, readyEvent, &hookReadyOk]() {
-            hookThreadMain(readyEvent, hookReadyOk);
-        });
-        if (readyEvent) {
-            WaitForSingleObject(readyEvent, 3000);
-            CloseHandle(readyEvent);
+    m_lastCheckedHwnd = nullptr;
+    m_lastCheckedPolicyEpoch = 0;
+    m_lastHwndExcluded = false;
+    m_lastKeyTickMs = 0;
+    m_mouseClicked.store(false, std::memory_order_release);
+    m_foregroundDirty.store(true, std::memory_order_release);
+
+    // 统一复用宿主唯一高优先级 KeyboardHook 独立输入线程，彻底消除进程内第 2 条 WH_KEYBOARD_LL 钩子
+    auto& kbHook = tools3000::core::KeyboardHook::instance();
+    kbHook.setTextExpanderObserver([this](const KBDLLHOOKSTRUCT& data, WPARAM wParam) {
+        if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
+            m_enabled.load(std::memory_order_acquire) &&
+            !m_expanding.load(std::memory_order_acquire) &&
+            (data.flags & LLKHF_INJECTED) == 0 &&
+            data.dwExtraInfo != kInjectedExtraInfoTag) {
+            handleLowLevelKeyDown(data);
         }
-        if (!hookReadyOk.load(std::memory_order_acquire)) {
-            LOG_ERROR("TextExpander failed to install low-level keyboard hook");
+    });
+    if (!kbHook.isInstalled()) {
+        if (!kbHook.install()) {
+            LOG_ERROR("TextExpander failed to ensure shared KeyboardHook active");
         }
     }
 }
 
 void TextExpanderManager::stopRuntimeWorkers() {
-    std::thread hookToJoin;
     std::thread workerToJoin;
     uint64_t subToUnsub = 0;
+
+    // 优先解除共享 KeyboardHook 观察者绑定，避免新按键进入
+    tools3000::core::KeyboardHook::instance().setTextExpanderObserver(nullptr);
 
     {
         std::lock_guard lifecycleLock(m_lifecycleMutex);
         subToUnsub = m_mouseActivitySubId;
         m_mouseActivitySubId = 0;
-
-        const DWORD tid = m_hookThreadId.load(std::memory_order_acquire);
-        if (tid != 0) {
-            PostThreadMessageW(tid, WM_QUIT, 0, 0);
-        }
-        if (m_hookThread.joinable()) {
-            hookToJoin = std::move(m_hookThread);
-        }
 
         m_workerRunning.store(false, std::memory_order_release);
         {
@@ -834,92 +838,16 @@ void TextExpanderManager::stopRuntimeWorkers() {
     if (subToUnsub != 0) {
         tools3000::core::EventBus::instance().unsubscribeAndWait(subToUnsub);
     }
-    if (hookToJoin.joinable()) {
-        hookToJoin.join();
-    }
     if (workerToJoin.joinable()) {
         workerToJoin.join();
     }
 }
 
-void TextExpanderManager::hookThreadMain(HANDLE readyEvent, std::atomic<bool>& hookReadyOk) {
-    // 提升钩子线程调度优先级，杜绝系统重负载下 WH_KEYBOARD_LL 回调延迟
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
-
-    // 强制初始化线程消息队列，确保 PostThreadMessageW(WM_QUIT) 绝不丢失
-    MSG msg{};
-    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
-
-    m_hookThreadId.store(GetCurrentThreadId(), std::memory_order_release);
-    m_lastCheckedHwnd = nullptr;
-    m_lastCheckedPolicyEpoch = 0;
-    m_lastHwndExcluded = false;
-    m_lastKeyTickMs = 0;
-    m_mouseClicked.store(false, std::memory_order_release);
-    m_foregroundDirty.store(true, std::memory_order_release);
-
-    HHOOK kbHook = SetWindowsHookExW(
-        WH_KEYBOARD_LL,
-        &TextExpanderManager::lowLevelKeyboardProc,
-        GetModuleHandleW(nullptr),
-        0);
-    m_kbHook.store(kbHook, std::memory_order_release);
-
-    // 鼠标点击感知统一复用宿主核心 MouseHook -> EventBus(MouseActivityEvent)，
-    // 严禁在此安装第 2 个全局 WH_MOUSE_LL 钩子引发 1000Hz 鼠标移动与截图框选串行延迟！
-    HWINEVENTHOOK fgEventHook = SetWinEventHook(
-        EVENT_SYSTEM_FOREGROUND,
-        EVENT_SYSTEM_FOREGROUND,
-        nullptr,
-        &TextExpanderManager::winEventForegroundProc,
-        0,
-        0,
-        WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-
-    hookReadyOk.store(kbHook != nullptr, std::memory_order_release);
-    if (readyEvent) {
-        SetEvent(readyEvent);
+void TextExpanderManager::notifyForegroundChanged() {
+    if (!m_enabled.load(std::memory_order_acquire)) {
+        return;
     }
-
-    if (kbHook != nullptr) {
-        while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-            TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-        }
-    }
-
-    if (fgEventHook) {
-        UnhookWinEvent(fgEventHook);
-    }
-    if (HHOOK kh = m_kbHook.exchange(nullptr, std::memory_order_acq_rel)) {
-        UnhookWindowsHookEx(kh);
-    }
-    m_hookThreadId.store(0, std::memory_order_release);
-}
-
-LRESULT CALLBACK TextExpanderManager::lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-    auto& self = TextExpanderManager::instance();
-    if (nCode == HC_ACTION &&
-        (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
-        self.m_enabled.load(std::memory_order_acquire) &&
-        !self.m_expanding.load(std::memory_order_acquire)) {
-        const auto* data = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
-        if (data && (data->flags & LLKHF_INJECTED) == 0 && data->dwExtraInfo != kInjectedExtraInfoTag) {
-            self.handleLowLevelKeyDown(*data);
-        }
-    }
-    return CallNextHookEx(self.m_kbHook.load(std::memory_order_relaxed), nCode, wParam, lParam);
-}
-
-void CALLBACK TextExpanderManager::winEventForegroundProc(
-    HWINEVENTHOOK,
-    DWORD,
-    HWND,
-    LONG,
-    LONG,
-    DWORD,
-    DWORD) {
-    TextExpanderManager::instance().handleForegroundChanged();
+    handleForegroundChanged();
 }
 
 void TextExpanderManager::handleForegroundChanged() {

@@ -132,6 +132,11 @@ impl CapsEngine {
         self.enabled
     }
 
+    /// 当 CapsLock 未按住且不存在尚未释放的滚键映射时返回 true，供 C++ 钩子无锁快路径零开销直通普通打字按键
+    pub fn is_idle(&self) -> bool {
+        self.state == CapsState::Idle && self.active_mapped_downs.is_empty()
+    }
+
     pub fn reset_state(&mut self) {
         self.state = CapsState::Idle;
         self.active_mapped_downs.clear();
@@ -387,6 +392,17 @@ pub unsafe extern "C" fn t3k_caps_reset_state(ptr: *mut CapsEngine) {
     if let Some(eng) = ptr.as_mut() {
         eng.reset_state();
     }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn t3k_caps_is_idle(ptr: *const CapsEngine) -> u8 {
+    if let Some(eng) = ptr.as_ref() {
+        if eng.is_idle() {
+            return 1;
+        }
+        return 0;
+    }
+    1
 }
 
 #[no_mangle]

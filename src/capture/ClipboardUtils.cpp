@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <thread>
 
 namespace tools3000::capture {
 
@@ -28,9 +29,10 @@ uint32_t s_lastCopiedSeqNumber = 0;
 bool s_hasPinMeta = false;
 Tools3000PinMetadata s_lastPinMeta{};
 std::atomic<uint64_t> s_lastTempPruneTickMs{0};
+std::atomic<bool> s_tempPruneInFlight{false};
 
-void pruneStaleClipboardTempFiles(const std::filesystem::path& tempDir,
-                                  const std::wstring& keepFilePath) noexcept {
+void pruneStaleClipboardTempFilesAsync(std::filesystem::path tempDir,
+                                       std::wstring keepFilePath) noexcept {
     const uint64_t nowTick = GetTickCount64();
     uint64_t prevTick = s_lastTempPruneTickMs.load(std::memory_order_relaxed);
     if (prevTick != 0 && (nowTick - prevTick) < 60'000ULL) {
@@ -39,48 +41,63 @@ void pruneStaleClipboardTempFiles(const std::filesystem::path& tempDir,
     if (!s_lastTempPruneTickMs.compare_exchange_strong(prevTick, nowTick, std::memory_order_relaxed)) {
         return;
     }
-
-    std::error_code ec;
-    if (!std::filesystem::exists(tempDir, ec)) return;
-
-    struct TempEntry {
-        std::filesystem::path path;
-        std::filesystem::file_time_type mtime;
-    };
-    std::vector<TempEntry> entries;
-    const auto nowFs = std::filesystem::file_time_type::clock::now();
-
-    for (std::filesystem::directory_iterator it(tempDir, ec), end; !ec && it != end; it.increment(ec)) {
-        if (!it->is_regular_file(ec)) continue;
-        const std::wstring fname = it->path().filename().wstring();
-        if (fname.rfind(L"Tools3000_", 0) != 0) continue;
-        if (fname.size() < 4 || fname.substr(fname.size() - 4) != L".png") continue;
-        if (!keepFilePath.empty() && it->path().wstring() == keepFilePath) continue;
-
-        const auto mtime = it->last_write_time(ec);
-        if (ec) {
-            ec.clear();
-            continue;
-        }
-        if (nowFs > mtime && (nowFs - mtime) > std::chrono::hours(24)) {
-            std::filesystem::remove(it->path(), ec);
-            ec.clear();
-            continue;
-        }
-        entries.push_back(TempEntry{it->path(), mtime});
+    if (s_tempPruneInFlight.exchange(true, std::memory_order_acq_rel)) {
+        return;
     }
 
-    constexpr std::size_t kMaxRetainedTempPngs = 32;
-    if (entries.size() > kMaxRetainedTempPngs) {
-        std::sort(entries.begin(), entries.end(), [](const TempEntry& a, const TempEntry& b) {
-            return a.mtime > b.mtime;
-        });
-        for (std::size_t i = kMaxRetainedTempPngs; i < entries.size(); ++i) {
-            if (nowFs > entries[i].mtime && (nowFs - entries[i].mtime) > std::chrono::minutes(2)) {
-                std::filesystem::remove(entries[i].path, ec);
-                ec.clear();
+    try {
+        std::thread([dir = std::move(tempDir), keep = std::move(keepFilePath)]() noexcept {
+            struct Guard {
+                ~Guard() noexcept {
+                    s_tempPruneInFlight.store(false, std::memory_order_release);
+                }
+            } inFlightGuard;
+
+            std::error_code ec;
+            if (!std::filesystem::exists(dir, ec)) return;
+
+            struct TempEntry {
+                std::filesystem::path path;
+                std::filesystem::file_time_type mtime;
+            };
+            std::vector<TempEntry> entries;
+            const auto nowFs = std::filesystem::file_time_type::clock::now();
+
+            for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
+                if (!it->is_regular_file(ec)) continue;
+                const std::wstring fname = it->path().filename().wstring();
+                if (fname.rfind(L"Tools3000_", 0) != 0) continue;
+                if (fname.size() < 4 || fname.substr(fname.size() - 4) != L".png") continue;
+                if (!keep.empty() && it->path().wstring() == keep) continue;
+
+                const auto mtime = it->last_write_time(ec);
+                if (ec) {
+                    ec.clear();
+                    continue;
+                }
+                if (nowFs > mtime && (nowFs - mtime) > std::chrono::hours(24)) {
+                    std::filesystem::remove(it->path(), ec);
+                    ec.clear();
+                    continue;
+                }
+                entries.push_back(TempEntry{it->path(), mtime});
             }
-        }
+
+            constexpr std::size_t kMaxRetainedTempPngs = 32;
+            if (entries.size() > kMaxRetainedTempPngs) {
+                std::sort(entries.begin(), entries.end(), [](const TempEntry& a, const TempEntry& b) {
+                    return a.mtime > b.mtime;
+                });
+                for (std::size_t i = kMaxRetainedTempPngs; i < entries.size(); ++i) {
+                    if (nowFs > entries[i].mtime && (nowFs - entries[i].mtime) > std::chrono::minutes(2)) {
+                        std::filesystem::remove(entries[i].path, ec);
+                        ec.clear();
+                    }
+                }
+            }
+        }).detach();
+    } catch (...) {
+        s_tempPruneInFlight.store(false, std::memory_order_release);
     }
 }
 }
@@ -90,7 +107,8 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
                                          HWND ownerHwnd,
                                          const CaptureRegion* sourceRegion,
                                          int padX,
-                                         int padY) {
+                                         int padY,
+                                         const std::vector<uint8_t>* preEncodedPng) {
     if (image.empty() || image.cols <= 0 || image.rows <= 0) {
         LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
         return false;
@@ -100,16 +118,25 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
     // 严禁创建临时窗口又在退出时 DestroyWindow，避免破坏 Windows 剪贴板底层句柄所有权。
     HWND safeOwner = (ownerHwnd && IsWindow(ownerHwnd)) ? ownerHwnd : nullptr;
 
-    // 2. 在进入系统剪贴板全局锁之前预先完成 PNG 编码、像素色彩转换与 CF_HDROP 临时文件落盘，
-    // 将 OpenClipboard 临界区耗时从数十毫秒缩短至亚毫秒级，彻底消除剪贴板锁竞争与重复编码开销。
-    std::vector<uint8_t> pngBytes;
-    try {
-        if (!cv::imencode(".png", image, pngBytes)) {
-            pngBytes.clear();
+    // 2. 在进入系统剪贴板全局锁之前预先完成单次极速 PNG 编码（复用调用方已编码载荷避免双倍耗时）、
+    //    像素色彩转换与页缓存 CF_HDROP 临时文件写入（禁用阻塞式 FlushFileBuffers，旧文件清理移至后台线程），
+    //    彻底消除软件冷启动后首次截图点击完成时的剪贴板交付卡顿。
+    std::vector<uint8_t> ownedPngBytes;
+    const std::vector<uint8_t>* activePngPtr = nullptr;
+    if (preEncodedPng && !preEncodedPng->empty()) {
+        activePngPtr = preEncodedPng;
+    } else {
+        try {
+            const std::vector<int> fastPngParams = {cv::IMWRITE_PNG_COMPRESSION, 1};
+            if (cv::imencode(".png", image, ownedPngBytes, fastPngParams) && !ownedPngBytes.empty()) {
+                activePngPtr = &ownedPngBytes;
+            } else {
+                ownedPngBytes.clear();
+            }
+        } catch (const cv::Exception& e) {
+            LOG_ERROR("ClipboardUtils: PNG encode threw OpenCV exception: {}", e.what());
+            ownedPngBytes.clear();
         }
-    } catch (const cv::Exception& e) {
-        LOG_ERROR("ClipboardUtils: PNG encode threw OpenCV exception: {}", e.what());
-        pngBytes.clear();
     }
 
     // 使用 64 位无符号整数计算未压缩 DIB 尺寸，防止超长图/超大图触发 32 位有符号整数溢出 (-2GB 负向堆越界写)
@@ -134,9 +161,14 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
                              dib5ImageBytes64 <= static_cast<uint64_t>((std::numeric_limits<DWORD>::max)()));
 
     std::wstring dropFilePath = preferredFilePath;
+    bool dropFileReady = false;
     std::error_code ec;
-    if (!pngBytes.empty() && (dropFilePath.empty() || !std::filesystem::exists(dropFilePath, ec))) {
-        // 若外部未显式持久化文件，自动在应用临时目录输出高可用截图副本 (宽字符时间戳原生写盘，杜绝中文路径乱码)
+    if (!dropFilePath.empty() && std::filesystem::exists(dropFilePath, ec)) {
+        dropFileReady = true;
+    }
+    if (activePngPtr && !activePngPtr->empty() && !dropFileReady) {
+        // 若外部未显式持久化文件，自动在应用临时目录以 OS 页缓存快速输出高可用截图副本
+        // （保留重解析点防护，跳过阻塞式物理 FlushFileBuffers，旧临时文件清理移交后台线程零阻塞执行）
         auto tempDir = tools3000::core::WinUtils::getAppDataDirectory() / L"temp";
         std::filesystem::create_directories(tempDir, ec);
 
@@ -151,8 +183,10 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
                   tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()));
         auto tempFile = tempDir / timeBuf;
 
-        if (tools3000::common::atomicWriteBinaryFileWithFlush(tempFile.wstring(), pngBytes.data(), pngBytes.size())) {
+        if (tools3000::common::atomicWriteBinaryFileWithFlush(
+                tempFile.wstring(), activePngPtr->data(), activePngPtr->size(), /*flushToDisk=*/false)) {
             dropFilePath = tempFile.wstring();
+            dropFileReady = true;
         } else {
             static std::atomic<uint32_t> s_dropFallbackSeq{1};
             wchar_t fallbackBuf[80];
@@ -161,11 +195,13 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
                       tm.tm_hour, tm.tm_min, tm.tm_sec, static_cast<int>(ms.count()),
                       s_dropFallbackSeq.fetch_add(1, std::memory_order_relaxed));
             auto fallbackFile = tempDir / fallbackBuf;
-            if (tools3000::common::atomicWriteBinaryFileWithFlush(fallbackFile.wstring(), pngBytes.data(), pngBytes.size())) {
+            if (tools3000::common::atomicWriteBinaryFileWithFlush(
+                    fallbackFile.wstring(), activePngPtr->data(), activePngPtr->size(), /*flushToDisk=*/false)) {
                 dropFilePath = fallbackFile.wstring();
+                dropFileReady = true;
             }
         }
-        pruneStaleClipboardTempFiles(tempDir, dropFilePath);
+        pruneStaleClipboardTempFilesAsync(std::move(tempDir), dropFilePath);
     }
 
     cv::Mat bgrMat;
@@ -214,7 +250,7 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
         }
     }
 
-    if (pngBytes.empty() && bgrMat.empty() && bgraMat.empty()) {
+    if ((!activePngPtr || activePngPtr->empty()) && bgrMat.empty() && bgraMat.empty()) {
         LOG_WARN("ClipboardUtils: image buffer is empty, aborting clipboard write");
         return false;
     }
@@ -255,12 +291,12 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
 
     // 4. 格式 1: 写入 PNG 格式 (保留透明通道与最高画质，现代社交与协同软件首选)
     UINT formatPng = RegisterClipboardFormatW(L"PNG");
-    if (formatPng != 0 && !pngBytes.empty()) {
-        HGLOBAL hPngGlobal = GlobalAlloc(GMEM_MOVEABLE, pngBytes.size());
+    if (formatPng != 0 && activePngPtr && !activePngPtr->empty()) {
+        HGLOBAL hPngGlobal = GlobalAlloc(GMEM_MOVEABLE, activePngPtr->size());
         if (hPngGlobal) {
             void* pPngMem = GlobalLock(hPngGlobal);
             if (pPngMem) {
-                memcpy(pPngMem, pngBytes.data(), pngBytes.size());
+                memcpy(pPngMem, activePngPtr->data(), activePngPtr->size());
                 GlobalUnlock(hPngGlobal);
                 if (SetClipboardData(formatPng, hPngGlobal)) {
                     pngSet = true;
@@ -374,7 +410,7 @@ bool ClipboardUtils::copyImageToClipboard(const cv::Mat& image,
     }
 
     // 7. 格式 5: 写入 CF_HDROP (文件拖拽句柄，赋予 Windows 桌面与资源管理器直接 Ctrl+V 粘贴 PNG 图片文件的原生能力)
-    if (!dropFilePath.empty() && std::filesystem::exists(dropFilePath, ec)) {
+    if (dropFileReady && !dropFilePath.empty()) {
         DROPFILES df{};
         df.pFiles = sizeof(DROPFILES);
         df.pt = {0, 0};

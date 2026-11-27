@@ -1297,12 +1297,20 @@ void CaptureInput::executeToolbarCommand(const ToolbarButton& button) {
             int padX = (cropped.cols > reg.width && reg.width > 0) ? (cropped.cols - reg.width) / 2 : 0;
             int padY = (cropped.rows > reg.height && reg.height > 0) ? (cropped.rows - reg.height) / 2 : 0;
 
-            // 写入历史记录；仅在用户开启「自动复制到剪贴板」时顺带写入剪贴板（关闭时绝不破坏用户原有剪贴板）
-            CaptureHistory::instance().push(cropped, reg);
+            // 若用户开启「自动复制到剪贴板」，优先写入剪贴板并复用单次极速 PNG 字节流给历史记录，避免二次编码卡顿
+            std::vector<uint8_t> pinSharedPng;
             if (tools3000::core::ConfigManager::instance().get<bool>("/capture/copyToClipboard", true)) {
                 const cv::Mat clipboardCopy = WatermarkRenderer::applyGlobalCaptureWatermarkIfEnabled(cropped);
-                ClipboardUtils::copyImageToClipboard(clipboardCopy, L"", nullptr, &reg, padX, padY);
+                if (!clipboardCopy.empty()) {
+                    cv::imencode(".png", clipboardCopy, pinSharedPng, {cv::IMWRITE_PNG_COMPRESSION, 1});
+                }
+                const std::vector<uint8_t>* preEncoded = pinSharedPng.empty() ? nullptr : &pinSharedPng;
+                ClipboardUtils::copyImageToClipboard(clipboardCopy, L"", nullptr, &reg, padX, padY, preEncoded);
+                if (clipboardCopy.data != cropped.data) {
+                    pinSharedPng.clear();
+                }
             }
+            CaptureHistory::instance().push(cropped, reg, "", pinSharedPng.empty() ? nullptr : &pinSharedPng);
 
             // 计算智能贴图坐标（原位对齐并避让重叠）
             POINT spawnPos = PinWindow::calculateSmartSpawnPosition(cropped.cols, cropped.rows, nullptr, &reg, padX, padY);

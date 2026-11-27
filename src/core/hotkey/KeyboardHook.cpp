@@ -4,6 +4,7 @@
 #include "core/logger/Logger.h"
 #include "core/stats/StatsManager.h"
 #include "core/config/ConfigManager.h"
+#include "core/utils/UiThreadJoin.h"
 #include <vector>
 #include <string>
 #include <format>
@@ -11,49 +12,148 @@
 
 namespace tools3000::core {
 
+KeyboardHook::KeyboardHook() = default;
+
+KeyboardHook::~KeyboardHook() {
+    uninstall();
+    clearCallbacks();
+}
+
 KeyboardHook& KeyboardHook::instance() {
     static KeyboardHook inst;
     return inst;
 }
 
+bool KeyboardHook::isInstalled() const {
+    return m_hookHandle.load(std::memory_order_acquire) != nullptr;
+}
+
+void KeyboardHook::reclaimRetiredCallbacksLocked() noexcept {
+    if (m_activeHookCalls.load(std::memory_order_seq_cst) == 0) {
+        m_retiredKeycastCallbacks.clear();
+        m_retiredKeycastKeyInfoCallbacks.clear();
+        m_retiredKeyInterceptors.clear();
+        m_retiredLowLevelKeyInterceptors.clear();
+        m_retiredActivityCallbacks.clear();
+        m_retiredTextExpanderObservers.clear();
+    }
+}
+
 bool KeyboardHook::install() {
-    if (m_hookHandle) {
+    std::lock_guard lifecycleLock(m_lifecycleMutex);
+    if (isInstalled()) {
         LOG_DEBUG("Hook already installed");
         return true;
     }
 
     syncConfigCache();
 
-    m_hookHandle = SetWindowsHookExW(
+    HANDLE readyEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!readyEvent) {
+        LOG_ERROR("KeyboardHook failed to create input thread ready event, error={}", GetLastError());
+        return false;
+    }
+
+    m_inputThread = std::jthread([this, readyEvent]() {
+        inputThreadWorker(readyEvent);
+    });
+
+    WaitForSingleObject(readyEvent, 3000);
+    CloseHandle(readyEvent);
+
+    if (!isInstalled()) {
+        LOG_ERROR("Hook installation failed, error={}", GetLastError());
+        const DWORD tid = m_threadId.exchange(0, std::memory_order_acq_rel);
+        if (tid != 0) {
+            PostThreadMessageW(tid, WM_QUIT, 0, 0);
+        }
+        if (m_inputThread.joinable()) {
+            joinWorkerWhilePumpingSentMessages(m_inputThread, 3000);
+        }
+        return false;
+    }
+
+    LOG_INFO("KeyboardHook installed on dedicated high-priority input thread");
+    return true;
+}
+
+void KeyboardHook::inputThreadWorker(HANDLE readyEvent) {
+    // 独立高优先级键盘输入线程：与主 UI 线程的截图/WebView2/设置窗彻底解耦，
+    // 杜绝主线程短暂繁忙时阻塞系统 WH_KEYBOARD_LL 导致输入法按键迟滞或 Windows 自动脱钩。
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
+    // 预初始化线程消息队列，确保 PostThreadMessageW(WM_QUIT) 绝不丢失
+    MSG msg{};
+    PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);
+
+    m_threadId.store(GetCurrentThreadId(), std::memory_order_release);
+
+    HHOOK hook = SetWindowsHookExW(
         WH_KEYBOARD_LL,
         lowLevelKeyboardProc,
         GetModuleHandleW(nullptr),
         0  // 全局钩子
     );
 
-    if (!m_hookHandle) {
-        LOG_ERROR("Hook installation failed, error={}", GetLastError());
-        return false;
+    if (hook) {
+        m_hookHandle.store(hook, std::memory_order_release);
+    } else {
+        LOG_ERROR("SetWindowsHookExW(WH_KEYBOARD_LL) failed, error={}", GetLastError());
     }
 
-    LOG_INFO("Hook installed");
-    return true;
+    SetEvent(readyEvent);
+
+    if (!hook) {
+        m_threadId.store(0, std::memory_order_release);
+        return;
+    }
+
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (HHOOK h = m_hookHandle.exchange(nullptr, std::memory_order_acq_rel)) {
+        UnhookWindowsHookEx(h);
+    }
+    m_threadId.store(0, std::memory_order_release);
 }
 
 void KeyboardHook::uninstall() {
-    if (m_hookHandle) {
-        UnhookWindowsHookEx(m_hookHandle);
-        m_hookHandle = nullptr;
-        m_testModifierMask.store(0, std::memory_order_relaxed);
-        {
-            std::lock_guard lock(m_callbackMutex);
-            m_pendingModifierVk = 0;
-            m_comboTriggered = false;
+    std::jthread workerToJoin;
+    bool hadHook = false;
+    {
+        std::lock_guard lifecycleLock(m_lifecycleMutex);
+        if (HHOOK h = m_hookHandle.exchange(nullptr, std::memory_order_acq_rel)) {
+            UnhookWindowsHookEx(h);
+            hadHook = true;
         }
-        {
-            std::lock_guard hookLock(m_hookHotkeyMutex);
-            m_pressedHookVks.clear();
+        const DWORD tid = m_threadId.exchange(0, std::memory_order_acq_rel);
+        if (tid != 0) {
+            PostThreadMessageW(tid, WM_QUIT, 0, 0);
         }
+        if (m_inputThread.joinable()) {
+            workerToJoin = std::move(m_inputThread);
+        }
+    }
+
+    if (workerToJoin.joinable() && workerToJoin.get_id() != std::this_thread::get_id()) {
+        joinWorkerWhilePumpingSentMessages(workerToJoin, 3000);
+    }
+
+    m_testModifierMask.store(0, std::memory_order_relaxed);
+    m_pendingModifierVk.store(0, std::memory_order_relaxed);
+    m_comboTriggered.store(false, std::memory_order_relaxed);
+    {
+        std::lock_guard hookLock(m_hookHotkeyMutex);
+        m_pressedHookVks.clear();
+    }
+    {
+        std::lock_guard lock(m_callbackMutex);
+        reclaimRetiredCallbacksLocked();
+    }
+
+    if (hadHook) {
         LOG_INFO("Hook uninstalled");
     }
 }
@@ -61,11 +161,8 @@ void KeyboardHook::uninstall() {
 void KeyboardHook::setPaused(bool paused) {
     m_paused.store(paused, std::memory_order_relaxed);
     if (paused) {
-        {
-            std::lock_guard lock(m_callbackMutex);
-            m_pendingModifierVk = 0;
-            m_comboTriggered = false;
-        }
+        m_pendingModifierVk.store(0, std::memory_order_relaxed);
+        m_comboTriggered.store(false, std::memory_order_relaxed);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -80,11 +177,8 @@ bool KeyboardHook::isPaused() const {
 void KeyboardHook::setFullscreenSuspended(bool suspended) {
     m_fullscreenSuspended.store(suspended, std::memory_order_relaxed);
     if (suspended) {
-        {
-            std::lock_guard lock(m_callbackMutex);
-            m_pendingModifierVk = 0;
-            m_comboTriggered = false;
-        }
+        m_pendingModifierVk.store(0, std::memory_order_relaxed);
+        m_comboTriggered.store(false, std::memory_order_relaxed);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -99,11 +193,8 @@ bool KeyboardHook::isFullscreenSuspended() const {
 void KeyboardHook::setRemoteSuspended(bool suspended) {
     m_remoteSuspended.store(suspended, std::memory_order_relaxed);
     if (suspended) {
-        {
-            std::lock_guard lock(m_callbackMutex);
-            m_pendingModifierVk = 0;
-            m_comboTriggered = false;
-        }
+        m_pendingModifierVk.store(0, std::memory_order_relaxed);
+        m_comboTriggered.store(false, std::memory_order_relaxed);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -189,18 +280,33 @@ void KeyboardHook::clearHookHotkeys() {
 }
 
 void KeyboardHook::clearCallbacks() {
-    std::function<void(const std::string&)> keycastCb;
-    std::function<void(const KeycastKeyInfo&)> keycastInfoCb;
-    std::function<bool(DWORD, WPARAM)> keyInterceptor;
-    std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> lowLevelInterceptor;
-    std::function<void(DWORD, WPARAM)> activityCb;
     {
         std::lock_guard lock(m_callbackMutex);
-        keycastCb = std::move(m_keycastCallback);
-        keycastInfoCb = std::move(m_keycastKeyInfoCallback);
-        keyInterceptor = std::move(m_keyInterceptor);
-        lowLevelInterceptor = std::move(m_lowLevelKeyInterceptor);
-        activityCb = std::move(m_activityCallback);
+        m_keycastCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_keycastCallbackHolder) {
+            m_retiredKeycastCallbacks.push_back(std::move(m_keycastCallbackHolder));
+        }
+        m_keycastKeyInfoCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_keycastKeyInfoCallbackHolder) {
+            m_retiredKeycastKeyInfoCallbacks.push_back(std::move(m_keycastKeyInfoCallbackHolder));
+        }
+        m_keyInterceptorPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_keyInterceptorHolder) {
+            m_retiredKeyInterceptors.push_back(std::move(m_keyInterceptorHolder));
+        }
+        m_lowLevelKeyInterceptorPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_lowLevelKeyInterceptorHolder) {
+            m_retiredLowLevelKeyInterceptors.push_back(std::move(m_lowLevelKeyInterceptorHolder));
+        }
+        m_activityCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_activityCallbackHolder) {
+            m_retiredActivityCallbacks.push_back(std::move(m_activityCallbackHolder));
+        }
+        m_textExpanderObserverPtr.store(nullptr, std::memory_order_seq_cst);
+        if (m_textExpanderObserverHolder) {
+            m_retiredTextExpanderObservers.push_back(std::move(m_textExpanderObserverHolder));
+        }
+        reclaimRetiredCallbacksLocked();
     }
     clearHookHotkeys();
 }
@@ -244,34 +350,103 @@ void KeyboardHook::syncConfigCache() {
 void KeyboardHook::setKeycastCallback(std::function<void(const std::string&)> cb) {
     syncConfigCache();
     std::lock_guard lock(m_callbackMutex);
-    m_keycastCallback = std::move(cb);
+    if (m_keycastCallbackHolder) {
+        m_retiredKeycastCallbacks.push_back(std::move(m_keycastCallbackHolder));
+    }
+    if (cb) {
+        m_keycastCallbackHolder = std::make_unique<KeycastCallbackFn>(std::move(cb));
+        m_keycastCallbackPtr.store(m_keycastCallbackHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_keycastCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
 }
 
 void KeyboardHook::setKeycastKeyInfoCallback(std::function<void(const KeycastKeyInfo&)> cb) {
     syncConfigCache();
     std::lock_guard lock(m_callbackMutex);
-    m_keycastKeyInfoCallback = std::move(cb);
+    if (m_keycastKeyInfoCallbackHolder) {
+        m_retiredKeycastKeyInfoCallbacks.push_back(std::move(m_keycastKeyInfoCallbackHolder));
+    }
+    if (cb) {
+        m_keycastKeyInfoCallbackHolder = std::make_unique<KeycastKeyInfoCallbackFn>(std::move(cb));
+        m_keycastKeyInfoCallbackPtr.store(m_keycastKeyInfoCallbackHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_keycastKeyInfoCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
 }
 
 void KeyboardHook::setKeyInterceptor(std::function<bool(DWORD vkCode, WPARAM wParam)> interceptor) {
     std::lock_guard lock(m_callbackMutex);
-    m_keyInterceptor = std::move(interceptor);
+    if (m_keyInterceptorHolder) {
+        m_retiredKeyInterceptors.push_back(std::move(m_keyInterceptorHolder));
+    }
+    if (interceptor) {
+        m_keyInterceptorHolder = std::make_unique<KeyInterceptorFn>(std::move(interceptor));
+        m_keyInterceptorPtr.store(m_keyInterceptorHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_keyInterceptorPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
 }
 
 void KeyboardHook::setLowLevelKeyInterceptor(std::function<bool(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> interceptor) {
     std::lock_guard lock(m_callbackMutex);
-    m_lowLevelKeyInterceptor = std::move(interceptor);
+    if (m_lowLevelKeyInterceptorHolder) {
+        m_retiredLowLevelKeyInterceptors.push_back(std::move(m_lowLevelKeyInterceptorHolder));
+    }
+    if (interceptor) {
+        m_lowLevelKeyInterceptorHolder = std::make_unique<LowLevelKeyInterceptorFn>(std::move(interceptor));
+        m_lowLevelKeyInterceptorPtr.store(m_lowLevelKeyInterceptorHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_lowLevelKeyInterceptorPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
 }
 
 void KeyboardHook::setKeyboardActivityCallback(std::function<void(DWORD vkCode, WPARAM wParam)> cb) {
     std::lock_guard lock(m_callbackMutex);
-    m_activityCallback = std::move(cb);
+    if (m_activityCallbackHolder) {
+        m_retiredActivityCallbacks.push_back(std::move(m_activityCallbackHolder));
+    }
+    if (cb) {
+        m_activityCallbackHolder = std::make_unique<ActivityCallbackFn>(std::move(cb));
+        m_activityCallbackPtr.store(m_activityCallbackHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_activityCallbackPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
+}
+
+void KeyboardHook::setTextExpanderObserver(std::function<void(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> observer) {
+    std::lock_guard lock(m_callbackMutex);
+    if (m_textExpanderObserverHolder) {
+        m_retiredTextExpanderObservers.push_back(std::move(m_textExpanderObserverHolder));
+    }
+    if (observer) {
+        m_textExpanderObserverHolder = std::make_unique<TextExpanderObserverFn>(std::move(observer));
+        m_textExpanderObserverPtr.store(m_textExpanderObserverHolder.get(), std::memory_order_seq_cst);
+    } else {
+        m_textExpanderObserverPtr.store(nullptr, std::memory_order_seq_cst);
+    }
+    reclaimRetiredCallbacksLocked();
 }
 
 LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     auto& self = KeyboardHook::instance();
 
     if (nCode >= 0 && !self.m_paused.load(std::memory_order_relaxed)) {
+        struct ActiveHookCallGuard {
+            std::atomic<uint32_t>& counter;
+            explicit ActiveHookCallGuard(std::atomic<uint32_t>& c) noexcept : counter(c) {
+                counter.fetch_add(1, std::memory_order_seq_cst);
+            }
+            ~ActiveHookCallGuard() noexcept {
+                counter.fetch_sub(1, std::memory_order_release);
+            }
+        } callGuard{self.m_activeHookCalls};
+
         try {
             auto* data = reinterpret_cast<KBDLLHOOKSTRUCT*>(lParam);
 
@@ -279,7 +454,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
             // 杜绝后台正式版进程被自动化 E2E 测试脚本误触发或抢占拦截。
             static const bool s_allowInjectedKeyboard =
                 (GetEnvironmentVariableW(L"TOOLS3000_ALLOW_INJECTED_KEYBOARD", nullptr, 0) > 0);
-            if (!(data->flags & LLKHF_INJECTED) || s_allowInjectedKeyboard) {
+            if (data && (!(data->flags & LLKHF_INJECTED) || s_allowInjectedKeyboard)) {
                 // 统一维护欧洲键盘布局 AltGr 合成 Left-Ctrl (scanCode 0x21D / 0x02xx) 状态机，
                 // 消除 Keycast 插件在主线程重复安装第二条 WH_KEYBOARD_LL 的系统钩子开销。
                 {
@@ -312,24 +487,16 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 const bool localHotkeysSuspended = fullscreenSuspended || remoteSuspended;
 
                 if (!localHotkeysSuspended) {
-                    // 优先执行键盘活动监听器（例如鼠标聚光灯双击 Ctrl 与退场检测）
-                    std::function<void(DWORD, WPARAM)> actCallback;
-                    {
-                        std::lock_guard lock(self.m_callbackMutex);
-                        actCallback = self.m_activityCallback;
-                    }
-                    if (actCallback) {
-                        actCallback(data->vkCode, wParam);
+                    // 优先执行键盘活动监听器（例如鼠标聚光灯双击 Ctrl 与退场检测）— 0 锁原子读
+                    if (auto* actCallback = self.m_activityCallbackPtr.load(std::memory_order_acquire);
+                        actCallback && *actCallback) {
+                        (*actCallback)(data->vkCode, wParam);
                     }
                 }
 
-                // 优先执行底层原始按键拦截器（例如 RemoteMaster 硬件扫描码级沉浸直通与急救快捷键，全屏/远程桌面下仍需生效）
-                std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> lowLevelInterceptor;
-                {
-                    std::lock_guard lock(self.m_callbackMutex);
-                    lowLevelInterceptor = self.m_lowLevelKeyInterceptor;
-                }
-                if (lowLevelInterceptor && lowLevelInterceptor(*data, wParam)) {
+                // 优先执行底层原始按键拦截器（例如 RemoteMaster / CapsLayer，全屏/远程桌面下仍需生效）— 0 锁原子读
+                if (auto* lowLevelInterceptor = self.m_lowLevelKeyInterceptorPtr.load(std::memory_order_acquire);
+                    lowLevelInterceptor && *lowLevelInterceptor && (*lowLevelInterceptor)(*data, wParam)) {
                     return 1; // 消费并拦截按键
                 }
 
@@ -417,14 +584,19 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                         }
                     }
 
-                    // 优先执行自定义按键拦截器（例如 QuickLook 空格预览）
-                    std::function<bool(DWORD, WPARAM)> interceptor;
-                    {
-                        std::lock_guard lock(self.m_callbackMutex);
-                        interceptor = self.m_keyInterceptor;
-                    }
-                    if (interceptor && interceptor(data->vkCode, wParam)) {
+                    // 优先执行自定义按键拦截器（例如 QuickLook 空格预览）— 0 锁原子读
+                    if (auto* interceptor = self.m_keyInterceptorPtr.load(std::memory_order_acquire);
+                        interceptor && *interceptor && (*interceptor)(data->vkCode, wParam)) {
                         return 1; // 消费并拦截按键
+                    }
+                }
+
+                // 共享单钩子文本扩展观察者：在未被拦截的非注入物理按键按下时直达 TextExpander（全进程仅 1 条 WH_KEYBOARD_LL）
+                if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
+                    ((data->flags & LLKHF_INJECTED) == 0)) {
+                    if (auto* teObs = self.m_textExpanderObserverPtr.load(std::memory_order_acquire);
+                        teObs && *teObs) {
+                        (*teObs)(*data, wParam);
                     }
                 }
 
@@ -444,19 +616,18 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                              (!fullscreenSuspended || isRecording ||
                                               !self.m_keycastAutoBypassFullscreen.load(std::memory_order_relaxed));
                 if (captureOverlayActive && !isRecording) {
-                    std::lock_guard lock(self.m_callbackMutex);
-                    self.m_pendingModifierVk = 0;
-                    self.m_comboTriggered = false;
+                    self.m_pendingModifierVk.store(0, std::memory_order_relaxed);
+                    self.m_comboTriggered.store(false, std::memory_order_relaxed);
                 }
-                std::function<void(const KeycastKeyInfo&)> keycastKeyInfoCallback;
-                std::function<void(const std::string&)> keycastCallback;
-                if (allowKeycastNow) {
-                    std::lock_guard lock(self.m_callbackMutex);
-                    keycastKeyInfoCallback = self.m_keycastKeyInfoCallback;
-                    keycastCallback = self.m_keycastCallback;
-                }
+                auto* keycastKeyInfoCallback = allowKeycastNow
+                    ? self.m_keycastKeyInfoCallbackPtr.load(std::memory_order_acquire)
+                    : nullptr;
+                auto* keycastCallback = allowKeycastNow
+                    ? self.m_keycastCallbackPtr.load(std::memory_order_acquire)
+                    : nullptr;
 
-                if (keycastKeyInfoCallback || keycastCallback) {
+                if ((keycastKeyInfoCallback && *keycastKeyInfoCallback) ||
+                    (keycastCallback && *keycastCallback)) {
                     uint8_t mode = self.m_filterMode.load(std::memory_order_relaxed);
                     // 录屏模式严格尊重用户按键过滤策略（默认 smart_shortcuts 智能静默拼音/密码打字，杜绝全屏刷屏；
                     // 仅在用户显式配置 all_keys 时才回显普通打字）
@@ -483,16 +654,12 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                     if (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) {
                         if (isMod) {
                             // 修饰键单按时进入暂存态，不立即弹出回显（等待 KeyUp 或后续组合键触发）
-                            std::lock_guard lock(self.m_callbackMutex);
-                            self.m_pendingModifierVk = vk;
-                            self.m_comboTriggered = false;
+                            self.m_pendingModifierVk.store(vk, std::memory_order_relaxed);
+                            self.m_comboTriggered.store(false, std::memory_order_relaxed);
                         } else {
                             // 主键按下，如果此前有暂存的修饰键，标记组合键已触发（吞掉单修饰键）
-                            {
-                                std::lock_guard lock(self.m_callbackMutex);
-                                if (self.m_pendingModifierVk != 0) {
-                                    self.m_comboTriggered = true;
-                                }
+                            if (self.m_pendingModifierVk.load(std::memory_order_relaxed) != 0) {
+                                self.m_comboTriggered.store(true, std::memory_order_relaxed);
                             }
 
                             UINT scanCode = data->scanCode;
@@ -526,10 +693,10 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 !self.m_realRCtrlDown.load(std::memory_order_relaxed);
 
                             if (info.shouldDisplay) {
-                                if (keycastKeyInfoCallback) {
-                                    keycastKeyInfoCallback(info);
-                                } else if (keycastCallback) {
-                                    keycastCallback(info.rawKey);
+                                if (keycastKeyInfoCallback && *keycastKeyInfoCallback) {
+                                    (*keycastKeyInfoCallback)(info);
+                                } else if (keycastCallback && *keycastCallback) {
+                                    (*keycastCallback)(info.rawKey);
                                 }
                             }
                         }
@@ -539,17 +706,15 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                         if (isMod) {
                             bool shouldEmitSingleMod = false;
                             DWORD targetVk = 0;
-                            {
-                                std::lock_guard lock(self.m_callbackMutex);
-                                if (self.m_pendingModifierVk == vk && !self.m_comboTriggered) {
-                                    if (filterMode == "with_single_modifiers" || filterMode == "all_keys") {
-                                        shouldEmitSingleMod = true;
-                                        targetVk = vk;
-                                    }
+                            if (self.m_pendingModifierVk.load(std::memory_order_relaxed) == vk &&
+                                !self.m_comboTriggered.load(std::memory_order_relaxed)) {
+                                if (filterMode == "with_single_modifiers" || filterMode == "all_keys") {
+                                    shouldEmitSingleMod = true;
+                                    targetVk = vk;
                                 }
-                                self.m_pendingModifierVk = 0;
-                                self.m_comboTriggered = false;
                             }
+                            self.m_pendingModifierVk.store(0, std::memory_order_relaxed);
+                            self.m_comboTriggered.store(false, std::memory_order_relaxed);
 
                             if (shouldEmitSingleMod) {
                                 std::string modName = "Ctrl";
@@ -563,10 +728,10 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 modInfo.isShortcut = false;
                                 modInfo.shouldDisplay = true;
 
-                                if (keycastKeyInfoCallback) {
-                                    keycastKeyInfoCallback(modInfo);
-                                } else if (keycastCallback) {
-                                    keycastCallback(modName);
+                                if (keycastKeyInfoCallback && *keycastKeyInfoCallback) {
+                                    (*keycastKeyInfoCallback)(modInfo);
+                                } else if (keycastCallback && *keycastCallback) {
+                                    (*keycastCallback)(modName);
                                 }
                             }
                         }
@@ -580,7 +745,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
         }
     }
 
-    return CallNextHookEx(self.m_hookHandle, nCode, wParam, lParam);
+    return CallNextHookEx(self.m_hookHandle.load(std::memory_order_relaxed), nCode, wParam, lParam);
 }
 
 } // namespace tools3000::core

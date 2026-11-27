@@ -203,7 +203,9 @@ inline bool ensureDirectorySafeNoReparse(const std::wstring& dirPath) noexcept {
     return true;
 }
 
-inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, std::string_view content) {
+inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath,
+                                           std::string_view content,
+                                           bool flushToDisk = true) {
     if (targetPath.empty()) {
         return false;
     }
@@ -272,7 +274,7 @@ inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, std::
         offset += bytesWritten;
     }
 
-    if (!FlushFileBuffers(hFile)) {
+    if (flushToDisk && !FlushFileBuffers(hFile)) {
         CloseHandle(hFile);
         DeleteFileW(tempPath.c_str());
         return false;
@@ -286,13 +288,14 @@ inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, std::
         return false;
     }
 
+    const DWORD moveFlags = MOVEFILE_REPLACE_EXISTING | (flushToDisk ? MOVEFILE_WRITE_THROUGH : 0u);
     constexpr DWORD kRenameRetryBackoffMs[] = {10, 20, 35};
     bool moved = false;
     for (size_t attempt = 0; attempt <= std::size(kRenameRetryBackoffMs); ++attempt) {
         if (MoveFileExW(
                 tempPath.c_str(),
                 targetPath.c_str(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+                moveFlags)) {
             moved = true;
             break;
         }
@@ -311,13 +314,17 @@ inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, std::
     return true;
 }
 
-inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath, const void* data, size_t size) {
+inline bool atomicWriteBinaryFileWithFlush(const std::wstring& targetPath,
+                                           const void* data,
+                                           size_t size,
+                                           bool flushToDisk = true) {
     if (size > 0 && data == nullptr) {
         return false;
     }
     return atomicWriteBinaryFileWithFlush(
         targetPath,
-        size > 0 ? std::string_view(static_cast<const char*>(data), size) : std::string_view{});
+        size > 0 ? std::string_view(static_cast<const char*>(data), size) : std::string_view{},
+        flushToDisk);
 }
 
 inline bool atomicWriteFileWithFlush(const std::wstring& targetPath, const std::string& content) {
