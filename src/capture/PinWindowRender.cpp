@@ -1784,10 +1784,11 @@ void PinWindow::render() {
                 ComPtr<ID2D1SolidColorBrush> hudTxtBr;
                 m_renderTarget->CreateSolidColorBrush(hudPal.textPrimary, hudTxtBr.GetAddressOf());
 
-                auto drawCapsulePill = [&](const std::wstring& pillText, float preferCenterY, bool hoveredPill = false) -> D2D1_RECT_F {
+                auto drawCapsulePill = [&](const std::wstring& pillText, float preferCenterY, bool hoveredPill = false, bool withSpinner = false) -> D2D1_RECT_F {
                     const float textW = measureUiTextWidth(pillText, hudScale);
-                    const float pillH = (std::min)(size.height - 4.0f, 24.0f * hudScale);
-                    const float pillW = std::clamp(textW + 20.0f * hudScale, 42.0f * hudScale, (std::max)(42.0f * hudScale, size.width - 8.0f));
+                    const float spinReserve = withSpinner ? (18.0f * hudScale) : 0.0f;
+                    const float pillH = (std::min)(size.height - 4.0f, 26.0f * hudScale);
+                    const float pillW = std::clamp(textW + 22.0f * hudScale + spinReserve, 44.0f * hudScale, (std::max)(44.0f * hudScale, size.width - 8.0f));
                     const float left = (size.width - pillW) * 0.5f;
                     const float top = std::clamp(preferCenterY - pillH * 0.5f, 4.0f, (std::max)(4.0f, size.height - pillH - 4.0f));
                     const D2D1_RECT_F pillRect = D2D1::RectF(left, top, left + pillW, top + pillH);
@@ -1796,23 +1797,70 @@ void PinWindow::render() {
                         FloatingGlassBar::drawButtonPill(
                             m_renderTarget.Get(), pillRect, pillH * 0.5f, true, false, false, false, 0.96f, hudPal.isDark);
                     }
+                    if (withSpinner && m_d2dFactory && pillW >= 48.0f * hudScale) {
+                        const float sr = 5.5f * hudScale;
+                        const float scx = pillRect.left + 13.0f * hudScale;
+                        const float scy = (pillRect.top + pillRect.bottom) * 0.5f;
+                        const float sw = 1.65f * hudScale;
+                        ComPtr<ID2D1SolidColorBrush> trackBr, arcBr;
+                        m_renderTarget->CreateSolidColorBrush(
+                            hudPal.isDark ? D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.22f) : D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.14f),
+                            trackBr.GetAddressOf());
+                        const auto accent = tools3000::core::NativeThemePalette::getEffectiveAccentColorRGB();
+                        m_renderTarget->CreateSolidColorBrush(
+                            D2D1::ColorF(accent.r, accent.g, accent.b, 0.98f), arcBr.GetAddressOf());
+                        if (trackBr) {
+                            m_renderTarget->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(scx, scy), sr, sr), trackBr.Get(), sw);
+                        }
+                        if (arcBr) {
+                            constexpr float kPi = 3.14159265f;
+                            const float a0 = m_busySpinAngle;
+                            const float a1 = a0 + 1.45f * kPi;
+                            ComPtr<ID2D1PathGeometry> arcGeo;
+                            if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(arcGeo.GetAddressOf())) && arcGeo) {
+                                ComPtr<ID2D1GeometrySink> sink;
+                                if (SUCCEEDED(arcGeo->Open(sink.GetAddressOf())) && sink) {
+                                    sink->BeginFigure(D2D1::Point2F(scx + sr * std::cos(a0), scy + sr * std::sin(a0)),
+                                                      D2D1_FIGURE_BEGIN_HOLLOW);
+                                    sink->AddArc(D2D1::ArcSegment(
+                                        D2D1::Point2F(scx + sr * std::cos(a1), scy + sr * std::sin(a1)),
+                                        D2D1::SizeF(sr, sr), 0.0f,
+                                        D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                                    if (SUCCEEDED(sink->Close())) {
+                                        m_renderTarget->DrawGeometry(arcGeo.Get(), arcBr.Get(), sw);
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (hudTxtBr) {
+                        const D2D1_RECT_F textRect = withSpinner
+                            ? D2D1::RectF(pillRect.left + spinReserve + 4.0f * hudScale, pillRect.top, pillRect.right - 6.0f * hudScale, pillRect.bottom)
+                            : pillRect;
                         m_renderTarget->DrawTextW(
                             pillText.c_str(), static_cast<UINT32>(pillText.size()),
-                            m_uiCenterTextFormat.Get(), pillRect, hudTxtBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+                            m_uiCenterTextFormat.Get(), textRect, hudTxtBr.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
                     }
                     return pillRect;
                 };
 
                 if (ocrWaiting || translateWaiting) {
                     const bool isZh = tools3000::core::isUiLanguageChinese();
-                    const std::wstring waitText = translateWaiting
-                        ? tools3000::core::trWCstrFor(isZh, L"正在翻译...", L"Translating...")
-                        : tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...");
+                    std::wstring stageOverride;
+                    {
+                        std::lock_guard<std::mutex> stLock(m_stageTextMutex);
+                        stageOverride = translateWaiting ? m_translateStageText : m_ocrStageText;
+                    }
+                    const std::wstring waitText = !stageOverride.empty()
+                        ? stageOverride
+                        : (translateWaiting
+                               ? std::wstring(tools3000::core::trWCstrFor(isZh, L"正在翻译...", L"Translating..."))
+                               : std::wstring(tools3000::core::trWCstrFor(isZh, L"正在识别...", L"Recognizing...")));
                     const float topAnchor = (m_hoverAlpha > 0.05f && m_toolbarRect.bottom > m_toolbarRect.top)
                         ? (m_toolbarRect.bottom + 16.0f * hudScale)
                         : (size.height * 0.5f);
-                    drawCapsulePill(waitText, topAnchor);
+                    drawCapsulePill(waitText, topAnchor, false, /*withSpinner=*/true);
                     m_lastRenderedOcrBadge = true;
                 }
                 if (showPctBadge) {

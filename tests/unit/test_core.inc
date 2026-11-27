@@ -7250,3 +7250,80 @@ TEST(WindowKitControllerTest, HandleLayoutEditorResultPersistsLayoutAndPerDeskto
         cfg.set<nlohmann::json>("/windowManager", prevWm);
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 全球双栈自适应离线模型下载引擎与翻译阶段名称回归测试
+// ─────────────────────────────────────────────────────────────────────────────
+#include "core/network/ResilientModelDownloader.h"
+#include "core/translate/TranslationService.h"
+
+TEST(ResilientModelDownloaderTest, UrlHostContentRangeWatchdogAndRegionOrder) {
+    using namespace tools3000::core::net;
+
+    // 1. URL 主机名提取（小写规范化、自动剥离路径与端口）
+    EXPECT_EQ(ResilientModelDownloader::extractUrlHostUtf8(
+        L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx"),
+        "www.modelscope.cn");
+    EXPECT_EQ(ResilientModelDownloader::extractUrlHostUtf8(
+        L"https://HF-Mirror.com:443/andraniksargsyan/migan/resolve/main/migan_pipeline_v2.onnx"),
+        "hf-mirror.com");
+
+    // 2. HTTP Content-Range 断点续传头严格校验（防止错位续写污染模型二进制）
+    uint64_t totalLen = 0;
+    EXPECT_TRUE(ResilientModelDownloader::parseContentRangeHeader(
+        L"bytes 4194304-13488747/13488748", 4194304ULL, &totalLen));
+    EXPECT_EQ(totalLen, 13488748ULL);
+    EXPECT_FALSE(ResilientModelDownloader::parseContentRangeHeader(
+        L"bytes 0-13488747/13488748", 4194304ULL, &totalLen));
+    EXPECT_TRUE(ResilientModelDownloader::parseContentRangeHeader(
+        L"bytes 1024-2047/*", 1024ULL, &totalLen));
+    EXPECT_EQ(totalLen, 0ULL);
+    EXPECT_FALSE(ResilientModelDownloader::parseContentRangeHeader(
+        L"invalid header", 0ULL, &totalLen));
+
+    // 3. 停滞与低速看门狗决策（含尾部 <=512KB 豁免防误切）
+    ResilientDownloadOptions opts{};
+    EXPECT_EQ(ResilientModelDownloader::evaluateWatchdog(0, 0, 500000.0, 10000000, opts),
+              WatchdogDecision::Continue);
+    EXPECT_EQ(ResilientModelDownloader::evaluateWatchdog(8500, 0, 500000.0, 10000000, opts),
+              WatchdogDecision::StallTimeout);
+    EXPECT_EQ(ResilientModelDownloader::evaluateWatchdog(0, 12500, 10240.0, 5000000, opts),
+              WatchdogDecision::LowSpeedTimeout);
+    EXPECT_EQ(ResilientModelDownloader::evaluateWatchdog(0, 15000, 10240.0, 200000, opts),
+              WatchdogDecision::Continue);
+
+    // 4. 全球双栈区域重排（胜出区域优先，备选区域保底不丢失）
+    std::vector<MirrorEndpoint> mirrors = {
+        {L"https://www.modelscope.cn/a", MirrorRegion::China, "cn1"},
+        {L"https://www.modelscope.ai/a", MirrorRegion::Global, "gl1"},
+        {L"https://modelscope.cn/a", MirrorRegion::China, "cn2"},
+        {L"https://www.modelscope.ai/b", MirrorRegion::Global, "gl2"},
+    };
+    const auto glFirst = ResilientModelDownloader::orderMirrorsByRegionPreference(mirrors, MirrorRegion::Global);
+    ASSERT_EQ(glFirst.size(), 4u);
+    EXPECT_EQ(glFirst[0].region, MirrorRegion::Global);
+    EXPECT_EQ(glFirst[1].region, MirrorRegion::Global);
+    EXPECT_EQ(glFirst[2].region, MirrorRegion::China);
+    EXPECT_EQ(glFirst[3].region, MirrorRegion::China);
+
+    // 5. 句柄级取消令牌状态机与进程区域偏好读写
+    auto tok = std::make_shared<DownloadCancelToken>();
+    EXPECT_FALSE(tok->isCancelled());
+    tok->cancel();
+    EXPECT_TRUE(tok->isCancelled());
+    EXPECT_FALSE(tok->registerActiveHandle(reinterpret_cast<void*>(0x1234)));
+    tok->reset();
+    EXPECT_FALSE(tok->isCancelled());
+
+    ResilientModelDownloader::resetSessionPreferredRegionForTest();
+    EXPECT_EQ(ResilientModelDownloader::sessionPreferredRegion(), MirrorRegion::Auto);
+    ResilientModelDownloader::setSessionPreferredRegion(MirrorRegion::China);
+    EXPECT_EQ(ResilientModelDownloader::sessionPreferredRegion(), MirrorRegion::China);
+    ResilientModelDownloader::resetSessionPreferredRegionForTest();
+
+    // 6. 翻译引擎短名格式化（中英双语零空值）
+    using tools3000::core::translate::TranslationService;
+    EXPECT_EQ(TranslationService::formatProviderShortName("index_translate", true), "Index-Translate");
+    EXPECT_EQ(TranslationService::formatProviderShortName("edge_free", true), "Edge 翻译");
+    EXPECT_EQ(TranslationService::formatProviderShortName("google_free", false), "Google Translate");
+}

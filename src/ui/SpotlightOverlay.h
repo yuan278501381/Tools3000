@@ -103,6 +103,31 @@ public:
     };
     ViewportBounds calculateViewportBoundsLocked() const;
 
+    /// 空间滞回局部视口计算纯算法（供生产与单元测试共用）：内容未越出已有视口时 0 移动、0 表面重建
+    static ViewportBounds applySpatialHysteresisViewport(
+        const ViewportBounds& currentSticky,
+        int contentMinX,
+        int contentMinY,
+        int contentMaxX,
+        int contentMaxY,
+        const RECT& safeBounds,
+        int lookaheadMarginPx,
+        int minDimPx = 256,
+        int quantizePx = 64) noexcept;
+
+    /// 全屏聚光灯 4-Rect 裁剪几何分解纯算法：仅圆洞外接局部小矩形走径向渐变，其余 97.5% 纯色矩形填充
+    struct FourRectClipLayout {
+        D2D1_RECT_F centerBox{};
+        D2D1_RECT_F outerStrips[4]{};
+        int outerStripCount = 0;
+    };
+    static FourRectClipLayout computeFourRectClipGeometry(
+        float surfaceW,
+        float surfaceH,
+        float centerX,
+        float centerY,
+        float outerRadius) noexcept;
+
     enum class TrailParticleKind {
         OrbMain,      // 主能量光球 (6.5px ~ 8.0px, 带微光晕)
         OrbSub,       // 次级漂浮球 (3.5px ~ 5.0px)
@@ -186,6 +211,9 @@ protected:
         if (m_hasDcompSurface.load(std::memory_order_acquire)) return false;
         return !isActive();
     }
+    bool needsContinuousAnimation() const override;
+    void onRecreateDeviceResources() override;
+    void onReleaseDeviceResources() override;
 
 private:
     SpotlightOverlay() = default;
@@ -196,12 +224,20 @@ private:
     void processMouseMoveLocked(POINT pt, bool bypass = false);
     void updateNeedMouseMoveLocked();
     bool isFullscreenBypassActiveFast() noexcept;
+    void refreshCachedAccentColor() const noexcept;
+    ID2D1SolidColorBrush* acquireSolidBrush(const D2D1_COLOR_F& color) noexcept;
 
     std::atomic<bool> m_needMouseMove{false};
     std::atomic_flag m_rawMovePushSpin = ATOMIC_FLAG_INIT;
     std::atomic<bool> m_fullscreenOverlayBypass{false};
     std::atomic<uintptr_t> m_cachedForegroundHwnd{0};
     std::atomic<bool> m_fgProbePending{false};
+    mutable std::atomic<uint32_t> m_cachedAccentRgb{0x3B82F6u};
+    mutable std::atomic<uint64_t> m_cachedAccentConfigVersion{0};
+    std::atomic<bool> m_pendingAnimStartReanchor{false};
+
+    Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_reusableSolidBrush;
+    mutable ViewportBounds m_stickyLocalViewport{};
 
     SpotlightSettings m_settings;
     mutable std::recursive_mutex m_mutex;
@@ -238,6 +274,7 @@ private:
     std::vector<TrailParticle> m_trail;
     float m_trailHue = 195.0f; // 七彩色相累加器
     size_t m_eventSub = 0;
+    size_t m_themeSub = 0;
     bool m_streamSubscribed = false;
 };
 

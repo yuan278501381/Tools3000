@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <fstream>
+#include <memory>
 
 namespace tools3000::core {
 
@@ -20,7 +21,71 @@ namespace {
 
 std::atomic<uint64_t> g_dialogJobSeq{1};
 
-nlohmann::json serializeRequest(const FileDialogRequest& req) {
+struct AnchorCenterPoint {
+    bool valid = false;
+    int x = 0;
+    int y = 0;
+};
+
+AnchorCenterPoint resolveMonitorCenterForWindow(HWND ownerHwnd) noexcept {
+    HMONITOR hMon = nullptr;
+    if (ownerHwnd && IsWindow(ownerHwnd)) {
+        hMon = MonitorFromWindow(ownerHwnd, MONITOR_DEFAULTTONEAREST);
+    }
+    if (!hMon) {
+        POINT cursorPt{};
+        if (GetCursorPos(&cursorPt)) {
+            hMon = MonitorFromPoint(cursorPt, MONITOR_DEFAULTTONEAREST);
+        }
+    }
+    if (!hMon) {
+        hMon = MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
+    }
+    if (!hMon) return {};
+
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(hMon, &mi)) {
+        return {};
+    }
+    AnchorCenterPoint pt{};
+    pt.valid = true;
+    pt.x = mi.rcWork.left + (mi.rcWork.right - mi.rcWork.left) / 2;
+    pt.y = mi.rcWork.top + (mi.rcWork.bottom - mi.rcWork.top) / 2;
+    return pt;
+}
+
+void bringWorkerDialogToForeground(DWORD workerPid) noexcept {
+    if (workerPid == 0) return;
+    struct EnumCtx {
+        DWORD pid = 0;
+        HWND found = nullptr;
+    } ctx{workerPid, nullptr};
+    EnumWindows([](HWND hwnd, LPARAM lp) -> BOOL {
+        auto* c = reinterpret_cast<EnumCtx*>(lp);
+        DWORD pid = 0;
+        GetWindowThreadProcessId(hwnd, &pid);
+        if (pid != c->pid) return TRUE;
+        if (!IsWindowVisible(hwnd)) return TRUE;
+        if (GetWindow(hwnd, GW_OWNER) != nullptr || (GetWindowLongPtrW(hwnd, GWL_STYLE) & WS_CAPTION) != 0) {
+            c->found = hwnd;
+            return FALSE;
+        }
+        if (!c->found) {
+            c->found = hwnd;
+        }
+        return TRUE;
+    }, reinterpret_cast<LPARAM>(&ctx));
+
+    if (ctx.found && IsWindow(ctx.found)) {
+        if (IsIconic(ctx.found)) {
+            ShowWindow(ctx.found, SW_RESTORE);
+        }
+        SetForegroundWindow(ctx.found);
+    }
+}
+
+nlohmann::json serializeRequest(const FileDialogRequest& req, const AnchorCenterPoint& anchor) {
     nlohmann::json filtersJson = nlohmann::json::array();
     for (const auto& f : req.filters) {
         filtersJson.push_back({
@@ -30,7 +95,12 @@ nlohmann::json serializeRequest(const FileDialogRequest& req) {
     }
     return {
         {"mode", static_cast<int>(req.mode)},
-        {"ownerHwnd", static_cast<uint64_t>(reinterpret_cast<uintptr_t>(req.ownerHwnd))},
+        // 严禁跨进程将宿主 HWND 传给子进程 IFileDialog::Show(ownerHwnd)：
+        // 跨进程模态拥有关系会触发 AttachThreadInput 死锁与全屏 TOPMOST 覆盖层遮挡对话框。
+        // 子进程改用同进程同线程隐形锚点定位在宿主所在显示器中心，完全杜绝跨进程互锁。
+        {"anchorValid", anchor.valid},
+        {"anchorX", anchor.x},
+        {"anchorY", anchor.y},
         {"title", WinUtils::wstringToUtf8(req.title)},
         {"defaultExtension", WinUtils::wstringToUtf8(req.defaultExtension)},
         {"defaultFileName", WinUtils::wstringToUtf8(req.defaultFileName)},
@@ -42,7 +112,7 @@ nlohmann::json serializeRequest(const FileDialogRequest& req) {
     };
 }
 
-bool deserializeRequest(const nlohmann::json& j, FileDialogRequest& out) {
+bool deserializeRequest(const nlohmann::json& j, FileDialogRequest& out, AnchorCenterPoint& outAnchor) {
     if (!j.is_object()) return false;
     const int modeInt = j.value("mode", 0);
     if (modeInt == static_cast<int>(FileDialogMode::SaveFile)) {
@@ -52,9 +122,10 @@ bool deserializeRequest(const nlohmann::json& j, FileDialogRequest& out) {
     } else {
         out.mode = FileDialogMode::OpenFile;
     }
-    const uint64_t rawOwner = j.value("ownerHwnd", uint64_t{0});
-    HWND candidateOwner = reinterpret_cast<HWND>(static_cast<uintptr_t>(rawOwner));
-    out.ownerHwnd = (candidateOwner && IsWindow(candidateOwner)) ? candidateOwner : nullptr;
+    out.ownerHwnd = nullptr;
+    outAnchor.valid = j.value("anchorValid", false);
+    outAnchor.x = j.value("anchorX", 0);
+    outAnchor.y = j.value("anchorY", 0);
     out.title = WinUtils::utf8ToWstring(j.value("title", ""));
     out.defaultExtension = WinUtils::utf8ToWstring(j.value("defaultExtension", ""));
     out.defaultFileName = WinUtils::utf8ToWstring(j.value("defaultFileName", ""));
@@ -83,36 +154,124 @@ bool deserializeRequest(const nlohmann::json& j, FileDialogRequest& out) {
     return true;
 }
 
-void waitForWorkerPumpingSentMessages(HANDLE hProcess, HWND modalOwner) noexcept {
-    // 若在拥有窗口的 UI 线程模态等待子进程，必须响应 QS_SENDMESSAGE 跨线程同步消息并临时禁用父窗防重入，
-    // 彻底避免子进程 IFileDialog 向 ownerHwnd 发送 WM_GETICON / WM_NCACTIVATE 等消息时互锁。
+class ScopedInProcessAnchorWindow final {
+public:
+    explicit ScopedInProcessAnchorWindow(const AnchorCenterPoint& anchor) noexcept {
+        const AnchorCenterPoint pt = anchor.valid ? anchor : resolveMonitorCenterForWindow(nullptr);
+        const int x = pt.valid ? pt.x : CW_USEDEFAULT;
+        const int y = pt.valid ? pt.y : CW_USEDEFAULT;
+        m_hwnd = CreateWindowExW(
+            WS_EX_TOOLWINDOW,
+            L"STATIC",
+            L"",
+            WS_POPUP,
+            x, y, 1, 1,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (m_hwnd) {
+            SetForegroundWindow(m_hwnd);
+        }
+    }
+
+    ~ScopedInProcessAnchorWindow() noexcept {
+        if (m_hwnd && IsWindow(m_hwnd)) {
+            DestroyWindow(m_hwnd);
+        }
+    }
+
+    ScopedInProcessAnchorWindow(const ScopedInProcessAnchorWindow&) = delete;
+    ScopedInProcessAnchorWindow& operator=(const ScopedInProcessAnchorWindow&) = delete;
+
+    HWND hwnd() const noexcept { return m_hwnd; }
+
+private:
+    HWND m_hwnd = nullptr;
+};
+
+void waitForWorkerPumpingModalMessages(HANDLE hProcess, DWORD workerPid, HWND modalOwner) noexcept {
+    // 若在拥有窗口的 UI 线程等待隔离文件对话框子进程：
+    //   1. 临时禁用父窗防重入，并若父窗处于 WS_EX_TOPMOST（如全屏截图覆盖层 / 置顶贴图）则临时降级为 NOTOPMOST，
+    //      确保系统文件选择框 100% 浮于最前端可见且不被全屏覆盖层死死遮住；
+    //   2. 必须泵送 QS_ALLINPUT（而不仅是 QS_SENDMESSAGE | QS_PAINT），否则任意鼠标点击或队列消息超过 5 秒
+    //      不被取走就会触发 Windows Ghost Window（“应用程序没有响应”）；
+    //   3. 用户点击已禁用的父窗时自动将焦点拉回子进程文件对话框，还原原生模态体验。
     const DWORD currentTid = GetCurrentThreadId();
     const bool ownsModalWindow =
         modalOwner && IsWindow(modalOwner) && GetWindowThreadProcessId(modalOwner, nullptr) == currentTid;
     const BOOL wasEnabled = ownsModalWindow ? IsWindowEnabled(modalOwner) : FALSE;
-    if (ownsModalWindow && wasEnabled) {
-        EnableWindow(modalOwner, FALSE);
+    const bool wasTopMost = ownsModalWindow &&
+        ((GetWindowLongPtrW(modalOwner, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0);
+
+    if (ownsModalWindow) {
+        if (wasEnabled) {
+            EnableWindow(modalOwner, FALSE);
+        }
+        if (wasTopMost) {
+            SetWindowPos(modalOwner, HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
     }
 
+    bool repostQuit = false;
+    WPARAM quitCode = 0;
+
     for (;;) {
-        const DWORD waitRes = MsgWaitForMultipleObjects(
-            1, &hProcess, FALSE, 250, QS_SENDMESSAGE | QS_PAINT);
+        const DWORD waitRes = MsgWaitForMultipleObjectsEx(
+            1, &hProcess, 100, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (waitRes == WAIT_OBJECT_0 || waitRes == WAIT_FAILED) {
             break;
         }
         MSG msg{};
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE | PM_QS_PAINT)) {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_QUIT) {
+                repostQuit = true;
+                quitCode = msg.wParam;
+                break;
+            }
+            if (ownsModalWindow && msg.hwnd == modalOwner &&
+                ((msg.message == WM_SETCURSOR &&
+                  (HIWORD(msg.lParam) == WM_LBUTTONDOWN || HIWORD(msg.lParam) == WM_RBUTTONDOWN)) ||
+                 msg.message == WM_LBUTTONDOWN || msg.message == WM_RBUTTONDOWN ||
+                 msg.message == WM_NCLBUTTONDOWN || msg.message == WM_MOUSEACTIVATE)) {
+                bringWorkerDialogToForeground(workerPid);
+            }
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
+        }
+        if (repostQuit) {
+            break;
+        }
+        if (WaitForSingleObject(hProcess, 0) == WAIT_OBJECT_0) {
+            break;
         }
     }
 
     if (ownsModalWindow && IsWindow(modalOwner)) {
+        if (wasTopMost) {
+            SetWindowPos(modalOwner, HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
         if (wasEnabled) {
             EnableWindow(modalOwner, TRUE);
         }
         SetForegroundWindow(modalOwner);
     }
+
+    if (repostQuit) {
+        PostQuitMessage(static_cast<int>(quitCode));
+    }
+}
+
+HANDLE createKillOnCloseJobForChild(HANDLE hChildProcess) noexcept {
+    HANDLE hJob = CreateJobObjectW(nullptr, nullptr);
+    if (!hJob) return nullptr;
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli{};
+    jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) ||
+        !AssignProcessToJobObject(hJob, hChildProcess)) {
+        CloseHandle(hJob);
+        return nullptr;
+    }
+    return hJob;
 }
 
 std::wstring resolveWorkerExecutablePath() {
@@ -142,9 +301,9 @@ std::wstring resolveWorkerExecutablePath() {
     return buf;
 }
 
-} // namespace
-
-FileDialogResult OutOfProcessFileDialog::executeInProcess(const FileDialogRequest& request) {
+FileDialogResult executeInProcessWithAnchor(
+    const FileDialogRequest& request,
+    const AnchorCenterPoint& anchor) {
     FileDialogResult res{};
     res.selectedFilterIndex = request.initialFilterIndex > 0 ? request.initialFilterIndex : 1u;
 
@@ -227,11 +386,21 @@ FileDialogResult OutOfProcessFileDialog::executeInProcess(const FileDialogReques
         dialog->SetFileTypeIndex(clampedIdx);
     }
 
-    const HWND safeOwner = (request.ownerHwnd && IsWindow(request.ownerHwnd))
-        ? request.ownerHwnd
-        : nullptr;
+    // 仅允许绑定同进程同线程的合法父窗；跨进程场景一律改用子进程内部隐形锚点定位到目标显示器中心，
+    // 100% 消除跨进程 AttachThreadInput 死锁与全屏覆盖层遮挡。
+    HWND safeOwner = nullptr;
+    if (request.ownerHwnd && IsWindow(request.ownerHwnd)) {
+        DWORD ownerPid = 0;
+        GetWindowThreadProcessId(request.ownerHwnd, &ownerPid);
+        if (ownerPid == GetCurrentProcessId()) {
+            safeOwner = request.ownerHwnd;
+        }
+    }
+    std::unique_ptr<ScopedInProcessAnchorWindow> anchorWin;
     if (!safeOwner) {
         AllowSetForegroundWindow(GetCurrentProcessId());
+        anchorWin = std::make_unique<ScopedInProcessAnchorWindow>(anchor);
+        safeOwner = anchorWin->hwnd();
     }
     const HRESULT showHr = dialog->Show(safeOwner);
     if (showHr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
@@ -259,6 +428,12 @@ FileDialogResult OutOfProcessFileDialog::executeInProcess(const FileDialogReques
     return res;
 }
 
+} // namespace
+
+FileDialogResult OutOfProcessFileDialog::executeInProcess(const FileDialogRequest& request) {
+    return executeInProcessWithAnchor(request, resolveMonitorCenterForWindow(request.ownerHwnd));
+}
+
 FileDialogResult OutOfProcessFileDialog::show(const FileDialogRequest& request) {
     const std::wstring exePath = resolveWorkerExecutablePath();
     if (exePath.empty()) {
@@ -284,8 +459,9 @@ FileDialogResult OutOfProcessFileDialog::show(const FileDialogRequest& request) 
         }
     } cleanup{jobPath, outPath};
 
+    const AnchorCenterPoint anchor = resolveMonitorCenterForWindow(request.ownerHwnd);
     nlohmann::json jobDoc = {
-        {"request", serializeRequest(request)},
+        {"request", serializeRequest(request, anchor)},
         {"outputPath", WinUtils::pathToUtf8(outPath)},
     };
     const std::string jobBytes = jobDoc.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
@@ -313,12 +489,16 @@ FileDialogResult OutOfProcessFileDialog::show(const FileDialogRequest& request) 
         return executeInProcess(request);
     }
 
+    HANDLE hJob = createKillOnCloseJobForChild(pi.hProcess);
     AllowSetForegroundWindow(pi.dwProcessId);
     CloseHandle(pi.hThread);
-    waitForWorkerPumpingSentMessages(pi.hProcess, request.ownerHwnd);
+    waitForWorkerPumpingModalMessages(pi.hProcess, pi.dwProcessId, request.ownerHwnd);
     DWORD exitCode = 1;
     GetExitCodeProcess(pi.hProcess, &exitCode);
     CloseHandle(pi.hProcess);
+    if (hJob) {
+        CloseHandle(hJob);
+    }
 
     if (exitCode != 0 || !std::filesystem::exists(outPath, ec)) {
         LOG_WARN("OutOfProcessFileDialog: worker exited abnormally (code={}), falling back in-process", exitCode);
@@ -366,11 +546,12 @@ int OutOfProcessFileDialog::runWorkerFromJobFile(const std::filesystem::path& jo
     }
 
     FileDialogRequest req{};
-    if (!deserializeRequest(jobDoc["request"], req)) {
+    AnchorCenterPoint anchor{};
+    if (!deserializeRequest(jobDoc["request"], req, anchor)) {
         return 6;
     }
 
-    const FileDialogResult res = executeInProcess(req);
+    const FileDialogResult res = executeInProcessWithAnchor(req, anchor);
     const nlohmann::json outDoc = {
         {"accepted", res.accepted},
         {"cancelled", res.cancelled},

@@ -5198,3 +5198,49 @@ TEST(GestureAuditRegressionTest, TranslateTShape180ReversalRecognitionAndNoFalse
     EXPECT_GT(scoreLrd, scoreLr);
     EXPECT_GT(scoreLrd, scoreLur);
 }
+
+TEST(GestureTrailOverlayTest, LocalHysteresisSwapChainLowVramAndZeroRedirection) {
+    using namespace tools3000::gesture;
+    // 1. 验证纯函数扩展样式策略：合成模式带 WS_EX_NOREDIRECTIONBITMAP 且不含 WS_EX_LAYERED / WS_EX_APPWINDOW
+    const LONG_PTR compEx = normalizeGestureCompositorOverlayExStyle(WS_EX_LAYERED | WS_EX_APPWINDOW);
+    EXPECT_NE(compEx & WS_EX_NOREDIRECTIONBITMAP, 0);
+    EXPECT_EQ(compEx & WS_EX_LAYERED, 0);
+    EXPECT_EQ(compEx & WS_EX_APPWINDOW, 0);
+    EXPECT_TRUE(gestureOverlayIsTaskbarSafe(compEx));
+
+    // 2. 实机验证：手势宿主零重定向表面 + 局部 640x640 SwapChain（显存由 ~60MB 降至 ~3.5MB）+ 闲置回收归零
+    auto& overlay = GestureTrailOverlay::instance();
+    ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
+    EXPECT_TRUE(overlay.isCompositorReady());
+
+    HWND hwnd = FindWindowW(L"Tools3000_GestureOverlay", nullptr);
+    ASSERT_NE(hwnd, nullptr);
+    const LONG_PTR actualEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    EXPECT_NE(actualEx & WS_EX_NOREDIRECTIONBITMAP, 0);
+    EXPECT_EQ(actualEx & WS_EX_LAYERED, 0);
+
+    const auto tStart = std::chrono::steady_clock::now();
+    overlay.beginTrail();
+    overlay.addPoint(300.0f, 300.0f);
+    overlay.addPoint(420.0f, 360.0f);
+    for (int i = 0; i < 60 && !overlay.hasAllocatedSurfaces(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const auto allocMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - tStart).count();
+
+    EXPECT_TRUE(overlay.hasAllocatedSurfaces());
+    EXPECT_LE(overlay.allocatedTrailSurfaceWidth(), 768);
+    EXPECT_LE(overlay.allocatedTrailSurfaceHeight(), 768);
+    EXPECT_GE(overlay.trailSurfaceTier(), 1);
+    std::cout << "[GestureTrailSwapChain] tier=" << overlay.trailSurfaceTier()
+              << " surface=" << overlay.allocatedTrailSurfaceWidth() << "x" << overlay.allocatedTrailSurfaceHeight()
+              << " coldStartMs=" << allocMs << std::endl;
+
+    overlay.hide();
+    overlay.releaseIdleSurfacesNow();
+    EXPECT_FALSE(overlay.hasAllocatedSurfaces());
+    EXPECT_EQ(overlay.allocatedTrailSurfaceWidth(), 0);
+    EXPECT_EQ(overlay.allocatedTrailSurfaceHeight(), 0);
+    overlay.shutdown();
+}

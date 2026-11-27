@@ -2358,20 +2358,29 @@ std::vector<OcrResult> OcrEngine::extractText(const cv::Mat& image, const std::s
 
     if (allowDeepOcr && deepInstalled) {
         std::vector<OcrResult> deepResults;
+        bool deepFailed = false;
         try {
             deepResults = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+            deepFailed = DeepOcrEngine::instance().lastExtractFailed();
         } catch (const winrt::hresult_error& e) {
             LOG_ERROR("OcrEngine: DeepOcr WinRT exception (hr=0x{:08X}), falling back to Windows OCR",
                       static_cast<uint32_t>(e.code().value));
             deepResults.clear();
+            deepFailed = true;
         } catch (const std::exception& e) {
             LOG_ERROR("OcrEngine: DeepOcr std exception ({}), falling back to Windows OCR", e.what());
             deepResults.clear();
+            deepFailed = true;
         } catch (...) {
             LOG_ERROR("OcrEngine: DeepOcr unknown exception, falling back to Windows OCR");
             deepResults.clear();
+            deepFailed = true;
         }
-        if (!deepResults.empty() || enginePref == "ppocr_v4") {
+        if (deepFailed) {
+            LOG_WARN("OcrEngine: DeepOcr engine failed during load/inference (enginePref={}), falling back to Windows OCR",
+                     enginePref);
+        }
+        if (!deepResults.empty() || (enginePref == "ppocr_v4" && !deepFailed)) {
             OcrPageExtraction entry;
             entry.lines = deepResults;
             entry.activeEngine = "ppocr_v4";
@@ -2449,20 +2458,29 @@ OcrPageExtraction OcrEngine::extractPage(const cv::Mat& image, const std::string
     };
 
     if (preferDeep) {
+        bool deepFailed = false;
         try {
             page.lines = DeepOcrEngine::instance().extractText(image, scriptModeOverride);
+            deepFailed = DeepOcrEngine::instance().lastExtractFailed();
         } catch (const winrt::hresult_error& e) {
             LOG_ERROR("OcrEngine: DeepOcr page WinRT exception (hr=0x{:08X}), falling back to Windows OCR",
                       static_cast<uint32_t>(e.code().value));
             page.lines.clear();
+            deepFailed = true;
         } catch (const std::exception& e) {
             LOG_ERROR("OcrEngine: DeepOcr page std exception ({}), falling back to Windows OCR", e.what());
             page.lines.clear();
+            deepFailed = true;
         } catch (...) {
             LOG_ERROR("OcrEngine: DeepOcr page unknown exception, falling back to Windows OCR");
             page.lines.clear();
+            deepFailed = true;
         }
-        if (!page.lines.empty() || enginePref == "ppocr_v4") {
+        if (deepFailed) {
+            LOG_WARN("OcrEngine: DeepOcr page engine failed during load/inference (enginePref={}), falling back to Windows OCR",
+                     enginePref);
+        }
+        if (!page.lines.empty() || (enginePref == "ppocr_v4" && !deepFailed)) {
             page.qrCodes = consumeQrSafe();
             page.activeEngine = "ppocr_v4";
             storeRecentOcrCache(cacheKey, image.cols, image.rows, /*hasQrChecked=*/true, page);

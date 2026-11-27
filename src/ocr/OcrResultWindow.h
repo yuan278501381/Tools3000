@@ -196,6 +196,8 @@ private:
     uint64_t m_copiedTime = 0;
     bool m_copySucceeded = false;
     bool m_isLoadingState = false;
+    float m_loadingSpinAngle = 0.0f;
+    uint64_t m_loadingStartTick = 0;
     std::wstring m_statusBadge;
 };
 

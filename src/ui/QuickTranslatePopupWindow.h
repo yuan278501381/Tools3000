@@ -138,6 +138,10 @@ private:
         const std::string& targetPref,
         const std::string& effectiveTarget,
         POINT anchorPt);
+    void updateLoadingStageOnUiThread(
+        uint64_t requestId,
+        const std::string& stageTextUtf8,
+        const std::string& updatedProviderLabel = {});
     void presentResultOnUiThread(
         uint64_t requestId,
         const std::string& translatedText,
@@ -183,6 +187,7 @@ private:
     uint64_t m_activeUiRequestId = 0;
     std::string m_sourceTextUtf8;
     std::string m_translatedTextUtf8;
+    std::string m_loadingStageTextUtf8;
     std::string m_errorTextUtf8;
     std::string m_providerLabelUtf8;
     std::string m_sourceLangPref = "auto";

@@ -935,7 +935,11 @@
     "langArSa": "OCR en árabe",
     "langThTh": "OCR en tailandés",
     "translateExcludedAppsTitle": "Ceder automáticamente en apps profesionales",
-    "translateExcludedAppsDesc": "Libera temporalmente este atajo cuando estas apps están en primer plano (p. ej. ssms.exe para ejecutar SQL, emacs.exe para M-x) manteniendo activos los demás atajos de Tools3000"
+    "translateExcludedAppsDesc": "Libera temporalmente este atajo cuando estas apps están en primer plano (p. ej. ssms.exe para ejecutar SQL, emacs.exe para M-x) manteniendo activos los demás atajos de Tools3000",
+    "downloadPhaseProbing": "Probando el servidor de descarga más rápido...",
+    "downloadPhaseSwitching": "Servidor lento, cambiando a servidor alternativo ({{index}}/{{total}})...",
+    "downloadPhaseVerifying": "Verificando la integridad del modelo sin conexión...",
+    "downloadMirrorTag": "Servidor: {{host}}"
   },
   "gesture": {
     "title": "Configuración de gestos de ratón",

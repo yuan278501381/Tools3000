@@ -24,6 +24,7 @@
 #include <dcomp.h>
 #include <d3d11.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 #include <vector>
 #include <string>
@@ -150,8 +151,13 @@ public:
     /// 获取累积手势脏矩形 (供测试与外部诊断断言)
     RECT accumulatedStrokeDirtyRect() const noexcept { return m_accumulatedStrokeDirtyRect; }
 
-    /// 查询当前是否仍驻留全屏 DComp/GDI 轨迹表面（供闲置显存释放测试与诊断）
+    /// 查询当前是否仍驻留硬件/GDI 轨迹表面（供闲置显存释放测试与诊断）
     bool hasAllocatedSurfaces() const noexcept { return m_hasAllocatedSurfaces.load(std::memory_order_acquire); }
+
+    /// 诊断内省：返回当前分配的轨迹局部硬件表面宽高及 SwapChain 降级层级 (0=None, 1=FlipWaitable, 2=FlipSequential, 3=DcompSurface)
+    int allocatedTrailSurfaceWidth() const noexcept { return m_allocatedTrailSurfaceW.load(std::memory_order_acquire); }
+    int allocatedTrailSurfaceHeight() const noexcept { return m_allocatedTrailSurfaceH.load(std::memory_order_acquire); }
+    int trailSurfaceTier() const noexcept { return m_trailSurfaceTierAtomic.load(std::memory_order_acquire); }
 
     /// 冷路径闲置显存/表面立即释放入口（供单测验证回收与懒重建闭环）
     void releaseIdleSurfacesNow();
@@ -178,9 +184,25 @@ private:
     bool presentLayeredLocked(HWND hwnd, HDC memDC, int x, int y, int width, int height);
     void clearCanvasLocked();
 
-    // ── DirectComposition GPU 显存直通硬件合成管线 ──
+    // ── DirectComposition + 局部滞回 DXGI Flip SwapChain 硬件合成管线 ──
+    enum class TrailSurfaceTier : uint8_t {
+        None = 0,
+        FlipWaitable = 1,
+        FlipSequential = 2,
+        DcompSurface = 3
+    };
     bool ensureCompositorLocked();
-    /// 预分配全虚拟屏 DirectComposition 双缓冲硬件表面 (0 SetWindowPos, 0 CreateSurface)
+    void ensureGdiLayeredWindowStyleLocked();
+    /// 按局部包围盒分配/复用/扩容轻量化 DXGI Flip SwapChain（常规 640x640 ≈ 3.28MB；降级回退 DComp Surface）
+    bool ensureTrailSurfaceForBoundsLocked(int left, int top, int right, int bottom);
+    bool createOrResizeTrailSwapChainLocked(int width, int height);
+    bool renderTrailToSwapChainLocked(
+        const std::vector<TrailPoint>& points,
+        bool isRecognized,
+        float fadeAlpha);
+    bool clearTrailSwapChainLocked();
+    void setHighResTimerPeriod(bool active) noexcept;
+    /// 兼容降级路径：分配 DirectComposition Surface
     bool preallocateTrailSurfacesLocked(int width, int height);
     /// 清空 DirectComposition 表面全部或指定脏矩形区域 (严格在 EndDraw 前释放 IDXGISurface)
     bool clearDcompSurfaceLocked(IDCompositionSurface* surface, const RECT* pDirtyRect = nullptr);
@@ -345,8 +367,15 @@ private:
     std::vector<TrailPoint> m_points;
     std::string m_resultText;
 
-    // 缓存平滑贝塞尔曲线 PathGeometry 以提升渲染性能
+    // 缓存平滑贝塞尔曲线 PathGeometry 以提升渲染性能（首尾点与视口原点未变时 100% 零重建复用）
     Microsoft::WRL::ComPtr<ID2D1PathGeometry> m_smoothPathGeometry;
+    size_t m_cachedPathPointCount = 0;
+    float m_cachedPathFirstX = 0.0f;
+    float m_cachedPathFirstY = 0.0f;
+    float m_cachedPathLastX = 0.0f;
+    float m_cachedPathLastY = 0.0f;
+    int m_cachedPathOriginX = 0;
+    int m_cachedPathOriginY = 0;
 
     // Direct2D 资源与并发安全渲染锁
     std::mutex m_renderMutex;
@@ -366,17 +395,32 @@ private:
     int m_width = 0;
     int m_height = 0;
 
-    // DirectComposition 硬件合成设备与视口表面
+    // DirectComposition 硬件合成设备与局部滞回 SwapChain 表面
     bool m_compositorReady = false;
+    bool m_usingNoRedirectionStyle = false;
+    bool m_isWarpDevice = false;
+    int m_maxTextureDimension = 8192;
     std::atomic<bool> m_hasAllocatedSurfaces{false};
+    std::atomic<int> m_allocatedTrailSurfaceW{0};
+    std::atomic<int> m_allocatedTrailSurfaceH{0};
+    std::atomic<int> m_trailSurfaceTierAtomic{0};
     std::atomic<bool> m_idleSurfaceReleaseRequested{false};
     std::atomic<uint64_t> m_idleSurfaceReleaseGen{0};
     Microsoft::WRL::ComPtr<ID3D11Device> m_d3dDevice;
+    Microsoft::WRL::ComPtr<IDXGIFactory2> m_dxgiFactory2;
     Microsoft::WRL::ComPtr<IDCompositionDevice> m_dcompDevice;
     Microsoft::WRL::ComPtr<IDCompositionTarget> m_trailDcompTarget;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_rootDcompVisual;
     Microsoft::WRL::ComPtr<IDCompositionVisual> m_trailDcompVisual;
     Microsoft::WRL::ComPtr<IDCompositionEffectGroup> m_trailEffectGroup;
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> m_trailSwapChain;
+    HANDLE m_trailFrameLatencyWaitable = nullptr;
+    TrailSurfaceTier m_trailSurfaceTier = TrailSurfaceTier::None;
+    int m_trailViewportX = 0;
+    int m_trailViewportY = 0;
+    int m_trailViewportW = 0;
+    int m_trailViewportH = 0;
+    bool m_trailSwapChainContentBound = false;
     GpuSurfaceContext m_frontCtx;
     Microsoft::WRL::ComPtr<IDCompositionSurface> m_trailDcompSurface;
     int m_trailDcompW = 0;

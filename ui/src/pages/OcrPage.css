@@ -104,6 +104,8 @@
 .ocr-page__progress-meta {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
   gap: var(--spacing-sm);
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
@@ -111,6 +113,18 @@
   color: var(--text-muted);
   font-variant-numeric: tabular-nums lining-nums;
   font-feature-settings: "tnum" 1;
+}
+
+.ocr-page__progress-stage {
+  color: var(--text-secondary);
+  min-width: 0;
+  word-break: break-word;
+}
+
+.ocr-page__progress-stats {
+  flex-shrink: 0;
+  color: var(--text-primary);
+  font-weight: var(--font-semibold);
 }
 
 .ocr-page__hint-note {

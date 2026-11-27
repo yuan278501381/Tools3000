@@ -13,10 +13,12 @@
 #include <vector>
 #include <sstream>
 #include <cmath>
+#include <mmsystem.h>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "msimg32.lib")
+#pragma comment(lib, "winmm.lib")
 
 namespace tools3000::keycast {
 
@@ -245,9 +247,11 @@ bool KeycastOverlay::init() {
 }
 
 void KeycastOverlay::cleanup() {
+    setHighResTimerBoost(false);
     if (m_hwnd) {
         KillTimer(m_hwnd, ANIMATION_TIMER_ID);
         m_timerRunning = false;
+        m_lastAnimTickTime = {};
         DestroyWindow(m_hwnd);
         m_hwnd = nullptr;
     }
@@ -1544,69 +1548,93 @@ void KeycastOverlay::render() {
     ReleaseDC(nullptr, hdcScreen);
 }
 
+void KeycastOverlay::setHighResTimerBoost(bool active) noexcept {
+    if (active && !m_highResTimerBoosted) {
+        if (timeBeginPeriod(1) == TIMERR_NOERROR) {
+            m_highResTimerBoosted = true;
+        }
+    } else if (!active && m_highResTimerBoosted) {
+        timeEndPeriod(1);
+        m_highResTimerBoosted = false;
+    }
+}
+
 void KeycastOverlay::tickAnimation() {
     const KeycastSettings settings = getSettings();
     std::lock_guard<std::mutex> lock(m_mutex);
     const uint64_t now = GetTickCount64();
     const uint64_t holdTime = static_cast<uint64_t>(std::clamp(settings.displayDurationMs, 200, 30000));
 
+    // 基于真实单调时钟 dt 进行帧率无关物理积分（60/120/144/240Hz 与老机型 30Hz 速度 100% 恒定丝滑）
+    const auto steadyNow = std::chrono::steady_clock::now();
+    float dtSec = 1.0f / 60.0f;
+    if (m_lastAnimTickTime != std::chrono::steady_clock::time_point{}) {
+        dtSec = std::chrono::duration<float>(steadyNow - m_lastAnimTickTime).count();
+    }
+    m_lastAnimTickTime = steadyNow;
+    dtSec = std::clamp(dtSec, 0.001f, 0.05f);
+    const float dt60 = dtSec * 60.0f;
+    auto expFactor = [dt60](float rate60) noexcept -> float {
+        return 1.0f - std::pow(1.0f - rate60, dt60);
+    };
+
     for (auto it = m_rows.begin(); it != m_rows.end();) {
         auto& row = *it;
         const uint64_t elapsed = now - row.lastActiveTime;
 
         // 1. 行级物理平滑推移动画 (新行推旧行向上平滑推移)
-        row.offsetY += (row.targetOffsetY - row.offsetY) * 0.28f;
+        row.offsetY += (row.targetOffsetY - row.offsetY) * expFactor(0.28f);
 
         // 2. 项级物理动力学 (连击连续流体演进 + 长距离阻尼滑行 + 二阶弹簧气泡)
         for (auto& item : row.items) {
             // 连击角标与胶囊宽度物理连续延展 (Continuous Badge Fluid Expansion)
             if (item.repeatCount > 1) {
-                item.badgeWidthProgress += (1.0f - item.badgeWidthProgress) * 0.28f;
+                item.badgeWidthProgress += (1.0f - item.badgeWidthProgress) * expFactor(0.28f);
                 if (std::abs(1.0f - item.badgeWidthProgress) < 0.005f) item.badgeWidthProgress = 1.0f;
 
-                float bSpringK = 0.40f;
-                float bDamping = 0.62f;
-                float bForce = bSpringK * (1.0f - item.badgeScale);
+                constexpr float bSpringK = 0.40f;
+                const float bDamping = std::pow(0.62f, dt60);
+                const float bForce = bSpringK * (1.0f - item.badgeScale) * dt60;
                 item.badgeScaleVel = (item.badgeScaleVel + bForce) * bDamping;
-                item.badgeScale += item.badgeScaleVel;
+                item.badgeScale += item.badgeScaleVel * dt60;
 
-                item.badgeOpacity += (1.0f - item.badgeOpacity) * 0.35f;
+                item.badgeOpacity += (1.0f - item.badgeOpacity) * expFactor(0.35f);
                 if (item.badgeOpacity > 0.99f) item.badgeOpacity = 1.0f;
             }
 
             // 主按键弹性微颤阻尼逼近
             if (std::abs(item.scale - 1.0f) > 0.005f || std::abs(item.scaleVel) > 0.005f) {
-                float springK = 0.36f;
-                float damping = 0.65f;
-                float force = springK * (1.0f - item.scale);
+                constexpr float springK = 0.36f;
+                const float damping = std::pow(0.65f, dt60);
+                const float force = springK * (1.0f - item.scale) * dt60;
                 item.scaleVel = (item.scaleVel + force) * damping;
-                item.scale += item.scaleVel;
+                item.scale += item.scaleVel * dt60;
             } else {
                 item.scale = 1.0f;
                 item.scaleVel = 0.0f;
             }
 
             if (item.isFirstInRow) {
-                item.offsetX += (0.0f - item.offsetX) * 0.18f;
+                item.offsetX += (0.0f - item.offsetX) * expFactor(0.18f);
                 if (std::abs(item.offsetX) < 0.25f) item.offsetX = 0.0f;
-                item.opacity += (1.0f - item.opacity) * 0.22f;
+                item.opacity += (1.0f - item.opacity) * expFactor(0.22f);
             } else {
                 if (settings.subsequentKeyAnim == "slide") {
-                    item.offsetX += (0.0f - item.offsetX) * 0.20f;
+                    item.offsetX += (0.0f - item.offsetX) * expFactor(0.20f);
                     if (std::abs(item.offsetX) < 0.25f) item.offsetX = 0.0f;
-                    item.opacity += (1.0f - item.opacity) * 0.25f;
+                    item.opacity += (1.0f - item.opacity) * expFactor(0.25f);
                 } else if (settings.subsequentKeyAnim == "pop") {
-                    item.offsetY += (0.0f - item.offsetY) * 0.32f;
-                    item.opacity += (1.0f - item.opacity) * 0.42f;
+                    item.offsetY += (0.0f - item.offsetY) * expFactor(0.32f);
+                    item.opacity += (1.0f - item.opacity) * expFactor(0.42f);
                 } else {
-                    item.opacity += (1.0f - item.opacity) * 0.35f;
+                    item.opacity += (1.0f - item.opacity) * expFactor(0.35f);
                 }
             }
         }
 
         // 3. 寿命到期 或 新行挤出时的平滑消融微漂移动效（顶部停靠严禁向上越界撞切顶边）
         if (elapsed > holdTime || row.isExiting) {
-            float fadeSpeed = row.isExiting ? 0.08f : 0.045f;
+            const float fadeSpeed = (row.isExiting ? 0.08f : 0.045f) * dt60;
             row.opacity = (std::max)(0.0f, row.opacity - fadeSpeed);
             if (settings.exitDriftAnim) {
                 const bool isBottomPlacement = m_hasDockingRegion ||
@@ -1614,9 +1642,9 @@ void KeycastOverlay::tickAnimation() {
                                                settings.position == "bottom_center" ||
                                                settings.position == "bottom_right";
                 if (isBottomPlacement) {
-                    row.targetOffsetY = (std::max)(row.targetOffsetY - 0.6f, -8.0f);
+                    row.targetOffsetY = (std::max)(row.targetOffsetY - 0.6f * dt60, -8.0f);
                 } else {
-                    row.targetOffsetY = (std::min)(row.targetOffsetY + 0.45f, 6.0f);
+                    row.targetOffsetY = (std::min)(row.targetOffsetY + 0.45f * dt60, 6.0f);
                 }
             }
         }
@@ -1642,6 +1670,8 @@ void KeycastOverlay::onAnimationCompleteAndHide() {
         }
         KillTimer(m_hwnd, ANIMATION_TIMER_ID);
         m_timerRunning = false;
+        m_lastAnimTickTime = {};
+        setHighResTimerBoost(false);
         ShowWindow(m_hwnd, SW_HIDE);
     }
 }
@@ -1819,7 +1849,9 @@ LRESULT CALLBACK KeycastOverlay::wndProc(HWND hwnd, UINT msg, WPARAM wParam, LPA
         self.render();
         ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         if (!self.m_timerRunning) {
-            SetTimer(hwnd, ANIMATION_TIMER_ID, 16, nullptr); // 60fps 物理帧循环
+            self.m_lastAnimTickTime = std::chrono::steady_clock::now();
+            self.setHighResTimerBoost(true);
+            SetTimer(hwnd, ANIMATION_TIMER_ID, 8, nullptr); // 120Hz 丝滑物理帧循环（活跃期动态高精度定时，隐藏即归还）
             self.m_timerRunning = true;
         }
         return 0;

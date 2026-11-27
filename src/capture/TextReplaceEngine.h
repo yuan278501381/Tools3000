@@ -7,6 +7,7 @@
 #ifndef TOOLS3000_CAPTURE_TEXTREPLACEENGINE_H
 #define TOOLS3000_CAPTURE_TEXTREPLACEENGINE_H
 
+#include "core/network/ResilientModelDownloader.h"
 #include <opencv2/core.hpp>
 #include <array>
 #include <atomic>
@@ -110,6 +111,11 @@ struct AiInpaintModelStatus {
     int progressPercent = 0;
     uint64_t downloadedBytes = 0;
     uint64_t totalBytes = 28079181ULL;
+    double speedBytesPerSec = 0.0;
+    std::string activeMirrorHost;
+    int mirrorIndex = 0;
+    int mirrorTotal = 0;
+    std::string phase; // "probing" | "downloading" | "switching" | "verifying" | ""
     std::string state = "not_installed"; // "installed" | "downloading" | "not_installed" | "error"
     std::string modelDir;
     std::string modelFile;
@@ -167,11 +173,17 @@ private:
 
     mutable std::mutex m_downloadMutex;
     std::thread m_downloadWorker;
+    std::shared_ptr<tools3000::core::net::DownloadCancelToken> m_downloadCancelToken;
     std::atomic<bool> m_downloading{false};
     std::atomic<bool> m_cancelDownload{false};
     std::atomic<int> m_progressPercent{0};
     std::atomic<uint64_t> m_downloadedBytes{0};
     std::atomic<uint64_t> m_totalBytes{28079181ULL};
+    std::atomic<double> m_speedBytesPerSec{0.0};
+    std::atomic<int> m_mirrorIndex{0};
+    std::atomic<int> m_mirrorTotal{0};
+    std::string m_activeMirrorHost;
+    std::string m_downloadPhase;
     std::string m_lastDownloadError;
 };
 

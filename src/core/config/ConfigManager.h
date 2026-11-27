@@ -100,6 +100,9 @@ public:
     /// 获取累计物理原子落盘次数（供性能监测与合并刷盘单测校验）
     uint64_t diskWriteCount() const noexcept;
 
+    /// 获取内存配置单调递增版本号（每次配置写入/热加载原子递增，供渲染热路径零锁校验缓存一致性）
+    uint64_t version() const noexcept;
+
     // ── 配置变更通知 ─────────────────────────────────────────────────────
 
     /// 注册变更回调（返回回调 ID，用于取消注册）
@@ -169,6 +172,7 @@ private:
     bool m_dirty = false;
     std::chrono::steady_clock::time_point m_dirtyDeadline{};
     mutable std::atomic<uint64_t> m_diskWriteCount{0};
+    std::atomic<uint64_t> m_version{1};
 
     // 文件监控
     std::thread m_watchThread;

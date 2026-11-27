@@ -228,6 +228,7 @@ bool ConfigManager::load(bool* changed) {
         std::unique_lock lock(m_mutex);
         if (changed) *changed = m_config != loaded;
         m_config = std::move(loaded);
+        m_version.fetch_add(1, std::memory_order_release);
     }
     return true;
 }
@@ -350,6 +351,10 @@ uint64_t ConfigManager::diskWriteCount() const noexcept {
     return m_diskWriteCount.load(std::memory_order_relaxed);
 }
 
+uint64_t ConfigManager::version() const noexcept {
+    return m_version.load(std::memory_order_acquire);
+}
+
 void ConfigManager::flushWorkerLoop() {
     for (;;) {
         {
@@ -385,6 +390,7 @@ bool ConfigManager::setJsonValue(const std::string& key, json value) {
                 m_config = json::object();
             }
             m_config[json::json_pointer(key)] = std::move(value);
+            m_version.fetch_add(1, std::memory_order_release);
         } catch (const std::exception& e) {
             LOG_WARN("设置配置项失败: key={}, error={}", key, e.what());
             return false;
@@ -420,6 +426,7 @@ bool ConfigManager::mergePatch(const json& patch, const std::string& notificatio
             if (!existingPipeToken.empty()) {
                 m_config["search"]["pipeToken"] = existingPipeToken;
             }
+            m_version.fetch_add(1, std::memory_order_release);
         } catch (const std::exception& e) {
             LOG_WARN("配置合并失败: {}", e.what());
             return false;
@@ -481,6 +488,7 @@ bool ConfigManager::remove(const std::string& key) {
         }
     }
     if (!changed) return true;
+    m_version.fetch_add(1, std::memory_order_release);
     markDirtyAndScheduleFlush();
     notifyChange(key);
     return true;
@@ -528,6 +536,7 @@ bool ConfigManager::reset() {
         {
             std::unique_lock lock(m_mutex);
             m_config = std::move(empty);
+            m_version.fetch_add(1, std::memory_order_release);
         }
         {
             std::lock_guard flushLock(m_flushMutex);

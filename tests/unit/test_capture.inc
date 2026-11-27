@@ -17374,9 +17374,159 @@ TEST(CaptureClipboardFastDeliveryTest, PreEncodedPngReuseAndNonFlushAtomicWriteA
     std::filesystem::remove_all(tempDir, ec);
 }
 
+TEST(Win10DeepOcrFallbackTest, ClampIrVersionRespectsOpset11AndOpset14) {
+    using namespace tools3000::ocr;
+
+    auto buildSyntheticOnnx = [](uint8_t irVer, uint8_t opsetVer) {
+        std::vector<uint8_t> bytes;
+        // field 1 (ir_version), wire 0 -> tag 0x08
+        bytes.push_back(0x08);
+        bytes.push_back(irVer);
+        // field 7 (graph), wire 2 -> tag 0x3A, len 2, minimal name="g"
+        bytes.push_back(0x3A);
+        bytes.push_back(0x03);
+        bytes.push_back(0x12);
+        bytes.push_back(0x01);
+        bytes.push_back('g');
+        // field 8 (opset_import), wire 2 -> tag 0x42, version=opsetVer (field 2, wire 0 -> tag 0x10)
+        bytes.push_back(0x42);
+        bytes.push_back(0x02);
+        bytes.push_back(0x10);
+        bytes.push_back(opsetVer);
+        // pad to >= 16 bytes with producer_name (field 2, wire 2 -> tag 0x12)
+        bytes.push_back(0x12);
+        bytes.push_back(0x08);
+        for (int i = 0; i < 8; ++i) bytes.push_back('t');
+        return bytes;
+    };
+
+    // PP-OCRv6 (ir=8, opset=11) 应无损钳位至 IR 7，同时兼容 Win11 21H2 (Build 22000) 与 22H2+
+    auto v6Bytes = buildSyntheticOnnx(8, 11);
+    EXPECT_TRUE(DeepOcrEngine::clampOnnxIrVersionForWinMl(v6Bytes));
+    EXPECT_EQ(v6Bytes[1], 7u);
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(v6Bytes));
+
+    // PP-OCRv5 扩展包 (ir=10, opset=14) 应钳位至 IR 8
+    auto v5Bytes = buildSyntheticOnnx(10, 14);
+    EXPECT_TRUE(DeepOcrEngine::clampOnnxIrVersionForWinMl(v5Bytes));
+    EXPECT_EQ(v5Bytes[1], 8u);
+    EXPECT_FALSE(DeepOcrEngine::clampOnnxIrVersionForWinMl(v5Bytes));
+}
+
+TEST(Win10DeepOcrFallbackTest, RealOpenCvDnnRunsPpOcrV6EndToEndWithoutWinMl) {
+    using namespace tools3000::ocr;
+
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "Local PP-OCRv6 model bundle not installed on this machine";
+    }
+
+    // 读取真实中英双语办公文档截图样本，强制跳过 WinML 直走 Win10/Server OpenCV 4.12 DNN 管线
+    cv::Mat sampleImg;
+    const std::filesystem::path fixturePath =
+        std::filesystem::path(L"tests/fixtures/ocr/desktop_office/office_doc_bilingual_review.png");
+    std::error_code ec;
+    if (std::filesystem::is_regular_file(fixturePath, ec)) {
+        sampleImg = cv::imread(fixturePath.string(), cv::IMREAD_COLOR);
+    }
+    if (sampleImg.empty()) {
+        sampleImg = cv::Mat(120, 480, CV_8UC3, cv::Scalar(255, 255, 255));
+        cv::putText(sampleImg, "Tools3000 Win10 OCR OK", cv::Point(20, 75),
+                    cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(15, 15, 15), 2, cv::LINE_AA);
+    }
+
+    struct ScopedOpenCvForceReset {
+        DeepOcrEngine& eng;
+        ~ScopedOpenCvForceReset() {
+            eng.setForceOpenCvDnnForTest(false);
+            eng.releaseLoadedModels();
+        }
+    } guard{deep};
+
+    deep.releaseLoadedModels();
+    deep.setForceOpenCvDnnForTest(true);
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto lines = deep.extractText(sampleImg);
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    std::cout << "[Win10OpenCvDnnOcr] image=" << sampleImg.cols << "x" << sampleImg.rows
+              << " lines=" << lines.size()
+              << " failed=" << deep.lastExtractFailed()
+              << " elapsed=" << ms << "ms" << std::endl;
+    for (size_t i = 0; i < (std::min<size_t>)(lines.size(), 5u); ++i) {
+        std::cout << "  [" << i << "] " << lines[i].text << std::endl;
+    }
+    EXPECT_FALSE(deep.lastExtractFailed()) << "Win10 OpenCV DNN fallback must load and run PP-OCRv6 without error";
+    EXPECT_FALSE(lines.empty()) << "Win10 OpenCV DNN fallback must recognize text lines on PP-OCRv6";
+}
 
 
 
 
 
 
+
+
+TEST(DeepOcrStageFeedbackTest, AllFiveStagesFormattedAndCpuFallbackEmitsStageCallbacks) {
+    using namespace tools3000::ocr;
+
+    // 1. 验证 5 大长耗时阶段的中英文消息与顶栏徽章格式化均非空且区分清晰
+    const std::array<std::tuple<OcrRecognitionStage, uint32_t, std::string>, 5> kCases = {{
+        {OcrRecognitionStage::DeepModelLoading, 0u, "v6"},
+        {OcrRecognitionStage::DeepCpuInference, 18u, "opencv_dnn"},
+        {OcrRecognitionStage::DeepMultiLineRecognizing, 24u, "server"},
+        {OcrRecognitionStage::LowConfidenceRefining, 3u, ""},
+        {OcrRecognitionStage::AutoScriptSwitching, 0u, "korean"},
+    }};
+    for (const auto& [st, cnt, detail] : kCases) {
+        std::wstring msgZh, badgeZh, msgEn, badgeEn;
+        formatOcrStageFeedback(st, cnt, detail, true, msgZh, badgeZh);
+        formatOcrStageFeedback(st, cnt, detail, false, msgEn, badgeEn);
+        EXPECT_FALSE(msgZh.empty());
+        EXPECT_FALSE(badgeZh.empty());
+        EXPECT_FALSE(msgEn.empty());
+        EXPECT_FALSE(badgeEn.empty());
+    }
+
+    // 2. 实机验证：当本地存在离线模型包并进入 OpenCV DNN CPU 兼容深度识别时，真实收到 DeepModelLoading 与 DeepCpuInference 回调
+    auto& deep = DeepOcrEngine::instance();
+    if (!deep.isModelInstalled()) {
+        GTEST_SKIP() << "Local PP-OCR model bundle not installed";
+    }
+
+    cv::Mat sampleImg(120, 420, CV_8UC3, cv::Scalar(255, 255, 255));
+    cv::putText(sampleImg, "Tools3000 Deep OCR", cv::Point(18, 72),
+                cv::FONT_HERSHEY_SIMPLEX, 1.0, cv::Scalar(15, 15, 15), 2, cv::LINE_AA);
+
+    std::vector<OcrRecognitionStage> observedStages;
+    std::mutex stMutex;
+    struct ScopedReset {
+        DeepOcrEngine& eng;
+        ~ScopedReset() {
+            eng.setStageCallback({});
+            eng.setForceOpenCvDnnForTest(false);
+            eng.releaseLoadedModels();
+        }
+    } guard{deep};
+
+    deep.releaseLoadedModels();
+    deep.setForceOpenCvDnnForTest(true);
+    deep.setStageCallback([&](OcrRecognitionStage st, uint32_t, const std::string&) {
+        std::lock_guard<std::mutex> lock(stMutex);
+        observedStages.push_back(st);
+    });
+
+    const auto lines = deep.extractText(sampleImg);
+    EXPECT_FALSE(deep.lastExtractFailed());
+    EXPECT_FALSE(lines.empty());
+
+    bool sawModelLoading = false;
+    bool sawCpuInference = false;
+    for (auto st : observedStages) {
+        if (st == OcrRecognitionStage::DeepModelLoading) sawModelLoading = true;
+        if (st == OcrRecognitionStage::DeepCpuInference) sawCpuInference = true;
+    }
+    EXPECT_TRUE(sawModelLoading);
+    EXPECT_TRUE(sawCpuInference);
+}

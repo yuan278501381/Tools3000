@@ -935,7 +935,11 @@
     "langArSa": "阿拉伯語辨識",
     "langThTh": "泰語辨識",
     "translateExcludedAppsTitle": "專業軟體自動讓位",
-    "translateExcludedAppsDesc": "當以下軟體位於前景時自動交還此快捷鍵（如 ssms.exe 執行 SQL、emacs.exe 命令面板），其餘 Tools3000 快捷鍵照常生效"
+    "translateExcludedAppsDesc": "當以下軟體位於前景時自動交還此快捷鍵（如 ssms.exe 執行 SQL、emacs.exe 命令面板），其餘 Tools3000 快捷鍵照常生效",
+    "downloadPhaseProbing": "正在測速選擇最快下載線路...",
+    "downloadPhaseSwitching": "目前線路較慢，正在自動切換備用線路（{{index}}/{{total}}）...",
+    "downloadPhaseVerifying": "正在校驗離線模型完整性...",
+    "downloadMirrorTag": "節點：{{host}}"
   },
   "gesture": {
     "title": "滑鼠手勢設定",

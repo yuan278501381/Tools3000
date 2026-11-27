@@ -465,6 +465,18 @@ void PinOcrScheduler::workerLoop() {
                 cancelledOrSkipped = true;
             } else {
                 dirtySinceLastTrim = true;
+                struct StageGuard {
+                    bool installed = false;
+                    ~StageGuard() {
+                        if (installed) {
+                            tools3000::ocr::DeepOcrEngine::instance().setStageCallback({});
+                        }
+                    }
+                } stageGuard{};
+                if (currentJob.onStage) {
+                    tools3000::ocr::DeepOcrEngine::instance().setStageCallback(currentJob.onStage);
+                    stageGuard.installed = true;
+                }
                 if (customExtractorCopy) {
                     page = customExtractorCopy(input.image, input.scriptModeOverride);
                 } else {

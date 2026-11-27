@@ -174,8 +174,12 @@ DisplayPacingInfo GesturePacer::queryMonitorHardware(HMONITOR hMon) const noexce
         }
     }
 
-    // 4. Tier 4: 安全钳制 (<=1 回退 60Hz，[60, 360] 物理原生) 与衍生参数计算
-    info.refreshRateHz = clampDisplayFrequency(rawHz);
+    // 4. Tier 4: 安全钳制 (<=1 回退 60Hz，[60, 360] 物理原生；RDP 远程会话封顶 60Hz 防带宽过载) 与衍生参数计算
+    uint32_t clampedHz = clampDisplayFrequency(rawHz);
+    if (GetSystemMetrics(SM_REMOTESESSION) != 0) {
+        clampedHz = (std::min)(clampedHz, 60u);
+    }
+    info.refreshRateHz = clampedHz;
     info.framePeriodTicks = computeFramePeriodTicks(m_qpcFreq, info.refreshRateHz);
     info.framePeriodMs = computeFramePeriodMs(info.refreshRateHz);
     info.dpiScale = tools3000::core::dpi::scaleForMonitor(hMon);
@@ -191,8 +195,10 @@ void GesturePacer::setRefreshRate(uint32_t refreshRateHz) noexcept {
     m_framePeriodMs = computeFramePeriodMs(clampedHz);
     m_framePeriodUs = m_framePeriodMs * 1000.0;
 
-    // 微自旋保护预算：默认 500 微秒 (0.5ms)
-    m_spinBudgetTicks = (500ULL * m_qpcFreq) / 1'000'000ULL;
+    // CPU 满载友好策略：Win10 1803+ 高精度内核定时器自带亚毫秒精度，默认 0us 零忙等不反噬 DWM；
+    // 旧系统无高精度定时器时仅保留极短 150us 退让预算，绝不长时自旋抢核。
+    const uint64_t defaultSpinUs = m_isHighResTimer ? 0ULL : 150ULL;
+    m_spinBudgetTicks = (defaultSpinUs * m_qpcFreq) / 1'000'000ULL;
 
     m_activePacing.refreshRateHz = clampedHz;
     m_activePacing.framePeriodTicks = m_framePeriodTicks;
@@ -284,15 +290,17 @@ int64_t GesturePacer::microsecondsToTicks(int64_t us) const noexcept {
 
 void GesturePacer::spinUntilDeadline(uint64_t targetQpc) noexcept {
     uint64_t current = nowQpc();
+    int yieldCount = 0;
     while (current < targetQpc) {
         const int64_t diffTicks = static_cast<int64_t>(targetQpc - current);
         const int64_t diffUs = (diffTicks * 1'000'000LL) / static_cast<int64_t>(m_qpcFreq);
-        if (diffUs > 100) {
-            // 剩余时间大于 100 微秒：让出当前逻辑处理核心时间片给同优先级就绪线程
+        if (diffUs > 60 || yieldCount >= 8) {
+            // 严禁在 CPU 100% 满载下长时间占用核心饿死 DWM / 输入钩子：主动让出调度时间片
             SwitchToThread();
+            yieldCount = 0;
         } else {
-            // 最后 100 微秒：超低延迟 CPU 硬件自旋原语 (x86/x64 _mm_pause / ARM64 __yield)
             YieldProcessor();
+            ++yieldCount;
         }
         current = nowQpc();
     }
@@ -326,17 +334,17 @@ bool GesturePacer::waitOrPace(HANDLE wakeEvent) noexcept {
             return true;
         }
 
-        // ── Phase 2: 若已进入微自旋窗口 (剩余时间 <= spinBudget，默认 500us) ──
-        if (remainingTicks <= static_cast<int64_t>(m_spinBudgetTicks)) {
+        // ── Phase 2: 仅剩余极短时间 (<= spinBudget) 时短让步对齐 ──
+        if (m_spinBudgetTicks > 0 && remainingTicks <= static_cast<int64_t>(m_spinBudgetTicks)) {
             spinUntilDeadline(m_targetDeadlineQpc);
             return true;
         }
 
-        // ── Phase 1: 大段休眠 (Waitable Timer 挂起释放 CPU 核心) ──
+        // ── Phase 1: 内核高精度 WaitableTimer 挂起，完全释放 CPU 核心给 DWM 与前台工作负载 ──
         const int64_t sleepTicks = remainingTicks - static_cast<int64_t>(m_spinBudgetTicks);
         const LONGLONG sleep100ns = (sleepTicks * 10'000'000LL) / static_cast<LONGLONG>(m_qpcFreq);
 
-        if (sleep100ns >= 5000 && m_timer != nullptr) { // 至少 0.5ms 才进入内核等待
+        if (sleep100ns >= 1000 && m_timer != nullptr) { // >= 0.1ms 均走内核零忙等挂起
             LARGE_INTEGER dueTime{};
             dueTime.QuadPart = -sleep100ns; // 负值表示相对时间 (100ns 为基准)
             SetWaitableTimer(m_timer, &dueTime, 0, nullptr, nullptr, FALSE);
@@ -353,21 +361,17 @@ bool GesturePacer::waitOrPace(HANDLE wakeEvent) noexcept {
                 MWMO_INPUTAVAILABLE
             );
 
-            // 唤醒后主动取消待定定时器
             CancelWaitableTimer(m_timer);
 
-            // 若因窗口输入消息到达而唤醒，立即返回 false，让调用方 renderLoop 优先泵送 Win32 消息
             if (waitRes == WAIT_OBJECT_0 + handleCount) {
                 return false;
             }
 
-            // 若因外部 wakeEvent 被唤醒（例如手势取消、打断或退出）
             if (wakeEvent != nullptr && waitRes == WAIT_OBJECT_0) {
                 return false;
             }
         } else {
-            // 剩余时间在 0.5ms ~ 1.0ms 之间，直接进入自旋让步
-            spinUntilDeadline(m_targetDeadlineQpc);
+            // 剩余不足 0.1ms 直接释放呈现，彻底零自旋
             return true;
         }
     }

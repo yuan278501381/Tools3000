@@ -68,6 +68,11 @@ interface DeepOcrModelStatus {
   downloadedBytes: number;
   totalBytes: number;
   serverTotalBytes?: number;
+  speedBytesPerSec?: number;
+  activeMirrorHost?: string;
+  mirrorIndex?: number;
+  mirrorTotal?: number;
+  phase?: 'probing' | 'downloading' | 'switching' | 'verifying' | string;
   modelTier?: string;
   activeModelTier?: string;
   scriptMode?: string;
@@ -84,6 +89,11 @@ interface AiInpaintModelStatus {
   progressPercent: number;
   downloadedBytes: number;
   totalBytes: number;
+  speedBytesPerSec?: number;
+  activeMirrorHost?: string;
+  mirrorIndex?: number;
+  mirrorTotal?: number;
+  phase?: 'probing' | 'downloading' | 'switching' | 'verifying' | string;
   state: 'installed' | 'downloading' | 'not_installed' | 'error' | string;
   modelDir: string;
   modelFile: string;
@@ -124,6 +134,23 @@ const SCRIPT_PACK_CATALOG = [
 const formatPackSizeMb = (bytes: number): string => {
   const mb = Math.max(0.1, bytes / (1024 * 1024));
   return `${mb.toFixed(1)} MB`;
+};
+
+const formatDownloadSpeed = (bytesPerSec?: number): string => {
+  if (!bytesPerSec || bytesPerSec <= 1024) return '';
+  if (bytesPerSec >= 1024 * 1024) {
+    return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+  }
+  return `${Math.round(bytesPerSec / 1024)} KB/s`;
+};
+
+const formatTransferredBytes = (downloaded: number, total: number): string => {
+  const dlMb = (Math.max(0, downloaded) / (1024 * 1024)).toFixed(1);
+  if (total > 0 && total >= downloaded) {
+    const totalMb = (total / (1024 * 1024)).toFixed(1);
+    return `${dlMb} / ${totalMb} MB`;
+  }
+  return `${dlMb} MB`;
 };
 
 const normalizeOcrTab = (raw?: string): OcrPageSubTab => {
@@ -737,6 +764,67 @@ export const OcrPage: FC = () => {
     { id: 'models', label: t('ocr.tabModels', 'Offline Engines & Packs'), icon: <Package size={16} /> },
   ];
 
+  const isDownloadingCoreBase =
+    modelStatus.downloading && !modelStatus.downloadingServer && !modelStatus.downloadingScriptPack;
+  const isDownloadingServerPack = Boolean(modelStatus.downloading && modelStatus.downloadingServer);
+
+  const renderDownloadProgress = (
+    progressPercent: number,
+    downloadedBytes: number,
+    totalBytes: number,
+    fileLabel: string,
+    phase?: string,
+    speedBytesPerSec?: number,
+    activeMirrorHost?: string,
+    mirrorIndex?: number,
+    mirrorTotal?: number,
+  ) => {
+    let stageLabel = fileLabel
+      ? t('ocr.downloadingFile', { file: fileLabel })
+      : t('ocr.deepStatusDownloading', { percent: progressPercent });
+    if (phase === 'probing') {
+      stageLabel = t('ocr.downloadPhaseProbing', 'Testing fastest download mirror...');
+    } else if (phase === 'switching') {
+      stageLabel = t('ocr.downloadPhaseSwitching', {
+        index: mirrorIndex || 2,
+        total: mirrorTotal || 2,
+        defaultValue: 'Current mirror is slow, switching to fallback mirror ({{index}}/{{total}})...',
+      });
+    } else if (phase === 'verifying') {
+      stageLabel = t('ocr.downloadPhaseVerifying', 'Verifying offline model integrity...');
+    }
+
+    const speedText = phase === 'downloading' || !phase ? formatDownloadSpeed(speedBytesPerSec) : '';
+    const transferText = downloadedBytes > 0 ? formatTransferredBytes(downloadedBytes, totalBytes) : '';
+    const rightParts = [transferText, speedText, `${progressPercent}%`].filter(Boolean);
+
+    return (
+      <div className="ocr-page__progress-wrap">
+        <div
+          role="progressbar"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={progressPercent}
+          className="ocr-page__progress-track"
+        >
+          <div
+            className="ocr-page__progress-fill"
+            style={{ width: `${Math.max(2, Math.min(100, progressPercent))}%` }}
+          />
+        </div>
+        <div className="ocr-page__progress-meta">
+          <span className="ocr-page__progress-stage">
+            {stageLabel}
+            {activeMirrorHost && phase !== 'probing' && phase !== 'verifying'
+              ? ` · ${t('ocr.downloadMirrorTag', { host: activeMirrorHost, defaultValue: 'Mirror: {{host}}' })}`
+              : ''}
+          </span>
+          <span className="ocr-page__progress-stats">{rightParts.join(' · ')}</span>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="ocr-page">
       <Tabs
@@ -1000,30 +1088,18 @@ export const OcrPage: FC = () => {
                     </div>
                   </div>
 
-                  {modelStatus.downloading && (
-                    <div className="ocr-page__progress-wrap">
-                      <div
-                        role="progressbar"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={modelStatus.progressPercent}
-                        className="ocr-page__progress-track"
-                      >
-                        <div
-                          className="ocr-page__progress-fill"
-                          style={{ width: `${Math.max(2, Math.min(100, modelStatus.progressPercent))}%` }}
-                        />
-                      </div>
-                      <div className="ocr-page__progress-meta">
-                        <span>
-                          {modelStatus.currentFile
-                            ? t('ocr.downloadingFile', { file: modelStatus.currentFile })
-                            : t('ocr.deepStatusDownloading', { percent: modelStatus.progressPercent })}
-                        </span>
-                        <span>{`${modelStatus.progressPercent}%`}</span>
-                      </div>
-                    </div>
-                  )}
+                  {isDownloadingCoreBase &&
+                    renderDownloadProgress(
+                      modelStatus.progressPercent,
+                      modelStatus.downloadedBytes,
+                      modelStatus.totalBytes,
+                      modelStatus.currentFile,
+                      modelStatus.phase,
+                      modelStatus.speedBytesPerSec,
+                      modelStatus.activeMirrorHost,
+                      modelStatus.mirrorIndex,
+                      modelStatus.mirrorTotal,
+                    )}
                 </div>
               </SettingRow>
 
@@ -1051,7 +1127,7 @@ export const OcrPage: FC = () => {
                     />
 
                     <div className="ocr-page__pack-actions">
-                      {modelStatus.downloading && modelStatus.downloadingServer ? (
+                      {isDownloadingServerPack ? (
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1088,6 +1164,19 @@ export const OcrPage: FC = () => {
                       )}
                     </div>
                   </div>
+
+                  {isDownloadingServerPack &&
+                    renderDownloadProgress(
+                      modelStatus.progressPercent,
+                      modelStatus.downloadedBytes,
+                      modelStatus.totalBytes,
+                      modelStatus.currentFile,
+                      modelStatus.phase,
+                      modelStatus.speedBytesPerSec,
+                      modelStatus.activeMirrorHost,
+                      modelStatus.mirrorIndex,
+                      modelStatus.mirrorTotal,
+                    )}
 
                   {settings.modelTier === 'server' && !modelStatus.serverInstalled && !modelStatus.downloading && (
                     <div className="ocr-page__hint-note">
@@ -1150,6 +1239,19 @@ export const OcrPage: FC = () => {
                       ) : null}
                     </div>
                   </div>
+
+                  {isDownloadingScriptPack &&
+                    renderDownloadProgress(
+                      modelStatus.progressPercent,
+                      modelStatus.downloadedBytes,
+                      modelStatus.totalBytes,
+                      modelStatus.currentFile,
+                      modelStatus.phase,
+                      modelStatus.speedBytesPerSec,
+                      modelStatus.activeMirrorHost,
+                      modelStatus.mirrorIndex,
+                      modelStatus.mirrorTotal,
+                    )}
 
                   <div className="ocr-page__script-grid">
                     {SCRIPT_PACK_CATALOG.map((meta) => {
@@ -1280,30 +1382,18 @@ export const OcrPage: FC = () => {
                     </div>
                   </div>
 
-                  {inpaintStatus.downloading && (
-                    <div className="ocr-page__progress-wrap">
-                      <div
-                        role="progressbar"
-                        aria-valuemin={0}
-                        aria-valuemax={100}
-                        aria-valuenow={inpaintStatus.progressPercent}
-                        className="ocr-page__progress-track"
-                      >
-                        <div
-                          className="ocr-page__progress-fill"
-                          style={{ width: `${Math.max(2, Math.min(100, inpaintStatus.progressPercent))}%` }}
-                        />
-                      </div>
-                      <div className="ocr-page__progress-meta">
-                        <span>
-                          {inpaintStatus.modelFile
-                            ? t('ocr.downloadingFile', { file: inpaintStatus.modelFile })
-                            : t('ocr.inpaintStatusDownloading', { percent: inpaintStatus.progressPercent })}
-                        </span>
-                        <span>{`${inpaintStatus.progressPercent}%`}</span>
-                      </div>
-                    </div>
-                  )}
+                  {inpaintStatus.downloading &&
+                    renderDownloadProgress(
+                      inpaintStatus.progressPercent,
+                      inpaintStatus.downloadedBytes,
+                      inpaintStatus.totalBytes,
+                      inpaintStatus.modelFile,
+                      inpaintStatus.phase,
+                      inpaintStatus.speedBytesPerSec,
+                      inpaintStatus.activeMirrorHost,
+                      inpaintStatus.mirrorIndex,
+                      inpaintStatus.mirrorTotal,
+                    )}
                 </div>
               </SettingRow>
             </Card>

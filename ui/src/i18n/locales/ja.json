@@ -935,7 +935,11 @@
     "langArSa": "アラビア語 OCR",
     "langThTh": "タイ語 OCR",
     "translateExcludedAppsTitle": "専門アプリでの自動一時譲歩",
-    "translateExcludedAppsDesc": "以下のアプリが前面にある間はこのショートカットを自動的に明け渡し（例: ssms.exe の SQL 実行、emacs.exe の M-x）、他の Tools3000 ショートカットは維持します"
+    "translateExcludedAppsDesc": "以下のアプリが前面にある間はこのショートカットを自動的に明け渡し（例: ssms.exe の SQL 実行、emacs.exe の M-x）、他の Tools3000 ショートカットは維持します",
+    "downloadPhaseProbing": "最速ダウンロードミラーを測定中...",
+    "downloadPhaseSwitching": "接続が遅いため予備ミラーへ自動切替中（{{index}}/{{total}}）...",
+    "downloadPhaseVerifying": "オフラインモデルの整合性を検証中...",
+    "downloadMirrorTag": "ミラー：{{host}}"
   },
   "gesture": {
     "title": "マウスジェスチャー設定",

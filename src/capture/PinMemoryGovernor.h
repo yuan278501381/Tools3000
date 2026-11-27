@@ -17,6 +17,7 @@
 #ifndef TOOLS3000_CAPTURE_PINMEMORYGOVERNOR_H
 #define TOOLS3000_CAPTURE_PINMEMORYGOVERNOR_H
 
+#include "ocr/DeepOcrEngine.h"
 #include "ocr/OcrEngine.h"
 
 #include <opencv2/core.hpp>
@@ -153,6 +154,7 @@ public:
         PinOcrPriority priority = PinOcrPriority::SilentWarmup;
         AcquireInputFn acquireInput;
         CompleteTaskFn onComplete;
+        tools3000::ocr::OcrStageCallback onStage;
     };
 
     static PinOcrScheduler& instance();

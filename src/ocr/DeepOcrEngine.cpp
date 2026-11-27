@@ -641,7 +641,9 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
             LOG_INFO("DeepOcrEngine: loaded {} dictionary keys directly from rec ONNX metadata", m_dictKeys.size());
         }
 
-        // 优先挂载系统内置 Windows.AI.MachineLearning + DirectML 原生 D3D12 紧凑固定桶管线
+        // 优先挂载系统内置 Windows.AI.MachineLearning + DirectML 原生 D3D12 紧凑固定桶管线；
+        // 在 Windows 10 (Inbox WinML 仅支持 ONNX 1.4/opset 9) / Server / 显式测试回退模式下自动平滑回落 OpenCV DNN CPU
+        if (!isForceOpenCvDnnEnabled()) {
         try {
             ensureComApartmentInitialized();
             const auto winmlDetPath = ensureOnnxWinMlIr8CompatiblePath(detPath);
@@ -819,10 +821,25 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                          m_dictKeys.size());
                 return true;
             }
-        } catch (...) {
+        } catch (const winrt::hresult_error& e) {
+            LOG_INFO("DeepOcrEngine: native WinML load unavailable (hr=0x{:08X}), falling back to OpenCV DNN CPU",
+                     static_cast<uint32_t>(e.code().value));
             m_winMl.reset();
             m_useWinMl = false;
             m_activeSessionCountAtomic.store(0, std::memory_order_release);
+        } catch (const std::exception& e) {
+            LOG_INFO("DeepOcrEngine: native WinML load unavailable ({}), falling back to OpenCV DNN CPU", e.what());
+            m_winMl.reset();
+            m_useWinMl = false;
+            m_activeSessionCountAtomic.store(0, std::memory_order_release);
+        } catch (...) {
+            LOG_INFO("DeepOcrEngine: native WinML load unavailable, falling back to OpenCV DNN CPU");
+            m_winMl.reset();
+            m_useWinMl = false;
+            m_activeSessionCountAtomic.store(0, std::memory_order_release);
+        }
+        } else {
+            LOG_INFO("DeepOcrEngine: forced OpenCV DNN CPU fallback mode active");
         }
 
         // 无损回退路径：OpenCV DNN 固定分桶推理引擎（仅在 WinML 不可用时按需整文件读盘）
@@ -873,7 +890,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
         m_loadedEngineGen = desiredGen;
         m_modelsLoaded = true;
         m_modelsLoadedAtomic.store(true, std::memory_order_release);
-        LOG_INFO("DeepOcrEngine: PP-OCR{} ONNX models loaded (tier={}, dict={} keys)", m_loadedEngineGen, m_loadedModelTier, m_dictKeys.size());
+        LOG_INFO("DeepOcrEngine: PP-OCR{} ONNX models loaded via OpenCV DNN CPU fallback (tier={}, dict={} keys)", m_loadedEngineGen, m_loadedModelTier, m_dictKeys.size());
         return true;
     } catch (const winrt::hresult_error& e) {
         LOG_ERROR("DeepOcrEngine: WinRT exception loading PP-OCRv4 models: hr=0x{:08X}",
@@ -1288,6 +1305,7 @@ void normalizeArabicRtlLine(CtcDecodeOutput& dec) {
 
 std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const std::string& scriptModeOverride) {
     tools3000::core::TraceId::Scope traceScope;
+    m_lastExtractFailed.store(false, std::memory_order_release);
     if (image.empty()) return {};
 
     bool installed = false;
@@ -1327,6 +1345,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         }
         if (status == OcrWorkerExtractStatus::WorkerFailed) {
             LOG_WARN("DeepOcrEngine: isolated OCR worker failed; aborting DeepOCR without unsafe in-process fallback");
+            m_lastExtractFailed.store(true, std::memory_order_release);
             return {};
         }
     }
@@ -1373,12 +1392,26 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
         pageRotated270Ccw = false;
 
         const auto tLoadStart = std::chrono::steady_clock::now();
+        if (!m_modelsLoaded) {
+            const std::string genHint = deep_ocr_detail::isV6BaseBundlePresent(modelDir) ? "v6" : "v4";
+            notifyStage(OcrRecognitionStage::DeepModelLoading, 0u, genHint);
+        }
         if (!ensureModelsLoadedLocked(modelDir)) {
+            m_lastExtractFailed.store(true, std::memory_order_release);
             return {};
         }
         const auto tInferStart = std::chrono::steady_clock::now();
         loadMs = std::chrono::duration_cast<std::chrono::milliseconds>(
             tInferStart - tLoadStart).count();
+
+        // 若当前落入 CPU 兼容深度模式（OpenCV DNN 或 WinML CPU），在进入检测前即刻反馈给用户，避免耗时数秒时界面无反馈
+        if (!m_useWinMl) {
+            notifyStage(OcrRecognitionStage::DeepCpuInference, 0u, "opencv_dnn");
+        } else if (m_winMl && !m_winMl->usingDirectMLGpu) {
+            notifyStage(OcrRecognitionStage::DeepCpuInference, 0u, "winml_cpu");
+        } else if (m_loadedModelTier == "server") {
+            notifyStage(OcrRecognitionStage::DeepMultiLineRecognizing, 0u, "server");
+        }
 
         if (m_useWinMl) {
             ensureComApartmentInitialized();
@@ -2999,13 +3032,62 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 mapIsolatedDecodedToQuad(pieces[pi], pieceDecoded[pi]);
             }
         } else {
+            // OpenCV DNN CPU 回退分支（Win10 / Server 2016-2022 完整支持主包 + 显式扩展语种包）
+            if (!pieces.empty()) {
+                notifyStage(OcrRecognitionStage::DeepCpuInference,
+                            static_cast<uint32_t>(pieces.size()),
+                            "opencv_dnn");
+            }
+            cv::dnn::Net extNetShort;
+            cv::dnn::Net extNetLong;
+            std::vector<std::string> extDictKeys;
+            bool useCvExtPack = false;
+            if (effectiveScriptMode != "auto" && effectiveScriptMode != "cjk") {
+                const auto packPath = deep_ocr_detail::resolveScriptPackModelPath(modelDir, effectiveScriptMode);
+                if (!packPath.empty() && deep_ocr_detail::isScriptPackModelPresent(modelDir, effectiveScriptMode)) {
+                    std::vector<uint8_t> extBytes;
+                    if (readFileBytes(packPath, extBytes) &&
+                        extractEmbeddedCharacterDictFromOnnx(extBytes.data(), extBytes.size(), extDictKeys) &&
+                        extDictKeys.size() >= 64) {
+                        std::vector<uint8_t> extShortFixed, extLongFixed;
+                        const bool spOk = patchOnnxGraphInputShape(
+                            extBytes.data(), extBytes.size(),
+                            {1, 3, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecShortBucketWidth},
+                            extShortFixed);
+                        const bool lpOk = patchOnnxGraphInputShape(
+                            extBytes.data(), extBytes.size(),
+                            {1, 3, DeepOcrConstants::kRecImgHeight, DeepOcrConstants::kRecLongBucketWidth},
+                            extLongFixed);
+                        try {
+                            const auto& sSrc = spOk ? extShortFixed : extBytes;
+                            const auto& lSrc = lpOk ? extLongFixed : extBytes;
+                            extNetShort = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(sSrc.data()), sSrc.size());
+                            extNetLong = cv::dnn::readNetFromONNX(reinterpret_cast<const char*>(lSrc.data()), lSrc.size());
+                            if (!extNetShort.empty() && !extNetLong.empty()) {
+                                extNetShort.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                                extNetShort.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                                extNetLong.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+                                extNetLong.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+                                useCvExtPack = true;
+                                detectedScript = effectiveScriptMode;
+                            }
+                        } catch (...) {
+                            useCvExtPack = false;
+                        }
+                    }
+                }
+            }
+            const auto& activeDict = useCvExtPack ? extDictKeys : m_dictKeys;
             for (const auto& pc : pieces) {
                 const bool useShort = (pc.contentW <= DeepOcrConstants::kRecShortBucketWidth);
                 const int netW = useShort
                     ? DeepOcrConstants::kRecShortBucketWidth
                     : DeepOcrConstants::kRecLongBucketWidth;
-                cv::dnn::Net& activeNet = useShort ? m_recNetShort : m_recNetLong;
-                cv::Mat recBlob = makeRecOrClsBlob(pc.stripBgr, H, pc.contentW, netW);
+                cv::dnn::Net& activeNet = useCvExtPack
+                    ? (useShort ? extNetShort : extNetLong)
+                    : (useShort ? m_recNetShort : m_recNetLong);
+                const int clampedContentW = (std::min)(pc.contentW, netW);
+                cv::Mat recBlob = makeRecOrClsBlob(pc.stripBgr, H, clampedContentW, netW);
                 activeNet.setInput(recBlob);
                 cv::Mat recOut = activeNet.forward();
                 if (recOut.empty()) continue;
@@ -3013,8 +3095,13 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 int numClasses = (recOut.dims >= 3) ? recOut.size[2] : recOut.cols;
                 if (seqT <= 0 || numClasses <= 1) continue;
                 cv::Mat logits2d(seqT, numClasses, CV_32F, recOut.ptr<float>());
-                const float validRatio = static_cast<float>(pc.contentW) / static_cast<float>(netW);
-                const CtcDecodeOutput dec = decodeCtcGreedy(logits2d, m_dictKeys, validRatio);
+                const float validRatio = static_cast<float>(clampedContentW) / static_cast<float>(netW);
+                CtcDecodeOutput dec = decodeCtcGreedy(logits2d, activeDict, validRatio);
+                if (detectedScript == "cyrillic") {
+                    normalizeCyrillicLatinHomoglyphs(dec);
+                } else if (detectedScript == "arabic") {
+                    normalizeArabicRtlLine(dec);
+                }
                 mapIsolatedDecodedToQuad(pc, dec);
             }
         }
@@ -3099,6 +3186,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 gpuErrorNeedsCpuRetry = true;
             } else {
                 LOG_ERROR("DeepOcrEngine: WinRT inference exception: hr=0x{:08X}", hr);
+                m_lastExtractFailed.store(true, std::memory_order_release);
                 return {};
             }
         } catch (const std::exception& e) {
@@ -3107,6 +3195,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 gpuErrorNeedsCpuRetry = true;
             } else {
                 LOG_ERROR("DeepOcrEngine: inference exception: {}", e.what());
+                m_lastExtractFailed.store(true, std::memory_order_release);
                 return {};
             }
         } catch (...) {
@@ -3115,6 +3204,7 @@ std::vector<OcrResult> DeepOcrEngine::extractText(const cv::Mat& image, const st
                 gpuErrorNeedsCpuRetry = true;
             } else {
                 LOG_ERROR("DeepOcrEngine: inference unknown exception");
+                m_lastExtractFailed.store(true, std::memory_order_release);
                 return {};
             }
         }
@@ -3217,6 +3307,78 @@ void DeepOcrEngine::notifyStage(OcrRecognitionStage stage, uint32_t count, const
     }
 }
 
+void formatOcrStageFeedback(
+    OcrRecognitionStage stage,
+    uint32_t count,
+    const std::string& detail,
+    bool isZh,
+    std::wstring& outMessage,
+    std::wstring& outBadge) {
+    outMessage.clear();
+    outBadge.clear();
+
+    auto scriptLabel = [&](const std::string& script) -> std::wstring {
+        if (script == "korean")   return isZh ? L"韩语" : L"Korean";
+        if (script == "cyrillic") return isZh ? L"俄语/西里尔文" : L"Cyrillic";
+        if (script == "arabic")   return isZh ? L"阿拉伯语" : L"Arabic";
+        if (script == "thai")     return isZh ? L"泰语" : L"Thai";
+        if (script == "japan")    return isZh ? L"日语" : L"Japanese";
+        if (script == "latin")    return isZh ? L"拉丁扩展" : L"Latin";
+        return isZh ? L"扩展语种" : L"Extended Script";
+    };
+
+    switch (stage) {
+        case OcrRecognitionStage::DeepModelLoading:
+            outMessage = isZh
+                ? L"正在启动离线深度识别引擎，请稍候..."
+                : L"Loading offline deep OCR engine...";
+            outBadge = isZh ? L"离线引擎启动中" : L"Loading Engine";
+            break;
+        case OcrRecognitionStage::DeepCpuInference:
+            if (count > 0) {
+                outMessage = isZh
+                    ? (L"深度离线识别中（CPU 兼容模式 · " + std::to_wstring(count) + L" 行文字）...")
+                    : (L"Deep offline OCR in progress (CPU mode · " + std::to_wstring(count) + L" lines)...");
+            } else {
+                outMessage = isZh
+                    ? L"已进入深度离线识别（CPU 兼容模式），正在分析画面..."
+                    : L"Running deep offline OCR (CPU compatible mode)...";
+            }
+            outBadge = isZh ? L"CPU 深度模式" : L"CPU Deep Mode";
+            break;
+        case OcrRecognitionStage::DeepMultiLineRecognizing:
+            if (count > 0) {
+                outMessage = isZh
+                    ? (L"高精度深度模型正在识别 " + std::to_wstring(count) + L" 行文字...")
+                    : (L"High-precision deep model recognizing " + std::to_wstring(count) + L" lines...");
+            } else {
+                outMessage = isZh
+                    ? L"已进入高精度深度识别模型，正在精细解析文字..."
+                    : L"Running high-precision deep OCR model...";
+            }
+            outBadge = (detail == "server")
+                ? (isZh ? L"高精度深度模式" : L"High-Precision Mode")
+                : (isZh ? L"深度识别中" : L"Deep OCR");
+            break;
+        case OcrRecognitionStage::LowConfidenceRefining:
+            outMessage = isZh
+                ? (L"检测到 " + std::to_wstring(count) + L" 处疑难文字，正在高精度精修...")
+                : (L"Refining " + std::to_wstring(count) + L" challenging text lines...");
+            outBadge = isZh ? L"高精度精修中" : L"Refining";
+            break;
+        case OcrRecognitionStage::AutoScriptSwitching: {
+            const std::wstring langW = scriptLabel(detail);
+            outMessage = isZh
+                ? (L"检测到 " + langW + L"，正在使用扩展语种模型复核...")
+                : (L"Detected " + langW + L", re-recognizing with script pack...");
+            outBadge = langW;
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 bool DeepOcrEngine::isWarmAndLoaded() const noexcept {
     return m_modelsLoadedAtomic.load(std::memory_order_acquire);
 }
@@ -3240,6 +3402,13 @@ bool DeepOcrEngine::isForceCpuOnlyMode() const noexcept {
         return true;
     }
     return worker::envFlagEnabled(L"TOOLS3000_OCR_FORCE_CPU");
+}
+
+bool DeepOcrEngine::isForceOpenCvDnnEnabled() const noexcept {
+    if (m_forceOpenCvDnnForTest.load(std::memory_order_acquire)) {
+        return true;
+    }
+    return worker::envFlagEnabled(L"TOOLS3000_OCR_FORCE_OPENCV_DNN");
 }
 
 bool DeepOcrEngine::isGpuRuntimeBlacklisted() const noexcept {
