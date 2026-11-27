@@ -8,7 +8,7 @@
 
 Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release delivers a comprehensive **Window Manager v2** upgrade — still **completely disabled by default** (zero background processes, zero hooks, zero RAM until you opt in) — bringing a dual-layer visual layout manager, red-frame workspace capture with interactive desktop & taskbar previews, a freely resizable `Alt+Tab` switcher plus standalone same-app `Alt+\`` switching, and seamless multi-monitor / virtual-desktop resilience across Windows 10, Windows 11, and Windows Server 2019–2025:
 
-1. **SnapZones v2 (FancyZones): Dual-Layer Visual Layout Hub & 6 Parametric Templates**
+1. **SnapZones v2: Dual-Layer Visual Layout Hub & 6 Parametric Templates**
    - Launch the new **Dual-Layer Layout Manager** directly from `Settings -> Window Manager` or via hotkey (`Win+Shift+~`): see semi-transparent snap zones live across your full desktop while adjusting templates, zone counts, and spacing right on top.
    - Ships with **6 built-in parametric templates** (No Layout, Focus, Columns, Rows, Grid, and Priority Grid), custom layout duplication & 1:1 fullscreen visual editing, **0–9 instant layout hotkeys** with conflict protection, and automatic landscape/portrait defaults per monitor.
    - Offline monitors are safely preserved instead of lost when docking/undocking, and bindings for deleted virtual desktops can be audited and cleaned up in one click.
@@ -16,7 +16,8 @@ Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release deli
    - Clicking **Create Workspace** now frames every active monitor with a crisp `4px` crimson capture border so you can arrange your real desktop live and capture your current virtual desktop snapshot (with real app icons, launch arguments, administrator elevation flags, minimized window positions, and matched SnapZones).
    - Inspect and fine-tune workspaces in the new **interactive miniature desktop & taskbar preview stage** — hovering any app row or preview tile highlights it live, with accordion controls for launch arguments, elevation, window state, exact bounds, SnapZone slot, always-on-top, and opacity.
    - Generate standalone **Desktop Shortcuts (`.lnk`)** to launch any workspace in one double-click, with automatic multi-monitor collapse fallback when switching from multi-screen desks to a single laptop screen and a lightweight floating launch progress card.
-3. **Quick Switch v2: Freely Resizable `Alt+Tab` Hub & Standalone Same-App `Alt+\``**
+3. **Quick Switch v2 (`Alt+Tab`, inspired by [vibeslop/AltTabio](https://github.com/vibeslop/AltTabio)): Freely Resizable Hub & Standalone Same-App `Alt+\``**
+   - Interaction design and core window-switching ideas are credited to the open-source GitHub project **[vibeslop/AltTabio](https://github.com/vibeslop/AltTabio)** (MIT License), natively integrated and extended for Tools3000.
    - The enhanced `Alt+Tab` switcher now opens in a roomy dual-pane layout that supports **8-direction edge/corner resizing, titlebar dragging, adjustable list/preview split ratio, and cross-monitor position memory** (with automatic rescue if a remembered monitor is disconnected).
    - Added **in-place desktop position preview**, Chinese Pinyin initial & fuzzy filtering, full keyboard/button window controls (`F4`–`F9`, `P` pin, `Z` maximize/restore, `T` minimize to tray, plus tray-window recovery), and a **standalone `Alt+\`` same-app window switcher** that works independently even if you prefer to keep Windows' built-in `Alt+Tab`.
 4. **Window Management Mouse Gestures & Broad Windows Compatibility**
@@ -31,17 +32,18 @@ Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release deli
 
 欢迎升级至 **Tools3000 v1.5.5**。本版本以已正式发布的 **v1.5.4** 为对比基线，带来全新进化的 **窗口管理套件 v2.0**（延续出厂默认全关闭设计，未开启时零进程、零钩子、零内存占用），全面重构分屏布局、工作区一键快照与增强 `Alt+Tab` 切换体验，并针对多显示器热插拔、虚拟桌面及 Windows 10 / Windows 11 / Windows Server 2019–2025 全场景做了系统级加固：
 
-### 1. 分屏布局 v2（FancyZones）：双层共视布局管理器与 6 大参数化模板
+### 1. 分屏布局 v2（SnapZones）：双层共视布局管理器与 6 大参数化模板
 - 全新上线 **双层共视布局管理器**（支持从 `设置 -> 窗口管理` 或全局热键一键唤起）：底层直接全屏实时透视当前分屏分区，顶层悬浮卡片控制台实时切换布局、增减分区数量或开关分区间距，所见即所得；
 - 内置 **6 套参数化模板**（无布局、焦点、列、行、网格、优先级网格），支持自定义布局复制与 1:1 全屏精细编辑、**0–9 数字布局快捷键**一键切换与冲突自动消解，以及横屏/竖屏默认布局自适应；
 - 新增**多屏与虚拟桌面拓扑自愈**：外接显示器拔出时自动保留历史绑定配置（插回即恢复），已删除的虚拟桌面绑定支持在设置页一键扫描并安全清理。
 
-### 2. 工作区 v2：正红边框实时摆拍、双层微缩预览舞台与桌面快捷方式
+### 2. 工作区 v2（Workspaces）：正红边框实时摆拍、双层微缩预览舞台与桌面快捷方式
 - 点击 **创建工作区** 后，系统将在所有活动显示器外缘拉起清晰的 `4px` 正红取景细边，方便你先将桌面窗口摆放到理想位置再一键捕获，精准记录当前虚拟桌面内所有窗口的真实彩色图标、启动参数、管理员权限标识、最小化窗还原位置及所属分屏槽位；
 - 捕获与编辑界面全面升级为 **双层交互式桌面与任务栏微缩舞台**：鼠标悬停在应用列表或微缩预览窗口上可实时双向高亮联动，展开手风琴面板即可逐项精调管理员启动、命令行参数、窗口状态、精确坐标、分屏槽位、置顶与透明度；
 - 支持为任意工作区一键生成 **桌面快捷方式 (`.lnk`)** 双击直达启动；从多屏桌面切回单屏笔记本时，自动按比例折叠落位至主屏绝不丢窗，并配备轻量原生启动进度浮窗。
 
-### 3. 窗口速切器 v2：自由拖缩 `Alt+Tab` 双栏中枢与独立同应用 `Alt+\``
+### 3. 窗口速切器 v2（`Alt+Tab`，参考开源项目 [AltTabio](https://github.com/vibeslop/AltTabio)）：自由拖缩双栏中枢与独立同应用 `Alt+\``
+- 核心交互与窗口控制思路参考自 GitHub 开源项目 **[vibeslop/AltTabio](https://github.com/vibeslop/AltTabio)**（MIT 开源协议），并结合 Tools3000 架构完成原生融合与功能扩展；
 - 增强 `Alt+Tab` 切换器升级为可自由掌控的双栏中枢，支持 **8 方向边角自由缩放、顶栏拖动定位、列表与预览分割线调宽，以及跨屏位置记忆**（拔掉外接屏时自动安全拉回主屏）；
 - 新增 **桌面原位投影预览**、中文拼音首字母与模糊秒搜、完整窗口操作快捷键（`F4`–`F9` 窗口控制、`P` 置顶、`Z` 最大化/还原、`T` 收纳托盘及系统托盘窗捞回）；
 - 新增 **独立同应用切窗（`Alt+\``）轨道**：即使不接管 Windows 原生 `Alt+Tab`，也可以单独开启 `Alt+\`` 在同一软件的多个窗口间极速切换。
@@ -74,4 +76,4 @@ Welcome to **Tools3000 v1.5.5** (compared against **v1.5.4**). This release deli
 Get-FileHash .\Tools3000-v1.5.5-Setup.exe -Algorithm SHA256
 ```
 
-> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 `SBOM.spdx.json` 软件物料清单。

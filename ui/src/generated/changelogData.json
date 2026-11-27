@@ -7,7 +7,7 @@
       "version": "1.5.5",
       "tag": "v1.5.5",
       "kind": "patch",
-      "publishedAt": "2026-11-27T19:57:48+08:00",
+      "publishedAt": "2026-11-27T20:05:33+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.5.5**。本版本以已正式发布的 **v1.5.4** 为对比基线，带来全新进化的 **窗口管理套件 v2.0**（延续出厂默认全关闭设计，未开启时零进程、零钩子、零内存占用），全面重构分屏布局、工作区一键快照与增强 `Alt+Tab` 切换体验，并针对多显示器热插拔、虚拟桌面及 Windows 10 / Windows 11 / Windows Server 2019–2025 全场景做了系统级加固：",
         "counts": {
@@ -18,7 +18,7 @@
         },
         "sections": [
           {
-            "title": "分屏布局 v2（FancyZones）：双层共视布局管理器与 6 大参数化模板",
+            "title": "分屏布局 v2（SnapZones）：双层共视布局管理器与 6 大参数化模板",
             "category": "feature",
             "items": [
               "全新上线 **双层共视布局管理器**（支持从 `设置 -> 窗口管理` 或全局热键一键唤起）：底层直接全屏实时透视当前分屏分区，顶层悬浮卡片控制台实时切换布局、增减分区数量或开关分区间距，所见即所得；",
@@ -27,7 +27,7 @@
             ]
           },
           {
-            "title": "工作区 v2：正红边框实时摆拍、双层微缩预览舞台与桌面快捷方式",
+            "title": "工作区 v2（Workspaces）：正红边框实时摆拍、双层微缩预览舞台与桌面快捷方式",
             "category": "improvement",
             "items": [
               "点击 **创建工作区** 后，系统将在所有活动显示器外缘拉起清晰的 `4px` 正红取景细边，方便你先将桌面窗口摆放到理想位置再一键捕获，精准记录当前虚拟桌面内所有窗口的真实彩色图标、启动参数、管理员权限标识、最小化窗还原位置及所属分屏槽位；",
@@ -36,9 +36,10 @@
             ]
           },
           {
-            "title": "窗口速切器 v2：自由拖缩 `Alt+Tab` 双栏中枢与独立同应用 `Alt+\\``",
+            "title": "窗口速切器 v2（`Alt+Tab`，参考开源项目 AltTabio）：自由拖缩双栏中枢与独立同应用 `Alt+\\``",
             "category": "improvement",
             "items": [
+              "核心交互与窗口控制思路参考自 GitHub 开源项目 **vibeslop/AltTabio**（MIT 开源协议），并结合 Tools3000 架构完成原生融合与功能扩展；",
               "增强 `Alt+Tab` 切换器升级为可自由掌控的双栏中枢，支持 **8 方向边角自由缩放、顶栏拖动定位、列表与预览分割线调宽，以及跨屏位置记忆**（拔掉外接屏时自动安全拉回主屏）；",
               "新增 **桌面原位投影预览**、中文拼音首字母与模糊秒搜、完整窗口操作快捷键（`F4`–`F9` 窗口控制、`P` 置顶、`Z` 最大化/还原、`T` 收纳托盘及系统托盘窗捞回）；",
               "新增 **独立同应用切窗（`Alt+\\``）轨道**：即使不接管 Windows 原生 `Alt+Tab`，也可以单独开启 `Alt+\\`` 在同一软件的多个窗口间极速切换。"
@@ -64,7 +65,7 @@
         },
         "sections": [
           {
-            "title": "SnapZones v2 (FancyZones): Dual-Layer Visual Layout Hub & 6 Parametric Templates",
+            "title": "SnapZones v2: Dual-Layer Visual Layout Hub & 6 Parametric Templates",
             "category": "improvement",
             "items": [
               "Launch the new **Dual-Layer Layout Manager** directly from `Settings -> Window Manager` or via hotkey (`Win+Shift+~`): see semi-transparent snap zones live across your full desktop while adjusting templates, zone counts, and spacing right on top.",
@@ -82,9 +83,10 @@
             ]
           },
           {
-            "title": "Quick Switch v2: Freely Resizable `Alt+Tab` Hub & Standalone Same-App `Alt+\\``",
+            "title": "Quick Switch v2 (`Alt+Tab`, inspired by vibeslop/AltTabio): Freely Resizable Hub & Standalone Same-App `Alt+\\``",
             "category": "improvement",
             "items": [
+              "Interaction design and core window-switching ideas are credited to the open-source GitHub project **vibeslop/AltTabio** (MIT License), natively integrated and extended for Tools3000.",
               "The enhanced `Alt+Tab` switcher now opens in a roomy dual-pane layout that supports **8-direction edge/corner resizing, titlebar dragging, adjustable list/preview split ratio, and cross-monitor position memory** (with automatic rescue if a remembered monitor is disconnected).",
               "Added **in-place desktop position preview**, Chinese Pinyin initial & fuzzy filtering, full keyboard/button window controls (`F4`–`F9`, `P` pin, `Z` maximize/restore, `T` minimize to tray, plus tray-window recovery), and a **standalone `Alt+\\`` same-app window switcher** that works independently even if you prefer to keep Windows' built-in `Alt+Tab`."
             ]
