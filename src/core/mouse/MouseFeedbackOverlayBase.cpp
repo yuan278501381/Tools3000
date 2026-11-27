@@ -213,11 +213,25 @@ double MouseFeedbackOverlayBase::queryEffectiveRefreshHz(bool remoteSession, boo
 int64_t MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(int64_t elapsedUs, int64_t targetPeriodUs) noexcept {
     if (targetPeriodUs <= 0) return 0;
     const int64_t safeElapsed = (std::max<int64_t>)(0, elapsedUs);
-    // 若 DwmFlush / FrameLatencyWaitable 瞬时返回（实耗 < 55% 周期），需精确补足余量严防 RDP/锁屏 100% CPU 暴走
-    if (safeElapsed < (targetPeriodUs * 55) / 100) {
+    // 仅当 DwmFlush / FrameLatencyWaitable 异常瞬时返回（实耗 < 15% 周期，例如 RDP / 锁屏 / Server 2016 假返回）时补足余量防 100% CPU 暴走；
+    // 绝不可在真实 VSync 相位恢复（如等待 3~8ms 回到 VBlank 边沿）时额外睡眠，否则会破坏硬件 VSync 相位锁并诱发 30FPS 半帧振荡。
+    if (safeElapsed < (targetPeriodUs * 15) / 100) {
         return targetPeriodUs - safeElapsed;
     }
     return 0;
+}
+
+bool MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(
+    int64_t waitedUs, int64_t sinceLastFrameUs, int64_t targetPeriodUs) noexcept {
+    if (targetPeriodUs <= 0) return false;
+    const int64_t safeWaited = (std::max<int64_t>)(0, waitedUs);
+    const int64_t safeSince = (std::max<int64_t>)(0, sinceLastFrameUs);
+    // 若 Waitable 本身已对齐了本次 VSync（等耗 >= 45% 周期），或连同本帧渲染自上帧已耗时 >= 55% 周期，
+    // 则绝不能再叠加一次 DwmFlush()，否则跨过 VSync 边缘会强行空等整个下一周期导致帧率腰斩 (60->30 / 144->72)。
+    if (safeWaited >= (targetPeriodUs * 45) / 100 || safeSince >= (targetPeriodUs * 55) / 100) {
+        return false;
+    }
+    return true;
 }
 
 OverlayFrameMetrics MouseFeedbackOverlayBase::getFrameMetrics() const {
@@ -518,28 +532,36 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
             }
             const int64_t targetPeriodUs = static_cast<int64_t>(std::llround(1000000.0 / cachedRefreshHz));
 
-            // 1. 硬件 VSync 对齐（非 RDP / 非 WARP 场景优先等待 SwapChain FrameLatency + DwmFlush）
+            // 1. 单源硬件 VSync 对齐（严禁 Waitable 与 DwmFlush 无条件串行叠加导致 60->30 / 144->72 帧率腰斩！）
+            bool dwmFlushFailed = false;
             if (!remoteSession && !m_usingWarp) {
+                bool needDwmFlush = true;
                 if (m_frameLatencyWaitable) {
+                    const int64_t waitStartUs = MouseStreamThrottle::monotonicMicros();
                     HANDLE waitHandles[2] = {m_frameLatencyWaitable, m_controlEvent};
                     const DWORD waitCount = m_controlEvent ? 2u : 1u;
                     const DWORD latTimeout = static_cast<DWORD>(std::clamp<int64_t>((targetPeriodUs / 1000LL) + 6LL, 8LL, 40LL));
                     WaitForMultipleObjects(waitCount, waitHandles, FALSE, latTimeout);
+                    const int64_t waitEndUs = MouseStreamThrottle::monotonicMicros();
+                    const int64_t waitedUs = waitEndUs - waitStartUs;
+                    const int64_t sinceLastFrameUs = waitEndUs - lastAnimPacingEndUs;
+                    needDwmFlush = shouldInvokeDwmFlushAfterWaitable(waitedUs, sinceLastFrameUs, targetPeriodUs);
                 }
-                if (!st.stop_requested() &&
+                if (needDwmFlush &&
+                    !st.stop_requested() &&
                     !m_hideRequested.load(std::memory_order_acquire) &&
                     !m_zOrderYieldRequested.load(std::memory_order_acquire)) {
-                    (void)DwmFlush();
+                    dwmFlushFailed = FAILED(DwmFlush());
                 }
             }
 
-            // 2. QPC 防空转兜底：RDP / 锁屏 / Server 2016 异常 DwmFlush 瞬时返回时精准补足剩余周期，绝不 100% CPU 暴走
+            // 2. QPC 防空转兜底：RDP / WARP / 锁屏 / Server 2016 异常 DwmFlush 瞬时返回或失败时精准补足剩余周期，绝不 100% CPU 暴走
             if (!st.stop_requested() &&
                 !m_hideRequested.load(std::memory_order_acquire) &&
                 !m_zOrderYieldRequested.load(std::memory_order_acquire)) {
                 const int64_t afterFlushUs = MouseStreamThrottle::monotonicMicros();
                 const int64_t elapsedUs = afterFlushUs - lastAnimPacingEndUs;
-                const int64_t remainUs = (remoteSession || m_usingWarp)
+                const int64_t remainUs = (remoteSession || m_usingWarp || dwmFlushFailed)
                     ? ((elapsedUs < targetPeriodUs) ? (targetPeriodUs - elapsedUs) : 0LL)
                     : computeAntiSpinRemainingUs(elapsedUs, targetPeriodUs);
                 if (remainUs > 0) {

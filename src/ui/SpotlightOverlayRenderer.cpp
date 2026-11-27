@@ -13,6 +13,54 @@
 
 namespace tools3000::ui {
 
+namespace {
+
+/// 零掉帧大半径圆环绘制器：
+/// Direct2D 原生 DrawEllipse 在半径超过 ~2048px（包围盒 >4096px）时会坠入 CPU 路径加宽与海量三角剖分悬崖，
+/// 单次调用即可阻塞 EndDraw() 长达 30~45ms！本函数在中小半径直走原生 DrawEllipse，
+/// 超出 1200px 后自动切换为屏幕可见弧段裁剪直线逼近（仅绘制落在视口内的弧段），任何分辨率/半径下恒定 < 0.08ms！
+void drawSafeCircleStroke(ID2D1DeviceContext* ctx,
+                          float cx, float cy, float radius,
+                          ID2D1Brush* brush, float strokeWidth,
+                          float surfW, float surfH,
+                          float maxCornerDist) noexcept {
+    if (!ctx || !brush || radius <= 0.5f || strokeWidth <= 0.0f) return;
+    if (radius - strokeWidth > maxCornerDist) return;
+
+    constexpr float kNativeStrokeSafeRadius = 1200.0f;
+    if (radius <= kNativeStrokeSafeRadius) {
+        ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), radius, radius), brush, strokeWidth);
+        return;
+    }
+
+    constexpr int kSegments = 128;
+    constexpr float kTwoPi = 6.28318530718f;
+    const float pad = strokeWidth + 4.0f;
+    const float minX = -pad;
+    const float minY = -pad;
+    const float maxX = surfW + pad;
+    const float maxY = surfH + pad;
+
+    float prevX = cx + radius;
+    float prevY = cy;
+    for (int i = 1; i <= kSegments; ++i) {
+        const float angle = (kTwoPi * static_cast<float>(i)) / static_cast<float>(kSegments);
+        const float curX = cx + std::cos(angle) * radius;
+        const float curY = cy + std::sin(angle) * radius;
+        const float segMinX = (std::min)(prevX, curX);
+        const float segMaxX = (std::max)(prevX, curX);
+        const float segMinY = (std::min)(prevY, curY);
+        const float segMaxY = (std::max)(prevY, curY);
+        if (segMaxX >= minX && segMinX <= maxX && segMaxY >= minY && segMinY <= maxY) {
+            ctx->DrawLine(D2D1::Point2F(prevX, prevY), D2D1::Point2F(curX, curY), brush, strokeWidth);
+        }
+        prevX = curX;
+        prevY = curY;
+    }
+}
+
+} // namespace
+
 void SpotlightOverlay::render() {
     if (!m_hwnd) return;
     RenderSnapshot snapshot;
@@ -96,140 +144,99 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
         } else {
             const float baseRadius = (static_cast<float>((std::max)(40, snapshot.settings.spotlightSize)) / 2.0f) * spotScale;
             const float radius = baseRadius * snapshot.scalePulse;
-
-            // 纯净全屏暗角：4-Rect 裁剪加速——外围 97.5% 纯色矩形直接填充，仅圆洞外接小框跑径向渐变，
-            // 4K/双屏 4K 与老核显像素着色开销直降 97.5%，边缘 0 缝隙且画质 100% 像素级等价！
-            const float outerRadius = (std::max)(radius + 60.0f * spotScale, radius * 1.35f);
-            const float stopTransparent = (std::clamp)((radius - 0.5f) / outerRadius, 0.0f, 0.98f);
-            const float stopDark = (std::clamp)((radius + 1.2f) / outerRadius, stopTransparent + 0.002f, 0.999f);
             const D2D1_COLOR_F dimColor = D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.58f * alpha);
 
-            const FourRectClipLayout clipLayout =
-                computeFourRectClipGeometry(drawSurfaceW, drawSurfaceH, localCenterX, localCenterY, outerRadius);
+            // 精确计算光心到屏幕最远四角的欧氏距离：一旦洞径吞没全屏四个角，直接免除暗幕与挖洞光栅化！
+            const float maxDx = (std::max)(localCenterX, drawSurfaceW - localCenterX);
+            const float maxDy = (std::max)(localCenterY, drawSurfaceH - localCenterY);
+            const float maxCornerDist = std::sqrt(maxDx * maxDx + maxDy * maxDy);
 
-            if (clipLayout.outerStripCount > 0) {
-                if (auto* dimBrush = acquireSolidBrush(dimColor)) {
-                    for (int si = 0; si < clipLayout.outerStripCount; ++si) {
-                        ctx->FillRectangle(clipLayout.outerStrips[si], dimBrush);
-                    }
-                }
-            }
-
-            if (clipLayout.centerBox.right > clipLayout.centerBox.left &&
-                clipLayout.centerBox.bottom > clipLayout.centerBox.top) {
-                D2D1_GRADIENT_STOP maskStops[3] = {
-                    { stopTransparent, D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) },
-                    { stopDark, dimColor },
-                    { 1.0f, dimColor }
-                };
-                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> maskStopColl;
-                if (SUCCEEDED(ctx->CreateGradientStopCollection(
-                        maskStops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, maskStopColl.GetAddressOf()))) {
-                    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES radialProps = D2D1::RadialGradientBrushProperties(
-                        D2D1::Point2F(localCenterX, localCenterY),
-                        D2D1::Point2F(0, 0),
-                        outerRadius, outerRadius
-                    );
-                    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> maskBrush;
-                    if (SUCCEEDED(ctx->CreateRadialGradientBrush(
-                            radialProps, maskStopColl.Get(), maskBrush.GetAddressOf()))) {
-                        ctx->FillRectangle(clipLayout.centerBox, maskBrush.Get());
-                    }
-                }
-            }
-
-            // 2. 绘制 3D 晶莹珍珠水晶球体 (3D Luminous Sphere Orb · 纯净同色系透光，0 白边溢出)
-            if (radius > 4.0f) {
-                const float innerDiscRadius = radius;
-                const D2D1_POINT_2F highlightOffset = D2D1::Point2F(-innerDiscRadius * 0.32f, -innerDiscRadius * 0.32f);
-                const D2D1_COLOR_F highlightColor = D2D1::ColorF(
-                    (std::min)(1.0f, baseColor.r * 1.35f + 0.15f),
-                    (std::min)(1.0f, baseColor.g * 1.35f + 0.15f),
-                    (std::min)(1.0f, baseColor.b * 1.35f + 0.15f),
-                    0.28f * alpha
-                );
-
-                D2D1_GRADIENT_STOP sphereStops[5] = {
-                    { 0.00f, highlightColor },
-                    { 0.28f, D2D1::ColorF((std::min)(1.0f, baseColor.r * 1.15f), (std::min)(1.0f, baseColor.g * 1.15f), (std::min)(1.0f, baseColor.b * 1.15f), 0.20f * alpha) },
-                    { 0.68f, D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.14f * alpha) },
-                    { 0.92f, D2D1::ColorF(baseColor.r * 0.65f, baseColor.g * 0.65f, baseColor.b * 0.65f, 0.16f * alpha) },
-                    { 1.00f, D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) }
-                };
-
-                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> sphereStopColl;
-                if (SUCCEEDED(ctx->CreateGradientStopCollection(
-                        sphereStops, 5, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, sphereStopColl.GetAddressOf()))) {
-                    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES sphereProps = D2D1::RadialGradientBrushProperties(
-                        D2D1::Point2F(localCenterX, localCenterY),
-                        highlightOffset,
-                        innerDiscRadius, innerDiscRadius
-                    );
-                    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> sphereBrush;
-                    if (SUCCEEDED(ctx->CreateRadialGradientBrush(
-                            sphereProps, sphereStopColl.Get(), sphereBrush.GetAddressOf()))) {
+            // 1.1 纯净全屏暗幕挖洞：GPU 硬件 Clear(dimColor) + D2D1_PRIMITIVE_BLEND_COPY 单椭圆挖空，
+            //     彻底告别 3 层全屏 2.2-Gamma 径向渐变与 GeometryGroup CPU 布尔三角剖分！
+            //     在 D2D1_PRIMITIVE_BLEND_COPY 下，透明刷 (0,0,0,0) 按硬件抗锯齿覆盖率对底色做 dst*(1-cov) 线性混合：
+            //     洞内 100% 全透明、圆边原生硬件亚像素柔顺抗锯齿、洞外零重绘！
+            if (radius < maxCornerDist + 2.0f) {
+                ctx->Clear(dimColor);
+                if (radius > 0.5f) {
+                    if (auto* holeBrush = acquireSolidBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f))) {
+                        ctx->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_COPY);
                         ctx->FillEllipse(
-                            D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), innerDiscRadius, innerDiscRadius),
-                            sphereBrush.Get()
-                        );
+                            D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), radius, radius),
+                            holeBrush);
+                        ctx->SetPrimitiveBlend(D2D1_PRIMITIVE_BLEND_SOURCE_OVER);
                     }
-                }
-
-                // 2.2 底部：3D 次级环境反射弧光 (Bottom-Up Secondary Bounce Light)
-                const D2D1_POINT_2F bounceOffset = D2D1::Point2F(innerDiscRadius * 0.20f, innerDiscRadius * 0.28f);
-                D2D1_GRADIENT_STOP bounceStops[3] = {
-                    { 0.00f, D2D1::ColorF((std::min)(1.0f, baseColor.r * 1.15f), (std::min)(1.0f, baseColor.g * 1.15f), (std::min)(1.0f, baseColor.b * 1.15f), 0.12f * alpha) },
-                    { 0.60f, D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.06f * alpha) },
-                    { 1.00f, D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) }
-                };
-                Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> bounceStopColl;
-                if (SUCCEEDED(ctx->CreateGradientStopCollection(
-                        bounceStops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, bounceStopColl.GetAddressOf()))) {
-                    D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES bounceProps = D2D1::RadialGradientBrushProperties(
-                        D2D1::Point2F(localCenterX + bounceOffset.x, localCenterY + bounceOffset.y),
-                        D2D1::Point2F(0, 0),
-                        innerDiscRadius * 0.65f, innerDiscRadius * 0.65f
-                    );
-                    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> bounceBrush;
-                    if (SUCCEEDED(ctx->CreateRadialGradientBrush(
-                            bounceProps, bounceStopColl.Get(), bounceBrush.GetAddressOf()))) {
-                        ctx->FillEllipse(
-                            D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), innerDiscRadius, innerDiscRadius),
-                            bounceBrush.Get()
-                        );
+                    // 极轻 2px 光学柔边过渡描边（超 1200px 自动切可见弧段绘制，彻底杜绝 Direct2D 大半径 DrawEllipse 40ms 剖分悬崖）
+                    if (auto* featherBrush = acquireSolidBrush(D2D1::ColorF(0.0f, 0.0f, 0.0f, dimColor.a * 0.32f))) {
+                        drawSafeCircleStroke(ctx, localCenterX, localCenterY, radius + 0.8f * spotScale,
+                                             featherBrush, 2.0f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                     }
                 }
             }
 
-            // 3. 退出散开阶段：全屏水波巨浪漫溢散开
-            if (snapshot.animState == AnimState::FadeOut) {
-                float maxSpan = std::sqrt(drawSurfaceW * drawSurfaceW + drawSurfaceH * drawSurfaceH);
-                if (maxSpan < 800.0f) maxSpan = 1600.0f;
+            // 2. 绘制 3D 晶莹珍珠水晶球体（设备期缓存径向渐变笔刷零分配复用，每帧仅更新 SetOpacity/Center/Radius）：
+            //    FadeIn/Holding 小半径聚焦态完整呈现晶莹质感；FadeOut 退场时锁定原半径并随 (1-p)^3 轻盈消隐，
+            //    绝不跟随 5.5x 缩放拉伸至铺满整块 4K 屏幕！
+            const bool isFadeOut = (snapshot.animState == AnimState::FadeOut);
+            const float sphereFadeFactor = isFadeOut
+                ? std::pow((std::clamp)(1.0f - snapshot.focusProgress, 0.0f, 1.0f), 3.0f)
+                : 1.0f;
+            const float sphereAlpha = alpha * sphereFadeFactor;
+            const float innerDiscRadius = isFadeOut
+                ? (baseRadius * (1.0f + snapshot.focusProgress * 0.45f))
+                : radius;
 
-                const float rip1Radius = radius + snapshot.focusProgress * maxSpan * 0.90f;
-                const float rip1Alpha = (1.0f - snapshot.focusProgress) * 0.55f * alpha;
-                if (rip1Alpha > 0.01f) {
+            if (innerDiscRadius > 4.0f && sphereAlpha > 0.015f) {
+                ensureSphereGradientBrushesLocked(baseColor);
+                if (m_cachedSphereBrush) {
+                    const D2D1_POINT_2F highlightOffset = D2D1::Point2F(-innerDiscRadius * 0.32f, -innerDiscRadius * 0.32f);
+                    m_cachedSphereBrush->SetOpacity(sphereAlpha);
+                    m_cachedSphereBrush->SetCenter(D2D1::Point2F(localCenterX, localCenterY));
+                    m_cachedSphereBrush->SetGradientOriginOffset(highlightOffset);
+                    m_cachedSphereBrush->SetRadiusX(innerDiscRadius);
+                    m_cachedSphereBrush->SetRadiusY(innerDiscRadius);
+                    ctx->FillEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), innerDiscRadius, innerDiscRadius),
+                        m_cachedSphereBrush.Get()
+                    );
+                }
+
+                // 2.2 底部：3D 次级环境反射弧光 (仅在非退场态或高可见度时绘制)
+                if ((!isFadeOut || sphereAlpha > 0.12f) && m_cachedBounceBrush) {
+                    const D2D1_POINT_2F bounceOffset = D2D1::Point2F(innerDiscRadius * 0.20f, innerDiscRadius * 0.28f);
+                    const float bounceR = innerDiscRadius * 0.65f;
+                    m_cachedBounceBrush->SetOpacity(sphereAlpha);
+                    m_cachedBounceBrush->SetCenter(D2D1::Point2F(localCenterX + bounceOffset.x, localCenterY + bounceOffset.y));
+                    m_cachedBounceBrush->SetGradientOriginOffset(D2D1::Point2F(0.0f, 0.0f));
+                    m_cachedBounceBrush->SetRadiusX(bounceR);
+                    m_cachedBounceBrush->SetRadiusY(bounceR);
+                    ctx->FillEllipse(
+                        D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), innerDiscRadius, innerDiscRadius),
+                        m_cachedBounceBrush.Get()
+                    );
+                }
+            }
+
+            // 3. 退出散开阶段：紧贴扩张光圈前缘的轻盈双层水波环（全程走 drawSafeCircleStroke 零剖分悬崖 + 精确四角剔除）
+            if (isFadeOut) {
+                const float ripFade = (1.0f - snapshot.focusProgress) * (1.0f - snapshot.focusProgress);
+                const float rip1Radius = radius + snapshot.focusProgress * 260.0f * spotScale;
+                const float rip1Alpha = ripFade * 0.45f * alpha;
+                if (rip1Alpha > 0.015f) {
                     if (auto* b = acquireSolidBrush(D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, rip1Alpha))) {
-                        ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), rip1Radius, rip1Radius), b, 2.5f);
+                        drawSafeCircleStroke(ctx, localCenterX, localCenterY, rip1Radius, b,
+                                             2.2f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                     }
                 }
 
-                const float rip2Radius = radius + std::pow(snapshot.focusProgress, 1.2f) * maxSpan * 0.55f;
-                const float rip2Alpha = (1.0f - snapshot.focusProgress) * 0.40f * alpha;
-                if (rip2Alpha > 0.01f) {
+                const float rip2Radius = radius + std::pow(snapshot.focusProgress, 1.15f) * 140.0f * spotScale;
+                const float rip2Alpha = ripFade * 0.30f * alpha;
+                if (rip2Alpha > 0.015f) {
                     if (auto* b = acquireSolidBrush(D2D1::ColorF(
                             (std::min)(1.0f, baseColor.r * 1.15f),
                             (std::min)(1.0f, baseColor.g * 1.15f),
                             (std::min)(1.0f, baseColor.b * 1.15f), rip2Alpha))) {
-                        ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), rip2Radius, rip2Radius), b, 1.8f);
-                    }
-                }
-
-                const float rip3Radius = radius + std::pow(snapshot.focusProgress, 1.4f) * maxSpan * 0.28f;
-                const float rip3Alpha = (1.0f - snapshot.focusProgress) * 0.28f * alpha;
-                if (rip3Alpha > 0.01f) {
-                    if (auto* b = acquireSolidBrush(D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, rip3Alpha))) {
-                        ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), rip3Radius, rip3Radius), b, 1.2f);
+                        drawSafeCircleStroke(ctx, localCenterX, localCenterY, rip2Radius, b,
+                                             1.5f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                     }
                 }
             }
@@ -298,7 +305,8 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
                     breathe = 0.85f + 0.15f * std::sin(static_cast<float>(holdEl) * 0.006f);
                 }
                 if (auto* b = acquireSolidBrush(D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.32f * breathe * alpha))) {
-                    ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), radius + 3.0f * spotScale, radius + 3.0f * spotScale), b, 6.0f * spotScale);
+                    drawSafeCircleStroke(ctx, localCenterX, localCenterY, radius + 3.0f * spotScale, b,
+                                         6.0f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                 }
             } else {
                 // 方案 A（默认）：向心引力折叠超聚焦
@@ -308,7 +316,8 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
                     const float ring1Alpha = (0.35f + 0.65f * snapshot.focusProgress) * alpha;
                     if (ring1Alpha > 0.02f) {
                         if (auto* b = acquireSolidBrush(D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, ring1Alpha * 0.95f))) {
-                            ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), ring1Radius, ring1Radius), b, 2.0f * spotScale);
+                            drawSafeCircleStroke(ctx, localCenterX, localCenterY, ring1Radius, b,
+                                                 2.0f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                         }
                     }
 
@@ -317,7 +326,8 @@ void SpotlightOverlay::renderSnapshot(const RenderSnapshot& snapshot) {
                     const float ring2Alpha = (0.20f + 0.50f * snapshot.focusProgress) * alpha;
                     if (ring2Alpha > 0.02f) {
                         if (auto* b = acquireSolidBrush(D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, ring2Alpha * 0.60f))) {
-                            ctx->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(localCenterX, localCenterY), ring2Radius, ring2Radius), b, 1.2f * spotScale);
+                            drawSafeCircleStroke(ctx, localCenterX, localCenterY, ring2Radius, b,
+                                                 1.2f * spotScale, drawSurfaceW, drawSurfaceH, maxCornerDist);
                         }
                     }
                 }

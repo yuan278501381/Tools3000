@@ -2353,11 +2353,21 @@ TEST(OverlayZeroDropArchitectureTest, MouseStreamQpcThrottleAndAntiSpinGuard) {
     EXPECT_GE(liveHz, 30.0);
     EXPECT_LE(liveHz, 240.0);
 
-    // QPC 防空转校验：144Hz (6944us) 下 DwmFlush 瞬时返回 (<55%) 必须补足剩余周期，正常 VBlank 返回 0
+    // QPC 防空转校验：仅当 DwmFlush 瞬时假返回 (<15% 周期) 时补足余量；正常 VSync 相位恢复 (如 5ms/16.6ms 或 2ms/6.9ms) 绝不额外睡眠破坏锁相
     EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(500, 6944), 6444);
     EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(0, 16667), 16667);
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(5000, 16667), 0);
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(2000, 6944), 0);
     EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(6500, 6944), 0);
     EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(16000, 16667), 0);
+
+    // 单源 VSync 防腰斩校验：Waitable 已对齐 VSync 或本帧已耗时 >= 55% 周期时绝不可再叠 DwmFlush (防 60->30 / 144->72)
+    EXPECT_FALSE(MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(8000, 16000, 16667));
+    EXPECT_FALSE(MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(1500, 11000, 16667));
+    EXPECT_FALSE(MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(3500, 6800, 6944));
+    // 首帧或驱动提前释放 Waitable (<45% 且总耗时 <55%) 时才允许补一次 DwmFlush 对齐 VSync
+    EXPECT_TRUE(MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(200, 1200, 16667));
+    EXPECT_TRUE(MouseFeedbackOverlayBase::shouldInvokeDwmFlushAfterWaitable(100, 500, 6944));
 }
 
 TEST(OverlayZeroDropArchitectureTest, SpatialHysteresisViewportAndFourRectClip) {
@@ -2502,6 +2512,52 @@ TEST(OverlayZeroDropArchitectureTest, LiveSpotlightFramePacingAndStaticZeroCpu) 
     std::this_thread::sleep_for(std::chrono::milliseconds(220));
     const uint64_t framesAtStaticEnd = spot.getFrameMetrics().framesPresented;
     EXPECT_LE(framesAtStaticEnd - framesAtStaticStart, 1u) << "StaticHolding spotlight must suspend with 0% CPU";
+
+    // 2.5 取消聚光灯退场放大阶段 (FadeOut) 满帧零掉帧实机基准 (Issue #33 回归锁死)
+    spot.resetFrameMetrics();
+    spot.dismiss();
+    for (int i = 0; i < 90 && spot.isActive(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto fadeOutMetrics = spot.getFrameMetrics();
+    std::cout << "[SpotlightBench:FadeOut] tier=" << static_cast<int>(fadeOutMetrics.presentTier)
+              << " targetHz=" << fadeOutMetrics.targetHz
+              << " frames=" << fadeOutMetrics.framesPresented
+              << " P50=" << fadeOutMetrics.p50FrameMs << "ms"
+              << " P95=" << fadeOutMetrics.p95FrameMs << "ms"
+              << " P99=" << fadeOutMetrics.p99FrameMs << "ms"
+              << " dropRate=" << fadeOutMetrics.dropRatePercent << "%"
+              << " SetWindowPos=" << fadeOutMetrics.setWindowPosCalls
+              << " surfaceRebuilds=" << fadeOutMetrics.surfaceRebuilds
+              << std::endl;
+    EXPECT_GE(fadeOutMetrics.framesPresented, 14u) << "FadeOut expansion must sustain full native refresh cadence without halving to 30fps";
+    EXPECT_LE(fadeOutMetrics.setWindowPosCalls, 1u);
+    EXPECT_EQ(fadeOutMetrics.surfaceRebuilds, 0u);
+    EXPECT_LE(fadeOutMetrics.dropRatePercent, 10.0) << "FadeOut expansion must not stall GPU fillrate";
+
+    // 2.6 大尺寸聚光灯 (500px，4K 高分屏退场半径 > 2500px) 退场零剖分悬崖极限回归校验
+    testCfg.spotlightSize = 500;
+    spot.updateSettings(testCfg);
+    spot.trigger(POINT{800, 500}, /*autoFetch=*/false, /*allowCinemaZoom=*/false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(180));
+    spot.resetFrameMetrics();
+    spot.dismiss();
+    for (int i = 0; i < 90 && spot.isActive(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto largeFadeMetrics = spot.getFrameMetrics();
+    std::cout << "[SpotlightBench:FadeOutLarge500] tier=" << static_cast<int>(largeFadeMetrics.presentTier)
+              << " targetHz=" << largeFadeMetrics.targetHz
+              << " frames=" << largeFadeMetrics.framesPresented
+              << " P50=" << largeFadeMetrics.p50FrameMs << "ms"
+              << " P95=" << largeFadeMetrics.p95FrameMs << "ms"
+              << " P99=" << largeFadeMetrics.p99FrameMs << "ms"
+              << " dropRate=" << largeFadeMetrics.dropRatePercent << "%"
+              << std::endl;
+    EXPECT_GE(largeFadeMetrics.framesPresented, 14u) << "Large 500px FadeOut must not stall on Direct2D giant-ellipse tessellation";
+    EXPECT_LE(largeFadeMetrics.dropRatePercent, 10.0) << "Large 500px FadeOut must stay smooth without 40ms EndDraw spikes";
+    testCfg.spotlightSize = prevSettings.spotlightSize;
+    spot.updateSettings(testCfg);
 
     // 3. 局部轨迹 + 点击特效空间滞回验证：连续局部微动应保持极低 SetWindowPos 与表面重建次数
     spot.hideNow();

@@ -228,6 +228,7 @@ private:
     bool isFullscreenBypassActiveFast() noexcept;
     void refreshCachedAccentColor() const noexcept;
     ID2D1SolidColorBrush* acquireSolidBrush(const D2D1_COLOR_F& color) noexcept;
+    void ensureSphereGradientBrushesLocked(const D2D1_COLOR_F& baseColor) noexcept;
 
     std::atomic<bool> m_needMouseMove{false};
     std::atomic_flag m_rawMovePushSpin = ATOMIC_FLAG_INIT;
@@ -239,6 +240,9 @@ private:
     std::atomic<bool> m_pendingAnimStartReanchor{false};
 
     Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> m_reusableSolidBrush;
+    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> m_cachedSphereBrush;
+    Microsoft::WRL::ComPtr<ID2D1RadialGradientBrush> m_cachedBounceBrush;
+    uint32_t m_cachedGradientRgb = 0xFFFFFFFFu;
     mutable ViewportBounds m_stickyLocalViewport{};
 
     SpotlightSettings m_settings;

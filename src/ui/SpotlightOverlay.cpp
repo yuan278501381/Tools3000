@@ -72,6 +72,9 @@ void SpotlightOverlay::refreshCachedAccentColor() const noexcept {
 
 void SpotlightOverlay::onRecreateDeviceResources() {
     m_reusableSolidBrush.Reset();
+    m_cachedSphereBrush.Reset();
+    m_cachedBounceBrush.Reset();
+    m_cachedGradientRgb = 0xFFFFFFFFu;
     if (m_d2dContext) {
         (void)m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), m_reusableSolidBrush.GetAddressOf());
     }
@@ -79,6 +82,9 @@ void SpotlightOverlay::onRecreateDeviceResources() {
 
 void SpotlightOverlay::onReleaseDeviceResources() {
     m_reusableSolidBrush.Reset();
+    m_cachedSphereBrush.Reset();
+    m_cachedBounceBrush.Reset();
+    m_cachedGradientRgb = 0xFFFFFFFFu;
 }
 
 ID2D1SolidColorBrush* SpotlightOverlay::acquireSolidBrush(const D2D1_COLOR_F& color) noexcept {
@@ -91,6 +97,60 @@ ID2D1SolidColorBrush* SpotlightOverlay::acquireSolidBrush(const D2D1_COLOR_F& co
     }
     m_reusableSolidBrush->SetColor(color);
     return m_reusableSolidBrush.Get();
+}
+
+void SpotlightOverlay::ensureSphereGradientBrushesLocked(const D2D1_COLOR_F& baseColor) noexcept {
+    if (!m_d2dContext) return;
+    const uint32_t rgbKey =
+        (static_cast<uint32_t>(std::clamp(static_cast<int>(std::lround(baseColor.r * 255.0f)), 0, 255)) << 16) |
+        (static_cast<uint32_t>(std::clamp(static_cast<int>(std::lround(baseColor.g * 255.0f)), 0, 255)) << 8) |
+        static_cast<uint32_t>(std::clamp(static_cast<int>(std::lround(baseColor.b * 255.0f)), 0, 255));
+    if (m_cachedGradientRgb == rgbKey && m_cachedSphereBrush && m_cachedBounceBrush) {
+        return;
+    }
+
+    m_cachedSphereBrush.Reset();
+    m_cachedBounceBrush.Reset();
+    m_cachedGradientRgb = 0xFFFFFFFFu;
+
+    // 仅在颜色首次使用或变化时构建一次单位透明度渐变笔刷，后续每帧通过 SetOpacity/SetCenter/SetRadius 零分配复用
+    const D2D1_COLOR_F highlightColor = D2D1::ColorF(
+        (std::min)(1.0f, baseColor.r * 1.35f + 0.15f),
+        (std::min)(1.0f, baseColor.g * 1.35f + 0.15f),
+        (std::min)(1.0f, baseColor.b * 1.35f + 0.15f),
+        0.28f
+    );
+    D2D1_GRADIENT_STOP sphereStops[5] = {
+        { 0.00f, highlightColor },
+        { 0.28f, D2D1::ColorF((std::min)(1.0f, baseColor.r * 1.15f), (std::min)(1.0f, baseColor.g * 1.15f), (std::min)(1.0f, baseColor.b * 1.15f), 0.20f) },
+        { 0.68f, D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.14f) },
+        { 0.92f, D2D1::ColorF(baseColor.r * 0.65f, baseColor.g * 0.65f, baseColor.b * 0.65f, 0.16f) },
+        { 1.00f, D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) }
+    };
+    Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> sphereStopColl;
+    if (SUCCEEDED(m_d2dContext->CreateGradientStopCollection(
+            sphereStops, 5, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, sphereStopColl.GetAddressOf()))) {
+        const D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES props = D2D1::RadialGradientBrushProperties(
+            D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(0.0f, 0.0f), 1.0f, 1.0f);
+        (void)m_d2dContext->CreateRadialGradientBrush(props, sphereStopColl.Get(), m_cachedSphereBrush.GetAddressOf());
+    }
+
+    D2D1_GRADIENT_STOP bounceStops[3] = {
+        { 0.00f, D2D1::ColorF((std::min)(1.0f, baseColor.r * 1.15f), (std::min)(1.0f, baseColor.g * 1.15f), (std::min)(1.0f, baseColor.b * 1.15f), 0.12f) },
+        { 0.60f, D2D1::ColorF(baseColor.r, baseColor.g, baseColor.b, 0.06f) },
+        { 1.00f, D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f) }
+    };
+    Microsoft::WRL::ComPtr<ID2D1GradientStopCollection> bounceStopColl;
+    if (SUCCEEDED(m_d2dContext->CreateGradientStopCollection(
+            bounceStops, 3, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, bounceStopColl.GetAddressOf()))) {
+        const D2D1_RADIAL_GRADIENT_BRUSH_PROPERTIES props = D2D1::RadialGradientBrushProperties(
+            D2D1::Point2F(0.0f, 0.0f), D2D1::Point2F(0.0f, 0.0f), 1.0f, 1.0f);
+        (void)m_d2dContext->CreateRadialGradientBrush(props, bounceStopColl.Get(), m_cachedBounceBrush.GetAddressOf());
+    }
+
+    if (m_cachedSphereBrush && m_cachedBounceBrush) {
+        m_cachedGradientRgb = rgbKey;
+    }
 }
 
 D2D1_COLOR_F SpotlightOverlay::parseColor(const std::string& hexStr, float alpha) const {
@@ -580,8 +640,6 @@ SpotlightOverlay::ViewportBounds SpotlightOverlay::calculateViewportBoundsLocked
     }
 
     const POINT centerPt{(minX + maxX) / 2, (minY + maxY) / 2};
-    const float dpiScale = std::clamp(
-        tools3000::core::MouseViewportManager::getDpiScaleForPoint(centerPt), 1.0f, 3.0f);
     const RECT mon = tools3000::core::MouseViewportManager::getNearestMonitorBounds(centerPt);
     const RECT virt = tools3000::core::MouseViewportManager::getVirtualDesktopBounds();
     const bool spansMultiMonitor =
