@@ -2,7 +2,7 @@
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.10.0.schema.json
 
 PackageIdentifier: Yy1.Tools3000
-PackageVersion: 1.5.2
+PackageVersion: 1.5.3
 Platform:
 - Windows.Desktop
 MinimumOSVersion: 10.0.17763.0
@@ -14,12 +14,12 @@ ReleaseDate: 2026-11-27
 AppsAndFeaturesEntries:
 - DisplayName: Tools3000
   Publisher: Yy1 (yuan278501381)
-  DisplayVersion: 1.5.2
+  DisplayVersion: 1.5.3
   ProductCode: Tools3000_is1
   InstallerType: inno
 Installers:
 - Architecture: x64
-  InstallerUrl: https://github.com/yuan278501381/Tools3000/releases/download/v1.5.2/Tools3000-v1.5.2-Setup.exe
-  InstallerSha256: 8501D042E6CAB2E849A78CE4541BD85AB15ECFECCA4F782B5B40802AF15DF232
+  InstallerUrl: https://github.com/yuan278501381/Tools3000/releases/download/v1.5.3/Tools3000-v1.5.3-Setup.exe
+  InstallerSha256: 8A5FA947AE0EB7E573274AFD9828EFDB221E40B12E6FBDFB406529A43427203F
 ManifestType: installer
 ManifestVersion: 1.10.0

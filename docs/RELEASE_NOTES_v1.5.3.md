@@ -38,3 +38,20 @@ Welcome to **Tools3000 v1.5.3** (compared against **v1.5.2**). This urgent hotfi
 - **标准安装版手动覆盖**：下载下方 `Tools3000-v1.5.3-Setup.exe` 直接运行覆盖安装；
 - **绿色便携版手动覆盖**：下载 `Tools3000-v1.5.3-win-x64-portable.zip` 解压覆盖程序目录（保留 `data/` 目录配置与数据）；
 - **Scoop 用户**：在终端执行 `scoop update tools3000`。
+
+---
+
+### 文件完整性校验与安全查验 (SHA-256 / VirusTotal)
+
+| 发布文件 | SHA-256 | 安全检测 |
+| :--- | :--- | :--- |
+| `Tools3000-v1.5.3-Setup.exe` | `8a5fa947ae0eb7e573274afd9828efdb221e40b12e6fbdfb406529a43427203f` | [VirusTotal 查验](https://www.virustotal.com/gui/file/8a5fa947ae0eb7e573274afd9828efdb221e40b12e6fbdfb406529a43427203f) |
+| `Tools3000-v1.5.3-win-x64-portable.zip` | `25629c183d37132700e4f9be04fba77755cdd0383fc7a2b2c7372e25e1869aa3` | [VirusTotal 查验](https://www.virustotal.com/gui/file/25629c183d37132700e4f9be04fba77755cdd0383fc7a2b2c7372e25e1869aa3) |
+
+下载后可在 PowerShell 中快速核对本地文件哈希：
+
+```powershell
+Get-FileHash .\Tools3000-v1.5.3-Setup.exe -Algorithm SHA256
+```
+
+> 如遇 Windows Defender SmartScreen 未知发布者提示，核对上述 SHA-256 与 VirusTotal 无误后点击「更多信息 -> 仍要运行」即可；安装包与便携包内均随附 SBOM.spdx.json 软件物料清单。
