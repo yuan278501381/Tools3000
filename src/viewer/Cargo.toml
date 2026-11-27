@@ -1,6 +1,6 @@
 [package]
 name = "tools3000_picasa_viewer"
-version = "1.5.4"
+version = "1.5.5"
 edition = "2021"
 description = "Modern Picasa-inspired ultra-fast native Windows image viewer (tribute to Google Picasa Photo Viewer) with animated GIF/WebP/SVG/WIC support"
 license = "GPL-3.0-only"
