@@ -58,7 +58,8 @@ public:
                                      HWND ownerHwnd = nullptr,
                                      const CaptureRegion* sourceRegion = nullptr,
                                      int padX = 0,
-                                     int padY = 0);
+                                     int padY = 0,
+                                     const std::vector<uint8_t>* preEncodedPng = nullptr);
 
     /**
      * @brief 判断本地文件路径扩展名是否属于受支持的可贴图片格式（不区分大小写）

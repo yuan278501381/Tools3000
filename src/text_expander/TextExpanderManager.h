@@ -75,6 +75,9 @@ public:
     /// 可选注册规则命中回调（用于宿主额外观测或通知）
     void setOnRuleExpandedCallback(std::function<void(const std::string& ruleId, uint32_t hitCount)> cb);
 
+    /// 前台窗口变更通知（由宿主统一 EVENT_SYSTEM_FOREGROUND 守护调用，免去独立 SetWinEventHook 开销）
+    void notifyForegroundChanged();
+
     /// 测试辅助：指定隔离规则文件路径（严禁在生产路径调用）
     void setRulesFilePathForTesting(const std::filesystem::path& path);
 
@@ -105,7 +108,6 @@ private:
     void startRuntimeWorkers();
     void stopRuntimeWorkers();
 
-    void hookThreadMain(HANDLE readyEvent, std::atomic<bool>& hookReadyOk);
     void expansionWorkerLoop();
     void executeExpansionJob(const ExpansionJob& job);
 
@@ -115,16 +117,6 @@ private:
     void handleForegroundChanged();
     void recordRuleHitAndNotify(const std::string& ruleId);
     void pushStateChangedEvents(bool enabled) const;
-
-    static LRESULT CALLBACK lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
-    static void CALLBACK winEventForegroundProc(
-        HWINEVENTHOOK hWinEventHook,
-        DWORD event,
-        HWND hwnd,
-        LONG idObject,
-        LONG idChild,
-        DWORD dwEventThread,
-        DWORD dwmsEventTime);
 
     static std::string generateRuleId();
     static bool readClipboardPlainText(std::wstring& outText, bool& outWasSensitive);
@@ -150,7 +142,7 @@ private:
     std::atomic<bool> m_foregroundDirty{true};
     std::atomic<uint64_t> m_policyEpoch{1};
 
-    // 钩子线程私有状态（仅在钩子线程内读写，无锁高速路径）
+    // 钩子线程私有状态（由唯一 KeyboardHook 输入线程串行回调，无锁高速路径）
     HWND m_lastCheckedHwnd = nullptr;
     uint64_t m_lastCheckedPolicyEpoch = 0;
     bool m_lastHwndExcluded = false;
@@ -158,9 +150,6 @@ private:
 
     // 生命周期与后台线程管理
     mutable std::mutex m_lifecycleMutex;
-    std::thread m_hookThread;
-    std::atomic<DWORD> m_hookThreadId{0};
-    std::atomic<HHOOK> m_kbHook{nullptr};
     uint64_t m_mouseActivitySubId = 0;
 
     std::thread m_workerThread;

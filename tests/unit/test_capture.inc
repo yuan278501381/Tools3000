@@ -17303,6 +17303,77 @@ TEST(CaptureMarkupResizeAndCursorTest, SiblingToolsSnapshotResizePrecisionAndVec
     }
 }
 
+TEST(CaptureClipboardFastDeliveryTest, PreEncodedPngReuseAndNonFlushAtomicWriteAndHistoryZeroReencode) {
+    using namespace tools3000::capture;
+
+    // 1. 验证 AtomicFile::atomicWriteBinaryFileWithFlush(flushToDisk=false) 保持完整字节正确性与原子重命名
+    const auto tempDir = std::filesystem::temp_directory_path() /
+        (L"Tools3000FastCaptureTest_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+         std::to_wstring(GetTickCount64()));
+    std::error_code ec;
+    ASSERT_TRUE(std::filesystem::create_directories(tempDir, ec));
+    const auto fastFile = tempDir / L"fast_no_flush.bin";
+    const std::vector<uint8_t> payload = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x11, 0x22, 0x33, 0x44};
+    ASSERT_TRUE(tools3000::common::atomicWriteBinaryFileWithFlush(
+        fastFile.wstring(), payload.data(), payload.size(), /*flushToDisk=*/false));
+    {
+        std::ifstream ifs(fastFile, std::ios::binary);
+        ASSERT_TRUE(ifs.good());
+        std::vector<uint8_t> readBack((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        EXPECT_EQ(readBack, payload);
+    }
+
+    // 2. 构造高分测试图并提前做单次极速 PNG 编码，验证 copyImageToClipboard 100% 复用预编码字节（0 二次编码）
+    cv::Mat sampleImg(720, 1280, CV_8UC3, cv::Scalar(48, 96, 160));
+    cv::rectangle(sampleImg, cv::Rect(80, 60, 420, 260), cv::Scalar(240, 220, 180), cv::FILLED);
+    cv::putText(sampleImg, "Tools3000 Fast Clipboard", cv::Point(100, 180),
+                cv::FONT_HERSHEY_SIMPLEX, 0.9, cv::Scalar(20, 30, 40), 2);
+
+    std::vector<uint8_t> preEncodedPng;
+    ASSERT_TRUE(cv::imencode(".png", sampleImg, preEncodedPng, {cv::IMWRITE_PNG_COMPRESSION, 1}));
+    ASSERT_GT(preEncodedPng.size(), 64u);
+
+    const auto t0 = std::chrono::steady_clock::now();
+    ASSERT_TRUE(ClipboardUtils::copyImageToClipboard(
+        sampleImg, L"", nullptr, nullptr, 0, 0, &preEncodedPng));
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    EXPECT_LT(elapsedMs, 1500) << "Pre-encoded fast clipboard delivery should complete without disk flush stall";
+
+    // 回验剪贴板中 PNG 字节流与预编码字节 1:1 完全一致且 CF_DIB / CF_HDROP 均可用
+    const UINT pngFmt = RegisterClipboardFormatW(L"PNG");
+    ASSERT_NE(pngFmt, 0u);
+    if (OpenClipboard(nullptr)) {
+        EXPECT_TRUE(IsClipboardFormatAvailable(CF_DIB) != FALSE);
+        EXPECT_TRUE(IsClipboardFormatAvailable(CF_HDROP) != FALSE);
+        ASSERT_TRUE(IsClipboardFormatAvailable(pngFmt) != FALSE);
+        HANDLE hPng = GetClipboardData(pngFmt);
+        ASSERT_NE(hPng, nullptr);
+        const SIZE_T sz = GlobalSize(hPng);
+        ASSERT_GE(sz, preEncodedPng.size());
+        const auto* rawPtr = static_cast<const uint8_t*>(GlobalLock(hPng));
+        ASSERT_NE(rawPtr, nullptr);
+        EXPECT_EQ(std::memcmp(rawPtr, preEncodedPng.data(), preEncodedPng.size()), 0);
+        GlobalUnlock(hPng);
+        CloseClipboard();
+    }
+
+    // 3. 验证 CaptureHistory::push 直接复用 preEncodedPng，且读取回验像素无损还原
+    auto& history = CaptureHistory::instance();
+    const int beforeCount = history.count();
+    CaptureRegion reg{0, 0, sampleImg.cols, sampleImg.rows};
+    history.push(sampleImg, reg, "", &preEncodedPng);
+    ASSERT_EQ(history.count(), (std::min)(beforeCount + 1, history.maxSize()));
+    const auto latest = history.get(0);
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->image.cols, sampleImg.cols);
+    EXPECT_EQ(latest->image.rows, sampleImg.rows);
+    EXPECT_EQ(latest->image.at<cv::Vec3b>(10, 10), sampleImg.at<cv::Vec3b>(10, 10));
+    history.remove(0);
+
+    std::filesystem::remove_all(tempDir, ec);
+}
+
 
 
 

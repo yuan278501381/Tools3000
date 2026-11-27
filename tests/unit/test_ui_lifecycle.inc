@@ -2249,6 +2249,54 @@ TEST(CapsLayerManagerTest, DisabledShortCircuitAndSelfInjectionGuard) {
     EXPECT_FALSE(mgr.isEnabled());
 }
 
+TEST(KeyboardHookDedicatedThreadTest, InstallUninstallObserverAndCapsLayerIdleFastPath) {
+    using namespace tools3000::core;
+    using namespace tools3000::caps_layer;
+
+    // 1. 验证 KeyboardHook 独立高优先级输入线程安装、幂等重入、共享 TextExpander 观察者注册注销与安全卸载
+    auto& kb = KeyboardHook::instance();
+    const bool wasInstalled = kb.isInstalled();
+    ASSERT_TRUE(kb.install());
+    EXPECT_TRUE(kb.isInstalled());
+    EXPECT_TRUE(kb.install()); // 幂等
+
+    kb.setTextExpanderObserver([](const KBDLLHOOKSTRUCT&, WPARAM) {});
+    kb.setTextExpanderObserver(nullptr);
+    kb.uninstall();
+    EXPECT_FALSE(kb.isInstalled());
+    kb.uninstall(); // 重复卸载安全幂等
+
+    if (wasInstalled) {
+        ASSERT_TRUE(kb.install());
+    }
+
+    // 2. 验证 CapsLayerManager 空闲态无锁快路径：即使已启用，日常普通按键（如空格/字母）绝不拦截也不触发 FFI
+    auto& caps = CapsLayerManager::instance();
+    const bool prevCapsEnabled = caps.isEnabled();
+    caps.setEnabled(true);
+    caps.resetRuntimeState();
+    ASSERT_TRUE(caps.isEnabled());
+
+    KBDLLHOOKSTRUCT spaceKey{};
+    spaceKey.vkCode = VK_SPACE;
+    EXPECT_FALSE(caps.handleLowLevelKey(spaceKey, WM_KEYDOWN));
+    EXPECT_FALSE(caps.handleLowLevelKey(spaceKey, WM_KEYUP));
+
+    KBDLLHOOKSTRUCT letterKey{};
+    letterKey.vkCode = 'A';
+    EXPECT_FALSE(caps.handleLowLevelKey(letterKey, WM_KEYDOWN));
+    EXPECT_FALSE(caps.handleLowLevelKey(letterKey, WM_KEYUP));
+
+    // 3. 按下 CapsLock 进入 Pending 状态后应正常消费 CapsLock，resetRuntimeState 后回归空闲直通
+    KBDLLHOOKSTRUCT capsKey{};
+    capsKey.vkCode = VK_CAPITAL;
+    EXPECT_TRUE(caps.handleLowLevelKey(capsKey, WM_KEYDOWN));
+    caps.resetRuntimeState();
+    EXPECT_FALSE(caps.handleLowLevelKey(spaceKey, WM_KEYDOWN));
+
+    caps.setEnabled(prevCapsEnabled);
+}
+
 TEST(WindowKitControllerTest, DefaultOffZeroFootprintAndFeatureGating) {
     using namespace tools3000::core;
 

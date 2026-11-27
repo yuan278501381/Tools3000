@@ -1086,9 +1086,9 @@ void CaptureOverlay::cleanupAfterDelivery(bool trimMemory) {
     if (m_closedCallback) m_closedCallback();
 
     if (trimMemory) {
-        // 冷路径退场：主动修剪物理内存，将大图/D2D/DirectX 缓存归还系统，并预约静默冷态二次紧缩（覆盖异步剪贴板入库与 Toast 淡出）
-        tools3000::core::WinUtils::trimWorkingSet();
-        tools3000::core::WinUtils::scheduleQuietIdleTrim(3800);
+        // 冷路径异步退场：严禁在 ShowToastEvent 尚未渲染弹出前同步执行 trimWorkingSet（会触发 40~150ms
+        // 进程工作集扫描与软缺页，直接拖慢首次截图完成反馈与剪贴板粘贴手感）；改由冷态防抖定时回收。
+        tools3000::core::WinUtils::scheduleQuietIdleTrim(1200);
     }
 }
 

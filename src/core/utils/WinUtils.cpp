@@ -2564,15 +2564,30 @@ bool checkExplorerShellViewFocus(HWND foregroundWnd, bool& outIsExplorer, bool& 
         return false;
     }
 
-    // 检查焦点控件是否处于重命名编辑状态或搜索框/地址栏输入状态，防止打字时按空格误触发预览
+    // 检查焦点控件是否处于重命名编辑状态或搜索框/地址栏输入状态（含 Win11 现代 XAML 输入宿主），防止打字时按空格误触发预览
     DWORD threadId = GetWindowThreadProcessId(foregroundWnd, nullptr);
     GUITHREADINFO gti = { sizeof(GUITHREADINFO) };
     if (GetGUIThreadInfo(threadId, &gti) && gti.hwndFocus) {
         wchar_t focusClass[256] = {0};
         GetClassNameW(gti.hwndFocus, focusClass, 256);
+        auto hasInsensitiveSubstr = [](const wchar_t* haystack, const wchar_t* needle) noexcept -> bool {
+            if (!haystack || !needle || !*needle) return false;
+            const size_t nLen = wcslen(needle);
+            for (const wchar_t* p = haystack; *p; ++p) {
+                if (_wcsnicmp(p, needle, nLen) == 0) return true;
+            }
+            return false;
+        };
         if (_wcsicmp(focusClass, L"Edit") == 0 ||
             _wcsicmp(focusClass, L"RichEditD2DPT") == 0 ||
-            _wcsicmp(focusClass, L"RichEdit20W") == 0) {
+            _wcsicmp(focusClass, L"RichEdit20W") == 0 ||
+            _wcsicmp(focusClass, L"ComboBox") == 0 ||
+            _wcsicmp(focusClass, L"Windows.UI.Input.InputSite.WindowClass") == 0 ||
+            _wcsicmp(focusClass, L"Microsoft.UI.Content.DesktopChildSiteBridge") == 0 ||
+            hasInsensitiveSubstr(focusClass, L"InputSite") ||
+            hasInsensitiveSubstr(focusClass, L"SearchBox") ||
+            hasInsensitiveSubstr(focusClass, L"TextBox") ||
+            hasInsensitiveSubstr(focusClass, L"RichEdit")) {
             return false;
         }
         if (outIsExplorer && gti.hwndFocus != foregroundWnd &&

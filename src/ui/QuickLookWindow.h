@@ -32,7 +32,7 @@ public:
 
     std::wstring currentFilePath() const { return m_currentFilePath; }
     HWND getHwnd() const { return m_hwnd; }
-    bool isWebViewReady() const noexcept { return m_webViewReady; }
+    bool isWebViewReady() const noexcept { return m_webViewReady.load(std::memory_order_acquire); }
     bool isPdfPreviewActive() const noexcept { return m_currentIsPdfPreview.load(std::memory_order_acquire); }
 
 private:
@@ -63,7 +63,7 @@ private:
 
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_currentIsPdfPreview{false};
-    bool m_webViewReady = false;
+    std::atomic<bool> m_webViewReady{false};
     bool m_frontendReady = false;
     uint64_t m_showTimeTick{0};
     uint64_t m_mediaUrlRevision{0};

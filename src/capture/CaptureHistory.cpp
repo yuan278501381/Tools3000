@@ -103,7 +103,8 @@ CaptureHistory& CaptureHistory::instance() {
 }
 
 void CaptureHistory::push(const cv::Mat& image, const CaptureRegion& region,
-                           const std::string& filePath) {
+                           const std::string& filePath,
+                           const std::vector<uint8_t>* preEncodedPng) {
     if (image.empty()) {
         LOG_WARN("CaptureHistory: 忽略空图像");
         return;
@@ -120,18 +121,23 @@ void CaptureHistory::push(const cv::Mat& image, const CaptureRegion& region,
     // 若本次截图已落盘保存且文件可读，内存仅常驻 ~15KB 的 160px 缩略图与路径，按需从磁盘无损解码；
     // 仅对未落盘的纯剪贴板截图常驻轻量 PNG 压缩字节流，彻底消除 20 张高分屏截图双份驻留堆内存。
     if (!hasReadableBackingFile(entry.filePath)) {
-        bool encodedOk = false;
-        try {
-            encodedOk = cv::imencode(".png", image, entry.compressedPng,
-                                     {cv::IMWRITE_PNG_COMPRESSION, 3});
-        } catch (const cv::Exception&) {
-            encodedOk = false;
-        }
-        if (!encodedOk || entry.compressedPng.empty()) {
-            entry.compressedPng.clear();
-            entry.image = image.clone();
-        } else {
+        if (preEncodedPng && !preEncodedPng->empty()) {
+            entry.compressedPng = *preEncodedPng;
             entry.compressedPng.shrink_to_fit();
+        } else {
+            bool encodedOk = false;
+            try {
+                encodedOk = cv::imencode(".png", image, entry.compressedPng,
+                                         {cv::IMWRITE_PNG_COMPRESSION, 1});
+            } catch (const cv::Exception&) {
+                encodedOk = false;
+            }
+            if (!encodedOk || entry.compressedPng.empty()) {
+                entry.compressedPng.clear();
+                entry.image = image.clone();
+            } else {
+                entry.compressedPng.shrink_to_fit();
+            }
         }
     }
 

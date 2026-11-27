@@ -48,8 +48,10 @@ public:
     /// @param image 最终截图（带标注）
     /// @param region 截取区域
     /// @param filePath 保存路径（可为空）
+    /// @param preEncodedPng 可选的已编码 PNG 字节流（无磁盘背书时直接复用，避免二次 PNG 编码）
     void push(const cv::Mat& image, const CaptureRegion& region,
-              const std::string& filePath = "");
+              const std::string& filePath = "",
+              const std::vector<uint8_t>* preEncodedPng = nullptr);
 
     /// 获取指定索引的历史记录（0 = 最新，自动按需无损解码原图）
     std::optional<HistoryEntry> get(int index) const;

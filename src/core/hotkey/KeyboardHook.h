@@ -7,11 +7,15 @@
 
 #include <windows.h>
 #include <atomic>
+#include <cstdint>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace tools3000::core {
 
@@ -21,12 +25,15 @@ public:
 
     bool install();
     void uninstall();
+    bool isInstalled() const;
 
     void setKeycastCallback(std::function<void(const std::string&)> cb);
     void setKeycastKeyInfoCallback(std::function<void(const KeycastKeyInfo&)> cb);
     void setKeyInterceptor(std::function<bool(DWORD vkCode, WPARAM wParam)> interceptor);
     void setLowLevelKeyInterceptor(std::function<bool(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> interceptor);
     void setKeyboardActivityCallback(std::function<void(DWORD vkCode, WPARAM wParam)> cb);
+    /// 注册共享底层键盘观察者（供 TextExpander 复用全局唯一 WH_KEYBOARD_LL，杜绝双钩子串行延迟）
+    void setTextExpanderObserver(std::function<void(const KBDLLHOOKSTRUCT& data, WPARAM wParam)> observer);
     void syncConfigCache();
     void setPaused(bool paused);
     bool isPaused() const;
@@ -67,10 +74,12 @@ public:
     bool injectTestKeyEvent(DWORD vkCode, UINT scanCode, bool isKeyUp, DWORD flags = LLKHF_INJECTED);
 
 private:
-    KeyboardHook() = default;
-    ~KeyboardHook() = default;
+    KeyboardHook();
+    ~KeyboardHook();
 
     static LRESULT CALLBACK lowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+    void inputThreadWorker(HANDLE readyEvent);
+    void reclaimRetiredCallbacksLocked() noexcept;
 
     struct HookHotkeyEntry {
         int id = 0;
@@ -79,7 +88,19 @@ private:
         HotkeyCallback callback;
     };
 
-    HHOOK m_hookHandle = nullptr;
+    using KeycastCallbackFn = std::function<void(const std::string&)>;
+    using KeycastKeyInfoCallbackFn = std::function<void(const KeycastKeyInfo&)>;
+    using KeyInterceptorFn = std::function<bool(DWORD, WPARAM)>;
+    using LowLevelKeyInterceptorFn = std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)>;
+    using ActivityCallbackFn = std::function<void(DWORD, WPARAM)>;
+    using TextExpanderObserverFn = std::function<void(const KBDLLHOOKSTRUCT&, WPARAM)>;
+
+    std::atomic<HHOOK> m_hookHandle{nullptr};
+    std::atomic<DWORD> m_threadId{0};
+    std::jthread m_inputThread;
+    std::atomic<uint32_t> m_activeHookCalls{0};
+    std::mutex m_lifecycleMutex;
+
     std::atomic<bool> m_paused{false};
     std::atomic<bool> m_fullscreenSuspended{false};
     std::atomic<bool> m_remoteSuspended{false};
@@ -93,14 +114,35 @@ private:
     std::atomic<uint8_t> m_filterMode{0}; // 0: smart_shortcuts, 1: all_keys, 2: shortcuts_only
     std::atomic<bool> m_includeFunctionKeys{false};
     std::atomic<bool> m_keycastAutoBypassFullscreen{true};
-    std::function<void(const std::string&)> m_keycastCallback;
-    std::function<void(const KeycastKeyInfo&)> m_keycastKeyInfoCallback;
-    std::function<bool(DWORD, WPARAM)> m_keyInterceptor;
-    std::function<bool(const KBDLLHOOKSTRUCT&, WPARAM)> m_lowLevelKeyInterceptor;
-    std::function<void(DWORD, WPARAM)> m_activityCallback;
+
+    // 零锁热路径原子回调指针 + RCU 延迟回收容器（避免高并发打字/输入法路径争抢互斥锁）
+    std::atomic<KeycastCallbackFn*> m_keycastCallbackPtr{nullptr};
+    std::unique_ptr<KeycastCallbackFn> m_keycastCallbackHolder;
+    std::vector<std::unique_ptr<KeycastCallbackFn>> m_retiredKeycastCallbacks;
+
+    std::atomic<KeycastKeyInfoCallbackFn*> m_keycastKeyInfoCallbackPtr{nullptr};
+    std::unique_ptr<KeycastKeyInfoCallbackFn> m_keycastKeyInfoCallbackHolder;
+    std::vector<std::unique_ptr<KeycastKeyInfoCallbackFn>> m_retiredKeycastKeyInfoCallbacks;
+
+    std::atomic<KeyInterceptorFn*> m_keyInterceptorPtr{nullptr};
+    std::unique_ptr<KeyInterceptorFn> m_keyInterceptorHolder;
+    std::vector<std::unique_ptr<KeyInterceptorFn>> m_retiredKeyInterceptors;
+
+    std::atomic<LowLevelKeyInterceptorFn*> m_lowLevelKeyInterceptorPtr{nullptr};
+    std::unique_ptr<LowLevelKeyInterceptorFn> m_lowLevelKeyInterceptorHolder;
+    std::vector<std::unique_ptr<LowLevelKeyInterceptorFn>> m_retiredLowLevelKeyInterceptors;
+
+    std::atomic<ActivityCallbackFn*> m_activityCallbackPtr{nullptr};
+    std::unique_ptr<ActivityCallbackFn> m_activityCallbackHolder;
+    std::vector<std::unique_ptr<ActivityCallbackFn>> m_retiredActivityCallbacks;
+
+    std::atomic<TextExpanderObserverFn*> m_textExpanderObserverPtr{nullptr};
+    std::unique_ptr<TextExpanderObserverFn> m_textExpanderObserverHolder;
+    std::vector<std::unique_ptr<TextExpanderObserverFn>> m_retiredTextExpanderObservers;
+
     mutable std::mutex m_callbackMutex;
-    DWORD m_pendingModifierVk = 0;
-    bool m_comboTriggered = false;
+    std::atomic<DWORD> m_pendingModifierVk{0};
+    std::atomic<bool> m_comboTriggered{false};
 
     std::atomic<bool> m_hasHookHotkeys{false};
     std::unordered_map<int, HookHotkeyEntry> m_hookHotkeys;

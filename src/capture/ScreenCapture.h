@@ -85,7 +85,12 @@ bool copyMatToClipboard(const cv::Mat& image);
 
 class ScreenCapture {
 public:
-    bool copyToClipboard(const cv::Mat& image, const std::wstring& filePath = L"", const CaptureRegion* sourceRegion = nullptr, int padX = 0, int padY = 0);
+    bool copyToClipboard(const cv::Mat& image,
+                         const std::wstring& filePath = L"",
+                         const CaptureRegion* sourceRegion = nullptr,
+                         int padX = 0,
+                         int padY = 0,
+                         const std::vector<uint8_t>* preEncodedPng = nullptr);
 public:
     static ScreenCapture& instance();
 
@@ -139,7 +144,7 @@ private:
 
     /// 保存到文件
     std::string saveToFile(const std::vector<uint8_t>& data, const std::string& path,
-                           ImageFormat format);
+                           ImageFormat format, bool flushToDisk = true);
 
     /// 生成自动保存路径
     std::string generateSavePath(ImageFormat format) const;

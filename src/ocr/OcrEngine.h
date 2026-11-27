@@ -60,9 +60,22 @@ struct OcrWordToken {
     float bottom() const noexcept { return y + h; }
 };
 
+struct WindowsOcrScalePlan {
+    int borderPad = 0;
+    int targetWidth = 0;
+    int targetHeight = 0;
+    float scaleFactor = 1.0f;
+    bool applyUnsharpMask = false;
+    double unsharpSigma = 0.85;
+    double unsharpAmount = 0.24;
+};
+
 class OcrEngine {
 public:
     static OcrEngine& instance();
+
+    /// 根据原图物理分辨率与 Windows.Media.Ocr 引擎最大边上限规划预处理尺寸与锐化方案
+    static WindowsOcrScalePlan planWindowsOcrScaling(int srcWidth, int srcHeight, int engineMaxDim) noexcept;
 
     /// 初始化引擎 (探测可用的 Windows OCR 语言包与本地 PP-OCRv4 模型包)。
     bool initialize();

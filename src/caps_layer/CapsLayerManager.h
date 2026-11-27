@@ -125,6 +125,7 @@ private:
     std::string m_cachedFgExeLower;
 
     std::atomic<bool> m_enabled{false};
+    std::atomic<bool> m_capsOrRolloverActive{false};
     std::atomic<bool> m_circuitBreakerTripped{false};
     std::atomic<uint32_t> m_consecutiveHookErrors{0};
 

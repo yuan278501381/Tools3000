@@ -1383,32 +1383,34 @@ bool runWinOcrOnPreparedMat(
     outBorderPad = 0;
     outScaleFactor = 1.0f;
 
+    const WindowsOcrScalePlan plan = OcrEngine::planWindowsOcrScaling(srcImg.cols, srcImg.rows, maxDim);
+    outBorderPad = plan.borderPad;
+    outScaleFactor = plan.scaleFactor;
+
     cv::Mat prepared = srcImg;
-    const int effectiveWinMaxDim = (std::min)(maxDim, 1680);
-    if (srcImg.cols >= 8 && srcImg.rows >= 8 && srcImg.cols + 24 < effectiveWinMaxDim && srcImg.rows + 24 < effectiveWinMaxDim) {
-        outBorderPad = 12;
-        cv::copyMakeBorder(srcImg, prepared, outBorderPad, outBorderPad, outBorderPad, outBorderPad, cv::BORDER_REPLICATE);
-        const int maxPreparedSide = (std::max)(prepared.cols, prepared.rows);
-        if (maxPreparedSide < 1280) {
-            const float maxAllowedScale = static_cast<float>(effectiveWinMaxDim) / static_cast<float>((std::max)(1, maxPreparedSide));
-            const float desiredScale = (std::min)(2.0f, std::floor(maxAllowedScale * 10.0f) * 0.1f);
-            if (desiredScale >= 1.35f) {
-                const int upW = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.cols) * desiredScale))));
-                const int upH = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::round(static_cast<float>(prepared.rows) * desiredScale))));
-                outScaleFactor = static_cast<float>(upW) / static_cast<float>(prepared.cols);
-                cv::resize(prepared, prepared, cv::Size(upW, upH), 0.0, 0.0, cv::INTER_CUBIC);
-                // 温和反锐化掩模 (Unsharp Mask)：收紧小尺寸低分屏灰字与浅色胶囊数字边缘
-                cv::Mat blurred;
-                cv::GaussianBlur(prepared, blurred, cv::Size(0, 0), 0.85);
-                cv::addWeighted(prepared, 1.24, blurred, -0.24, 0.0, prepared);
-            }
+    if (plan.borderPad > 0) {
+        cv::copyMakeBorder(
+            srcImg, prepared,
+            plan.borderPad, plan.borderPad, plan.borderPad, plan.borderPad,
+            cv::BORDER_REPLICATE);
+    }
+    if (plan.targetWidth > 0 && plan.targetHeight > 0 &&
+        (plan.targetWidth != prepared.cols || plan.targetHeight != prepared.rows)) {
+        const int interp = (plan.targetWidth < prepared.cols || plan.targetHeight < prepared.rows)
+            ? cv::INTER_AREA
+            : cv::INTER_CUBIC;
+        cv::resize(prepared, prepared, cv::Size(plan.targetWidth, plan.targetHeight), 0.0, 0.0, interp);
+        if (plan.applyUnsharpMask && plan.unsharpAmount > 0.0) {
+            cv::Mat blurred;
+            cv::GaussianBlur(prepared, blurred, cv::Size(0, 0), plan.unsharpSigma);
+            cv::addWeighted(
+                prepared,
+                1.0 + plan.unsharpAmount,
+                blurred,
+                -plan.unsharpAmount,
+                0.0,
+                prepared);
         }
-    } else if (srcImg.cols > effectiveWinMaxDim) {
-        outScaleFactor = static_cast<float>(effectiveWinMaxDim) / static_cast<float>(srcImg.cols);
-        const int targetW = (std::min)(effectiveWinMaxDim, (std::max)(1, static_cast<int>(std::floor(srcImg.cols * outScaleFactor))));
-        const int targetH = (std::max)(1, static_cast<int>(std::floor(srcImg.rows * outScaleFactor)));
-        outScaleFactor = static_cast<float>(targetW) / static_cast<float>(srcImg.cols);
-        cv::resize(srcImg, prepared, cv::Size(targetW, targetH), 0.0, 0.0, cv::INTER_AREA);
     }
 
     if (prepared.rows <= maxDim) {
@@ -1465,6 +1467,80 @@ bool runWinOcrOnPreparedMat(
 }
 
 }  // namespace
+
+WindowsOcrScalePlan OcrEngine::planWindowsOcrScaling(int srcWidth, int srcHeight, int engineMaxDim) noexcept {
+    WindowsOcrScalePlan plan{};
+    if (srcWidth <= 0 || srcHeight <= 0) {
+        return plan;
+    }
+
+    // 彻底移除旧版 1680px 硬截断上限：Windows 10/11 原生 Windows.Media.Ocr 的 MaxImageDimension 通常为 10000px，
+    // 此前将 2K/宽屏 ERP 截图（如 2559x1316）压扁至 1680px 会导致 11~13px 细宋体汉字严重糊字断识。
+    const int safeMaxDim = (engineMaxDim > 0) ? engineMaxDim : 1680;
+    const int downscaleWidthCap = (std::min)(safeMaxDim, 4096);
+
+    if (srcWidth > downscaleWidthCap) {
+        const float rawScale = static_cast<float>(downscaleWidthCap) / static_cast<float>(srcWidth);
+        const int targetW = (std::min)(downscaleWidthCap, (std::max)(1, static_cast<int>(std::floor(srcWidth * rawScale))));
+        const int targetH = (std::max)(1, static_cast<int>(std::floor(srcHeight * rawScale)));
+        plan.borderPad = 0;
+        plan.targetWidth = targetW;
+        plan.targetHeight = targetH;
+        plan.scaleFactor = static_cast<float>(targetW) / static_cast<float>(srcWidth);
+        plan.applyUnsharpMask = false;
+        return plan;
+    }
+
+    int preparedW = srcWidth;
+    int preparedH = srcHeight;
+    if (srcWidth >= 8 && srcHeight >= 8 &&
+        srcWidth + 24 <= safeMaxDim &&
+        srcHeight + 24 <= safeMaxDim) {
+        plan.borderPad = 12;
+        preparedW = srcWidth + 24;
+        preparedH = srcHeight + 24;
+    }
+
+    plan.targetWidth = preparedW;
+    plan.targetHeight = preparedH;
+    plan.scaleFactor = 1.0f;
+
+    const int maxPreparedSide = (std::max)(preparedW, preparedH);
+    if (maxPreparedSide < 1280) {
+        // 小尺寸选区（弹窗/徽章/局部表格）：适度放大至最高 2.0x（上限 2560px）并温和锐化
+        const int smallUpscaleCap = (std::min)(safeMaxDim, 2560);
+        const float maxAllowedScale = static_cast<float>(smallUpscaleCap) / static_cast<float>((std::max)(1, maxPreparedSide));
+        const float desiredScale = (std::min)(2.0f, std::floor(maxAllowedScale * 10.0f) * 0.1f);
+        if (desiredScale >= 1.35f) {
+            const int upW = (std::min)(smallUpscaleCap, (std::max)(1, static_cast<int>(std::round(static_cast<float>(preparedW) * desiredScale))));
+            const int upH = (std::min)(smallUpscaleCap, (std::max)(1, static_cast<int>(std::round(static_cast<float>(preparedH) * desiredScale))));
+            plan.targetWidth = upW;
+            plan.targetHeight = upH;
+            plan.scaleFactor = static_cast<float>(upW) / static_cast<float>(preparedW);
+            plan.applyUnsharpMask = true;
+            plan.unsharpSigma = 0.85;
+            plan.unsharpAmount = 0.24;
+        }
+    } else if (maxPreparedSide <= 2800 && safeMaxDim >= 3840) {
+        // 中大宽屏桌面/ERP 小字表单（如 1920x1080 ~ 2560x1440）：
+        // 实测 1.5x 插值（上限 3960px）+ 轻量反锐化可显著拉开 11~13px 宋体笔画间距，兼顾速度与召回率。
+        const int wideUpscaleCap = (std::min)(safeMaxDim, 3960);
+        const float maxAllowedScale = static_cast<float>(wideUpscaleCap) / static_cast<float>((std::max)(1, maxPreparedSide));
+        const float desiredScale = (std::min)(1.5f, std::floor(maxAllowedScale * 10.0f) * 0.1f);
+        if (desiredScale >= 1.25f) {
+            const int upW = (std::min)(wideUpscaleCap, (std::max)(1, static_cast<int>(std::round(static_cast<float>(preparedW) * desiredScale))));
+            const int upH = (std::min)(wideUpscaleCap, (std::max)(1, static_cast<int>(std::round(static_cast<float>(preparedH) * desiredScale))));
+            plan.targetWidth = upW;
+            plan.targetHeight = upH;
+            plan.scaleFactor = static_cast<float>(upW) / static_cast<float>(preparedW);
+            plan.applyUnsharpMask = true;
+            plan.unsharpSigma = 0.75;
+            plan.unsharpAmount = 0.18;
+        }
+    }
+
+    return plan;
+}
 
 std::vector<std::string> OcrEngine::splitUtf8Codepoints(std::string_view utf8) {
     std::vector<std::string> out;

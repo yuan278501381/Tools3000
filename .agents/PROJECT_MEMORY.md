@@ -6,6 +6,18 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-27] 首次截图完成秒进剪贴板、宽图小字 Windows OCR 1680px 硬截断根治、单键盘钩子独立线程化与退场防僵尸 (`fix/capture-clipboard-ocr-input-hardening`)
+- **1. 首次截图点完成延迟写入剪贴板根治（Linux.do 曹阿瞒 `@longqiuyu` 反馈）(`AtomicFile.h`, `ClipboardUtils.{h,cpp}`, `ScreenCapture.{h,cpp}`, `CaptureHistory.{h,cpp}`, `CaptureOverlay.cpp`, `CaptureInputCommands.cpp`, `test_capture.inc`)**：
+  - *五重串行瓶颈实证*：① 同步重复 PNG 编码（`ScreenCapture` level-6 编码 + `ClipboardUtils` 再编一次 + 无文件时 `CaptureHistory` 再编一次）；② `OpenClipboard` 前同步调用 `FlushFileBuffers` + `MOVEFILE_WRITE_THROUGH` 强制物理刷盘；③ 首次启动第一次复制在主线程同步 `pruneStaleClipboardTempFiles` 扫盘删历史临时文件；④ `CaptureOverlay::cleanupAfterDelivery(true)` 在 `ShowToastEvent` 弹出前同步执行 `WinUtils::trimWorkingSet()` 引发 40~150ms 软缺页卡住 Toast 反馈；
+  - *终局单遍极速管线*：`AtomicFile::atomicWriteBinaryFileWithFlush` 新增 `bool flushToDisk = true`（保留全部重解析点与原子重命名安全，自动保存与临时 `CF_HDROP` 传 `false` 写 OS 页缓存 `<1ms`，显式另存为维持 `true`）；`ScreenCapture::encodeImage` / `ClipboardUtils` / `CaptureHistory` 统一采用无损极速 `IMWRITE_PNG_COMPRESSION = 1` 并通过 `preEncodedPng` 透传实现**单次编码、三处（落盘/剪贴板/历史）零重复编码复用**；`pruneStaleClipboardTempFilesAsync` 下沉后台防重入线程；`CaptureOverlay::cleanupAfterDelivery` 改为 `scheduleQuietIdleTrim(1200)` 异步冷态回收；非 PNG 自动保存优先写剪贴板与弹 Toast 再落盘。实测预编码复制到剪贴板 + 回验 + 历史入库端到端仅 **`47 ms`**。
+- **2. 宽图小字 Windows.Media.Ocr 1680px 硬截断误杀根治 (`OcrEngine.{h,cpp}`, `tests/fixtures/ocr/sap_b1_coa_small_text.jpg`, `tests/fixtures/ocr/README.md`, `test_live_ocr.inc`)**：
+  - *根因实证*：Windows 11 原生 `Windows.Media.Ocr` `MaxImageDimension() == 10000`，但旧版 `OcrEngine.cpp` 硬编码 `effectiveWinMaxDim = min(maxDim, 1680)`，导致 `2559x1316` SAP B1 科目表原图被 `0.656x` 强行压缩成 `1680x863`，12px 细宋体糊成 7.8px，连「人民币」都漏识，仅识出 `540` 个有效字符；
+  - *根治与双通道守护*：抽离可测纯函数 `OcrEngine::planWindowsOcrScaling(srcWidth, srcHeight, engineMaxDim)`，移除 `1680px` 硬上限（仅超宽 `> min(maxDim, 4096)` 才下采样；小图 `<1280` 维持最高 `2.0x` + 温和锐化；`1280~2800` 宽屏桌面/ERP 图放大至最高 `1.5x` 上限 `3960px` + 轻度锐化 `sigma=0.75/0.18`；`2800~4096` 4K 图 `1.0x` 原生直出）；收录 `sap_b1_coa_small_text.jpg` 为第 19 张核心样本并同时验证双通道：纯 Windows OCR 有效字符 **`540 -> 641 (+18.7%, 474ms)`** 并完整召回「人民币」/「220203」，PP-OCRv6 离线高精度引擎实测 **`770` 字符 / `87` 行（热跑 `546ms`）**全量科目编码一字不差。
+- **3. 底层键盘钩子独立高优先级单总线、CapsLayer 零锁快路径、Win11 资源管理器焦点避让与退场防僵尸 (`KeyboardHook.{h,cpp}`, `TextExpanderManager.{h,cpp}`, `CapsLayerManager.{h,cpp}`, `rust_caps/src/lib.rs`, `WinUtils.cpp`, `QuickLookWindow.h`, `main.cpp`, `test_ui_lifecycle.inc`)**：
+  - 将主程序 `KeyboardHook`（`WH_KEYBOARD_LL`）复刻 `MouseHook` 范式迁入独立 `THREAD_PRIORITY_HIGHEST` 输入线程 + 原子回调指针与 `m_activeHookCalls` RCU 延迟回收（热路径 0 锁），并合并 `TextExpanderManager` 独立第 2 条 `WH_KEYBOARD_LL` 与 `SetWinEventHook`（全进程永久仅 1 条键盘钩子，前台变更复用宿主 `syncForegroundFullscreenState`）；
+  - `rust_caps` 新增 `t3k_caps_is_idle` FFI 导出，`CapsLayerManager::handleLowLevelKey` 增加 `m_capsOrRolloverActive` 原子快路径（日常打字 0 锁、0 堆拷贝、0 FFI）；`WinUtils::checkExplorerShellViewFocus` 新增对 Win11 现代 XAML 输入控件（`Windows.UI.Input.InputSite.WindowClass` / `DesktopChildSiteBridge` 等）的显式避让；`QuickLookWindow::m_webViewReady` 原子化且钩子内 `SetTimer` 经 `MainThreadDispatcher` 回到 UI 线程；
+  - 根治 `main.cpp` 退场偶发单线程僵尸残留：因 Windows `ExitProcess()` 首步先终止所有后台看门狗线程，再单线程执行 `LdrShutdownProcess` 易在第三方 COM/DLL 静态析构卡死；在 `shutdownSubsystems()`、`releaseHostHotkeysAndMessageWindow()`、`releaseSingleInstanceMutex()`、`CoUninitialize()` 全部完成后直接 `TerminateProcess(GetCurrentProcess(), finalExitCode)`，实机隔离启停验证 `1376 ms` 以 `exitCode=0` 彻底清场、0 僵尸残留。
+
 ### [TODO(pre-release) 发版前必查清单] 日志默认级别临时切至 `trace`（2026-11-26）
 - **当前状态**：应项目负责人要求，为便于近期实机排错，初始默认日志级别已统一设为最详细档位 **`trace`**（SSOT 位于以下 5 处）：
   1. `src/core/logger/Logger.h`: `Logger::kDefaultLogLevel = "trace"` 与 `LoggerConfig::fileLevel = spdlog::level::trace`（`main.cpp`、`MessageBridge.cpp`、`WindowKitController.cpp` 均统一引用此常量）；

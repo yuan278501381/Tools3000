@@ -39,6 +39,7 @@ CapsEngine* t3k_caps_create();
 void t3k_caps_destroy(CapsEngine* ptr);
 void t3k_caps_set_enabled(CapsEngine* ptr, uint8_t enabled);
 void t3k_caps_reset_state(CapsEngine* ptr);
+uint8_t t3k_caps_is_idle(const CapsEngine* ptr);
 void t3k_caps_clear_rules(CapsEngine* ptr);
 void t3k_caps_set_options(CapsEngine* ptr, uint8_t tap_action_code, uint8_t shift_caps_native);
 void t3k_caps_add_excluded_app(CapsEngine* ptr, const uint8_t* exe_utf8, size_t exe_len);
@@ -509,6 +510,7 @@ void CapsLayerManager::rebuildRustRulesLocked() {
     }
 
     t3k_caps_set_enabled(m_engine, enabled ? 1 : 0);
+    m_capsOrRolloverActive.store(false, std::memory_order_release);
     m_circuitBreakerTripped.store(false, std::memory_order_release);
     m_consecutiveHookErrors.store(0, std::memory_order_release);
     m_enabled.store(enabled, std::memory_order_release);
@@ -562,6 +564,7 @@ void CapsLayerManager::initialize() {
 
 void CapsLayerManager::shutdown() {
     m_enabled.store(false, std::memory_order_release);
+    m_capsOrRolloverActive.store(false, std::memory_order_release);
     stopInjectorWorker();
     {
         std::lock_guard engLock(m_engineMutex);
@@ -605,6 +608,7 @@ void CapsLayerManager::updateForegroundProcess(const std::string& processName) {
 }
 
 void CapsLayerManager::resetRuntimeState() {
+    m_capsOrRolloverActive.store(false, std::memory_order_release);
     std::lock_guard engLock(m_engineMutex);
     if (m_engine) {
         t3k_caps_reset_state(m_engine);
@@ -848,6 +852,13 @@ bool CapsLayerManager::handleLowLevelKey(const KBDLLHOOKSTRUCT& data, WPARAM wPa
         return false;
     }
 
+    // 极速零锁直通路径：日常打字只要未按住 CapsLock 且无滚键残留，
+    // 对所有普通按键（含空格/字母/数字）仅需 1 次原子读 (<2ns)，0 互斥锁、0 字符串拷贝、0 Rust FFI。
+    if (data.vkCode != VK_CAPITAL &&
+        !m_capsOrRolloverActive.load(std::memory_order_acquire)) {
+        return false;
+    }
+
     const bool isDown = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
     const bool isUp = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
     if (!isDown && !isUp) {
@@ -888,6 +899,7 @@ bool CapsLayerManager::handleLowLevelKey(const KBDLLHOOKSTRUCT& data, WPARAM wPa
             actions.data(),
             actions.size(),
             &actionCount);
+        m_capsOrRolloverActive.store(t3k_caps_is_idle(m_engine) == 0, std::memory_order_release);
 
         std::vector<AsyncInjectionTask> deferredTasks;
         for (size_t i = 0; i < actionCount; ++i) {
@@ -931,6 +943,7 @@ bool CapsLayerManager::handleLowLevelKey(const KBDLLHOOKSTRUCT& data, WPARAM wPa
         const uint32_t errs = m_consecutiveHookErrors.fetch_add(1, std::memory_order_acq_rel) + 1;
         if (errs >= kMaxConsecutiveHookErrors) {
             m_circuitBreakerTripped.store(true, std::memory_order_release);
+            m_capsOrRolloverActive.store(false, std::memory_order_release);
             m_enabled.store(false, std::memory_order_release);
             LOG_ERROR("[CapsLayer] Circuit breaker tripped after {} hook faults; auto-disabled to protect host", errs);
         }
