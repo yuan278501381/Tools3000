@@ -217,6 +217,9 @@ int runOcrWorkerProcess(int argc, const wchar_t* const* argv) {
             results = DeepOcrEngine::instance().extractText(sharedView, scriptMode);
             stats = DeepOcrEngine::instance().lastRunStats();
             activeTier = DeepOcrEngine::instance().effectiveModelTier();
+            if (DeepOcrEngine::instance().lastExtractFailed()) {
+                inferFailed = true;
+            }
         } catch (const winrt::hresult_error&) {
             inferFailed = true;
         } catch (const std::exception&) {

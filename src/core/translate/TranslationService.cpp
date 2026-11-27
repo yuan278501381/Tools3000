@@ -1081,6 +1081,9 @@ public:
 
 class OpenAiCompatibleProvider final : public ITranslationProvider {
 public:
+    explicit OpenAiCompatibleProvider(TranslationStageCallback stageCb = {})
+        : m_stageCb(std::move(stageCb)) {}
+
     const char* id() const noexcept override { return "openai_compatible"; }
 
     TranslationBatchResult translate(
@@ -1237,6 +1240,9 @@ public:
                     (http.statusCode == 429 || http.statusCode == 500 ||
                      http.statusCode == 502 || http.statusCode == 503 || http.statusCode == 504));
                 if ((isTimeout || isTransientHttp) && attempt + 1 < maxAttempts) {
+                    if (m_stageCb) {
+                        m_stageCb(TranslationStage::RetryingTransient, 0u, 0u, out.providerUsed);
+                    }
                     LOG_WARN("TranslationService: {} transient error (status={}, win32={}), retrying once (items={}, model={})",
                              out.providerUsed, http.statusCode, http.win32Error, count, model);
                     if (!sleepCancelAwareMs(kTransientRetryDelayMs, cancelFlag, localAbort)) {
@@ -1253,6 +1259,9 @@ public:
             if (!http.transportOk) {
                 if (http.win32Error == ERROR_WINHTTP_TIMEOUT && count > 1 && depth < kMaxBinarySplitDepth) {
                     const size_t mid = beginIdx + count / 2;
+                    if (m_stageCb && depth == 0) {
+                        m_stageCb(TranslationStage::RetryingTransient, 0u, 0u, out.providerUsed);
+                    }
                     LOG_WARN("TranslationService: {} batch timeout (items={}, depth={}), splitting",
                              out.providerUsed, count, depth);
                     translateRange(beginIdx, mid, depth + 1, localAbort);
@@ -1332,10 +1341,18 @@ public:
             translatedItemCount.fetch_add(count, std::memory_order_relaxed);
         };
 
+        std::atomic<uint32_t> completedBatches{0};
+        if (m_stageCb && batches.size() > 1) {
+            m_stageCb(TranslationStage::BatchProgress, 0u, static_cast<uint32_t>(batches.size()), out.providerUsed);
+        }
         runBatchesConcurrently(
             batches.size(), policy.maxConcurrency, cancelFlag, abortFlag,
             [&](size_t bIdx, std::atomic<bool>& localAbort) {
                 translateRange(batches[bIdx].first, batches[bIdx].second, 0, localAbort);
+                const uint32_t doneNow = completedBatches.fetch_add(1, std::memory_order_acq_rel) + 1;
+                if (m_stageCb && batches.size() > 1 && !localAbort.load(std::memory_order_acquire)) {
+                    m_stageCb(TranslationStage::BatchProgress, doneNow, static_cast<uint32_t>(batches.size()), out.providerUsed);
+                }
             });
 
         if (!firstFatalErrCode.empty()) {
@@ -1364,6 +1381,9 @@ public:
         out.success = true;
         return out;
     }
+
+private:
+    TranslationStageCallback m_stageCb;
 };
 
 class DeepLProvider final : public ITranslationProvider {
@@ -1827,7 +1847,7 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
     };
 
     if (kind == TranslationProviderKind::OpenAiCompatible) {
-        OpenAiCompatibleProvider provider;
+        OpenAiCompatibleProvider provider(request.onStage);
         TranslationBatchResult aiRes = provider.translate(
             uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag);
         if (aiRes.success || aiRes.errorCode == "cancelled") {
@@ -1838,6 +1858,14 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
         if (!request.bypassCache && isKeylessPublicOpenAiUrl(settings.openaiBaseUrl)) {
             LOG_WARN("TranslationService: keyless public AI endpoint failed ({}:{}), falling back to free dual-channel",
                      aiRes.errorCode, aiRes.errorDetail);
+            if (request.onStage) {
+                const int64_t nowTs = unixNowSeconds();
+                const bool preferGoogle =
+                    (settings.freePrimary == TranslationConstants::kFreePrimaryGoogle) ||
+                    (nowTs < m_edgeCooldownUntilUnix.load(std::memory_order_acquire));
+                request.onStage(TranslationStage::SwitchingFallback, 0u, 0u,
+                                preferGoogle ? "google_free" : "edge_free");
+            }
         } else {
             return finalizeWithMerge(std::move(aiRes));
         }
@@ -1886,6 +1914,9 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
 
     LOG_WARN("TranslationService: primary free provider {} failed ({}:{}), falling back to {}",
              primaryProvider.id(), primaryRes.errorCode, primaryRes.errorDetail, fallbackProvider.id());
+    if (request.onStage) {
+        request.onStage(TranslationStage::SwitchingFallback, 0u, 0u, fallbackProvider.id());
+    }
 
     TranslationBatchResult fallbackRes = fallbackProvider.translate(
         uniqueToTranslate, effectiveSource, effectiveTarget, settings, cancelFlag);
@@ -1906,6 +1937,15 @@ TranslationBatchResult TranslationService::translateBatchWithSettings(
 // ─────────────────────────────────────────────────────────────────────────────
 // 纯静态方法与协议解析器
 // ─────────────────────────────────────────────────────────────────────────────
+
+std::string TranslationService::formatProviderShortName(std::string_view providerId, bool isChineseUi) {
+    if (providerId == "index_translate") return "Index-Translate";
+    if (providerId == "edge_free")       return isChineseUi ? "Edge 翻译" : "Edge Translate";
+    if (providerId == "google_free")     return isChineseUi ? "Google 翻译" : "Google Translate";
+    if (providerId == "deepl")           return "DeepL";
+    if (providerId == "openai_compatible") return isChineseUi ? "AI 翻译模型" : "AI Model";
+    return isChineseUi ? "备用翻译引擎" : "Fallback Engine";
+}
 
 TranslationProviderKind TranslationService::parseProviderKind(std::string_view provider) noexcept {
     if (provider == TranslationConstants::kProviderOpenAiCompatible) {

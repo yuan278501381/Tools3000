@@ -6,6 +6,7 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 #include <atomic>
+#include <chrono>
 #include <string>
 #include <mutex>
 #include <vector>
@@ -53,6 +54,9 @@ private:
     float m_opacity = 0.0f;
     float m_animScale = 1.0f; // For subtle pop-up animation
     bool m_fadingIn = false;
+    std::chrono::steady_clock::time_point m_fadeInStartTime{};
+    bool m_highResTimerBoosted = false;
+    void setHighResTimerBoost(bool active) noexcept;
 
     // D2D 资源
     Microsoft::WRL::ComPtr<ID2D1Factory> m_d2dFactory;

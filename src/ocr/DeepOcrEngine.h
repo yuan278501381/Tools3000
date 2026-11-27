@@ -16,6 +16,7 @@
 #define TOOLS3000_OCR_DEEPOCRENGINE_H
 
 #include "ocr/OcrEngine.h"
+#include "core/network/ResilientModelDownloader.h"
 
 #include <array>
 #include <atomic>
@@ -136,6 +137,11 @@ struct DeepOcrModelStatus {
     uint64_t downloadedBytes = 0;
     uint64_t totalBytes = DeepOcrConstants::kEstimatedBundleBytes;
     uint64_t serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
+    double speedBytesPerSec = 0.0;
+    std::string activeMirrorHost;
+    int mirrorIndex = 0;
+    int mirrorTotal = 0;
+    std::string phase; // "probing" | "downloading" | "switching" | "verifying" | ""
     std::string engineGeneration;           // "v6" | "v4" | ""
     bool upgradeAvailable = false;          // true when legacy v4 is installed but v6 is not yet installed
     std::string modelTier = "mobile";       // "mobile" | "server" (configured preference)
@@ -165,13 +171,25 @@ struct DeepOcrRunStats {
     std::string detectedScript = "cjk"; // "cjk" | "japan" | "korean" | "cyrillic" | "latin" | "arabic" | "thai"
 };
 
-/// 仅在进入慢路径（低置信度精修 / 自动扩展语种重识）时触发的阶段回调类型；常规快速识别绝不触发
+/// 仅在进入长耗时/深度识别链路时触发的阶段回调类型；常规热态毫秒级快路径保持静默零打扰
 enum class OcrRecognitionStage : uint32_t {
-    LowConfidenceRefining = 1u,
-    AutoScriptSwitching   = 2u,
+    LowConfidenceRefining    = 1u, // 疑难低置信度行触发高精度模型精修
+    AutoScriptSwitching      = 2u, // 自动检测到韩/俄/阿/泰语切换扩展模型复核
+    DeepModelLoading         = 3u, // 离线深度识别引擎/Worker 首次冷启动加载模型
+    DeepCpuInference         = 4u, // 进入 CPU 兼容深度识别模式 (Win10/Server OpenCV DNN 或 WinML CPU)
+    DeepMultiLineRecognizing = 5u, // 高精度档位或复杂多行截图进入深度模型识别
 };
 
 using OcrStageCallback = std::function<void(OcrRecognitionStage stage, uint32_t count, const std::string& detail)>;
+
+/// 将 OCR 实时阶段事件格式化为用户友好的中/英文提示与顶栏短徽章（全仓 UI 单一事实源）
+void formatOcrStageFeedback(
+    OcrRecognitionStage stage,
+    uint32_t count,
+    const std::string& detail,
+    bool isZh,
+    std::wstring& outMessage,
+    std::wstring& outBadge);
 
 struct DbDetectedQuad {
     std::array<cv::Point2f, 4> corners{}; // [TL, TR, BR, BL]
@@ -243,11 +261,18 @@ public:
     /// 安全删除指定多语种扩展识别包释放磁盘空间
     bool deleteScriptPack(const std::string& packId);
 
-    /// 兼容 Win10/11 原生 WinML：将 ONNX 顶层 ir_version (> 8) 原位无损钳位至 8
+    /// 兼容 Win10/11 原生 WinML：opset<=12 的模型原位无损钳位至 IR 7（兼容 Win11 21H2 Build 22000+），更高 opset 钳位至 IR 8
     static bool clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) noexcept;
 
-    /// 使用 PP-OCRv4 执行端到端离线高精度文字检测 + 方向矫正 + CTC 字符级识别（支持显式指定单次识字语种覆写）
+    /// 使用 PP-OCRv4/v6 执行端到端离线高精度文字检测 + 方向矫正 + CTC 字符级识别（支持显式指定单次识字语种覆写）
     std::vector<OcrResult> extractText(const cv::Mat& image, const std::string& scriptModeOverride = {});
+
+    /// 查询最近一次 extractText 是否因模型加载失败、运行时异常或 Worker 失败而异常中止（区别于“图像确实无文字”）
+    bool lastExtractFailed() const noexcept { return m_lastExtractFailed.load(std::memory_order_acquire); }
+
+    /// 供自动化测试强制跳过 WinML 直走 OpenCV DNN 回退管线（精准复现 Win10 / Server 2016-2022 无新版 WinML 环境）
+    void setForceOpenCvDnnForTest(bool force) noexcept { m_forceOpenCvDnnForTest.store(force, std::memory_order_release); }
+    bool isForceOpenCvDnnEnabled() const noexcept;
 
     /// 查询模型安装与后台下载实时状态
     DeepOcrModelStatus getModelStatus() const;
@@ -470,6 +495,8 @@ private:
     std::atomic<bool> m_shuttingDown{false};
     std::atomic<bool> m_forceCpuOnlyForWorker{false};
     std::atomic<bool> m_gpuRuntimeBlacklisted{false};
+    std::atomic<bool> m_forceOpenCvDnnForTest{false};
+    std::atomic<bool> m_lastExtractFailed{false};
 
     mutable std::mutex m_pathMutex;
     std::filesystem::path m_customTestModelDir;
@@ -484,14 +511,20 @@ private:
 
     mutable std::mutex m_downloadMutex;
     std::jthread m_downloadThread;
+    std::shared_ptr<tools3000::core::net::DownloadCancelToken> m_downloadCancelToken;
     std::atomic<bool> m_downloading{false};
     std::atomic<bool> m_downloadingServer{false};
     std::atomic<bool> m_cancelRequested{false};
     std::atomic<int> m_progressPercent{0};
     std::atomic<uint64_t> m_downloadedBytes{0};
     std::atomic<uint64_t> m_totalBytes{DeepOcrConstants::kEstimatedBundleBytes};
+    std::atomic<double> m_speedBytesPerSec{0.0};
+    std::atomic<int> m_mirrorIndex{0};
+    std::atomic<int> m_mirrorTotal{0};
     std::string m_downloadingScriptPack;
     std::string m_currentDownloadFile;
+    std::string m_activeMirrorHost;
+    std::string m_downloadPhase;
     std::string m_lastDownloadError;
 };
 

@@ -4,10 +4,10 @@
 
 #include "capture/TextReplaceEngine.h"
 #include "core/logger/Logger.h"
+#include "core/network/ResilientModelDownloader.h"
 #include "core/utils/WinUtils.h"
 
 #include <windows.h>
-#include <winhttp.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wincodec.h>
@@ -1245,232 +1245,70 @@ ResolvedTextPlacement resolveTextPlacement(const ExtractedTextStyle& extracted,
     return res;
 }
 
-bool downloadUrlToFileWithProgress(const std::wstring& url,
-                                   const std::filesystem::path& destPath,
-                                   std::atomic<bool>& cancelFlag,
-                                   std::atomic<uint64_t>& outDownloaded,
-                                   std::atomic<uint64_t>& outTotal,
-                                   std::atomic<int>& outPercent,
-                                   std::string& outError) {
-    URL_COMPONENTSW uc{};
-    uc.dwStructSize = sizeof(uc);
-    wchar_t hostBuf[256]{};
-    wchar_t pathBuf[2048]{};
-    uc.lpszHostName = hostBuf;
-    uc.dwHostNameLength = static_cast<DWORD>(std::size(hostBuf));
-    uc.lpszUrlPath = pathBuf;
-    uc.dwUrlPathLength = static_cast<DWORD>(std::size(pathBuf));
-    if (!WinHttpCrackUrl(url.c_str(), 0, 0, &uc)) {
-        outError = "invalid download URL";
-        return false;
-    }
-
-    HINTERNET hSession = WinHttpOpen(
-        L"Tools3000/1.0 (InpaintModelDownloader)",
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-    if (!hSession) {
-        outError = "WinHttpOpen failed";
-        return false;
-    }
-
-    struct ScopedHttp {
-        HINTERNET h = nullptr;
-        ~ScopedHttp() { if (h) WinHttpCloseHandle(h); }
-    };
-    ScopedHttp sessGuard{hSession};
-
-    WinHttpSetTimeouts(hSession, 15000, 15000, 30000, 30000);
-    HINTERNET hConn = WinHttpConnect(hSession, hostBuf, uc.nPort, 0);
-    if (!hConn) {
-        outError = "WinHttpConnect failed";
-        return false;
-    }
-    ScopedHttp connGuard{hConn};
-
-    const DWORD flags = (uc.nScheme == INTERNET_SCHEME_HTTPS) ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hReq = WinHttpOpenRequest(hConn, L"GET", pathBuf, nullptr,
-                                        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
-    if (!hReq) {
-        outError = "WinHttpOpenRequest failed";
-        return false;
-    }
-    ScopedHttp reqGuard{hReq};
-
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
-    WinHttpSetOption(hReq, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
-
-    if (!WinHttpSendRequest(hReq, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
-        !WinHttpReceiveResponse(hReq, nullptr)) {
-        outError = "network request failed";
-        return false;
-    }
-
-    DWORD statusCode = 0;
-    DWORD statusSize = sizeof(statusCode);
-    WinHttpQueryHeaders(hReq, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                        WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
-    if (statusCode < 200 || statusCode >= 300) {
-        outError = "HTTP status " + std::to_string(statusCode);
-        return false;
-    }
-
-    wchar_t clBuf[64]{};
-    DWORD clSize = sizeof(clBuf);
-    uint64_t expectedContentLen = 0;
-    uint64_t totalLen = kInpaintModelExpectedBytes;
-    if (WinHttpQueryHeaders(hReq, WINHTTP_QUERY_CONTENT_LENGTH,
-                            WINHTTP_HEADER_NAME_BY_INDEX, clBuf, &clSize, WINHTTP_NO_HEADER_INDEX)) {
-        const uint64_t parsed = _wcstoui64(clBuf, nullptr, 10);
-        if (parsed >= kInpaintModelMinValidBytes) {
-            expectedContentLen = parsed;
-            totalLen = parsed;
-        }
-    }
-    outTotal.store(totalLen, std::memory_order_release);
-
+bool verifyOnnxModelProtoFileComplete(const std::filesystem::path& filePath, uint64_t minValidBytes) {
     std::error_code ec;
-    std::filesystem::create_directories(destPath.parent_path(), ec);
-    const std::filesystem::path partPath = destPath.wstring() + L".part";
-    std::ofstream ofs(partPath, std::ios::binary | std::ios::trunc);
-    if (!ofs.is_open()) {
-        outError = "cannot open destination file";
+    const auto sz = std::filesystem::file_size(filePath, ec);
+    if (ec || sz < minValidBytes || sz < 16) {
         return false;
     }
-
-    std::vector<char> buf(65536);
-    uint64_t received = 0;
-    while (true) {
-        if (cancelFlag.load(std::memory_order_acquire)) {
-            ofs.close();
-            std::filesystem::remove(partPath, ec);
-            outError = "cancelled";
-            return false;
-        }
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(hReq, &avail)) {
-            ofs.close();
-            std::filesystem::remove(partPath, ec);
-            outError = "WinHttpQueryDataAvailable failed";
-            return false;
-        }
-        if (avail == 0) break;
-        const DWORD toRead = (std::min<DWORD>)(avail, static_cast<DWORD>(buf.size()));
-        DWORD readBytes = 0;
-        if (!WinHttpReadData(hReq, buf.data(), toRead, &readBytes)) {
-            ofs.close();
-            std::filesystem::remove(partPath, ec);
-            outError = "WinHttpReadData failed";
-            return false;
-        }
-        if (readBytes == 0) break;
-        ofs.write(buf.data(), static_cast<std::streamsize>(readBytes));
-        if (!ofs.good()) {
-            ofs.close();
-            std::filesystem::remove(partPath, ec);
-            outError = "disk write failed";
-            return false;
-        }
-        received += readBytes;
-        outDownloaded.store(received, std::memory_order_release);
-        const int pct = (totalLen > 0)
-            ? std::clamp(static_cast<int>((received * 100ULL) / totalLen), 0, 99)
-            : 0;
-        outPercent.store(pct, std::memory_order_release);
-    }
-
-    ofs.flush();
-    ofs.close();
-
-    if (received < kInpaintModelMinValidBytes ||
-        (expectedContentLen > 0 && received != expectedContentLen)) {
-        std::filesystem::remove(partPath, ec);
-        outError = (expectedContentLen > 0 && received != expectedContentLen)
-            ? "downloaded file truncated"
-            : "downloaded file too small";
+    std::ifstream verifyIfs(filePath, std::ios::binary);
+    std::vector<uint8_t> verifyBytes(static_cast<size_t>(sz));
+    if (!verifyIfs ||
+        !verifyIfs.read(reinterpret_cast<char*>(verifyBytes.data()), static_cast<std::streamsize>(verifyBytes.size())) ||
+        static_cast<uint64_t>(verifyIfs.gcount()) != sz) {
         return false;
     }
-
-    // 校验 ONNX ModelProto 全树完整无截断（拒绝代理错误页、HTML 与残缺二进制落盘）
-    {
-        std::ifstream verifyIfs(partPath, std::ios::binary);
-        std::vector<uint8_t> verifyBytes(static_cast<size_t>(received));
-        bool validOnnx = false;
-        if (verifyIfs &&
-            verifyIfs.read(reinterpret_cast<char*>(verifyBytes.data()), static_cast<std::streamsize>(verifyBytes.size())) &&
-            static_cast<uint64_t>(verifyIfs.gcount()) == received) {
-            size_t pos = 0;
-            bool hasIrVersion = false;
-            bool hasGraph = false;
-            bool parseOk = (verifyBytes.size() >= 16 && verifyBytes[0] != '<' && verifyBytes[0] != '{' && verifyBytes[0] != '[');
-            while (parseOk && pos < verifyBytes.size()) {
-                uint64_t tag = 0;
-                uint32_t shift = 0;
-                bool ok = false;
-                while (pos < verifyBytes.size() && shift < 64) {
-                    const uint8_t b = verifyBytes[pos++];
-                    tag |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
-                    if ((b & 0x80u) == 0) { ok = true; break; }
-                    shift += 7;
-                }
-                if (!ok || tag == 0) { parseOk = false; break; }
-                const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
-                const uint32_t field = static_cast<uint32_t>(tag >> 3u);
-                if (field == 0 || field > 64) { parseOk = false; break; }
-                if (wire == 0) {
-                    uint64_t val = 0; shift = 0; ok = false;
-                    while (pos < verifyBytes.size() && shift < 64) {
-                        const uint8_t b = verifyBytes[pos++];
-                        val |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
-                        if ((b & 0x80u) == 0) { ok = true; break; }
-                        shift += 7;
-                    }
-                    if (!ok) { parseOk = false; break; }
-                    if (field == 1 && val >= 1 && val <= 64) hasIrVersion = true;
-                } else if (wire == 2) {
-                    uint64_t len = 0; shift = 0; ok = false;
-                    while (pos < verifyBytes.size() && shift < 64) {
-                        const uint8_t b = verifyBytes[pos++];
-                        len |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
-                        if ((b & 0x80u) == 0) { ok = true; break; }
-                        shift += 7;
-                    }
-                    if (!ok || len > verifyBytes.size() - pos) { parseOk = false; break; }
-                    if (field == 7 && len > 0) hasGraph = true;
-                    pos += static_cast<size_t>(len);
-                } else if (wire == 1) {
-                    if (verifyBytes.size() - pos < 8) { parseOk = false; break; }
-                    pos += 8;
-                } else if (wire == 5) {
-                    if (verifyBytes.size() - pos < 4) { parseOk = false; break; }
-                    pos += 4;
-                } else {
-                    parseOk = false;
-                    break;
-                }
+    size_t pos = 0;
+    bool hasIrVersion = false;
+    bool hasGraph = false;
+    bool parseOk = (verifyBytes.size() >= 16 && verifyBytes[0] != '<' && verifyBytes[0] != '{' && verifyBytes[0] != '[');
+    while (parseOk && pos < verifyBytes.size()) {
+        uint64_t tag = 0;
+        uint32_t shift = 0;
+        bool ok = false;
+        while (pos < verifyBytes.size() && shift < 64) {
+            const uint8_t b = verifyBytes[pos++];
+            tag |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+            if ((b & 0x80u) == 0) { ok = true; break; }
+            shift += 7;
+        }
+        if (!ok || tag == 0) { parseOk = false; break; }
+        const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+        const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+        if (field == 0 || field > 64) { parseOk = false; break; }
+        if (wire == 0) {
+            uint64_t val = 0; shift = 0; ok = false;
+            while (pos < verifyBytes.size() && shift < 64) {
+                const uint8_t b = verifyBytes[pos++];
+                val |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                if ((b & 0x80u) == 0) { ok = true; break; }
+                shift += 7;
             }
-            validOnnx = parseOk && pos == verifyBytes.size() && hasIrVersion && hasGraph;
-        }
-        if (!validOnnx) {
-            std::filesystem::remove(partPath, ec);
-            outError = "ONNX integrity verification failed";
-            return false;
+            if (!ok) { parseOk = false; break; }
+            if (field == 1 && val >= 1 && val <= 64) hasIrVersion = true;
+        } else if (wire == 2) {
+            uint64_t len = 0; shift = 0; ok = false;
+            while (pos < verifyBytes.size() && shift < 64) {
+                const uint8_t b = verifyBytes[pos++];
+                len |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                if ((b & 0x80u) == 0) { ok = true; break; }
+                shift += 7;
+            }
+            if (!ok || len > verifyBytes.size() - pos) { parseOk = false; break; }
+            if (field == 7 && len > 0) hasGraph = true;
+            pos += static_cast<size_t>(len);
+        } else if (wire == 1) {
+            if (verifyBytes.size() - pos < 8) { parseOk = false; break; }
+            pos += 8;
+        } else if (wire == 5) {
+            if (verifyBytes.size() - pos < 4) { parseOk = false; break; }
+            pos += 4;
+        } else {
+            parseOk = false;
+            break;
         }
     }
-
-    std::filesystem::remove(destPath, ec);
-    ec.clear();
-    std::filesystem::rename(partPath, destPath, ec);
-    if (ec) {
-        std::filesystem::copy_file(partPath, destPath, std::filesystem::copy_options::overwrite_existing, ec);
-        std::filesystem::remove(partPath, ec);
-        if (ec) {
-            outError = "atomic move failed";
-            return false;
-        }
-    }
-    outPercent.store(100, std::memory_order_release);
-    return true;
+    return parseOk && pos == verifyBytes.size() && hasIrVersion && hasGraph;
 }
 
 void releaseIdleModelMemoryColdPath() {
@@ -1547,12 +1385,17 @@ AiInpaintModelStatus AiInpaintEngine::getModelStatus() const {
     st.progressPercent = st.installed ? 100 : m_progressPercent.load(std::memory_order_acquire);
     st.downloadedBytes = m_downloadedBytes.load(std::memory_order_acquire);
     st.totalBytes = m_totalBytes.load(std::memory_order_acquire);
+    st.speedBytesPerSec = st.downloading ? m_speedBytesPerSec.load(std::memory_order_acquire) : 0.0;
+    st.mirrorIndex = st.downloading ? m_mirrorIndex.load(std::memory_order_acquire) : 0;
+    st.mirrorTotal = st.downloading ? m_mirrorTotal.load(std::memory_order_acquire) : 0;
     st.modelDir = tools3000::core::WinUtils::wstringToUtf8(dir.wstring());
     st.modelFile = tools3000::core::WinUtils::wstringToUtf8(std::wstring(kInpaintModelFileName));
     st.usingGpu = m_usingGpu.load(std::memory_order_acquire);
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
+        st.activeMirrorHost = st.downloading ? m_activeMirrorHost : std::string{};
+        st.phase = st.downloading ? m_downloadPhase : std::string{};
         st.error = m_lastDownloadError;
     }
 
@@ -1587,36 +1430,125 @@ bool AiInpaintEngine::startModelDownload() {
     m_progressPercent.store(0, std::memory_order_release);
     m_downloadedBytes.store(0, std::memory_order_release);
     m_totalBytes.store(kInpaintModelExpectedBytes, std::memory_order_release);
+    m_speedBytesPerSec.store(0.0, std::memory_order_release);
+    m_mirrorIndex.store(0, std::memory_order_release);
+    m_mirrorTotal.store(2, std::memory_order_release);
+    auto cancelToken = std::make_shared<tools3000::core::net::DownloadCancelToken>();
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         m_lastDownloadError.clear();
+        m_activeMirrorHost.clear();
+        m_downloadPhase = "probing";
+        m_downloadCancelToken = cancelToken;
     }
 
     const auto destPath = resolveModelDirectory(nullptr) / kInpaintModelFileName;
-    m_downloadWorker = std::thread([this, destPath]() {
+    m_downloadWorker = std::thread([this, destPath, cancelToken]() {
+        std::error_code ec;
+        std::filesystem::create_directories(destPath.parent_path(), ec);
+        const std::filesystem::path partPath = destPath.wstring() + L".part";
+
+        std::vector<tools3000::core::net::MirrorEndpoint> mirrors = {
+            {kInpaintModelUrls[0], tools3000::core::net::MirrorRegion::China, "hf-mirror"},
+            {kInpaintModelUrls[1], tools3000::core::net::MirrorRegion::Global, "huggingface"},
+        };
+
+        tools3000::core::net::ResilientDownloadOptions dlOpts;
+        dlOpts.userAgent = L"Tools3000/1.0 (InpaintModelDownloader)";
+        dlOpts.maxFileBytes = 80ULL * 1024ULL * 1024ULL;
+        dlOpts.expectedFileBytes = kInpaintModelExpectedBytes;
+
         std::string lastErr;
         bool ok = false;
-        for (const wchar_t* url : kInpaintModelUrls) {
-            if (m_cancelDownload.load(std::memory_order_acquire)) break;
-            lastErr.clear();
-            if (downloadUrlToFileWithProgress(url, destPath, m_cancelDownload,
-                                              m_downloadedBytes, m_totalBytes, m_progressPercent, lastErr)) {
+        for (int verifyAttempt = 0; verifyAttempt < 2 && !mirrors.empty(); ++verifyAttempt) {
+            if (m_cancelDownload.load(std::memory_order_acquire) || cancelToken->isCancelled()) {
+                break;
+            }
+            const auto outcome = tools3000::core::net::ResilientModelDownloader::downloadToPartFile(
+                mirrors, partPath, dlOpts, cancelToken,
+                [this](const tools3000::core::net::DownloadProgress& prog) {
+                    const uint64_t totalLen = prog.fileTotalBytes >= kInpaintModelMinValidBytes
+                        ? prog.fileTotalBytes
+                        : kInpaintModelExpectedBytes;
+                    m_downloadedBytes.store(prog.fileBytesDownloaded, std::memory_order_release);
+                    m_totalBytes.store(totalLen, std::memory_order_release);
+                    const int pct = (totalLen > 0)
+                        ? std::clamp(static_cast<int>((prog.fileBytesDownloaded * 99ULL) / totalLen), 0, 99)
+                        : 0;
+                    m_progressPercent.store(pct, std::memory_order_release);
+                    m_speedBytesPerSec.store(prog.speedBytesPerSec, std::memory_order_release);
+                    m_mirrorIndex.store(prog.mirrorIndex, std::memory_order_release);
+                    m_mirrorTotal.store(prog.mirrorTotal, std::memory_order_release);
+                    {
+                        std::lock_guard<std::mutex> lock(m_downloadMutex);
+                        m_activeMirrorHost = prog.activeMirrorHost;
+                        m_downloadPhase = prog.phase;
+                    }
+                });
+
+            if (outcome.cancelled || m_cancelDownload.load(std::memory_order_acquire)) {
+                break;
+            }
+            if (!outcome.success) {
+                lastErr = outcome.error;
+                break;
+            }
+
+            {
+                std::lock_guard<std::mutex> lock(m_downloadMutex);
+                m_downloadPhase = "verifying";
+            }
+            m_speedBytesPerSec.store(0.0, std::memory_order_release);
+
+            if (!verifyOnnxModelProtoFileComplete(partPath, kInpaintModelMinValidBytes)) {
+                LOG_WARN("AiInpaintEngine: ONNX integrity check failed (mirror={})", outcome.activeMirrorHost);
+                std::filesystem::remove(partPath, ec);
+                lastErr = "ONNX integrity verification failed";
+                mirrors.erase(
+                    std::remove_if(mirrors.begin(), mirrors.end(), [&](const auto& ep) {
+                        return tools3000::core::net::ResilientModelDownloader::extractUrlHostUtf8(ep.url) ==
+                               outcome.activeMirrorHost;
+                    }),
+                    mirrors.end());
+                continue;
+            }
+
+            if (MoveFileExW(partPath.c_str(), destPath.c_str(),
+                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                m_progressPercent.store(100, std::memory_order_release);
                 ok = true;
                 break;
             }
-            LOG_WARN("AiInpaintEngine: mirror download failed ({}), trying next mirror", lastErr);
+            std::filesystem::remove(destPath, ec);
+            ec.clear();
+            std::filesystem::rename(partPath, destPath, ec);
+            if (!ec) {
+                m_progressPercent.store(100, std::memory_order_release);
+                ok = true;
+                break;
+            }
+            lastErr = "atomic move failed";
+            break;
         }
 
         if (ok) {
             LOG_INFO("AiInpaintEngine: MI-GAN 512 ONNX model installed successfully");
             TextReplaceEngine::clearPatchCache();
-        } else if (m_cancelDownload.load(std::memory_order_acquire)) {
+        } else if (m_cancelDownload.load(std::memory_order_acquire) || cancelToken->isCancelled()) {
             LOG_INFO("AiInpaintEngine: model download cancelled by user");
         } else {
             std::lock_guard<std::mutex> lock(m_downloadMutex);
             m_lastDownloadError = lastErr.empty() ? "download failed" : lastErr;
             LOG_WARN("AiInpaintEngine: model download failed: {}", m_lastDownloadError);
         }
+        {
+            std::lock_guard<std::mutex> lock(m_downloadMutex);
+            m_activeMirrorHost.clear();
+            m_downloadPhase.clear();
+        }
+        m_speedBytesPerSec.store(0.0, std::memory_order_release);
+        m_mirrorIndex.store(0, std::memory_order_release);
+        m_mirrorTotal.store(0, std::memory_order_release);
         m_downloading.store(false, std::memory_order_release);
     });
     return true;
@@ -1624,6 +1556,14 @@ bool AiInpaintEngine::startModelDownload() {
 
 void AiInpaintEngine::cancelModelDownload() {
     m_cancelDownload.store(true, std::memory_order_release);
+    std::shared_ptr<tools3000::core::net::DownloadCancelToken> token;
+    {
+        std::lock_guard<std::mutex> lock(m_downloadMutex);
+        token = m_downloadCancelToken;
+    }
+    if (token) {
+        token->cancel();
+    }
 }
 
 bool AiInpaintEngine::deleteModel() {

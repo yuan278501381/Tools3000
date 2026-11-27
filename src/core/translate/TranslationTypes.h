@@ -7,6 +7,7 @@
 #define TOOLS3000_CORE_TRANSLATE_TRANSLATIONTYPES_H
 
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,19 @@ struct OpenAiBatchPolicy {
     size_t maxConcurrency = 2;
 };
 
+/// 翻译长耗时链路实时阶段事件（多批次长图/自动重试/主备容灾切源）
+enum class TranslationStage : uint32_t {
+    BatchProgress     = 1u, // 长文本/多段贴图分批翻译进度（current=已完成批数, total=总批数, detail=providerId）
+    RetryingTransient = 2u, // 上游短暂波动或超时二分重试（detail=providerId）
+    SwitchingFallback = 3u, // 主通道繁忙/失败，自动切换备用翻译通道（detail=fallbackProviderId）
+};
+
+using TranslationStageCallback = std::function<void(
+    TranslationStage stage,
+    uint32_t current,
+    uint32_t total,
+    const std::string& detail)>;
+
 /// 批量翻译请求载荷
 struct TranslationBatchRequest {
     std::vector<std::string> texts;
@@ -82,6 +96,7 @@ struct TranslationBatchRequest {
     std::string uiLanguageCode;     // 当前界面语种（如 "zh-CN" / "en" / "ja"），用于 auto 智能判定
     bool lockTargetLanguage = false; // 为 true 时锁定显式 targetLangOverride，不触发副目标语种反向互译与同语种免译跳过
     bool bypassCache = false;       // 连通性实测探针置 true，强制绕过会话缓存与同语种跳过
+    TranslationStageCallback onStage; // 可选实时阶段回调（仅多批/重试/切源时触发，单批快路径零打扰）
 };
 
 /// 批量翻译结果载荷

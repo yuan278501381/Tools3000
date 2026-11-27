@@ -255,11 +255,55 @@ bool PinWindow::isLiveTextEnabled() const noexcept {
     }
 }
 
+void PinWindow::setOcrStageText(std::wstring text) {
+    {
+        std::lock_guard<std::mutex> lock(m_stageTextMutex);
+        if (m_ocrStageText == text) return;
+        m_ocrStageText = std::move(text);
+    }
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void PinWindow::setTranslateStageText(std::wstring text) {
+    {
+        std::lock_guard<std::mutex> lock(m_stageTextMutex);
+        if (m_translateStageText == text) return;
+        m_translateStageText = std::move(text);
+    }
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        InvalidateRect(m_hwnd, nullptr, FALSE);
+    }
+}
+
+void PinWindow::syncBusySpinnerTimer() {
+    if (!m_hwnd || !IsWindow(m_hwnd)) {
+        m_busySpinnerTimerActive = false;
+        return;
+    }
+    const bool translateWaiting = m_translationInFlight.load(std::memory_order_acquire);
+    const bool ocrWaiting = ((!m_silentOcrPreload.load(std::memory_order_acquire) &&
+                              m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 &&
+                              !m_ocrReady.load(std::memory_order_acquire)) ||
+                             m_extractTextInFlight.load(std::memory_order_acquire));
+    const bool busy = translateWaiting || ocrWaiting;
+    if (busy && !m_busySpinnerTimerActive) {
+        m_busySpinAngle = 0.0f;
+        m_busySpinnerTimerActive = true;
+        SetTimer(m_hwnd, kTimerIdBusySpinner, 50, nullptr);
+    } else if (!busy && m_busySpinnerTimerActive) {
+        KillTimer(m_hwnd, kTimerIdBusySpinner);
+        m_busySpinnerTimerActive = false;
+    }
+}
+
 void PinWindow::invalidateOcrStateAndRefreshIfSelecting() {
     m_ocrDeferredUntilHover.store(false, std::memory_order_release);
     if (m_pinInstanceId != 0) {
         PinOcrScheduler::instance().cancelPending(m_pinInstanceId);
     }
+    setOcrStageText({});
     {
         std::lock_guard<std::mutex> lock(m_ocrMutex);
         m_ocrBlocks.clear();
@@ -375,6 +419,8 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
 
         self->m_silentOcrPreload.store(false, std::memory_order_release);
         self->m_ocrReady = true;
+        self->setOcrStageText({});
+        self->syncBusySpinnerTimer();
 
         auto buildAllTextUtf8 = [&]() -> std::string {
             std::vector<tools3000::ocr::OcrResult> allBlocks;
@@ -453,6 +499,7 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     };
 
     if (!silentPreload && m_hwnd && IsWindow(m_hwnd)) {
+        syncBusySpinnerTimer();
         InvalidateRect(m_hwnd, nullptr, FALSE);
     }
 
@@ -465,6 +512,21 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
     job.pinId = pinId;
     job.version = currentVer;
     job.priority = priority;
+    job.onStage = [weakSelf, currentVer](tools3000::ocr::OcrRecognitionStage stage, uint32_t count, const std::string& detail) {
+        if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
+        const bool zh = tools3000::core::isUiLanguageChinese();
+        std::wstring msgW;
+        std::wstring badgeW;
+        tools3000::ocr::formatOcrStageFeedback(stage, count, detail, zh, msgW, badgeW);
+        if (msgW.empty()) return;
+        tools3000::core::MainThreadDispatcher::instance().post([weakSelf, currentVer, msgW = std::move(msgW)]() mutable {
+            if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
+            auto self = weakSelf.lock();
+            if (!self || !self->isAlive() || self->m_ocrVersion.load() != currentVer || self->m_ocrReady.load()) return;
+            self->setOcrStageText(std::move(msgW));
+            self->syncBusySpinnerTimer();
+        });
+    };
     job.acquireInput = [weakSelf, currentVer]() -> PinOcrScheduler::AcquiredTaskInput {
         PinOcrScheduler::AcquiredTaskInput out{};
         if (s_ocrShuttingDown.load(std::memory_order_acquire)) {
@@ -503,6 +565,7 @@ void PinWindow::ensureOcrExecutedAsync(bool silentPreload) {
             if (auto self = weakSelf.lock()) {
                 uint64_t expected = currentVer;
                 self->m_ocrInFlightVersion.compare_exchange_strong(expected, 0);
+                self->setOcrStageText({});
             }
             releaseCountersOnce();
             return;

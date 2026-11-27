@@ -7,11 +7,11 @@
 #include "ocr/DeepOcrEngineInternal.h"
 #include "core/config/ConfigManager.h"
 #include "core/logger/Logger.h"
+#include "core/network/ResilientModelDownloader.h"
 #include "core/utils/TraceId.h"
 #include "core/utils/WinUtils.h"
 
 #include <windows.h>
-#include <winhttp.h>
 
 #include <algorithm>
 #include <array>
@@ -23,6 +23,8 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -191,20 +193,55 @@ bool isScriptPackModelPresent(const std::filesystem::path& dir, std::string_view
 
 std::filesystem::path ensureOnnxWinMlIr8CompatiblePath(const std::filesystem::path& onnxPath) {
     if (onnxPath.empty()) return onnxPath;
-    // 快速 64B 头部零拷贝嗅探：已为 IR<=8 时零整文件读盘开销直通
+    // 快速 64B 头部零拷贝嗅探：ir_version <= 7 时已兼容 Win11 21H2+ 全系列原生 WinML，零整文件读盘直通
     std::ifstream probeIfs(onnxPath, std::ios::binary);
     if (!probeIfs) return onnxPath;
-    std::vector<uint8_t> head(64, 0);
+    std::array<uint8_t, 64> head{};
     probeIfs.read(reinterpret_cast<char*>(head.data()), static_cast<std::streamsize>(head.size()));
     const size_t got = static_cast<size_t>(probeIfs.gcount());
     probeIfs.close();
     if (got < 16) return onnxPath;
-    head.resize(got);
-    if (!DeepOcrEngine::clampOnnxIrVersionForWinMl(head)) {
-        return onnxPath;
+    {
+        size_t pos = 0;
+        uint64_t headIr = 0;
+        while (pos < got) {
+            uint64_t tag = 0;
+            uint32_t shift = 0;
+            bool ok = false;
+            while (pos < got && shift < 64) {
+                const uint8_t b = head[pos++];
+                tag |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                if ((b & 0x80u) == 0) { ok = true; break; }
+                shift += 7;
+            }
+            if (!ok || tag == 0) break;
+            const uint32_t wire = static_cast<uint32_t>(tag & 0x07u);
+            const uint32_t field = static_cast<uint32_t>(tag >> 3u);
+            if (wire == 0) {
+                uint64_t val = 0;
+                shift = 0;
+                ok = false;
+                while (pos < got && shift < 64) {
+                    const uint8_t b = head[pos++];
+                    val |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                    if ((b & 0x80u) == 0) { ok = true; break; }
+                    shift += 7;
+                }
+                if (!ok) break;
+                if (field == 1) {
+                    headIr = val;
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        if (headIr > 0 && headIr <= 7) {
+            return onnxPath;
+        }
     }
 
-    // 检测到手动放入的 IR>8 (如 IR=10 的 PP-OCRv5/v6) 模型：无损原位钳位至 IR 8，失败则落入临时兼容路径
+    // 检测到 IR>=8 模型：按 opset_import 精确钳位（opset<=12 钳位至 IR 7 兼容 Win11 21H2，更高 opset 钳位至 IR 8）
     std::vector<uint8_t> fullBytes;
     if (!readFileBytes(onnxPath, fullBytes)) {
         return onnxPath;
@@ -242,14 +279,20 @@ std::filesystem::path ensureOnnxWinMlIr8CompatiblePath(const std::filesystem::pa
 
 namespace {
 
+struct MirrorSpecEntry {
+    const wchar_t* url;
+    tools3000::core::net::MirrorRegion region;
+};
+
 struct ModelDownloadSpec {
     const wchar_t* localFileName;
     const char* displayName;
     size_t minValidBytes;
+    uint64_t estimatedBytes;
     bool isOnnx;
     bool requiresEmbeddedDict;
     bool isScriptExtOnnx;
-    std::array<const wchar_t*, 4> mirrorUrls;
+    std::array<MirrorSpecEntry, 6> mirrors;
 };
 
 struct ScriptPackDownloadMeta {
@@ -258,49 +301,58 @@ struct ScriptPackDownloadMeta {
     ModelDownloadSpec spec;
 };
 
-// 新一代 PP-OCRv6 Small 核心底座（原生 50 语种：中简/繁/英/日/法/德/西/葡等，全内嵌字典，零外部 txt）
+// 新一代 PP-OCRv6 Small 核心底座（原生 50 语种，China + Global 双栈并发竞速 + 锁定 Tag v3.10.0 与 master 互备）
 constexpr std::array<ModelDownloadSpec, 3> kModelSpecs = {{
     {
         DeepOcrConstants::kV6DetModelFileName,
         "PP-OCRv6_det_small.onnx",
         DeepOcrConstants::kMinDetModelBytes,
+        5000000ULL,
         true,
         false,
         false,
-        {
-            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
-            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
-            nullptr,
-            nullptr
-        }
+        {{
+            {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx", tools3000::core::net::MirrorRegion::Global},
+            {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx", tools3000::core::net::MirrorRegion::Global},
+            {nullptr, tools3000::core::net::MirrorRegion::Auto},
+            {nullptr, tools3000::core::net::MirrorRegion::Auto}
+        }}
     },
     {
         DeepOcrConstants::kClsModelFileName,
         "ch_ppocr_mobile_v2.0_cls.onnx",
         DeepOcrConstants::kMinClsModelBytes,
+        600000ULL,
         true,
         false,
         false,
-        {
-            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
-            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
-            L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx",
-            L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx"
-        }
+        {{
+            {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+            {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+            {L"https://hf-mirror.com/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://huggingface.co/SWHL/RapidOCR/resolve/main/PP-OCRv1/ch_ppocr_mobile_v2.0_cls_infer.onnx", tools3000::core::net::MirrorRegion::Global}
+        }}
     },
     {
         DeepOcrConstants::kV6RecModelFileName,
         "PP-OCRv6_rec_small.onnx",
         DeepOcrConstants::kMinRecModelBytes,
+        26150000ULL,
         true,
         true,
         false,
-        {
-            L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
-            L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
-            nullptr,
-            nullptr
-        }
+        {{
+            {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx", tools3000::core::net::MirrorRegion::Global},
+            {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx", tools3000::core::net::MirrorRegion::China},
+            {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx", tools3000::core::net::MirrorRegion::Global},
+            {nullptr, tools3000::core::net::MirrorRegion::Auto},
+            {nullptr, tools3000::core::net::MirrorRegion::Auto}
+        }}
     }
 }};
 
@@ -309,15 +361,18 @@ constexpr ModelDownloadSpec kServerRecModelSpec = {
     DeepOcrConstants::kV6RecMediumModelFileName,
     "PP-OCRv6_rec_medium.onnx",
     DeepOcrConstants::kMinRecServerModelBytes,
+    DeepOcrConstants::kEstimatedServerAddOnBytes,
     true,
     true,
     false,
-    {
-        L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
-        L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx",
-        nullptr,
-        nullptr
-    }
+    {{
+        {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx", tools3000::core::net::MirrorRegion::China},
+        {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx", tools3000::core::net::MirrorRegion::Global},
+        {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx", tools3000::core::net::MirrorRegion::China},
+        {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv6/rec/PP-OCRv6_rec_medium.onnx", tools3000::core::net::MirrorRegion::Global},
+        {nullptr, tools3000::core::net::MirrorRegion::Auto},
+        {nullptr, tools3000::core::net::MirrorRegion::Auto}
+    }}
 };
 
 // 4 大官方 Apache-2.0 精选按需多语种扩展包（与 PP-OCRv6 50 语种互补，覆盖全球 65+ 主流语言）
@@ -329,15 +384,18 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kScriptKoreanRecFileName,
             "korean_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
+            DeepOcrConstants::kEstimatedScriptKoreanBytes,
             true,
             true,
             true,
-            {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx",
-                nullptr,
-                nullptr
-            }
+            {{
+                {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto}
+            }}
         }
     },
     {
@@ -347,15 +405,18 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kScriptCyrillicRecFileName,
             "cyrillic_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
+            DeepOcrConstants::kEstimatedScriptCyrillicBytes,
             true,
             true,
             true,
-            {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx",
-                nullptr,
-                nullptr
-            }
+            {{
+                {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/cyrillic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto}
+            }}
         }
     },
     {
@@ -365,15 +426,18 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kScriptArabicRecFileName,
             "arabic_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
+            DeepOcrConstants::kEstimatedScriptArabicBytes,
             true,
             true,
             true,
-            {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx",
-                nullptr,
-                nullptr
-            }
+            {{
+                {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/arabic_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto}
+            }}
         }
     },
     {
@@ -383,15 +447,18 @@ constexpr std::array<ScriptPackDownloadMeta, 4> kScriptPackSpecs = {{
             DeepOcrConstants::kScriptThaiRecFileName,
             "th_PP-OCRv5_rec_mobile.onnx",
             DeepOcrConstants::kMinRecModelBytes,
+            DeepOcrConstants::kEstimatedScriptThaiBytes,
             true,
             true,
             true,
-            {
-                L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx",
-                L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx",
-                nullptr,
-                nullptr
-            }
+            {{
+                {L"https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/v3.10.0/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {L"https://modelscope.cn/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::China},
+                {L"https://www.modelscope.ai/models/RapidAI/RapidOCR/resolve/master/onnx/PP-OCRv5/rec/th_PP-OCRv5_rec_mobile.onnx", tools3000::core::net::MirrorRegion::Global},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto},
+                {nullptr, tools3000::core::net::MirrorRegion::Auto}
+            }}
         }
     }
 }};
@@ -403,134 +470,15 @@ const ScriptPackDownloadMeta* findScriptPackMeta(std::string_view id) noexcept {
     return nullptr;
 }
 
-
-bool downloadHttpsUrlToFile(
-    const wchar_t* url,
-    const std::filesystem::path& tempFilePath,
-    std::stop_token stopToken,
-    std::atomic<bool>& cancelFlag,
-    const std::function<void(uint64_t deltaBytes, uint64_t contentLength)>& onChunk) {
-    if (!url || wcslen(url) == 0) return false;
-
-    URL_COMPONENTS urlComp{};
-    urlComp.dwStructSize = sizeof(urlComp);
-    wchar_t hostBuf[256]{};
-    wchar_t pathBuf[2048]{};
-    urlComp.lpszHostName = hostBuf;
-    urlComp.dwHostNameLength = static_cast<DWORD>(std::size(hostBuf));
-    urlComp.lpszUrlPath = pathBuf;
-    urlComp.dwUrlPathLength = static_cast<DWORD>(std::size(pathBuf));
-
-    if (!WinHttpCrackUrl(url, 0, 0, &urlComp) || urlComp.nScheme != INTERNET_SCHEME_HTTPS) {
-        return false;
-    }
-
-    HINTERNET hSession = WinHttpOpen(
-        L"Tools3000/1.0 (PP-OCRv6 Offline Model Installer)",
-        WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
-        WINHTTP_NO_PROXY_NAME,
-        WINHTTP_NO_PROXY_BYPASS,
-        0);
-    if (!hSession) return false;
-
-    struct WinHttpHandleGuard {
-        HINTERNET s = nullptr;
-        HINTERNET c = nullptr;
-        HINTERNET r = nullptr;
-        ~WinHttpHandleGuard() {
-            if (r) WinHttpCloseHandle(r);
-            if (c) WinHttpCloseHandle(c);
-            if (s) WinHttpCloseHandle(s);
-        }
-    } guard{hSession, nullptr, nullptr};
-
-    WinHttpSetTimeouts(hSession, 12000, 15000, 15000, 30000);
-    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
-    WinHttpSetOption(hSession, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
-
-    guard.c = WinHttpConnect(hSession, hostBuf, urlComp.nPort, 0);
-    if (!guard.c) return false;
-
-    guard.r = WinHttpOpenRequest(
-        guard.c,
-        L"GET",
-        pathBuf,
-        nullptr,
-        WINHTTP_NO_REFERER,
-        WINHTTP_DEFAULT_ACCEPT_TYPES,
-        WINHTTP_FLAG_SECURE);
-    if (!guard.r) return false;
-
-    if (!WinHttpSendRequest(guard.r, WINHTTP_NO_ADDITIONAL_HEADERS, 0, WINHTTP_NO_REQUEST_DATA, 0, 0, 0)) {
-        return false;
-    }
-    if (!WinHttpReceiveResponse(guard.r, nullptr)) {
-        return false;
-    }
-
-    DWORD statusCode = 0;
-    DWORD statusSize = sizeof(statusCode);
-    if (!WinHttpQueryHeaders(guard.r,
-                             WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
-                             WINHTTP_HEADER_NAME_BY_INDEX,
-                             &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX) ||
-        statusCode < 200 || statusCode >= 300) {
-        LOG_WARN("DeepOcrEngine: mirror returned HTTP {} for {}",
-                 statusCode, tools3000::core::WinUtils::wstringToUtf8(url));
-        return false;
-    }
-
-    uint64_t contentLen = 0;
-    wchar_t lenHeader[64]{};
-    DWORD lenHeaderBytes = sizeof(lenHeader);
-    if (WinHttpQueryHeaders(guard.r, WINHTTP_QUERY_CONTENT_LENGTH,
-                            WINHTTP_HEADER_NAME_BY_INDEX, lenHeader, &lenHeaderBytes, WINHTTP_NO_HEADER_INDEX)) {
-        contentLen = std::wcstoull(lenHeader, nullptr, 10);
-    }
-
-    std::ofstream ofs(tempFilePath, std::ios::binary | std::ios::trunc);
-    if (!ofs) return false;
-
-    constexpr DWORD kChunkSize = 64 * 1024;
-    std::vector<uint8_t> buffer(kChunkSize);
-    uint64_t writtenTotal = 0;
-    constexpr uint64_t kMaxSingleModelBytes = 128ULL * 1024ULL * 1024ULL;
-
-    while (!stopToken.stop_requested() && !cancelFlag.load(std::memory_order_acquire)) {
-        DWORD avail = 0;
-        if (!WinHttpQueryDataAvailable(guard.r, &avail)) return false;
-        if (avail == 0) break;
-
-        const DWORD toRead = (std::min)(avail, kChunkSize);
-        DWORD bytesRead = 0;
-        if (!WinHttpReadData(guard.r, buffer.data(), toRead, &bytesRead)) return false;
-        if (bytesRead == 0) break;
-
-        writtenTotal += bytesRead;
-        if (writtenTotal > kMaxSingleModelBytes) return false;
-
-        ofs.write(reinterpret_cast<const char*>(buffer.data()), static_cast<std::streamsize>(bytesRead));
-        if (!ofs) return false;
-
-        if (onChunk) {
-            onChunk(bytesRead, contentLen);
+std::vector<tools3000::core::net::MirrorEndpoint> buildMirrorList(const ModelDownloadSpec& spec) {
+    std::vector<tools3000::core::net::MirrorEndpoint> out;
+    out.reserve(spec.mirrors.size());
+    for (const auto& entry : spec.mirrors) {
+        if (entry.url && wcslen(entry.url) > 0) {
+            out.push_back(tools3000::core::net::MirrorEndpoint{entry.url, entry.region, {}});
         }
     }
-
-    if (stopToken.stop_requested() || cancelFlag.load(std::memory_order_acquire)) {
-        return false;
-    }
-
-    ofs.flush();
-    if (!ofs || writtenTotal == 0) {
-        return false;
-    }
-    if (contentLen > 0 && writtenTotal != contentLen) {
-        LOG_WARN("DeepOcrEngine: truncated download detected (got={} bytes, expected={} bytes) from {}",
-                 writtenTotal, contentLen, tools3000::core::WinUtils::wstringToUtf8(url));
-        return false;
-    }
-    return true;
+    return out;
 }
 
 
@@ -688,6 +636,12 @@ bool DeepOcrEngine::clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) 
     if (onnxBytes.size() < 16) return false;
     size_t pos = 0;
     const size_t n = onnxBytes.size();
+    bool hasIr = false;
+    size_t irValStart = 0;
+    size_t irValBytes = 0;
+    uint64_t irVal = 0;
+    uint64_t maxDefaultOpset = 0;
+
     while (pos < n) {
         uint64_t tag = 0;
         size_t cur = pos;
@@ -715,13 +669,11 @@ bool DeepOcrEngine::clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) 
                 shift += 7;
             }
             if (!ok) break;
-            // ModelProto.ir_version (field 1): opset 14 仅需 IR 8，钳位至 8 即可在 Win10/11 原生 WinML 100% 无损加载 PP-OCRv5
             if (field == 1) {
-                if (val > 8 && val <= 127 && (pos - valStart) == 1) {
-                    onnxBytes[valStart] = 8u;
-                    return true;
-                }
-                return false;
+                hasIr = true;
+                irValStart = valStart;
+                irValBytes = pos - valStart;
+                irVal = val;
             }
         } else if (wire == 2) {
             uint64_t len = 0;
@@ -734,6 +686,67 @@ bool DeepOcrEngine::clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) 
                 shift += 7;
             }
             if (!ok || len > n - pos) break;
+            // ModelProto.opset_import (field 8): OperatorSetIdProto { domain=1, version=2 }
+            if (field == 8 && len > 0) {
+                size_t sp = pos;
+                const size_t sEnd = pos + static_cast<size_t>(len);
+                std::string_view domain;
+                uint64_t opVer = 0;
+                while (sp < sEnd) {
+                    uint64_t st = 0;
+                    shift = 0;
+                    ok = false;
+                    while (sp < sEnd && shift < 64) {
+                        const uint8_t b = onnxBytes[sp++];
+                        st |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                        if ((b & 0x80u) == 0) { ok = true; break; }
+                        shift += 7;
+                    }
+                    if (!ok || st == 0) break;
+                    const uint32_t sw = static_cast<uint32_t>(st & 0x07u);
+                    const uint32_t sf = static_cast<uint32_t>(st >> 3u);
+                    if (sw == 0) {
+                        uint64_t sv = 0;
+                        shift = 0;
+                        ok = false;
+                        while (sp < sEnd && shift < 64) {
+                            const uint8_t b = onnxBytes[sp++];
+                            sv |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                            if ((b & 0x80u) == 0) { ok = true; break; }
+                            shift += 7;
+                        }
+                        if (!ok) break;
+                        if (sf == 2) opVer = sv;
+                    } else if (sw == 2) {
+                        uint64_t sl = 0;
+                        shift = 0;
+                        ok = false;
+                        while (sp < sEnd && shift < 64) {
+                            const uint8_t b = onnxBytes[sp++];
+                            sl |= (static_cast<uint64_t>(b & 0x7Fu) << shift);
+                            if ((b & 0x80u) == 0) { ok = true; break; }
+                            shift += 7;
+                        }
+                        if (!ok || sl > sEnd - sp) break;
+                        if (sf == 1) {
+                            domain = std::string_view(reinterpret_cast<const char*>(onnxBytes.data() + sp),
+                                                      static_cast<size_t>(sl));
+                        }
+                        sp += static_cast<size_t>(sl);
+                    } else if (sw == 1) {
+                        if (sEnd - sp < 8) break;
+                        sp += 8;
+                    } else if (sw == 5) {
+                        if (sEnd - sp < 4) break;
+                        sp += 4;
+                    } else {
+                        break;
+                    }
+                }
+                if ((domain.empty() || domain == "ai.onnx") && opVer > maxDefaultOpset) {
+                    maxDefaultOpset = opVer;
+                }
+            }
             pos += static_cast<size_t>(len);
         } else if (wire == 1) {
             if (n - pos < 8) break;
@@ -744,6 +757,17 @@ bool DeepOcrEngine::clampOnnxIrVersionForWinMl(std::vector<uint8_t>& onnxBytes) 
         } else {
             break;
         }
+    }
+
+    if (!hasIr || irValBytes != 1 || irVal > 127) {
+        return false;
+    }
+    // opset <= 12（如 PP-OCRv6 det/rec 的 opset=11）仅需 IR 7，钳位至 7 可同时兼容 Win11 21H2 (Build 22000) 与 22H2+；
+    // 更高 opset（如 PP-OCRv5 扩展包的 opset=14）或未携带 opset_import 的测试包钳位至 IR 8。
+    const uint64_t targetIr = (maxDefaultOpset > 0 && maxDefaultOpset <= 12) ? 7u : 8u;
+    if (irVal > targetIr) {
+        onnxBytes[irValStart] = static_cast<uint8_t>(targetIr);
+        return true;
     }
     return false;
 }
@@ -1113,6 +1137,149 @@ bool DeepOcrEngine::patchOnnxGraphInputShape(
             const size_t gSize = static_cast<size_t>(graphLen);
             pos += gSize;
 
+            // 预扫描 1：识别 Paddle2ONNX 导出的 0 元素标量形状常量 (dims == [0]) 及恒等冗余链路
+            //   Reshape(x, empty_0d_shape) -> y  紧接  Unsqueeze(y) -> z
+            //   OpenCV 4.12 ONNXImporter 在解析 0 元素 Reshape shape 张量时会把空 Mat 视为 CV_8UC1 触发
+            //   CV_Assert(blob.type() == CV_32SC1) 崩溃（Win10/Server 退回 OpenCV DNN 时 100% 导致 PP-OCRv6 加载失败）。
+            //   无损折叠该等价恒等对 (z := x) 后，PP-OCRv6_rec_small/medium 与全套 PP-OCRv5 语种包 100% 畅通运行。
+            std::unordered_set<std::string> emptyZeroDimInits;
+            struct NodeBrief {
+                std::string opType;
+                std::vector<std::string> inputs;
+                std::vector<std::string> outputs;
+            };
+            std::vector<NodeBrief> graphNodes;
+            {
+                size_t sp = 0;
+                while (sp < gSize) {
+                    uint64_t gtag = 0;
+                    if (!readProtobufVarint(gData, gSize, sp, gtag) || gtag == 0) break;
+                    const uint32_t gwire = static_cast<uint32_t>(gtag & 0x07u);
+                    const uint32_t gfnum = static_cast<uint32_t>(gtag >> 3u);
+                    if (gwire == 2) {
+                        uint64_t subLen = 0;
+                        if (!readProtobufVarint(gData, gSize, sp, subLen) || subLen > gSize - sp) break;
+                        const uint8_t* sub = gData + sp;
+                        const size_t sl = static_cast<size_t>(subLen);
+                        sp += sl;
+                        if (gfnum == 5) { // GraphProto.initializer (TensorProto)
+                            size_t tp = 0;
+                            std::string tname;
+                            std::vector<uint64_t> tdims;
+                            while (tp < sl) {
+                                uint64_t tt = 0;
+                                if (!readProtobufVarint(sub, sl, tp, tt) || tt == 0) break;
+                                const uint32_t tw = static_cast<uint32_t>(tt & 0x07u);
+                                const uint32_t tf = static_cast<uint32_t>(tt >> 3u);
+                                if (tw == 0) {
+                                    uint64_t dv = 0;
+                                    if (!readProtobufVarint(sub, sl, tp, dv)) break;
+                                    if (tf == 1) tdims.push_back(dv);
+                                } else if (tw == 2) {
+                                    uint64_t fl = 0;
+                                    if (!readProtobufVarint(sub, sl, tp, fl) || fl > sl - tp) break;
+                                    if (tf == 8) {
+                                        tname.assign(reinterpret_cast<const char*>(sub + tp), static_cast<size_t>(fl));
+                                    } else if (tf == 1) {
+                                        size_t pk = tp;
+                                        const size_t pkEnd = tp + static_cast<size_t>(fl);
+                                        while (pk < pkEnd) {
+                                            uint64_t dv = 0;
+                                            if (!readProtobufVarint(sub, pkEnd, pk, dv)) break;
+                                            tdims.push_back(dv);
+                                        }
+                                    }
+                                    tp += static_cast<size_t>(fl);
+                                } else if (tw == 5) {
+                                    if (sl - tp < 4) break;
+                                    tp += 4;
+                                } else if (tw == 1) {
+                                    if (sl - tp < 8) break;
+                                    tp += 8;
+                                } else {
+                                    break;
+                                }
+                            }
+                            if (!tname.empty() && tdims.size() == 1 && tdims[0] == 0) {
+                                emptyZeroDimInits.insert(std::move(tname));
+                            }
+                        } else if (gfnum == 1) { // GraphProto.node (NodeProto)
+                            NodeBrief nb{};
+                            size_t np = 0;
+                            while (np < sl) {
+                                uint64_t nt = 0;
+                                if (!readProtobufVarint(sub, sl, np, nt) || nt == 0) break;
+                                const uint32_t nw = static_cast<uint32_t>(nt & 0x07u);
+                                const uint32_t nf = static_cast<uint32_t>(nt >> 3u);
+                                if (nw == 2) {
+                                    uint64_t fl = 0;
+                                    if (!readProtobufVarint(sub, sl, np, fl) || fl > sl - np) break;
+                                    if (nf == 1) {
+                                        nb.inputs.emplace_back(reinterpret_cast<const char*>(sub + np), static_cast<size_t>(fl));
+                                    } else if (nf == 2) {
+                                        nb.outputs.emplace_back(reinterpret_cast<const char*>(sub + np), static_cast<size_t>(fl));
+                                    } else if (nf == 4) {
+                                        nb.opType.assign(reinterpret_cast<const char*>(sub + np), static_cast<size_t>(fl));
+                                    }
+                                    np += static_cast<size_t>(fl);
+                                } else if (nw == 0) {
+                                    uint64_t dummy = 0;
+                                    if (!readProtobufVarint(sub, sl, np, dummy)) break;
+                                } else if (nw == 5) {
+                                    if (sl - np < 4) break;
+                                    np += 4;
+                                } else if (nw == 1) {
+                                    if (sl - np < 8) break;
+                                    np += 8;
+                                } else {
+                                    break;
+                                }
+                            }
+                            graphNodes.push_back(std::move(nb));
+                        }
+                    } else if (gwire == 0) {
+                        uint64_t dummy = 0;
+                        if (!readProtobufVarint(gData, gSize, sp, dummy)) break;
+                    } else if (gwire == 5) {
+                        if (gSize - sp < 4) break;
+                        sp += 4;
+                    } else if (gwire == 1) {
+                        if (gSize - sp < 8) break;
+                        sp += 8;
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            std::unordered_map<std::string, std::string> inputAlias;
+            std::unordered_set<std::string> dropNodeOutputs;
+            if (!emptyZeroDimInits.empty()) {
+                std::unordered_map<std::string, size_t> consumerCount;
+                for (const auto& nb : graphNodes) {
+                    for (const auto& inName : nb.inputs) {
+                        ++consumerCount[inName];
+                    }
+                }
+                std::unordered_map<std::string, std::string> scalarReshaped;
+                for (const auto& nb : graphNodes) {
+                    if (nb.opType == "Reshape" && nb.inputs.size() == 2 && nb.outputs.size() == 1 &&
+                        emptyZeroDimInits.count(nb.inputs[1]) > 0 && consumerCount[nb.outputs[0]] == 1) {
+                        scalarReshaped[nb.outputs[0]] = nb.inputs[0];
+                    }
+                }
+                for (const auto& nb : graphNodes) {
+                    if (nb.opType == "Unsqueeze" && !nb.inputs.empty() && nb.outputs.size() == 1) {
+                        const auto it = scalarReshaped.find(nb.inputs[0]);
+                        if (it != scalarReshaped.end()) {
+                            inputAlias[nb.outputs[0]] = it->second;
+                            dropNodeOutputs.insert(it->first);
+                            dropNodeOutputs.insert(nb.outputs[0]);
+                        }
+                    }
+                }
+            }
+
             std::vector<uint8_t> newGraph;
             newGraph.reserve(gSize + 64);
             size_t gp = 0;
@@ -1135,6 +1302,107 @@ bool DeepOcrEngine::patchOnnxGraphInputShape(
                     const auto fixedVi = buildFixedFloatValueInfoProto(inName, fixedDims);
                     appendProtobufLengthDelimited(newGraph, 11, fixedVi.data(), fixedVi.size());
                     patchedInput = true;
+                } else if (gfnum == 1 && gwire == 2 && !dropNodeOutputs.empty()) { // GraphProto.node = field 1
+                    uint64_t nodeLen = 0;
+                    if (!readProtobufVarint(gData, gSize, gp, nodeLen) || nodeLen > gSize - gp) {
+                        return false;
+                    }
+                    const uint8_t* nData = gData + gp;
+                    const size_t nSize = static_cast<size_t>(nodeLen);
+                    gp += nSize;
+
+                    bool dropThisNode = false;
+                    bool needsInputRewrite = false;
+                    {
+                        size_t np = 0;
+                        size_t outCount = 0;
+                        std::string firstOut;
+                        while (np < nSize) {
+                            uint64_t nt = 0;
+                            if (!readProtobufVarint(nData, nSize, np, nt) || nt == 0) break;
+                            const uint32_t nw = static_cast<uint32_t>(nt & 0x07u);
+                            const uint32_t nf = static_cast<uint32_t>(nt >> 3u);
+                            if (nw == 2) {
+                                uint64_t fl = 0;
+                                if (!readProtobufVarint(nData, nSize, np, fl) || fl > nSize - np) break;
+                                if (nf == 2) {
+                                    ++outCount;
+                                    if (outCount == 1) {
+                                        firstOut.assign(reinterpret_cast<const char*>(nData + np), static_cast<size_t>(fl));
+                                    }
+                                } else if (nf == 1) {
+                                    std::string inStr(reinterpret_cast<const char*>(nData + np), static_cast<size_t>(fl));
+                                    if (inputAlias.count(inStr) > 0) {
+                                        needsInputRewrite = true;
+                                    }
+                                }
+                                np += static_cast<size_t>(fl);
+                            } else if (nw == 0) {
+                                uint64_t dummy = 0;
+                                if (!readProtobufVarint(nData, nSize, np, dummy)) break;
+                            } else if (nw == 5) {
+                                if (nSize - np < 4) break;
+                                np += 4;
+                            } else if (nw == 1) {
+                                if (nSize - np < 8) break;
+                                np += 8;
+                            } else {
+                                break;
+                            }
+                        }
+                        if (outCount == 1 && dropNodeOutputs.count(firstOut) > 0) {
+                            dropThisNode = true;
+                        }
+                    }
+
+                    if (dropThisNode) {
+                        continue;
+                    }
+                    if (!needsInputRewrite) {
+                        newGraph.insert(newGraph.end(), gData + gFieldStart, gData + gp);
+                    } else {
+                        std::vector<uint8_t> rewrittenNode;
+                        rewrittenNode.reserve(nSize + 16);
+                        size_t np = 0;
+                        while (np < nSize) {
+                            const size_t nFieldStart = np;
+                            uint64_t nt = 0;
+                            if (!readProtobufVarint(nData, nSize, np, nt) || nt == 0) return false;
+                            const uint32_t nw = static_cast<uint32_t>(nt & 0x07u);
+                            const uint32_t nf = static_cast<uint32_t>(nt >> 3u);
+                            if (nw == 2) {
+                                uint64_t fl = 0;
+                                if (!readProtobufVarint(nData, nSize, np, fl) || fl > nSize - np) return false;
+                                if (nf == 1) {
+                                    std::string inStr(reinterpret_cast<const char*>(nData + np), static_cast<size_t>(fl));
+                                    np += static_cast<size_t>(fl);
+                                    const auto it = inputAlias.find(inStr);
+                                    const std::string& finalIn = (it != inputAlias.end()) ? it->second : inStr;
+                                    appendProtobufLengthDelimited(
+                                        rewrittenNode, 1,
+                                        reinterpret_cast<const uint8_t*>(finalIn.data()), finalIn.size());
+                                } else {
+                                    np += static_cast<size_t>(fl);
+                                    rewrittenNode.insert(rewrittenNode.end(), nData + nFieldStart, nData + np);
+                                }
+                            } else if (nw == 0) {
+                                uint64_t dummy = 0;
+                                if (!readProtobufVarint(nData, nSize, np, dummy)) return false;
+                                rewrittenNode.insert(rewrittenNode.end(), nData + nFieldStart, nData + np);
+                            } else if (nw == 5) {
+                                if (nSize - np < 4) return false;
+                                np += 4;
+                                rewrittenNode.insert(rewrittenNode.end(), nData + nFieldStart, nData + np);
+                            } else if (nw == 1) {
+                                if (nSize - np < 8) return false;
+                                np += 8;
+                                rewrittenNode.insert(rewrittenNode.end(), nData + nFieldStart, nData + np);
+                            } else {
+                                return false;
+                            }
+                        }
+                        appendProtobufLengthDelimited(newGraph, 1, rewrittenNode.data(), rewrittenNode.size());
+                    }
                 } else if (gwire == 0) {
                     uint64_t dummy = 0;
                     if (!readProtobufVarint(gData, gSize, gp, dummy)) return false;
@@ -1202,11 +1470,16 @@ DeepOcrModelStatus DeepOcrEngine::getModelStatus() const {
     st.downloadedBytes = m_downloadedBytes.load(std::memory_order_acquire);
     st.totalBytes = m_totalBytes.load(std::memory_order_acquire);
     st.serverTotalBytes = DeepOcrConstants::kEstimatedServerAddOnBytes;
+    st.speedBytesPerSec = st.downloading ? m_speedBytesPerSec.load(std::memory_order_acquire) : 0.0;
+    st.mirrorIndex = st.downloading ? m_mirrorIndex.load(std::memory_order_acquire) : 0;
+    st.mirrorTotal = st.downloading ? m_mirrorTotal.load(std::memory_order_acquire) : 0;
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         st.downloadingScriptPack = st.downloading ? m_downloadingScriptPack : std::string{};
         st.currentFile = m_currentDownloadFile;
+        st.activeMirrorHost = st.downloading ? m_activeMirrorHost : std::string{};
+        st.phase = st.downloading ? m_downloadPhase : std::string{};
         st.error = m_lastDownloadError;
     }
 
@@ -1253,12 +1526,18 @@ bool DeepOcrEngine::startModelDownload(const std::string& tier) {
     m_progressPercent.store(0, std::memory_order_release);
     m_downloadedBytes.store(0, std::memory_order_release);
     m_totalBytes.store(initialEstTotal, std::memory_order_release);
+    m_speedBytesPerSec.store(0.0, std::memory_order_release);
+    m_mirrorIndex.store(0, std::memory_order_release);
+    m_mirrorTotal.store(0, std::memory_order_release);
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         m_downloadingScriptPack.clear();
         m_currentDownloadFile.clear();
+        m_activeMirrorHost.clear();
+        m_downloadPhase = "probing";
         m_lastDownloadError.clear();
+        m_downloadCancelToken = std::make_shared<tools3000::core::net::DownloadCancelToken>();
         if (m_downloadThread.joinable()) {
             m_downloadThread.join();
         }
@@ -1298,12 +1577,18 @@ bool DeepOcrEngine::startScriptPackDownload(const std::string& packId) {
     m_progressPercent.store(0, std::memory_order_release);
     m_downloadedBytes.store(0, std::memory_order_release);
     m_totalBytes.store(initialEstTotal, std::memory_order_release);
+    m_speedBytesPerSec.store(0.0, std::memory_order_release);
+    m_mirrorIndex.store(0, std::memory_order_release);
+    m_mirrorTotal.store(0, std::memory_order_release);
 
     {
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         m_downloadingScriptPack = packId;
         m_currentDownloadFile.clear();
+        m_activeMirrorHost.clear();
+        m_downloadPhase = "probing";
         m_lastDownloadError.clear();
+        m_downloadCancelToken = std::make_shared<tools3000::core::net::DownloadCancelToken>();
         if (m_downloadThread.joinable()) {
             m_downloadThread.join();
         }
@@ -1365,9 +1650,16 @@ bool DeepOcrEngine::deleteScriptPack(const std::string& packId) {
 
 void DeepOcrEngine::cancelModelDownload() {
     m_cancelRequested.store(true, std::memory_order_release);
-    std::lock_guard<std::mutex> lock(m_downloadMutex);
-    if (m_downloadThread.joinable()) {
-        m_downloadThread.request_stop();
+    std::shared_ptr<tools3000::core::net::DownloadCancelToken> cancelToken;
+    {
+        std::lock_guard<std::mutex> lock(m_downloadMutex);
+        cancelToken = m_downloadCancelToken;
+        if (m_downloadThread.joinable()) {
+            m_downloadThread.request_stop();
+        }
+    }
+    if (cancelToken) {
+        cancelToken->cancel();
     }
 }
 
@@ -1575,50 +1867,88 @@ void DeepOcrEngine::downloadWorkerLoop(
             }
         }
 
-        for (const wchar_t* mirrorUrl : spec.mirrorUrls) {
-            if (fileDone) break;
-            if (!mirrorUrl) continue;
-            if (stopToken.stop_requested() || m_cancelRequested.load(std::memory_order_acquire)) {
-                break;
-            }
+        std::shared_ptr<tools3000::core::net::DownloadCancelToken> cancelToken;
+        {
+            std::lock_guard<std::mutex> lock(m_downloadMutex);
+            cancelToken = m_downloadCancelToken;
+        }
+        if (!cancelToken) {
+            cancelToken = std::make_shared<tools3000::core::net::DownloadCancelToken>();
+        }
 
-            std::filesystem::remove(partPath, ec);
+        if (!fileDone) {
+            auto mirrors = buildMirrorList(spec);
             const uint64_t baseBeforeFile = cumulativeBytes;
-            uint64_t fileProgressBytes = 0;
+            uint64_t finalDownloadedFileBytes = 0;
 
-            const bool dlOk = downloadHttpsUrlToFile(
-                mirrorUrl, partPath, stopToken, m_cancelRequested,
-                [&](uint64_t delta, uint64_t /*contentLen*/) {
-                    fileProgressBytes += delta;
-                    const uint64_t curTotal = baseBeforeFile + fileProgressBytes;
-                    m_downloadedBytes.store(curTotal, std::memory_order_release);
-                    const uint64_t estTotal = (std::max)(curTotal + 65536ULL, expectedTotalBytes);
-                    m_totalBytes.store(estTotal, std::memory_order_release);
-                    const int pct = std::clamp(
-                        static_cast<int>((curTotal * 98ULL) / estTotal),
-                        1, 98);
-                    m_progressPercent.store(pct, std::memory_order_release);
-                });
+            for (int verifyAttempt = 0; verifyAttempt < 2 && !mirrors.empty(); ++verifyAttempt) {
+                if (stopToken.stop_requested() || m_cancelRequested.load(std::memory_order_acquire)) {
+                    cancelToken->cancel();
+                    break;
+                }
 
-            if (!dlOk) {
+                tools3000::core::net::ResilientDownloadOptions dlOpts;
+                dlOpts.userAgent = L"Tools3000/1.0 (PP-OCRv6 Offline Model Installer)";
+                dlOpts.maxFileBytes = 128ULL * 1024ULL * 1024ULL;
+                dlOpts.expectedFileBytes = spec.estimatedBytes;
+
+                const auto outcome = tools3000::core::net::ResilientModelDownloader::downloadToPartFile(
+                    mirrors, partPath, dlOpts, cancelToken,
+                    [&](const tools3000::core::net::DownloadProgress& prog) {
+                        const uint64_t curTotal = baseBeforeFile + prog.fileBytesDownloaded;
+                        m_downloadedBytes.store(curTotal, std::memory_order_release);
+                        const uint64_t estTotal = (std::max)(curTotal + 65536ULL, expectedTotalBytes);
+                        m_totalBytes.store(estTotal, std::memory_order_release);
+                        const int pct = std::clamp(
+                            static_cast<int>((curTotal * 98ULL) / estTotal),
+                            1, 98);
+                        m_progressPercent.store(pct, std::memory_order_release);
+                        m_speedBytesPerSec.store(prog.speedBytesPerSec, std::memory_order_release);
+                        m_mirrorIndex.store(prog.mirrorIndex, std::memory_order_release);
+                        m_mirrorTotal.store(prog.mirrorTotal, std::memory_order_release);
+                        {
+                            std::lock_guard<std::mutex> lock(m_downloadMutex);
+                            m_activeMirrorHost = prog.activeMirrorHost;
+                            m_downloadPhase = prog.phase;
+                        }
+                    });
+
+                if (outcome.cancelled || stopToken.stop_requested() || m_cancelRequested.load(std::memory_order_acquire)) {
+                    break;
+                }
+                if (!outcome.success) {
+                    failReason = outcome.error;
+                    break;
+                }
+
+                {
+                    std::lock_guard<std::mutex> lock(m_downloadMutex);
+                    m_downloadPhase = "verifying";
+                }
+                m_speedBytesPerSec.store(0.0, std::memory_order_release);
+
+                // 严格验证文件完整性 (ONNX 魔数 + 全模型 IR<=8 无损钳位 + 内嵌词典校验)
+                if (!verifyCandidatePath(partPath, &finalDownloadedFileBytes, /*normalizeIrInPlace=*/spec.isOnnx)) {
+                    LOG_WARN("DeepOcrEngine: downloaded file failed integrity check: {} (mirror={})",
+                             spec.displayName, outcome.activeMirrorHost);
+                    std::filesystem::remove(partPath, ec);
+                    mirrors.erase(
+                        std::remove_if(mirrors.begin(), mirrors.end(), [&](const auto& ep) {
+                            return tools3000::core::net::ResilientModelDownloader::extractUrlHostUtf8(ep.url) ==
+                                   outcome.activeMirrorHost;
+                        }),
+                        mirrors.end());
+                    continue;
+                }
+
+                if (MoveFileExW(partPath.c_str(), finalPath.c_str(),
+                                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
+                    cumulativeBytes += (finalDownloadedFileBytes > 0 ? finalDownloadedFileBytes : outcome.bytesWritten);
+                    fileDone = true;
+                    break;
+                }
                 std::filesystem::remove(partPath, ec);
-                continue;
             }
-
-            // 严格验证文件完整性 (ONNX 魔数 + 全模型 IR<=8 无损钳位 + 内嵌词典校验 / OpenCV DNN 试解析)
-            if (!verifyCandidatePath(partPath, nullptr, /*normalizeIrInPlace=*/spec.isOnnx)) {
-                LOG_WARN("DeepOcrEngine: downloaded file failed integrity check: {}", spec.displayName);
-                std::filesystem::remove(partPath, ec);
-                continue;
-            }
-
-            if (MoveFileExW(partPath.c_str(), finalPath.c_str(),
-                            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0) {
-                cumulativeBytes += fileProgressBytes;
-                fileDone = true;
-                break;
-            }
-            std::filesystem::remove(partPath, ec);
         }
 
         if (!fileDone) {
@@ -1646,6 +1976,11 @@ void DeepOcrEngine::downloadWorkerLoop(
         std::lock_guard<std::mutex> lock(m_downloadMutex);
         m_currentDownloadFile.clear();
         m_downloadingScriptPack.clear();
+        m_activeMirrorHost.clear();
+        m_downloadPhase.clear();
+        m_speedBytesPerSec.store(0.0, std::memory_order_release);
+        m_mirrorIndex.store(0, std::memory_order_release);
+        m_mirrorTotal.store(0, std::memory_order_release);
         if (allSucceeded) {
             m_lastDownloadError.clear();
             m_progressPercent.store(100, std::memory_order_release);

@@ -345,6 +345,15 @@ inline LONG_PTR normalizeGestureOverlayExStyle(LONG_PTR current) noexcept {
     return (current | required) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
 }
 
+/// DirectComposition 硬件合成窗口扩展样式：使用 WS_EX_NOREDIRECTIONBITMAP 零 GDI 重定向表面（4K 屏立省 ~30MB 显存）
+inline LONG_PTR normalizeGestureCompositorOverlayExStyle(LONG_PTR current) noexcept {
+    constexpr LONG_PTR required = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
+                                  WS_EX_TOPMOST | WS_EX_NOACTIVATE |
+                                  WS_EX_TOOLWINDOW;
+    constexpr LONG_PTR forbidden = WS_EX_APPWINDOW | WS_EX_LAYERED;
+    return (current | required) & ~forbidden;
+}
+
 inline bool gestureOverlayIsTaskbarSafe(LONG_PTR exStyle) noexcept {
     return (exStyle & WS_EX_TOOLWINDOW) != 0 &&
            (exStyle & WS_EX_APPWINDOW) == 0 &&

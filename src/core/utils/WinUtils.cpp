@@ -3960,9 +3960,11 @@ HWND WinUtils::createOverlayHelperOwner(HINSTANCE hInstance, const wchar_t* name
 void WinUtils::applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture) {
     if (!hwnd || !IsWindow(hwnd)) return;
     LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    constexpr LONG_PTR required = WS_EX_LAYERED | WS_EX_TRANSPARENT |
-                                  WS_EX_TOPMOST | WS_EX_NOACTIVATE |
-                                  WS_EX_TOOLWINDOW;
+    // DirectComposition WS_EX_NOREDIRECTIONBITMAP 窗口严禁强加 WS_EX_LAYERED，避免无谓分配 33MB GDI 重定向显存或触发旧系统合成退化
+    const bool noRedirection = (exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0;
+    const LONG_PTR required =
+        (noRedirection ? 0 : WS_EX_LAYERED) |
+        WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     exStyle = (exStyle | required) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
 

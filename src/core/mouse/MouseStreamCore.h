@@ -43,11 +43,17 @@ struct MouseStreamPoint {
 /// 鼠标流节流唤醒器 (120Hz / 8ms 节流合并控制器)
 class TOOLS3000CORE_API MouseStreamThrottle {
 public:
-    MouseStreamThrottle() = default;
-    ~MouseStreamThrottle() = default;
+    MouseStreamThrottle();
+    ~MouseStreamThrottle();
 
     /// 评估当前时钟是否需要唤醒消费线程。若满足节流间隔，原子更新最后唤醒时间并返回 true
     bool shouldWake(DWORD nowTick, DWORD minIntervalMs = 8) noexcept;
+
+    /// 基于 QPC 单调微秒时钟评估唤醒（彻底消除 GetTickCount 15.625ms 锯齿量化）
+    bool shouldWakeQpcUs(int64_t nowUs, int64_t minIntervalUs) noexcept;
+
+    /// 单调微秒级高精度时钟读数（QueryPerformanceCounter）
+    static int64_t monotonicMicros() noexcept;
 
     /// 仅检查是否满足节流间隔，不更新内部时间戳
     bool canWake(DWORD nowTick, DWORD minIntervalMs = 8) const noexcept;
@@ -60,6 +66,7 @@ public:
 
 private:
     std::atomic<DWORD> m_lastWakeTick{0};
+    std::atomic<int64_t> m_lastWakeUs{0};
 };
 
 /// 通用鼠标流核心基础设施

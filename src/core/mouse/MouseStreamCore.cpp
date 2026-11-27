@@ -11,10 +11,35 @@ namespace tools3000::core {
 // MouseStreamThrottle 实现
 // ─────────────────────────────────────────────────────────────────────────────
 
+MouseStreamThrottle::MouseStreamThrottle() = default;
+MouseStreamThrottle::~MouseStreamThrottle() = default;
+
+int64_t MouseStreamThrottle::monotonicMicros() noexcept {
+    static const int64_t s_freq = []() noexcept {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return (f.QuadPart > 0) ? f.QuadPart : 10000000LL;
+    }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    const int64_t sec = now.QuadPart / s_freq;
+    const int64_t rem = now.QuadPart % s_freq;
+    return sec * 1000000LL + (rem * 1000000LL) / s_freq;
+}
+
 bool MouseStreamThrottle::shouldWake(DWORD nowTick, DWORD minIntervalMs) noexcept {
     const DWORD last = m_lastWakeTick.load(std::memory_order_relaxed);
     if (last == 0 || (nowTick - last) >= minIntervalMs) {
         m_lastWakeTick.store(nowTick, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+bool MouseStreamThrottle::shouldWakeQpcUs(int64_t nowUs, int64_t minIntervalUs) noexcept {
+    const int64_t last = m_lastWakeUs.load(std::memory_order_relaxed);
+    if (last == 0 || (nowUs - last) >= minIntervalUs) {
+        m_lastWakeUs.store(nowUs, std::memory_order_relaxed);
         return true;
     }
     return false;
@@ -27,6 +52,7 @@ bool MouseStreamThrottle::canWake(DWORD nowTick, DWORD minIntervalMs) const noex
 
 void MouseStreamThrottle::reset() noexcept {
     m_lastWakeTick.store(0, std::memory_order_relaxed);
+    m_lastWakeUs.store(0, std::memory_order_relaxed);
 }
 
 DWORD MouseStreamThrottle::lastWakeTick() const noexcept {
@@ -117,7 +143,9 @@ void MouseStreamCore::pushPoint(const MouseStreamPoint& pt) noexcept {
     m_queue.push(pt);
 
     const DWORD interval = m_throttleIntervalMs.load(std::memory_order_relaxed);
-    if (m_throttle.shouldWake(pt.timestamp, interval)) {
+    const bool wakeNow = (interval == 0) ||
+        m_throttle.shouldWakeQpcUs(MouseStreamThrottle::monotonicMicros(), static_cast<int64_t>(interval) * 1000LL);
+    if (wakeNow) {
         // 1. 内核级 wait-free 事件唤醒 (0 闭包开销)
         HANDLE h = m_wakeEvent.load(std::memory_order_acquire);
         if (h) {

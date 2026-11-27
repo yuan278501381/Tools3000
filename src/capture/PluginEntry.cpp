@@ -764,20 +764,8 @@ static void startMemoryOcrTask(const cv::Mat& capturedImage, const CaptureRegion
                 if (g_ocrTaskGeneration.load(std::memory_order_acquire) != myGen) return;
                 std::wstring msgW;
                 std::wstring badgeW;
-                if (stage == tools3000::ocr::OcrRecognitionStage::LowConfidenceRefining) {
-                    msgW = tools3000::core::trFmtW(
-                        L"检测到 {0} 处低置信度文字，正在高精度精修...",
-                        L"Refining {0} low-confidence text lines...",
-                        {std::to_wstring(count)});
-                    badgeW = tools3000::core::trWCstrFor(zh, L"低置信度精修中", L"Refining");
-                } else if (stage == tools3000::ocr::OcrRecognitionStage::AutoScriptSwitching) {
-                    const std::wstring langW = formatOcrScriptDisplayName(detail, zh);
-                    msgW = tools3000::core::trFmtW(
-                        L"检测到 {0}，正在使用扩展语种模型复核...",
-                        L"Detected {0}, re-recognizing with script pack...",
-                        {langW});
-                    badgeW = langW;
-                } else {
+                tools3000::ocr::formatOcrStageFeedback(stage, count, detail, zh, msgW, badgeW);
+                if (msgW.empty()) {
                     return;
                 }
                 const bool showWin = tools3000::core::ConfigManager::instance().get<bool>(
@@ -875,6 +863,27 @@ static void onCaptureCompletedForOcr(const tools3000::capture::CaptureResult& re
     if (g_ocrWorker.joinable()) g_ocrWorker.join();
     g_ocrWorker = std::jthread([path]() {
         const bool zh = tools3000::core::isUiLanguageChinese();
+        struct FileStageGuard {
+            ~FileStageGuard() {
+                tools3000::ocr::DeepOcrEngine::instance().setStageCallback({});
+            }
+        } stageGuard;
+        tools3000::ocr::DeepOcrEngine::instance().setStageCallback(
+            [zh](tools3000::ocr::OcrRecognitionStage stage, uint32_t count, const std::string& detail) {
+                std::wstring msgW;
+                std::wstring badgeW;
+                tools3000::ocr::formatOcrStageFeedback(stage, count, detail, zh, msgW, badgeW);
+                if (msgW.empty()) return;
+                const bool showWin = tools3000::core::ConfigManager::instance().get<bool>("/ocr/showResultWindow", true);
+                if (showWin) {
+                    const std::string msgUtf8 = tools3000::core::WinUtils::wstringToUtf8(msgW);
+                    tools3000::core::MainThreadDispatcher::instance().post([msgUtf8, badgeW]() {
+                        tools3000::ocr::OcrResultWindow::instance().updateLoadingStatus(msgUtf8, badgeW);
+                    });
+                } else {
+                    tools3000::core::EventBus::instance().publish(tools3000::core::ShowToastEvent{msgW});
+                }
+            });
         try {
             std::string text = tools3000::ocr::OcrEngine::instance().recognizeImageFile(path);
             if (text.empty()) {
@@ -2110,6 +2119,11 @@ public:
                 {"downloadedBytes", st.downloadedBytes},
                 {"totalBytes", st.totalBytes},
                 {"serverTotalBytes", st.serverTotalBytes},
+                {"speedBytesPerSec", st.speedBytesPerSec},
+                {"activeMirrorHost", st.activeMirrorHost},
+                {"mirrorIndex", st.mirrorIndex},
+                {"mirrorTotal", st.mirrorTotal},
+                {"phase", st.phase},
                 {"modelTier", st.modelTier},
                 {"activeModelTier", st.activeModelTier},
                 {"scriptMode", st.scriptMode},
@@ -2206,6 +2220,11 @@ public:
                 {"progressPercent", st.progressPercent},
                 {"downloadedBytes", st.downloadedBytes},
                 {"totalBytes", st.totalBytes},
+                {"speedBytesPerSec", st.speedBytesPerSec},
+                {"activeMirrorHost", st.activeMirrorHost},
+                {"mirrorIndex", st.mirrorIndex},
+                {"mirrorTotal", st.mirrorTotal},
+                {"phase", st.phase},
                 {"state", st.state},
                 {"modelDir", st.modelDir},
                 {"modelFile", st.modelFile},

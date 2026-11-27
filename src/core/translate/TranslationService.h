@@ -89,6 +89,9 @@ public:
     /// 基于字符脚本分布的轻量本地源语种推测（当上游如 AI 模型未返回 detectedSourceLang 时作展示补充）
     static std::string detectDominantSourceLang(const std::vector<std::string>& texts);
 
+    /// 将内部翻译通道标识格式化为简洁可读名称（供贴图/划词浮窗阶段提示共用）
+    static std::string formatProviderShortName(std::string_view providerId, bool isChineseUi);
+
     /// 协议响应解析器（纯函数，支持单元测试精确验证各类边界响应）
     static bool parseEdgeTranslateResponse(
         std::string_view responseBody,

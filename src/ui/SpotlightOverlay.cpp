@@ -45,31 +45,91 @@ D2D1_COLOR_F SpotlightOverlay::hslToRgb(float h, float s, float l, float alpha) 
     return D2D1::ColorF(r + m, g + m, b + m, alpha);
 }
 
-D2D1_COLOR_F SpotlightOverlay::parseColor(const std::string& hexStr, float alpha) const {
-    std::string s = hexStr;
-    if (s.empty() || s == "auto") {
-        std::string accent = tools3000::core::ConfigManager::instance().get<std::string>("/general/accentColor", "blue");
-        if (accent == "blue") s = "#3b82f6";
-        else if (accent == "cyan") s = "#06b6d4";
-        else if (accent == "amber") s = "#f59e0b";
-        else if (accent == "mint") s = "#10b981";
-        else if (accent == "coral") s = "#f43f5e";
-        else if (accent == "violet") s = "#8b5cf6";
-        else s = "#3b82f6"; // 默认蓝色
+namespace {
+
+uint32_t accentNameToRgb(const std::string& accent) noexcept {
+    if (accent == "cyan") return 0x06B6D4u;
+    if (accent == "amber") return 0xF59E0Bu;
+    if (accent == "mint") return 0x10B981u;
+    if (accent == "coral") return 0xF43F5Eu;
+    if (accent == "violet") return 0x8B5CF6u;
+    return 0x3B82F6u; // 默认蓝色
+}
+
+} // namespace
+
+void SpotlightOverlay::refreshCachedAccentColor() const noexcept {
+    try {
+        auto& cfg = tools3000::core::ConfigManager::instance();
+        const uint64_t ver = cfg.version();
+        const std::string accent = cfg.get<std::string>("/general/accentColor", "blue");
+        m_cachedAccentRgb.store(accentNameToRgb(accent), std::memory_order_release);
+        m_cachedAccentConfigVersion.store(ver, std::memory_order_release);
+    } catch (...) {
+        m_cachedAccentRgb.store(0x3B82F6u, std::memory_order_release);
     }
-    if (!s.empty() && s.front() == '#') {
-        s = s.substr(1);
+}
+
+void SpotlightOverlay::onRecreateDeviceResources() {
+    m_reusableSolidBrush.Reset();
+    if (m_d2dContext) {
+        (void)m_d2dContext->CreateSolidColorBrush(D2D1::ColorF(1.0f, 1.0f, 1.0f, 1.0f), m_reusableSolidBrush.GetAddressOf());
     }
-    if (s.length() == 6) {
-        try {
-            unsigned long val = std::stoul(s, nullptr, 16);
-            float r = ((val >> 16) & 0xFF) / 255.0f;
-            float g = ((val >> 8) & 0xFF) / 255.0f;
-            float b = (val & 0xFF) / 255.0f;
-            return D2D1::ColorF(r, g, b, alpha);
-        } catch (...) {
-            LOG_WARN("聚光灯颜色格式无效，使用默认蓝色: {}", hexStr);
+}
+
+void SpotlightOverlay::onReleaseDeviceResources() {
+    m_reusableSolidBrush.Reset();
+}
+
+ID2D1SolidColorBrush* SpotlightOverlay::acquireSolidBrush(const D2D1_COLOR_F& color) noexcept {
+    if (!m_d2dContext) return nullptr;
+    if (!m_reusableSolidBrush) {
+        if (FAILED(m_d2dContext->CreateSolidColorBrush(color, m_reusableSolidBrush.GetAddressOf())) || !m_reusableSolidBrush) {
+            return nullptr;
         }
+        return m_reusableSolidBrush.Get();
+    }
+    m_reusableSolidBrush->SetColor(color);
+    return m_reusableSolidBrush.Get();
+}
+
+D2D1_COLOR_F SpotlightOverlay::parseColor(const std::string& hexStr, float alpha) const {
+    if (hexStr.empty() || hexStr == "auto") {
+        // 1ns 原子版本校验：配置无变更时 0 锁 0 分配，任意路径变更时即刻同步最新强调色
+        const uint64_t cfgVer = tools3000::core::ConfigManager::instance().version();
+        if (cfgVer != m_cachedAccentConfigVersion.load(std::memory_order_acquire)) {
+            refreshCachedAccentColor();
+        }
+        const uint32_t rgb = m_cachedAccentRgb.load(std::memory_order_acquire);
+        return D2D1::ColorF(
+            static_cast<float>((rgb >> 16) & 0xFFu) / 255.0f,
+            static_cast<float>((rgb >> 8) & 0xFFu) / 255.0f,
+            static_cast<float>(rgb & 0xFFu) / 255.0f,
+            alpha);
+    }
+    const char* p = hexStr.c_str();
+    size_t len = hexStr.size();
+    if (len > 0 && p[0] == '#') {
+        ++p;
+        --len;
+    }
+    if (len == 6) {
+        auto hexVal = [](char c) noexcept -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        int d0 = hexVal(p[0]), d1 = hexVal(p[1]), d2 = hexVal(p[2]),
+            d3 = hexVal(p[3]), d4 = hexVal(p[4]), d5 = hexVal(p[5]);
+        if (d0 >= 0 && d1 >= 0 && d2 >= 0 && d3 >= 0 && d4 >= 0 && d5 >= 0) {
+            return D2D1::ColorF(
+                static_cast<float>((d0 << 4) | d1) / 255.0f,
+                static_cast<float>((d2 << 4) | d3) / 255.0f,
+                static_cast<float>((d4 << 4) | d5) / 255.0f,
+                alpha);
+        }
+        LOG_WARN("聚光灯颜色格式无效，使用默认蓝色: {}", hexStr);
     }
     return D2D1::ColorF(0.231f, 0.510f, 0.965f, alpha);
 }
@@ -132,8 +192,15 @@ bool SpotlightOverlay::initialize(HINSTANCE hInstance) {
             }
         }
     );
+    refreshCachedAccentColor();
+    m_themeSub = tools3000::core::EventBus::instance().subscribe<tools3000::core::ThemeChangedEvent>(
+        [this](const tools3000::core::ThemeChangedEvent&) {
+            refreshCachedAccentColor();
+        }
+    );
 
-    // 接入通用高精度鼠标流核心基础设施
+    // 接入通用高精度鼠标流核心基础设施（QPC 4ms/250Hz 节流，高刷屏跟手无锯齿）
+    tools3000::core::MouseStreamCore::instance().setThrottleIntervalMs(4);
     tools3000::core::MouseStreamCore::instance().setWakeEvent(m_wakeEvent);
     CinemaZoomEngine::instance().setOnSessionEndedCallback([this]() {
         onCinemaZoomEnded();
@@ -161,6 +228,10 @@ void SpotlightOverlay::shutdown() {
     }
     m_needMouseMove.store(false, std::memory_order_release);
 
+    if (m_themeSub != 0) {
+        tools3000::core::EventBus::instance().unsubscribeAndWait(m_themeSub);
+        m_themeSub = 0;
+    }
     if (m_eventSub != 0) {
         tools3000::core::EventBus::instance().unsubscribeAndWait(m_eventSub);
         m_eventSub = 0;
@@ -316,6 +387,7 @@ void SpotlightOverlay::resetDefaults() {
     m_currentAlpha = 0.0f;
     m_ripples.clear();
     m_trail.clear();
+    m_stickyLocalViewport = {};
     m_ctrlState = CtrlDoubleTapState::Idle;
     m_firstCtrlDownTime = {};
     m_firstCtrlUpTime = {};
@@ -333,20 +405,143 @@ bool SpotlightOverlay::isActive() const {
     return m_animState != AnimState::Idle || !m_ripples.empty() || !m_trail.empty() || !tools3000::core::MouseStreamCore::instance().empty();
 }
 
+bool SpotlightOverlay::needsContinuousAnimation() const {
+    if (m_hideRequested.load(std::memory_order_relaxed)) return true;
+    std::lock_guard lock(m_mutex);
+    if (!m_ripples.empty() || !m_trail.empty()) return true;
+    if (!tools3000::core::MouseStreamCore::instance().empty()) return true;
+    if (m_animState == AnimState::FadeIn || m_animState == AnimState::FadeOut) return true;
+    if (m_animState == AnimState::Holding) {
+        if (m_settings.spotlightAnimStyle == "tactical_sonar" ||
+            m_settings.spotlightAnimStyle == "aurora_ripple") {
+            return true;
+        }
+        if (m_settings.holdDurationMs > 0 && !m_ctrlIsPhysicallyDown && !m_ringOnlyMode) {
+            return true;
+        }
+        if (m_targetPos.x != m_lastRenderedPos.x || m_targetPos.y != m_lastRenderedPos.y) {
+            return true;
+        }
+        // 常亮静止态（无雷达/呼吸动效、无水波/轨迹、光标静止）：直接挂起 INFINITE -> 0.00% CPU
+        return false;
+    }
+    return false;
+}
+
+SpotlightOverlay::ViewportBounds SpotlightOverlay::applySpatialHysteresisViewport(
+    const ViewportBounds& currentSticky,
+    int contentMinX,
+    int contentMinY,
+    int contentMaxX,
+    int contentMaxY,
+    const RECT& safeBounds,
+    int lookaheadMarginPx,
+    int minDimPx,
+    int quantizePx) noexcept {
+    const int safeW = (std::max)(minDimPx, static_cast<int>(safeBounds.right - safeBounds.left));
+    const int safeH = (std::max)(minDimPx, static_cast<int>(safeBounds.bottom - safeBounds.top));
+
+    const int reqW = (std::max)(1, contentMaxX - contentMinX);
+    const int reqH = (std::max)(1, contentMaxY - contentMinY);
+
+    // 若现有滞回视口已完整容纳当前内容，且未严重过大（面积 <= 6x 或单边 <= 768px），原位零成本复用！
+    if (!currentSticky.isFullscreen && currentSticky.w > 0 && currentSticky.h > 0) {
+        const int curRight = currentSticky.x + currentSticky.w;
+        const int curBottom = currentSticky.y + currentSticky.h;
+        const bool contains =
+            (contentMinX >= currentSticky.x) &&
+            (contentMinY >= currentSticky.y) &&
+            (contentMaxX <= curRight) &&
+            (contentMaxY <= curBottom);
+        const int64_t curArea = static_cast<int64_t>(currentSticky.w) * static_cast<int64_t>(currentSticky.h);
+        const int64_t paddedReqArea =
+            static_cast<int64_t>(reqW + lookaheadMarginPx * 2) *
+            static_cast<int64_t>(reqH + lookaheadMarginPx * 2);
+        const bool notWildlyOversized = (currentSticky.w <= 768 && currentSticky.h <= 768) ||
+                                        (curArea <= paddedReqArea * 4);
+        if (contains && notWildlyOversized) {
+            return currentSticky;
+        }
+    }
+
+    // 重建带前瞻余量的 64px 量化滞回视口，一次覆盖后续连续轨迹/点击，消灭逐帧 SetWindowPos 与 ResizeBuffers
+    const int step = (std::max)(16, quantizePx);
+    const int desiredW = reqW + lookaheadMarginPx * 2;
+    const int desiredH = reqH + lookaheadMarginPx * 2;
+    int newW = (std::max)(minDimPx, ((desiredW + step - 1) / step) * step);
+    int newH = (std::max)(minDimPx, ((desiredH + step - 1) / step) * step);
+    newW = (std::min)(newW, safeW);
+    newH = (std::min)(newH, safeH);
+
+    const int cx = (contentMinX + contentMaxX) / 2;
+    const int cy = (contentMinY + contentMaxY) / 2;
+    int newX = cx - newW / 2;
+    int newY = cy - newH / 2;
+
+    const int maxAllowedX = static_cast<int>(safeBounds.right) - newW;
+    const int maxAllowedY = static_cast<int>(safeBounds.bottom) - newH;
+    newX = std::clamp(newX, static_cast<int>(safeBounds.left), (std::max)(static_cast<int>(safeBounds.left), maxAllowedX));
+    newY = std::clamp(newY, static_cast<int>(safeBounds.top), (std::max)(static_cast<int>(safeBounds.top), maxAllowedY));
+    return {newX, newY, newW, newH, false};
+}
+
+SpotlightOverlay::FourRectClipLayout SpotlightOverlay::computeFourRectClipGeometry(
+    float surfaceW,
+    float surfaceH,
+    float centerX,
+    float centerY,
+    float outerRadius) noexcept {
+    FourRectClipLayout layout{};
+    if (surfaceW <= 0.0f || surfaceH <= 0.0f) return layout;
+
+    const float padR = std::ceil((std::max)(1.0f, outerRadius)) + 2.0f;
+    const float clL = std::clamp(centerX - padR, 0.0f, surfaceW);
+    const float clT = std::clamp(centerY - padR, 0.0f, surfaceH);
+    const float clR = std::clamp(centerX + padR, 0.0f, surfaceW);
+    const float clB = std::clamp(centerY + padR, 0.0f, surfaceH);
+
+    layout.centerBox = D2D1::RectF(clL, clT, clR, clB);
+    int count = 0;
+    if (clT > 0.0f) {
+        layout.outerStrips[count++] = D2D1::RectF(0.0f, 0.0f, surfaceW, clT);
+    }
+    if (clB < surfaceH) {
+        layout.outerStrips[count++] = D2D1::RectF(0.0f, clB, surfaceW, surfaceH);
+    }
+    if (clL > 0.0f && clB > clT) {
+        layout.outerStrips[count++] = D2D1::RectF(0.0f, clT, clL, clB);
+    }
+    if (clR < surfaceW && clB > clT) {
+        layout.outerStrips[count++] = D2D1::RectF(clR, clT, surfaceW, clB);
+    }
+    layout.outerStripCount = count;
+    return layout;
+}
+
 SpotlightOverlay::ViewportBounds SpotlightOverlay::calculateViewportBoundsLocked() const {
     const_cast<SpotlightOverlay*>(this)->drainRawMovesLocked();
 
     if (m_animState != AnimState::Idle && !m_ringOnlyMode) {
+        m_stickyLocalViewport = {};
         // 聚光灯全屏暗角模式：物理尺寸微调避让 1 像素，打破 Explorer 全屏独占判定
         auto fb = tools3000::core::MouseViewportManager::computeFullscreenAvoidanceBounds();
+        // 老显卡 FeatureLevel 10_0 纹理上限 (8192px) 安全降级：多 4K 跨屏超限时优雅聚焦光标所在单屏 (-1px 避让)
+        const int maxTex = maxTextureDimension();
+        if (fb.width > maxTex || fb.height > maxTex) {
+            const RECT mon = tools3000::core::MouseViewportManager::getNearestMonitorBounds(m_targetPos);
+            const int mw = (std::max)(1, static_cast<int>(mon.right - mon.left) - 1);
+            const int mh = (std::max)(1, static_cast<int>(mon.bottom - mon.top) - 1);
+            return {static_cast<int>(mon.left), static_cast<int>(mon.top), (std::min)(mw, maxTex), (std::min)(mh, maxTex), true};
+        }
         return {fb.x, fb.y, fb.width, fb.height, true};
     }
 
     if (m_animState == AnimState::Idle && m_ripples.empty() && m_trail.empty()) {
+        m_stickyLocalViewport = {};
         return {0, 0, 0, 0, false};
     }
 
-    // 局部自适应动态包围盒 (Dynamic Union Bounding Box)
+    // 局部自适应动态包围盒 (Dynamic Union Bounding Box) + 空间滞回前瞻复用 (Spatial Hysteresis)
     int minX = INT_MAX, minY = INT_MAX, maxX = INT_MIN, maxY = INT_MIN;
     if (m_animState != AnimState::Idle && m_ringOnlyMode) {
         const float ringScale = std::clamp(
@@ -377,29 +572,33 @@ SpotlightOverlay::ViewportBounds SpotlightOverlay::calculateViewportBoundsLocked
     }
 
     const POINT centerPt{(minX + maxX) / 2, (minY + maxY) / 2};
+    const float dpiScale = std::clamp(
+        tools3000::core::MouseViewportManager::getDpiScaleForPoint(centerPt), 1.0f, 3.0f);
     const RECT mon = tools3000::core::MouseViewportManager::getNearestMonitorBounds(centerPt);
     const RECT virt = tools3000::core::MouseViewportManager::getVirtualDesktopBounds();
-    const int monW = mon.right - mon.left;
-    const int monH = mon.bottom - mon.top;
-    const int virtW = virt.right - virt.left;
-    const int virtH = virt.bottom - virt.top;
     const bool spansMultiMonitor =
         (minX < mon.left || maxX > mon.right || minY < mon.top || maxY > mon.bottom);
-    const int safeLimitW = (std::max)(224, (spansMultiMonitor ? virtW : monW) - 4);
-    const int safeLimitH = (std::max)(224, (spansMultiMonitor ? virtH : monH) - 4);
-    auto lb = tools3000::core::MouseViewportManager::computeLocalBoundingBox(
-        minX, minY, maxX, maxY, 0, 224, (std::max)(safeLimitW, safeLimitH), 32);
-    if (lb.width > safeLimitW) {
-        lb.x += (lb.width - safeLimitW) / 2;
-        lb.width = safeLimitW;
+    RECT safeBounds = spansMultiMonitor ? virt : mon;
+    // 物理缩减 4px 确保局部视口绝不触发 Focus Assist 全屏匹配
+    safeBounds.right = (std::max)(safeBounds.left + 256, safeBounds.right - 4);
+    safeBounds.bottom = (std::max)(safeBounds.top + 256, safeBounds.bottom - 4);
+    const int maxTex = maxTextureDimension();
+    if (safeBounds.right - safeBounds.left > maxTex) {
+        safeBounds.right = safeBounds.left + maxTex;
     }
-    if (lb.height > safeLimitH) {
-        lb.y += (lb.height - safeLimitH) / 2;
-        lb.height = safeLimitH;
+    if (safeBounds.bottom - safeBounds.top > maxTex) {
+        safeBounds.bottom = safeBounds.top + maxTex;
     }
-    lb.x = std::clamp(lb.x, static_cast<int>(virt.left), static_cast<int>((std::max)(virt.left, virt.right - lb.width)));
-    lb.y = std::clamp(lb.y, static_cast<int>(virt.top), static_cast<int>((std::max)(virt.top, virt.bottom - lb.height)));
-    return {lb.x, lb.y, lb.width, lb.height, false};
+
+    // 仅原地点击水波纹不移动，采用极致紧致微视口（0 前瞻膨胀，省 90% 填充面积且严格 <= 300px）；
+    // 连续鼠标轨迹与放大伴随光环采用 80px 前瞻空间滞回，消灭连续移动期间的逐帧 SetWindowPos 与表面重建。
+    const bool hasMovingVisual = !m_trail.empty() || (m_animState != AnimState::Idle && m_ringOnlyMode);
+    const int lookaheadPx = hasMovingVisual ? 80 : 0;
+    const int minDimPx = hasMovingVisual ? 224 : 64;
+    const int quantizePx = hasMovingVisual ? 64 : 16;
+    m_stickyLocalViewport = applySpatialHysteresisViewport(
+        m_stickyLocalViewport, minX, minY, maxX, maxY, safeBounds, lookaheadPx, minDimPx, quantizePx);
+    return m_stickyLocalViewport;
 }
 
 void SpotlightOverlay::hideNow() {
@@ -411,6 +610,7 @@ void SpotlightOverlay::hideNow() {
         m_focusProgress = 0.0f;
         m_scalePulse = 1.0f;
         m_lastRenderedPos = {-9999, -9999};
+        m_stickyLocalViewport = {};
         m_ripples.clear();
         m_trail.clear();
         updateNeedMouseMoveLocked();

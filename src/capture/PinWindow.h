@@ -455,6 +455,7 @@ private:
 
     static constexpr UINT_PTR kTimerIdZoomAnim = 4;
     static constexpr UINT_PTR kTimerIdZoomStageIdleRelease = 5;
+    static constexpr UINT_PTR kTimerIdBusySpinner = 6;
 
     static LRESULT CALLBACK pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -613,6 +614,9 @@ private:
     std::deque<std::vector<MarkupElement>> m_pinRedoStack;
 
     void showTransientHudBadge(std::wstring text, uint32_t durationMs = 800, bool triggerInvalidate = true);
+    void setOcrStageText(std::wstring text);
+    void setTranslateStageText(std::wstring text);
+    void syncBusySpinnerTimer();
     void updateHoverAnimation();
     void drawHoverToolbar();
     void clearHoverToolbarRects() noexcept;
@@ -642,6 +646,11 @@ private:
     std::string m_translatedTargetLang;
     std::string m_translatedProviderUsed;
     std::string m_ocrScriptModeOverride; // 贴图级识字语种覆写（空表示跟随全局配置）
+    mutable std::mutex m_stageTextMutex;
+    std::wstring m_ocrStageText;
+    std::wstring m_translateStageText;
+    float m_busySpinAngle = 0.0f;
+    bool m_busySpinnerTimerActive = false;
     std::vector<TranslationParagraph> m_translatedParagraphs;
     uint64_t m_contentFingerprint = 0; // 当前贴图内容 64-bit 指纹（供 F3 贴图防重复套娃去重）
     std::vector<MarkupElement> m_markupElements;  // 1:1 原始像素空间下的独立可二次编辑矢量列表

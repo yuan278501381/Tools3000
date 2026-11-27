@@ -2329,3 +2329,211 @@ TEST(WindowKitControllerTest, DefaultOffZeroFootprintAndFeatureGating) {
     EXPECT_EQ(stats.value("workingSetBytes", 1u), 0u);
     EXPECT_EQ(stats.value("handleCount", 1u), 0u);
 }
+
+TEST(OverlayZeroDropArchitectureTest, MouseStreamQpcThrottleAndAntiSpinGuard) {
+    using namespace tools3000::core;
+
+    const int64_t t0 = MouseStreamThrottle::monotonicMicros();
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    const int64_t t1 = MouseStreamThrottle::monotonicMicros();
+    EXPECT_GT(t1, t0);
+
+    MouseStreamThrottle throttle;
+    EXPECT_TRUE(throttle.shouldWakeQpcUs(100000, 4000));
+    EXPECT_FALSE(throttle.shouldWakeQpcUs(102000, 4000)); // 2ms < 4ms 必须节流
+    EXPECT_FALSE(throttle.shouldWakeQpcUs(103999, 4000));
+    EXPECT_TRUE(throttle.shouldWakeQpcUs(104000, 4000));  // 精确 4ms 即刻唤醒（消除 GetTickCount 15.625ms 锯齿）
+    throttle.reset();
+    EXPECT_TRUE(throttle.shouldWakeQpcUs(104500, 4000));
+
+    // RDP 与 WARP 均强制封顶 60Hz，正常硬件显示器落在 [30, 240]Hz
+    EXPECT_DOUBLE_EQ(MouseFeedbackOverlayBase::queryEffectiveRefreshHz(/*remoteSession=*/true, /*usingWarp=*/false), 60.0);
+    EXPECT_DOUBLE_EQ(MouseFeedbackOverlayBase::queryEffectiveRefreshHz(/*remoteSession=*/false, /*usingWarp=*/true), 60.0);
+    const double liveHz = MouseFeedbackOverlayBase::queryEffectiveRefreshHz(false, false);
+    EXPECT_GE(liveHz, 30.0);
+    EXPECT_LE(liveHz, 240.0);
+
+    // QPC 防空转校验：144Hz (6944us) 下 DwmFlush 瞬时返回 (<55%) 必须补足剩余周期，正常 VBlank 返回 0
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(500, 6944), 6444);
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(0, 16667), 16667);
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(6500, 6944), 0);
+    EXPECT_EQ(MouseFeedbackOverlayBase::computeAntiSpinRemainingUs(16000, 16667), 0);
+}
+
+TEST(OverlayZeroDropArchitectureTest, SpatialHysteresisViewportAndFourRectClip) {
+    using namespace tools3000::ui;
+
+    // 1. 空间滞回局部视口：在 144px 前瞻缓冲内连续移动 50 次必须 0 次视口变更
+    const RECT safeMon{0, 0, 1916, 1076};
+    SpotlightOverlay::ViewportBounds sticky{};
+    sticky = SpotlightOverlay::applySpatialHysteresisViewport(sticky, 500, 500, 560, 560, safeMon, 144, 256, 64);
+    EXPECT_FALSE(sticky.isFullscreen);
+    EXPECT_GE(sticky.w, 256);
+    EXPECT_GE(sticky.h, 256);
+    EXPECT_LE(sticky.x, 500);
+    EXPECT_GE(sticky.x + sticky.w, 560);
+
+    int rebuilds = 0;
+    for (int step = 1; step <= 50; ++step) {
+        const int dx = (step % 2 == 0) ? (step % 40) : -(step % 40);
+        const int dy = (step % 3 == 0) ? (step % 36) : -(step % 36);
+        auto next = SpotlightOverlay::applySpatialHysteresisViewport(
+            sticky, 500 + dx, 500 + dy, 560 + dx, 560 + dy, safeMon, 144, 256, 64);
+        if (next.x != sticky.x || next.y != sticky.y || next.w != sticky.w || next.h != sticky.h) {
+            ++rebuilds;
+            sticky = next;
+        }
+    }
+    EXPECT_EQ(rebuilds, 0) << "Local cursor micro-motion within hysteresis cushion must cause 0 viewport rebuilds";
+
+    // 越出缓冲后平滑迁移并严守 Focus Assist 安全边界
+    auto shifted = SpotlightOverlay::applySpatialHysteresisViewport(
+        sticky, 1820, 980, 1890, 1050, safeMon, 144, 256, 64);
+    EXPECT_LE(shifted.x + shifted.w, safeMon.right);
+    EXPECT_LE(shifted.y + shifted.h, safeMon.bottom);
+    EXPECT_LE(shifted.x, 1820);
+    EXPECT_GE(shifted.x + shifted.w, 1890);
+
+    // 2. 4K (3840x2160) 全屏聚光灯 4-Rect 裁剪几何守恒验证：面积 100% 精确覆盖、0 缝隙、径向渐变面积 < 5%
+    const auto layout = SpotlightOverlay::computeFourRectClipGeometry(3840.0f, 2160.0f, 1920.0f, 1080.0f, 210.0f);
+    EXPECT_EQ(layout.outerStripCount, 4);
+    const double centerArea =
+        static_cast<double>(layout.centerBox.right - layout.centerBox.left) *
+        static_cast<double>(layout.centerBox.bottom - layout.centerBox.top);
+    double outerArea = 0.0;
+    for (int i = 0; i < layout.outerStripCount; ++i) {
+        const auto& r = layout.outerStrips[i];
+        EXPECT_GE(r.right, r.left);
+        EXPECT_GE(r.bottom, r.top);
+        outerArea += static_cast<double>(r.right - r.left) * static_cast<double>(r.bottom - r.top);
+    }
+    const double fullArea = 3840.0 * 2160.0;
+    EXPECT_NEAR(centerArea + outerArea, fullArea, 1.0);
+    EXPECT_LT(centerArea / fullArea, 0.05) << "Radial gradient pass must cover <5% of 4K screen";
+}
+
+TEST(OverlayZeroDropArchitectureTest, OutOfProcessFileDialogTopmostYieldAndNoDeadlock) {
+    using namespace tools3000::core;
+
+    // 构造全屏/置顶 WS_EX_TOPMOST 宿主窗口，验证隔离保存对话框期间自动降级 Z 序、正常泵送消息无 Ghost Window 且退场后完整恢复 TOPMOST
+    HWND owner = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        L"STATIC",
+        L"Tools3000_TopmostSaveAsTestOwner",
+        WS_POPUP,
+        100, 100, 320, 200,
+        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    ASSERT_NE(owner, nullptr);
+    ShowWindow(owner, SW_SHOWNOACTIVATE);
+    ASSERT_NE((GetWindowLongPtrW(owner, GWL_EXSTYLE) & WS_EX_TOPMOST), 0);
+
+    FileDialogRequest req{};
+    req.mode = FileDialogMode::SaveFile;
+    req.ownerHwnd = owner;
+    req.defaultExtension = L"png";
+    req.defaultFileName = L"Tools3000_Screenshot.png";
+    req.autoSelectPathForTest = L"C:\\Temp\\Tools3000_SaveAs_Regression.png";
+
+    const auto t0 = std::chrono::steady_clock::now();
+    const auto res = OutOfProcessFileDialog::show(req);
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+
+    EXPECT_TRUE(res.accepted);
+    EXPECT_EQ(res.selectedPath, req.autoSelectPathForTest);
+    EXPECT_LT(elapsedMs, 5000);
+    EXPECT_TRUE(IsWindowEnabled(owner) != FALSE);
+    EXPECT_NE((GetWindowLongPtrW(owner, GWL_EXSTYLE) & WS_EX_TOPMOST), 0);
+
+    DestroyWindow(owner);
+}
+
+TEST(OverlayZeroDropArchitectureTest, LiveSpotlightFramePacingAndStaticZeroCpu) {
+    using namespace tools3000::ui;
+    using namespace tools3000::core;
+
+    auto& spot = SpotlightOverlay::instance();
+    const bool alreadyInit = (spot.hwnd() != nullptr);
+    if (!alreadyInit) {
+        ASSERT_TRUE(spot.initialize(GetModuleHandleW(nullptr)));
+    }
+
+    const auto prevSettings = spot.getSettings();
+    SpotlightSettings testCfg = prevSettings;
+    testCfg.enabled = true;
+    testCfg.autoBypassFullscreen = false;
+    testCfg.doubleCtrlMode = "spotlight";
+    testCfg.spotlightAnimStyle = "inward_gravity";
+    testCfg.animationDurationMs = 1000;
+    testCfg.holdDurationMs = 0;
+    testCfg.mouseTrailEnabled = false;
+    testCfg.clickRippleEnabled = false;
+    spot.updateSettings(testCfg);
+
+    // 1. 全屏聚光灯活跃动效（FadeIn + 持续光标移动），采集真实 P50/P95/P99、丢帧率、SetWindowPos 与表面重建次数
+    spot.resetFrameMetrics();
+    spot.trigger(POINT{600, 400}, /*autoFetch=*/false, /*allowCinemaZoom=*/false);
+    for (int i = 0; i < 60; ++i) {
+        spot.onMouseMove(POINT{600 + i * 3, 400 + (i % 20)});
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    const auto activeMetrics = spot.getFrameMetrics();
+    std::cout << "[SpotlightBench:Fullscreen] tier=" << static_cast<int>(activeMetrics.presentTier)
+              << " warp=" << activeMetrics.usingWarp
+              << " targetHz=" << activeMetrics.targetHz
+              << " frames=" << activeMetrics.framesPresented
+              << " P50=" << activeMetrics.p50FrameMs << "ms"
+              << " P95=" << activeMetrics.p95FrameMs << "ms"
+              << " P99=" << activeMetrics.p99FrameMs << "ms"
+              << " dropRate=" << activeMetrics.dropRatePercent << "%"
+              << " SetWindowPos=" << activeMetrics.setWindowPosCalls
+              << " surfaceRebuilds=" << activeMetrics.surfaceRebuilds
+              << std::endl;
+
+    EXPECT_NE(activeMetrics.presentTier, OverlayPresentTier::None);
+    EXPECT_GE(activeMetrics.framesPresented, 15u);
+    EXPECT_LE(activeMetrics.setWindowPosCalls, 3u) << "Fullscreen spotlight must not call SetWindowPos per frame";
+    EXPECT_LE(activeMetrics.surfaceRebuilds, 2u) << "Fullscreen spotlight must not rebuild GPU surface per frame";
+
+    // 2. 静止常亮态 (StaticHolding) 验证：停止移动光标后渲染线程应完全挂起 0% CPU（0 新增呈现帧）
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    const uint64_t framesAtStaticStart = spot.getFrameMetrics().framesPresented;
+    std::this_thread::sleep_for(std::chrono::milliseconds(220));
+    const uint64_t framesAtStaticEnd = spot.getFrameMetrics().framesPresented;
+    EXPECT_LE(framesAtStaticEnd - framesAtStaticStart, 1u) << "StaticHolding spotlight must suspend with 0% CPU";
+
+    // 3. 局部轨迹 + 点击特效空间滞回验证：连续局部微动应保持极低 SetWindowPos 与表面重建次数
+    spot.hideNow();
+    std::this_thread::sleep_for(std::chrono::milliseconds(40));
+    testCfg.mouseTrailEnabled = true;
+    testCfg.mouseTrailStyle = "sonar_pulses";
+    testCfg.clickRippleEnabled = true;
+    testCfg.clickRippleStyle = "sparkle_burst";
+    spot.updateSettings(testCfg);
+    spot.resetFrameMetrics();
+    spot.onMouseDown(0, POINT{500, 500});
+    for (int i = 0; i < 40; ++i) {
+        spot.onMouseMove(POINT{500 + (i % 15) * 4, 500 + (i % 10) * 4});
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    const auto localMetrics = spot.getFrameMetrics();
+    std::cout << "[SpotlightBench:LocalTrail] tier=" << static_cast<int>(localMetrics.presentTier)
+              << " frames=" << localMetrics.framesPresented
+              << " P50=" << localMetrics.p50FrameMs << "ms"
+              << " P95=" << localMetrics.p95FrameMs << "ms"
+              << " P99=" << localMetrics.p99FrameMs << "ms"
+              << " dropRate=" << localMetrics.dropRatePercent << "%"
+              << " SetWindowPos=" << localMetrics.setWindowPosCalls
+              << " surfaceRebuilds=" << localMetrics.surfaceRebuilds
+              << std::endl;
+    EXPECT_GE(localMetrics.framesPresented, 10u);
+    EXPECT_LE(localMetrics.setWindowPosCalls, 4u) << "Spatial hysteresis local viewport must avoid per-frame SetWindowPos";
+    EXPECT_LE(localMetrics.surfaceRebuilds, 4u) << "Spatial hysteresis local viewport must avoid per-frame surface rebuilds";
+
+    spot.hideNow();
+    spot.updateSettings(prevSettings);
+    if (!alreadyInit) {
+        spot.shutdown();
+    }
+}

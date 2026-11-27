@@ -13,6 +13,7 @@
 
 #include "capture/PinWindowInternal.h"
 #include "capture/InPlaceTranslateEngine.h"
+#include "capture/TextReplaceEngine.h"
 #include "core/events/EventBus.h"
 #include "core/events/MainThreadDispatcher.h"
 #include "core/i18n/UiI18n.h"
@@ -104,6 +105,8 @@ void PinWindow::clearTranslationState() {
         m_translateCancelFlag.reset();
     }
     m_translationInFlight.store(false, std::memory_order_release);
+    setTranslateStageText({});
+    syncBusySpinnerTimer();
     m_showingTranslation = false;
     {
         std::lock_guard<std::mutex> lock(m_imageVaultMutex);
@@ -293,12 +296,30 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
     auto cancelFlag = std::make_shared<std::atomic<bool>>(false);
     m_translateCancelFlag = cancelFlag;
     m_translationInFlight.store(true, std::memory_order_release);
-    render();
 
     const cv::Mat baseCanvas = m_sourceImage.clone();
     const auto settings = tools3000::core::translate::TranslationService::instance().loadSettings();
     const std::string uiLangTag = tools3000::core::UiI18n::getEffectiveLanguageTag();
     const std::string traceId = tools3000::core::TraceId::current();
+    const size_t totalParagraphs = paragraphs.size();
+    {
+        std::string initProvId = settings.provider;
+        if (initProvId == tools3000::core::translate::TranslationConstants::kProviderOpenAiCompatible &&
+            tools3000::core::translate::TranslationService::isKeylessPublicOpenAiUrl(settings.openaiBaseUrl)) {
+            initProvId = "index_translate";
+        } else if (initProvId == tools3000::core::translate::TranslationConstants::kProviderAutoFree) {
+            initProvId = (settings.freePrimary == tools3000::core::translate::TranslationConstants::kFreePrimaryGoogle)
+                ? "google_free" : "edge_free";
+        }
+        const std::wstring provNameW = tools3000::core::WinUtils::utf8ToWstring(
+            tools3000::core::translate::TranslationService::formatProviderShortName(initProvId, isZh));
+        const std::wstring initStage = isZh
+            ? (L"正在翻译 " + std::to_wstring(totalParagraphs) + L" 段文字 (" + provNameW + L")...")
+            : (L"Translating " + std::to_wstring(totalParagraphs) + L" blocks (" + provNameW + L")...");
+        setTranslateStageText(initStage);
+    }
+    syncBusySpinnerTimer();
+    render();
     std::weak_ptr<PinWindow> weakSelf = shared_from_this();
     auto activeWorkers = m_ocrActiveWorkers;
     if (activeWorkers) {
@@ -333,6 +354,20 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
                 return;
             }
 
+            auto postStageText = [&](std::wstring stageW) {
+                tools3000::core::MainThreadDispatcher::instance().post(
+                    [weakSelf, expectedVer, stageW = std::move(stageW)]() mutable {
+                        if (s_ocrShuttingDown.load(std::memory_order_acquire)) return;
+                        auto self = weakSelf.lock();
+                        if (!self || !self->isAlive()) return;
+                        if (self->m_translationVersion.load(std::memory_order_acquire) != expectedVer ||
+                            !self->m_translationInFlight.load(std::memory_order_acquire)) {
+                            return;
+                        }
+                        self->setTranslateStageText(std::move(stageW));
+                    });
+            };
+
             tools3000::core::TraceId::setCurrent(traceId);
             tools3000::core::translate::TranslationBatchRequest req;
             req.uiLanguageCode = uiLangTag;
@@ -340,6 +375,29 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
             for (const auto& p : paragraphs) {
                 req.texts.push_back(p.originalText);
             }
+            req.onStage = [postStageText](
+                              tools3000::core::translate::TranslationStage stage,
+                              uint32_t current,
+                              uint32_t total,
+                              const std::string& detail) {
+                const bool zh = isChineseUiLanguage();
+                const std::wstring provW = tools3000::core::WinUtils::utf8ToWstring(
+                    tools3000::core::translate::TranslationService::formatProviderShortName(detail, zh));
+                if (stage == tools3000::core::translate::TranslationStage::BatchProgress && total > 1) {
+                    const uint32_t activeIdx = (std::min)(current + 1u, total);
+                    postStageText(zh
+                        ? (L"长图分批翻译中（第 " + std::to_wstring(activeIdx) + L"/" + std::to_wstring(total) + L" 批 · " + provW + L"）...")
+                        : (L"Translating batch " + std::to_wstring(activeIdx) + L"/" + std::to_wstring(total) + L" (" + provW + L")..."));
+                } else if (stage == tools3000::core::translate::TranslationStage::RetryingTransient) {
+                    postStageText(zh
+                        ? (L"翻译线路波动，正在自动重试 (" + provW + L")...")
+                        : (L"Translation route busy, retrying (" + provW + L")..."));
+                } else if (stage == tools3000::core::translate::TranslationStage::SwitchingFallback) {
+                    postStageText(zh
+                        ? (L"主通道响应慢，已切换备用引擎 (" + provW + L")...")
+                        : (L"Switching to fallback translator (" + provW + L")..."));
+                }
+            };
 
             auto batchRes = tools3000::core::translate::TranslationService::instance()
                                 .translateBatchWithSettings(req, settings, cancelFlag.get());
@@ -351,6 +409,11 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
 
             InPlaceTranslateRenderResult renderRes;
             if (batchRes.success && batchRes.translations.size() == paragraphs.size()) {
+                const bool zhNow = isChineseUiLanguage();
+                const bool hasAiInpaint = AiInpaintEngine::instance().isModelInstalled();
+                postStageText(hasAiInpaint
+                    ? (zhNow ? L"正在排版与 AI 无痕纹理修复..." : L"Typesetting & AI texture inpainting...")
+                    : (zhNow ? L"正在原位排版与无痕渲染译图..." : L"Rendering in-place translation..."));
                 for (size_t i = 0; i < paragraphs.size(); ++i) {
                     paragraphs[i].translatedText = batchRes.translations[i];
                 }
@@ -371,6 +434,8 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
                     }
 
                     self->m_translationInFlight.store(false, std::memory_order_release);
+                    self->setTranslateStageText({});
+                    self->syncBusySpinnerTimer();
                     const bool zh = isChineseUiLanguage();
 
                     if (!batchRes.success) {
@@ -426,6 +491,8 @@ void PinWindow::translateInPlace(bool selectedOnly, bool forceRetranslate) {
         }).detach();
     } catch (...) {
         m_translationInFlight.store(false, std::memory_order_release);
+        setTranslateStageText({});
+        syncBusySpinnerTimer();
         if (activeWorkers) {
             activeWorkers->fetch_sub(1, std::memory_order_acq_rel);
         }

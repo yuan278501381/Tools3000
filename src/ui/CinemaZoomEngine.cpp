@@ -325,6 +325,14 @@ void CinemaZoomEngine::resetZoomToConfigured() {
     m_cv.notify_all();
 }
 
+void CinemaZoomEngine::notifyCursorMoved() noexcept {
+    if (!m_active.load(std::memory_order_relaxed)) return;
+    if (m_isSettled.load(std::memory_order_acquire)) {
+        m_cursorMovedWake.store(true, std::memory_order_release);
+        m_cv.notify_one();
+    }
+}
+
 bool CinemaZoomEngine::isActive() const noexcept {
     return m_active.load(std::memory_order_acquire);
 }
@@ -517,14 +525,23 @@ void CinemaZoomEngine::workerLoop(POINT anchorPt, std::string traceId) {
             (std::abs(centerYSpring.pos - desiredCenterY) < 0.3);
 
         if (isSettled) {
+            m_isSettled.store(true, std::memory_order_release);
             std::unique_lock lk(m_mutex);
-            m_cv.wait_for(lk, std::chrono::milliseconds(followCursor ? 12 : 33), [this]() {
+            m_cv.wait_for(lk, std::chrono::milliseconds(followCursor ? 16 : 33), [this]() {
                 return m_immediateReset.load(std::memory_order_acquire) ||
+                       m_cursorMovedWake.exchange(false, std::memory_order_acq_rel) ||
                        static_cast<Phase>(m_phase.load(std::memory_order_acquire)) != Phase::Active;
             });
+            m_isSettled.store(false, std::memory_order_release);
         } else {
-            if (FAILED(DwmFlush())) {
-                Sleep(16);
+            m_isSettled.store(false, std::memory_order_release);
+            const auto flushStart = std::chrono::steady_clock::now();
+            const HRESULT flushHr = DwmFlush();
+            const auto flushUs = std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::steady_clock::now() - flushStart).count();
+            if (FAILED(flushHr) || flushUs < 2000) {
+                // RDP / Server 2016 异常 DwmFlush 瞬时返回兜底，严防空转
+                std::this_thread::sleep_for(std::chrono::milliseconds(8));
             }
         }
     }

@@ -293,6 +293,13 @@ OcrWorkerExtractStatus OcrWorkerClient::extractTextEx(
     bool triedFreshNormal = false;
 
     for (int attempt = 0; attempt < 3; ++attempt) {
+        const bool willColdSpawn = !(m_pipe && isChildAliveLocked() &&
+            m_workerTier == modelTier &&
+            m_workerModelDir == modelDir &&
+            m_workerSafeCpuMode == safeCpu);
+        if (willColdSpawn && onStage) {
+            onStage(OcrRecognitionStage::DeepModelLoading, 0u, safeCpu ? "worker_cpu" : "worker");
+        }
         bool reusedExisting = false;
         if (!ensureWorkerConnectedLocked(exePath, modelTier, modelDir, safeCpu, &reusedExisting)) {
             if (!safeCpu) {

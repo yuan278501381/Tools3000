@@ -599,13 +599,45 @@ void QuickTranslatePopupWindow::triggerQuickTranslate(
                         sourcePref, targetPref, effectiveTarget, cursorPt);
                 });
 
-            // 4. 异步调用统一 TranslationService 单一事实源
+            // 4. 异步调用统一 TranslationService 单一事实源（挂载长耗时阶段回调：重试/切备用引擎/分批进度）
             tools3000::core::translate::TranslationBatchRequest req;
             req.texts = {cleaned};
             req.sourceLangOverride = sourcePref;
             req.targetLangOverride = effectiveTarget;
             req.lockTargetLanguage = lockTarget;
             req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
+            req.onStage = [this, reqId, settings](
+                              tools3000::core::translate::TranslationStage stage,
+                              uint32_t current,
+                              uint32_t total,
+                              const std::string& detail) {
+                const bool zhUi = tools3000::core::isUiLanguageChinese();
+                const std::string provName =
+                    tools3000::core::translate::TranslationService::formatProviderShortName(detail, zhUi);
+                std::string msgUtf8;
+                std::string nextProvLabel;
+                if (stage == tools3000::core::translate::TranslationStage::SwitchingFallback) {
+                    msgUtf8 = zhUi
+                        ? ("主通道响应较慢，已自动切换至 " + provName + "...")
+                        : ("Primary route slow, switching to " + provName + "...");
+                    nextProvLabel = formatProviderDisplayLabel(settings, detail);
+                } else if (stage == tools3000::core::translate::TranslationStage::RetryingTransient) {
+                    msgUtf8 = zhUi
+                        ? ("网络波动，正在自动重试 (" + provName + ")...")
+                        : ("Route busy, retrying (" + provName + ")...");
+                } else if (stage == tools3000::core::translate::TranslationStage::BatchProgress && total > 1) {
+                    const uint32_t idx = (std::min)(current + 1u, total);
+                    msgUtf8 = zhUi
+                        ? ("长文本分批翻译中（第 " + std::to_string(idx) + "/" + std::to_string(total) + " 批）...")
+                        : ("Translating batch " + std::to_string(idx) + "/" + std::to_string(total) + "...");
+                } else {
+                    return;
+                }
+                tools3000::core::MainThreadDispatcher::instance().post(
+                    [this, reqId, msgUtf8 = std::move(msgUtf8), nextProvLabel = std::move(nextProvLabel)]() {
+                        updateLoadingStageOnUiThread(reqId, msgUtf8, nextProvLabel);
+                    });
+            };
             const auto res = svc.translateBatch(req, cancelFlag.get());
 
             if (cancelFlag->load(std::memory_order_acquire) ||
@@ -701,6 +733,38 @@ void QuickTranslatePopupWindow::translateTextAsync(
             req.lockTargetLanguage = lockTarget;
             req.uiLanguageCode = tools3000::core::UiI18n::getEffectiveLanguageTag();
             req.bypassCache = bypassCache;
+            req.onStage = [this, reqId, settings](
+                              tools3000::core::translate::TranslationStage stage,
+                              uint32_t current,
+                              uint32_t total,
+                              const std::string& detail) {
+                const bool zhUi = tools3000::core::isUiLanguageChinese();
+                const std::string provName =
+                    tools3000::core::translate::TranslationService::formatProviderShortName(detail, zhUi);
+                std::string msgUtf8;
+                std::string nextProvLabel;
+                if (stage == tools3000::core::translate::TranslationStage::SwitchingFallback) {
+                    msgUtf8 = zhUi
+                        ? ("主通道响应较慢，已自动切换至 " + provName + "...")
+                        : ("Primary route slow, switching to " + provName + "...");
+                    nextProvLabel = formatProviderDisplayLabel(settings, detail);
+                } else if (stage == tools3000::core::translate::TranslationStage::RetryingTransient) {
+                    msgUtf8 = zhUi
+                        ? ("网络波动，正在自动重试 (" + provName + ")...")
+                        : ("Route busy, retrying (" + provName + ")...");
+                } else if (stage == tools3000::core::translate::TranslationStage::BatchProgress && total > 1) {
+                    const uint32_t idx = (std::min)(current + 1u, total);
+                    msgUtf8 = zhUi
+                        ? ("长文本分批翻译中（第 " + std::to_string(idx) + "/" + std::to_string(total) + " 批）...")
+                        : ("Translating batch " + std::to_string(idx) + "/" + std::to_string(total) + "...");
+                } else {
+                    return;
+                }
+                tools3000::core::MainThreadDispatcher::instance().post(
+                    [this, reqId, msgUtf8 = std::move(msgUtf8), nextProvLabel = std::move(nextProvLabel)]() {
+                        updateLoadingStageOnUiThread(reqId, msgUtf8, nextProvLabel);
+                    });
+            };
             const auto res = tools3000::core::translate::TranslationService::instance().translateBatch(
                 req, cancelFlag.get());
 
@@ -918,10 +982,13 @@ void QuickTranslatePopupWindow::rebuildLayoutsAndResize(bool repositionAtAnchor)
     const bool zh = tools3000::core::isUiLanguageChinese();
     std::wstring bodyWide;
     if (st == PopupState::Loading) {
-        const wchar_t* dots = (m_loadingFrame % 3 == 0) ? L"." : ((m_loadingFrame % 3 == 1) ? L".." : L"...");
-        bodyWide = (zh ? std::wstring(L"正在使用 ") : std::wstring(L"Translating via ")) +
-                   tools3000::core::WinUtils::utf8ToWstring(m_providerLabelUtf8) +
-                   (zh ? std::wstring(L" 翻译") : std::wstring(L" ")) + dots;
+        if (!m_loadingStageTextUtf8.empty()) {
+            bodyWide = tools3000::core::WinUtils::utf8ToWstring(m_loadingStageTextUtf8);
+        } else {
+            bodyWide = (zh ? std::wstring(L"正在使用 ") : std::wstring(L"Translating via ")) +
+                       tools3000::core::WinUtils::utf8ToWstring(m_providerLabelUtf8) +
+                       (zh ? std::wstring(L" 翻译...") : std::wstring(L"..."));
+        }
     } else if (st == PopupState::Error) {
         bodyWide = tools3000::core::WinUtils::utf8ToWstring(m_errorTextUtf8);
     } else {
@@ -1061,6 +1128,7 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
     m_activeUiRequestId = requestId;
     m_sourceTextUtf8 = sourceText;
     m_translatedTextUtf8.clear();
+    m_loadingStageTextUtf8.clear();
     m_errorTextUtf8.clear();
     m_providerLabelUtf8 = providerLabel;
     m_sourceLangPref = sourcePref.empty() ? "auto" : sourcePref;
@@ -1082,7 +1150,25 @@ void QuickTranslatePopupWindow::presentLoadingOnUiThread(
     rebuildTextFormats();
     rebuildLayoutsAndResize(shouldReposition);
     SetForegroundWindow(hwnd);
-    SetTimer(hwnd, kTimerLoadingAnim, 280, nullptr);
+    SetTimer(hwnd, kTimerLoadingAnim, 50, nullptr);
+    render();
+}
+
+void QuickTranslatePopupWindow::updateLoadingStageOnUiThread(
+    uint64_t requestId,
+    const std::string& stageTextUtf8,
+    const std::string& updatedProviderLabel) {
+    if (m_shuttingDown.load(std::memory_order_acquire)) return;
+    if (requestId != m_activeUiRequestId) return;
+    if (m_state.load(std::memory_order_acquire) != PopupState::Loading) return;
+    HWND hwnd = m_hwnd.load(std::memory_order_acquire);
+    if (!hwnd || !IsWindow(hwnd) || !IsWindowVisible(hwnd)) return;
+
+    m_loadingStageTextUtf8 = stageTextUtf8;
+    if (!updatedProviderLabel.empty()) {
+        m_providerLabelUtf8 = updatedProviderLabel;
+    }
+    rebuildLayoutsAndResize(false);
     render();
 }
 
@@ -1537,10 +1623,40 @@ void QuickTranslatePopupWindow::render() {
         m_renderTarget->PopAxisAlignedClip();
     }
 
-    // 4. 译文 / 加载态 / 错误态主区域（带裁剪滚动与细圆角滚动条）
+    // 4. 译文 / 加载态 / 错误态主区域（带裁剪滚动、纯矢量加载旋转圆弧与细圆角滚动条）
     const PopupState st = m_state.load(std::memory_order_acquire);
     if (m_bodyLayout) {
         m_renderTarget->PushAxisAlignedClip(m_bodyViewportRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+        float bodyTextLeft = m_bodyViewportRect.left + 2.0f;
+        if (st == PopupState::Loading && m_d2dFactory) {
+            const float sr = 6.5f;
+            const float scx = m_bodyViewportRect.left + 10.0f;
+            const float scy = m_bodyViewportRect.top + 11.5f;
+            const float sw = 1.8f;
+            brush->SetColor(palette.scrollTrack);
+            m_renderTarget->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(scx, scy), sr, sr), brush.Get(), sw);
+            constexpr float kPi = 3.14159265f;
+            const float a0 = static_cast<float>(m_loadingFrame) * 0.34f;
+            const float a1 = a0 + 1.45f * kPi;
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> arcGeo;
+            if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(arcGeo.GetAddressOf())) && arcGeo) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(arcGeo->Open(sink.GetAddressOf())) && sink) {
+                    sink->BeginFigure(D2D1::Point2F(scx + sr * std::cos(a0), scy + sr * std::sin(a0)),
+                                      D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddArc(D2D1::ArcSegment(
+                        D2D1::Point2F(scx + sr * std::cos(a1), scy + sr * std::sin(a1)),
+                        D2D1::SizeF(sr, sr), 0.0f,
+                        D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_LARGE));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    if (SUCCEEDED(sink->Close())) {
+                        brush->SetColor(palette.accent);
+                        m_renderTarget->DrawGeometry(arcGeo.Get(), brush.Get(), sw);
+                    }
+                }
+            }
+            bodyTextLeft = m_bodyViewportRect.left + 24.0f;
+        }
         if (st == PopupState::Error) {
             brush->SetColor(palette.errorText);
         } else if (st == PopupState::Loading) {
@@ -1549,7 +1665,7 @@ void QuickTranslatePopupWindow::render() {
             brush->SetColor(palette.bodyText);
         }
         m_renderTarget->DrawTextLayout(
-            D2D1::Point2F(m_bodyViewportRect.left + 2.0f, m_bodyViewportRect.top - m_scrollY),
+            D2D1::Point2F(bodyTextLeft, m_bodyViewportRect.top - m_scrollY),
             m_bodyLayout.Get(), brush.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
         m_renderTarget->PopAxisAlignedClip();
     }
@@ -1653,7 +1769,6 @@ LRESULT QuickTranslatePopupWindow::handleMessage(HWND hwnd, UINT msg, WPARAM wPa
             if (wParam == kTimerLoadingAnim) {
                 if (m_state.load(std::memory_order_acquire) == PopupState::Loading) {
                     ++m_loadingFrame;
-                    rebuildLayoutsAndResize(false);
                     render();
                 } else {
                     KillTimer(hwnd, kTimerLoadingAnim);

@@ -81,6 +81,9 @@ public:
     void adjustZoomByStep(float delta);
     void resetZoomToConfigured();
 
+    /// 活跃静止态光标移动极速唤醒（零锁原子检查，消除 12ms 起步迟滞）
+    void notifyCursorMoved() noexcept;
+
     /// 当前是否处于推近/放大/拉回动画中（单次原子读，钩子热路径安全）
     bool isActive() const noexcept;
 
@@ -123,6 +126,8 @@ private:
     std::atomic<bool> m_active{false};
     std::atomic<bool> m_wheelAdjustActive{false};
     std::atomic<bool> m_immediateReset{false};
+    std::atomic<bool> m_isSettled{false};
+    std::atomic<bool> m_cursorMovedWake{false};
     std::atomic<uint8_t> m_phase{static_cast<uint8_t>(Phase::Idle)};
 
     CinemaZoomConfig m_config{};

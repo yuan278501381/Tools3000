@@ -935,7 +935,11 @@
     "langArSa": "아랍어 OCR",
     "langThTh": "태국어 OCR",
     "translateExcludedAppsTitle": "전문 앱 자동 양보",
-    "translateExcludedAppsDesc": "아래 앱이 활성화되어 있을 때 이 단축키를 일시 해제(예: ssms.exe SQL 실행, emacs.exe M-x)하며 나머지 Tools3000 단축키는 유지합니다"
+    "translateExcludedAppsDesc": "아래 앱이 활성화되어 있을 때 이 단축키를 일시 해제(예: ssms.exe SQL 실행, emacs.exe M-x)하며 나머지 Tools3000 단축키는 유지합니다",
+    "downloadPhaseProbing": "가장 빠른 다운로드 미러 측정 중...",
+    "downloadPhaseSwitching": "현재 미러가 느려 대체 미러로 자동 전환 중({{index}}/{{total}})...",
+    "downloadPhaseVerifying": "오프라인 모델 무결성 검증 중...",
+    "downloadMirrorTag": "미러: {{host}}"
   },
   "gesture": {
     "title": "마우스 제스처 설정",

@@ -935,7 +935,11 @@
     "langArSa": "OCR em árabe",
     "langThTh": "OCR em tailandês",
     "translateExcludedAppsTitle": "Ceder automaticamente em apps profissionais",
-    "translateExcludedAppsDesc": "Libera temporariamente este atalho quando estes apps estiverem em foco (ex.: ssms.exe para executar SQL, emacs.exe para M-x) mantendo os demais atalhos do Tools3000 ativos"
+    "translateExcludedAppsDesc": "Libera temporariamente este atalho quando estes apps estiverem em foco (ex.: ssms.exe para executar SQL, emacs.exe para M-x) mantendo os demais atalhos do Tools3000 ativos",
+    "downloadPhaseProbing": "Testando o servidor de download mais rápido...",
+    "downloadPhaseSwitching": "Servidor lento, alternando para servidor reserva ({{index}}/{{total}})...",
+    "downloadPhaseVerifying": "Verificando a integridade do modelo offline...",
+    "downloadMirrorTag": "Servidor: {{host}}"
   },
   "gesture": {
     "title": "Configurações de Gestos do Mouse",

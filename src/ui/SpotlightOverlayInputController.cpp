@@ -82,6 +82,9 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch, bool allowCinemaZoom) {
             m_hideRequested.store(false, std::memory_order_release);
             m_animState = AnimState::FadeIn;
             m_animStartTime = std::chrono::steady_clock::now();
+            if (m_hwnd.load(std::memory_order_acquire) != nullptr && !isCompositorReady()) {
+                m_pendingAnimStartReanchor.store(true, std::memory_order_release);
+            }
             m_currentAlpha = 0.05f;
             m_focusProgress = 0.0f;
             m_scalePulse = 1.0f;
@@ -103,6 +106,9 @@ void SpotlightOverlay::trigger(POINT pt, bool autoFetch, bool allowCinemaZoom) {
             m_hideRequested.store(false, std::memory_order_release);
             m_animState = AnimState::FadeIn;
             m_animStartTime = std::chrono::steady_clock::now();
+            if (m_hwnd.load(std::memory_order_acquire) != nullptr && !isCompositorReady()) {
+                m_pendingAnimStartReanchor.store(true, std::memory_order_release);
+            }
             m_currentAlpha = 0.05f;
             m_focusProgress = 0.0f;
             m_scalePulse = 1.0f;
@@ -411,6 +417,9 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
 }
 
 void SpotlightOverlay::onHookMouseMove(int x, int y) {
+    if (CinemaZoomEngine::instance().isActive()) {
+        CinemaZoomEngine::instance().notifyCursorMoved();
+    }
     if (!m_needMouseMove.load(std::memory_order_relaxed)) {
         return;
     }
@@ -675,6 +684,20 @@ void SpotlightOverlay::onMouseMove(POINT pt) {
 }
 
 void SpotlightOverlay::tickAnimation() {
+    // 若冷启动（闲置 60s 释放后）首次触发 FadeIn，先在渲染线程完成 GPU 上下文预建并仅补偿真实冷建耗时，
+    // 彻底消除冷启首帧直接跳到 progress≈0.3 的开场吞帧，同时绝不吞掉正常经过的时间流逝。
+    std::chrono::steady_clock::duration coldInitCompensation{0};
+    if (m_pendingAnimStartReanchor.load(std::memory_order_acquire)) {
+        if (m_hwnd.load(std::memory_order_acquire) != nullptr && !isCompositorReady()) {
+            const auto initStart = std::chrono::steady_clock::now();
+            std::lock_guard baseLock(m_baseMutex);
+            if (!isCompositorReady() && initCompositorLocked()) {
+                coldInitCompensation = std::chrono::steady_clock::now() - initStart;
+            }
+        }
+        m_pendingAnimStartReanchor.store(false, std::memory_order_release);
+    }
+
     RenderSnapshot snapshot;
     bool shouldRender = false;
     bool shouldHide = false;
@@ -684,6 +707,11 @@ void SpotlightOverlay::tickAnimation() {
 
         // 0. 从无锁单写单读高速环形队列出队并处理最新鼠标轨迹采样
         drainRawMovesLocked();
+
+        if (coldInitCompensation > std::chrono::steady_clock::duration::zero() &&
+            m_animState == AnimState::FadeIn) {
+            m_animStartTime += coldInitCompensation;
+        }
 
         // 1. 光标位置微采样：直接从底层操作系统极速获取光标 (开销仅 ~20ns)
         if (m_animState == AnimState::FadeIn || m_animState == AnimState::Holding) {

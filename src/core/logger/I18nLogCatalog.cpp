@@ -2989,6 +2989,10 @@ static const std::unordered_map<std::string_view, LogEntry>& getCatalog() {
             "[{}] 贴图原位翻译无变化: 全部段落与原文一致（如代码标识、文件名或路径）",
             "[{}] Pin window in-place translation produced no text changes (all paragraphs matched source text)"
         }},
+        {"手势轨迹 SwapChain 渲染失败，降级兼容管线", {
+            "[{}] 手势轨迹 SwapChain 渲染失败，降级兼容管线",
+            "[{}] Gesture trail SwapChain rendering failed, falling back to compatibility pipeline"
+        }},
     };
     return catalog;
 }

@@ -12,9 +12,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <mmsystem.h>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "winmm.lib")
 
 namespace tools3000::ui {
 
@@ -78,7 +80,19 @@ static constexpr const wchar_t* TOAST_CLASS = L"Tools3000_ToastOverlay";
 static constexpr UINT_PTR TIMER_ID = 1;
 static constexpr UINT_PTR FADE_IN_TIMER_ID = 3;
 static constexpr int HIDE_TIMEOUT_MS = 2000;
-static constexpr int FADE_INTERVAL_MS = 16;
+static constexpr int FADE_INTERVAL_MS = 8;
+static constexpr float FADE_IN_DURATION_MS = 180.0f;
+
+void ToastOverlay::setHighResTimerBoost(bool active) noexcept {
+    if (active && !m_highResTimerBoosted) {
+        if (timeBeginPeriod(1) == TIMERR_NOERROR) {
+            m_highResTimerBoosted = true;
+        }
+    } else if (!active && m_highResTimerBoosted) {
+        timeEndPeriod(1);
+        m_highResTimerBoosted = false;
+    }
+}
 
 ToastOverlay& ToastOverlay::instance() {
     static ToastOverlay inst;
@@ -139,6 +153,7 @@ bool ToastOverlay::initialize(HINSTANCE hInstance) {
 }
 
 void ToastOverlay::shutdown() {
+    setHighResTimerBoost(false);
     discardResources();
     if (m_hwnd) {
         KillTimer(m_hwnd, TIMER_ID);
@@ -173,6 +188,7 @@ void ToastOverlay::hideNow() {
     }
     KillTimer(hwnd, TIMER_ID);
     KillTimer(hwnd, FADE_IN_TIMER_ID);
+    setHighResTimerBoost(false);
     ShowWindow(hwnd, SW_HIDE);
     tools3000::core::accessibility::hideOverlay(hwnd);
     {
@@ -217,6 +233,7 @@ void ToastOverlay::showToast(const std::string& text) {
             m_opacity = 0.0f;
             m_animScale = 0.94f;
             m_fadingIn = true;
+            m_fadeInStartTime = std::chrono::steady_clock::now();
         }
         startFadeIn = m_fadingIn;
     }
@@ -240,8 +257,10 @@ void ToastOverlay::showToast(const std::string& text) {
     tools3000::core::accessibility::announceOverlay(hwnd, cleanWide);
     
     if (startFadeIn) {
+        setHighResTimerBoost(true);
         SetTimer(hwnd, FADE_IN_TIMER_ID, FADE_INTERVAL_MS, nullptr);
     } else {
+        setHighResTimerBoost(false);
         render();
         SetTimer(hwnd, TIMER_ID, HIDE_TIMEOUT_MS, nullptr);
     }
@@ -653,9 +672,14 @@ LRESULT CALLBACK ToastOverlay::windowProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                         bool done = false;
                         {
                             std::lock_guard lock(self->m_mutex);
-                            self->m_opacity += 0.1f;
-                            self->m_animScale = (std::min)(1.0f, self->m_animScale + 0.006f);
-                            if (self->m_opacity >= 1.0f) {
+                            const float elapsedMs = static_cast<float>(
+                                std::chrono::duration_cast<std::chrono::microseconds>(
+                                    std::chrono::steady_clock::now() - self->m_fadeInStartTime).count()) / 1000.0f;
+                            const float t = std::clamp(elapsedMs / FADE_IN_DURATION_MS, 0.0f, 1.0f);
+                            const float easeOut = 1.0f - std::pow(1.0f - t, 3.0f);
+                            self->m_opacity = easeOut;
+                            self->m_animScale = 0.94f + 0.06f * easeOut;
+                            if (t >= 1.0f) {
                                 self->m_opacity = 1.0f;
                                 self->m_animScale = 1.0f;
                                 self->m_fadingIn = false;
@@ -664,6 +688,7 @@ LRESULT CALLBACK ToastOverlay::windowProc(HWND hwnd, UINT msg, WPARAM wParam, LP
                         }
                         if (done) {
                             KillTimer(hwnd, FADE_IN_TIMER_ID);
+                            self->setHighResTimerBoost(false);
                             SetTimer(hwnd, TIMER_ID, HIDE_TIMEOUT_MS, nullptr);
                         }
                         self->render();

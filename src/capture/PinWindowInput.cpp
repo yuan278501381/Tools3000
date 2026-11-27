@@ -1866,6 +1866,22 @@ LRESULT CALLBACK PinWindow::pinWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
                 if (!self->m_zoomAnimating && !self->m_zoomStageActive) {
                     self->releaseZoomStage();
                 }
+            } else if (self && wParam == PinWindow::kTimerIdBusySpinner) {
+                const bool translateWaiting = self->m_translationInFlight.load(std::memory_order_acquire);
+                const bool ocrWaiting = ((!self->m_silentOcrPreload.load(std::memory_order_acquire) &&
+                                          self->m_ocrInFlightVersion.load(std::memory_order_acquire) != 0 &&
+                                          !self->m_ocrReady.load(std::memory_order_acquire)) ||
+                                         self->m_extractTextInFlight.load(std::memory_order_acquire));
+                if (translateWaiting || ocrWaiting) {
+                    self->m_busySpinAngle += 0.34f;
+                    if (self->m_busySpinAngle > 6.2831853f) {
+                        self->m_busySpinAngle -= 6.2831853f;
+                    }
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else {
+                    KillTimer(hwnd, PinWindow::kTimerIdBusySpinner);
+                    self->m_busySpinnerTimerActive = false;
+                }
             }
             return 0;
         }

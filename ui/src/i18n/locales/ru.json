@@ -935,7 +935,11 @@
     "langArSa": "Арабский OCR",
     "langThTh": "Тайский OCR",
     "translateExcludedAppsTitle": "Автоуступка в профессиональных приложениях",
-    "translateExcludedAppsDesc": "Временно освобождает это сочетание, когда активны указанные приложения (например, ssms.exe для выполнения SQL, emacs.exe для M-x), сохраняя остальные клавиши Tools3000"
+    "translateExcludedAppsDesc": "Временно освобождает это сочетание, когда активны указанные приложения (например, ssms.exe для выполнения SQL, emacs.exe для M-x), сохраняя остальные клавиши Tools3000",
+    "downloadPhaseProbing": "Подбор самого быстрого зеркала загрузки...",
+    "downloadPhaseSwitching": "Медленное зеркало, переключение на резервное ({{index}}/{{total}})...",
+    "downloadPhaseVerifying": "Проверка целостности офлайн-модели...",
+    "downloadMirrorTag": "Зеркало: {{host}}"
   },
   "gesture": {
     "title": "Настройки жестов мышью",

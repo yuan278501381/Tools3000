@@ -935,7 +935,11 @@
     "langArSa": "Arabic OCR",
     "langThTh": "Thai OCR",
     "translateExcludedAppsTitle": "Auto-Yield in Professional Apps",
-    "translateExcludedAppsDesc": "Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active"
+    "translateExcludedAppsDesc": "Temporarily releases this shortcut when these apps are focused (e.g. ssms.exe for Execute SQL, emacs.exe for M-x) while keeping all other Tools3000 shortcuts active",
+    "downloadPhaseProbing": "Testing fastest download mirror...",
+    "downloadPhaseSwitching": "Current mirror is slow, switching to fallback mirror ({{index}}/{{total}})...",
+    "downloadPhaseVerifying": "Verifying offline model integrity...",
+    "downloadMirrorTag": "Mirror: {{host}}"
   },
   "gesture": {
     "title": "Mouse Gesture Settings",

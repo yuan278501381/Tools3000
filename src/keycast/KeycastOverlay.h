@@ -10,6 +10,7 @@
 #include <mutex>
 #include <vector>
 #include <atomic>
+#include <chrono>
 #include "core/hotkey/KeyTranslator.h"
 
 namespace tools3000::keycast {
@@ -181,6 +182,9 @@ private:
     float m_dpiScale = 1.0f;
     bool m_updatingPlacement = false;
     bool m_timerRunning = false;
+    bool m_highResTimerBoosted = false;
+    std::chrono::steady_clock::time_point m_lastAnimTickTime{};
+    void setHighResTimerBoost(bool active) noexcept;
 
     std::vector<KeycastRow> m_rows;
     std::string m_lastRawKey;

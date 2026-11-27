@@ -30,8 +30,10 @@ namespace {
 constexpr wchar_t WindowClass[] = L"Tools3000_OcrResult";
 constexpr UINT FadeTimerId = 1;
 constexpr UINT CopyStateTimerId = 2;
+constexpr UINT LoadingAnimTimerId = 3;
 constexpr UINT FadeIntervalMs = 16;
 constexpr UINT FadeDurationMs = 150;
+constexpr UINT LoadingAnimIntervalMs = 33;
 constexpr UINT CopyStateDurationMs = 2000;
 constexpr float BaseShadowInset = 6.0f;
 constexpr float BaseIndexColWidth = 30.0f;
@@ -1043,6 +1045,14 @@ void OcrResultWindow::showResult(const std::string& text, const RECT* anchorRect
     const bool isZh = tools3000::core::isUiLanguageChinese();
     const std::string loadingLabel = tools3000::core::trUtf8CstrFor(isZh, "正在识别...", "Recognizing...");
     m_isLoadingState = (text == loadingLabel);
+    if (m_isLoadingState) {
+        m_loadingSpinAngle = 0.0f;
+        m_loadingStartTick = GetTickCount64();
+        SetTimer(m_hwnd, LoadingAnimTimerId, LoadingAnimIntervalMs, nullptr);
+    } else {
+        KillTimer(m_hwnd, LoadingAnimTimerId);
+        m_loadingStartTick = 0;
+    }
     m_mergeParagraphs = false;
     m_editedSinceModeSwitch = false;
     m_editUndoStack.clear();
@@ -1142,6 +1152,9 @@ void OcrResultWindow::hide() {
     if (GetCapture() == m_hwnd) ReleaseCapture();
     KillTimer(m_hwnd, FadeTimerId);
     KillTimer(m_hwnd, CopyStateTimerId);
+    KillTimer(m_hwnd, LoadingAnimTimerId);
+    m_isLoadingState = false;
+    m_loadingStartTick = 0;
     ShowWindow(m_hwnd, SW_HIDE);
     releaseSurface();
     m_lines.clear();
@@ -1355,21 +1368,29 @@ void OcrResultWindow::render(int retryDepth) {
     m_renderTarget->DrawRoundedRectangle(&card, m_brushBorder.Get(), border);
 
     // 3. 顶栏标题与“合并段落”切换胶囊按钮
-    std::wstring title = chinese
-        ? (L"文字识别结果 (" + std::to_wstring(m_lines.size()) + L" 行)")
-        : (L"Recognized Text (" + std::to_wstring(m_lines.size()) + L" lines)");
-    if (m_copiedTime && m_copySucceeded) {
-        if (m_copiedWord) {
-            title += chinese ? L"  ·  已复制词块" : L"  ·  Copied word";
-        } else if (m_copiedLineIndex >= 0) {
-            title += chinese
-                ? (L"  ·  已复制第 " + std::to_wstring(m_copiedLineIndex + 1) + L" 行")
-                : (L"  ·  Copied line " + std::to_wstring(m_copiedLineIndex + 1));
-        } else if (m_copiedSelection) {
-            title += chinese ? L"  ·  已复制选中文字" : L"  ·  Copied selection";
+    std::wstring title;
+    if (m_isLoadingState) {
+        title = chinese ? L"正在文字识别" : L"Recognizing Text";
+        if (!m_statusBadge.empty()) {
+            title += L"  ·  " + m_statusBadge;
         }
-    } else if (!m_statusBadge.empty()) {
-        title += L"  ·  " + m_statusBadge;
+    } else {
+        title = chinese
+            ? (L"文字识别结果 (" + std::to_wstring(m_lines.size()) + L" 行)")
+            : (L"Recognized Text (" + std::to_wstring(m_lines.size()) + L" lines)");
+        if (m_copiedTime && m_copySucceeded) {
+            if (m_copiedWord) {
+                title += chinese ? L"  ·  已复制词块" : L"  ·  Copied word";
+            } else if (m_copiedLineIndex >= 0) {
+                title += chinese
+                    ? (L"  ·  已复制第 " + std::to_wstring(m_copiedLineIndex + 1) + L" 行")
+                    : (L"  ·  Copied line " + std::to_wstring(m_copiedLineIndex + 1));
+            } else if (m_copiedSelection) {
+                title += chinese ? L"  ·  已复制选中文字" : L"  ·  Copied selection";
+            }
+        } else if (!m_statusBadge.empty()) {
+            title += L"  ·  " + m_statusBadge;
+        }
     }
     const float titleRight = (std::max)(padding, m_btnMergeRect.left - 8.0f * scale);
     m_renderTarget->DrawTextW(
@@ -1443,7 +1464,84 @@ void OcrResultWindow::render(int retryDepth) {
         }
     }
 
-    if (!m_lines.empty()) {
+    if (m_isLoadingState) {
+        // 深度识别/长耗时加载态：纯矢量双环旋转指示器 + 实时阶段主文案 + 温和副提示（0 Emoji，全 DPI 清晰）
+        const D2D1_RECT_F viewport = D2D1::RectF(
+            padding, header, width - padding, height - footer);
+        m_renderTarget->PushAxisAlignedClip(viewport, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+
+        const float centerX = (viewport.left + viewport.right) * 0.5f;
+        const float centerY = (viewport.top + viewport.bottom) * 0.5f - 10.0f * scale;
+        const float spinR = 13.0f * scale;
+        const float spinStroke = 2.4f * scale;
+
+        if (m_brushBtn) {
+            m_renderTarget->DrawEllipse(
+                D2D1::Ellipse(D2D1::Point2F(centerX, centerY - 18.0f * scale), spinR, spinR),
+                m_brushBtn.Get(), spinStroke);
+        }
+        if (m_d2dFactory && m_brushAccent) {
+            constexpr float kPi = 3.14159265f;
+            const float a0 = m_loadingSpinAngle;
+            const float a1 = a0 + 1.45f * kPi;
+            const float scx = centerX;
+            const float scy = centerY - 18.0f * scale;
+            const D2D1_POINT_2F pStart = D2D1::Point2F(scx + spinR * std::cos(a0), scy + spinR * std::sin(a0));
+            const D2D1_POINT_2F pEnd = D2D1::Point2F(scx + spinR * std::cos(a1), scy + spinR * std::sin(a1));
+            Microsoft::WRL::ComPtr<ID2D1PathGeometry> arcGeo;
+            if (SUCCEEDED(m_d2dFactory->CreatePathGeometry(&arcGeo)) && arcGeo) {
+                Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+                if (SUCCEEDED(arcGeo->Open(&sink)) && sink) {
+                    sink->BeginFigure(pStart, D2D1_FIGURE_BEGIN_HOLLOW);
+                    sink->AddArc(D2D1::ArcSegment(
+                        pEnd,
+                        D2D1::SizeF(spinR, spinR),
+                        0.0f,
+                        D2D1_SWEEP_DIRECTION_CLOCKWISE,
+                        D2D1_ARC_SIZE_LARGE));
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                    if (SUCCEEDED(sink->Close())) {
+                        m_renderTarget->DrawGeometry(arcGeo.Get(), m_brushAccent.Get(), spinStroke);
+                    }
+                }
+            }
+        }
+
+        const std::wstring stageMain = m_wideText.empty()
+            ? (chinese ? L"正在识别..." : L"Recognizing...")
+            : m_wideText;
+        if (m_dwriteFactory && m_textFormat && m_brushText) {
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> stageLayout;
+            const float maxTextW = (std::max)(120.0f * scale, (viewport.right - viewport.left) - 24.0f * scale);
+            if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                    stageMain.c_str(), static_cast<UINT32>(stageMain.size()),
+                    m_textFormat.Get(), maxTextW, 64.0f * scale, &stageLayout)) && stageLayout) {
+                stageLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                m_renderTarget->DrawTextLayout(
+                    D2D1::Point2F(viewport.left + 12.0f * scale, centerY + 6.0f * scale),
+                    stageLayout.Get(), m_brushText.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+
+        const uint64_t elapsedMs = (m_loadingStartTick > 0) ? (GetTickCount64() - m_loadingStartTick) : 0ULL;
+        if (elapsedMs >= 1200ULL && m_hintFormat && m_brushMuted) {
+            const std::wstring subHint = chinese
+                ? L"深度模型正在精细计算，请稍候（按 Esc 可关闭）"
+                : L"Deep model processing, please wait (Esc to close)";
+            Microsoft::WRL::ComPtr<IDWriteTextLayout> subLayout;
+            const float maxTextW = (std::max)(120.0f * scale, (viewport.right - viewport.left) - 24.0f * scale);
+            if (SUCCEEDED(m_dwriteFactory->CreateTextLayout(
+                    subHint.c_str(), static_cast<UINT32>(subHint.size()),
+                    m_hintFormat.Get(), maxTextW, 32.0f * scale, &subLayout)) && subLayout) {
+                subLayout->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+                m_renderTarget->DrawTextLayout(
+                    D2D1::Point2F(viewport.left + 12.0f * scale, centerY + 34.0f * scale),
+                    subLayout.Get(), m_brushMuted.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
+            }
+        }
+
+        m_renderTarget->PopAxisAlignedClip();
+    } else if (!m_lines.empty()) {
         const D2D1_RECT_F viewport = D2D1::RectF(
             padding, header, width - padding, height - footer);
         m_renderTarget->PushAxisAlignedClip(
@@ -2175,6 +2273,16 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
                 KillTimer(hwnd, CopyStateTimerId);
                 self->m_copiedTime = 0;
                 self->render();
+            } else if (wParam == LoadingAnimTimerId) {
+                if (self->m_isLoadingState && IsWindowVisible(hwnd)) {
+                    self->m_loadingSpinAngle += 0.24f;
+                    if (self->m_loadingSpinAngle > 6.2831853f) {
+                        self->m_loadingSpinAngle -= 6.2831853f;
+                    }
+                    self->render();
+                } else {
+                    KillTimer(hwnd, LoadingAnimTimerId);
+                }
             }
             return 0;
         case WM_DPICHANGED: {
@@ -2211,6 +2319,7 @@ LRESULT CALLBACK OcrResultWindow::wndProc(
         case WM_DESTROY:
             KillTimer(hwnd, FadeTimerId);
             KillTimer(hwnd, CopyStateTimerId);
+            KillTimer(hwnd, LoadingAnimTimerId);
             self->releaseSurface();
             if (self->m_hwnd == hwnd) self->m_hwnd = nullptr;
             return 0;
