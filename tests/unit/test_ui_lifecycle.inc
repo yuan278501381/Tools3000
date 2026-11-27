@@ -2537,3 +2537,82 @@ TEST(OverlayZeroDropArchitectureTest, LiveSpotlightFramePacingAndStaticZeroCpu) 
         spot.shutdown();
     }
 }
+
+TEST(OverlayZeroDropArchitectureTest, ClickRippleAndTrailMustStayClickThroughAndNeverSwallowRapidClicks) {
+    using namespace tools3000::ui;
+    using namespace tools3000::core;
+
+    auto& spot = SpotlightOverlay::instance();
+    const bool alreadyInit = (spot.hwnd() != nullptr);
+    if (!alreadyInit) {
+        ASSERT_TRUE(spot.initialize(GetModuleHandleW(nullptr)));
+    }
+
+    HWND spotHwnd = spot.hwnd();
+    ASSERT_NE(spotHwnd, nullptr);
+    const LONG_PTR exStyle = GetWindowLongPtrW(spotHwnd, GWL_EXSTYLE);
+    EXPECT_NE(exStyle & WS_EX_LAYERED, 0) << "Click-through overlay must keep WS_EX_LAYERED for cross-process hit-testing";
+    EXPECT_NE(exStyle & WS_EX_TRANSPARENT, 0) << "Click-through overlay must keep WS_EX_TRANSPARENT";
+
+    const auto prevSettings = spot.getSettings();
+    SpotlightSettings testCfg = prevSettings;
+    testCfg.enabled = true;
+    testCfg.autoBypassFullscreen = false;
+    testCfg.clickRippleEnabled = true;
+    testCfg.clickRippleStyle = "sparkle_burst";
+    testCfg.mouseTrailEnabled = false;
+    spot.updateSettings(testCfg);
+    spot.resetFrameMetrics();
+
+    // 1. 触发第一次点击水波纹，等待浮层实际显示并呈现到屏幕上
+    constexpr POINT kClickPt1{420, 420};
+    spot.onMouseDown(0, kClickPt1);
+    for (int i = 0; i < 60 && (!spot.isVisible() || spot.getFrameMetrics().framesPresented == 0); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(spot.isVisible());
+    ASSERT_TRUE(IsWindowVisible(spotHwnd) != FALSE);
+
+    // 2. 跨线程真实点击穿透断言：浮层就贴在点击坐标正上方，WindowFromPoint 绝不得命中 SpotlightOverlay
+    const HWND hitAtClick = WindowFromPoint(kClickPt1);
+    EXPECT_NE(hitAtClick, spotHwnd)
+        << "Visible click-ripple overlay must never intercept mouse/pointer clicks beneath cursor";
+
+    // 3. 380ms 内快速连点第二下：不得误触发 hideNow() 吞掉水波纹
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    const uint64_t framesBeforeSecondClick = spot.getFrameMetrics().framesPresented;
+    constexpr POINT kClickPt2{445, 435};
+    spot.onMouseDown(0, kClickPt2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(80));
+    EXPECT_TRUE(spot.isActive()) << "Rapid second click during active ripple must not invoke hideNow()";
+    EXPECT_TRUE(IsWindowVisible(spotHwnd) != FALSE);
+    EXPECT_GT(spot.getFrameMetrics().framesPresented, framesBeforeSecondClick);
+    EXPECT_NE(WindowFromPoint(kClickPt2), spotHwnd);
+
+    // 4. 校验 DComp SwapChain 画面实际可渲染输出（PrintWindow PW_RENDERFULLCONTENT 成功）
+    RECT rc{};
+    ASSERT_TRUE(GetWindowRect(spotHwnd, &rc) != FALSE);
+    const int w = (std::max)(1, static_cast<int>(rc.right - rc.left));
+    const int h = (std::max)(1, static_cast<int>(rc.bottom - rc.top));
+    HDC screenDc = GetDC(nullptr);
+    ASSERT_NE(screenDc, nullptr);
+    HDC memDc = CreateCompatibleDC(screenDc);
+    HBITMAP bmp = CreateCompatibleBitmap(screenDc, w, h);
+    HGDIOBJ old = SelectObject(memDc, bmp);
+    const BOOL pwOk = PrintWindow(spotHwnd, memDc, 0x00000002 /*PW_RENDERFULLCONTENT*/);
+    SelectObject(memDc, old);
+    DeleteObject(bmp);
+    DeleteDC(memDc);
+    ReleaseDC(nullptr, screenDc);
+    EXPECT_TRUE(pwOk != FALSE);
+
+    std::cout << "[SpotlightClickThrough] exStyle=0x" << std::hex << exStyle << std::dec
+              << " tier=" << static_cast<int>(spot.getFrameMetrics().presentTier)
+              << " clickThrough=1 rapidClickActive=1 printWindowOk=" << (pwOk != FALSE) << std::endl;
+
+    spot.hideNow();
+    spot.updateSettings(prevSettings);
+    if (!alreadyInit) {
+        spot.shutdown();
+    }
+}

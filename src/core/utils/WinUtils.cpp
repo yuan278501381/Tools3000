@@ -3960,11 +3960,10 @@ HWND WinUtils::createOverlayHelperOwner(HINSTANCE hInstance, const wchar_t* name
 void WinUtils::applyTaskbarSafeOverlayStyle(HWND hwnd, bool excludeFromCapture) {
     if (!hwnd || !IsWindow(hwnd)) return;
     LONG_PTR exStyle = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    // DirectComposition WS_EX_NOREDIRECTIONBITMAP 窗口严禁强加 WS_EX_LAYERED，避免无谓分配 33MB GDI 重定向显存或触发旧系统合成退化
-    const bool noRedirection = (exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0;
+    // Windows 内核规定：WS_EX_TRANSPARENT 必须与 WS_EX_LAYERED 同时置位，才能在跨线程/跨进程命中测试中实现点击与触控穿透。
+    // 即便窗口同时启用了 DirectComposition WS_EX_NOREDIRECTIONBITMAP，也必须保留 WS_EX_LAYERED（不调用 UpdateLayeredWindow 即不分配 GDI 重定向位图）。
     const LONG_PTR required =
-        (noRedirection ? 0 : WS_EX_LAYERED) |
-        WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW;
     exStyle = (exStyle | required) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, exStyle);
 

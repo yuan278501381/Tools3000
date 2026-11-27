@@ -300,6 +300,8 @@ void SpotlightOverlay::onMouseDown(int button, POINT pt) {
 
         const HWND hwnd = m_hwnd.load(std::memory_order_acquire);
         if (m_animState == AnimState::Idle &&
+            m_ripples.empty() &&
+            m_trail.empty() &&
             (m_visible.load(std::memory_order_relaxed) ||
              (hwnd && IsWindow(hwnd) && IsWindowVisible(hwnd)) ||
              m_hasDcompSurface.load(std::memory_order_acquire))) {
