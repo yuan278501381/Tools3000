@@ -46,6 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{UpdateLayeredWindow, HICON, ULW_AL
 pub struct SharedGraphics {
     pub d2d_factory: ID2D1Factory,
     pub dwrite_factory: IDWriteFactory,
+    #[allow(dead_code)]
     pub wic_factory: Option<IWICImagingFactory>,
 }
 
@@ -87,6 +88,7 @@ impl SharedGraphics {
         }
     }
 
+    #[allow(dead_code)]
     pub fn create_hwnd_target(
         &self,
         hwnd: HWND,
@@ -238,6 +240,7 @@ impl SharedGraphics {
     }
 
     /// 创建支持省略号自动截断与局部高亮着色的 DirectWrite TextLayout
+    #[allow(dead_code)]
     pub fn create_trimmed_text_layout(
         &self,
         text: &str,
@@ -264,6 +267,7 @@ impl SharedGraphics {
     }
 
     /// 将 Win32 HICON 通过 WIC 转换为预乘 BGRA ID2D1Bitmap（单次转换，绝不泄漏中间对象）
+    #[allow(dead_code)]
     pub fn hicon_to_d2d_bitmap(
         &self,
         rt: &ID2D1RenderTarget,

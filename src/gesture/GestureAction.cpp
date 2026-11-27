@@ -844,7 +844,7 @@ void GestureAction::execute(void* targetWindowPtr) const {
 
         case ActionType::BuiltinCommand: {
             LOG_DEBUG("执行手势动作: BuiltinCommand, cmd={}", static_cast<int>(builtinCmd));
-            BuiltinCommandDispatcher::instance().execute(builtinCmd, targetWindowPtr);
+            BuiltinCommandDispatcher::instance().execute(builtinCmd, targetWindowPtr, builtinParam);
             break;
         }
 
@@ -906,6 +906,9 @@ nlohmann::json GestureAction::toJson() const {
             break;
         case ActionType::BuiltinCommand:
             j["builtinCmd"] = static_cast<int>(builtinCmd);
+            if (!builtinParam.empty()) {
+                j["builtinParam"] = builtinParam;
+            }
             break;
         case ActionType::RunProgram:
             j["programPath"] = programPath;
@@ -976,6 +979,9 @@ GestureAction GestureAction::fromJson(const nlohmann::json& j) {
                 static_cast<int>(BuiltinCommand::CloseWindow),
                 static_cast<int>(kMaxBuiltinCommand));
             action.builtinCmd = static_cast<BuiltinCommand>(rawCmd);
+            if (j.contains("builtinParam") && j["builtinParam"].is_string()) {
+                action.builtinParam = j["builtinParam"].get<std::string>();
+            }
             break;
         }
         case ActionType::RunProgram:

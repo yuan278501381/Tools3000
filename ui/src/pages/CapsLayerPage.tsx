@@ -412,6 +412,16 @@ export const CapsLayerPage: FC = () => {
           </div>
         </div>
 
+        <div className="caps-input-notice" role="note">
+          <ShieldAlert size={15} className="caps-input-notice__icon" aria-hidden="true" />
+          <span>
+            {t(
+              'capsLayer.inputCautionNotice',
+              'Usage tip: Normal typing without holding CapsLock is completely unaffected, but CapsLock will switch to trigger on release. This may affect IMEs that use CapsLock to toggle Chinese/English, remote desktops, or game keybindings. Press Shift + CapsLock anytime for native CapsLock, or add apps to the exclusion list below.',
+            )}
+          </span>
+        </div>
+
         <DisabledCascade disabled={!settings.enabled} className="caps-hero-controls">
           <SettingRow
             label={t('capsLayer.tapActionLabel', 'Quick Tap CapsLock Action')}

@@ -102,13 +102,21 @@ void BuiltinCommandDispatcher::registerHandler(BuiltinCommand cmd, Handler handl
     m_handlers[cmd] = std::move(handler);
 }
 
+void BuiltinCommandDispatcher::registerParamHandler(BuiltinCommand cmd, ParamHandler handler) {
+    std::unique_lock lock(m_mutex);
+    m_paramHandlers[cmd] = std::move(handler);
+}
+
 void BuiltinCommandDispatcher::clearHandlers() {
     decltype(m_handlers) handlers;
+    decltype(m_paramHandlers) paramHandlers;
     {
         std::unique_lock lock(m_mutex);
         handlers.swap(m_handlers);
+        paramHandlers.swap(m_paramHandlers);
     }
     handlers.clear();
+    paramHandlers.clear();
 }
 
 namespace {
@@ -216,16 +224,24 @@ void toggleTransparency(HWND hwnd) {
 
 bool BuiltinCommandDispatcher::hasHandler(BuiltinCommand cmd) const {
     std::shared_lock lock(m_mutex);
-    return m_handlers.find(cmd) != m_handlers.end();
+    return m_handlers.find(cmd) != m_handlers.end() ||
+           m_paramHandlers.find(cmd) != m_paramHandlers.end();
 }
 
-bool BuiltinCommandDispatcher::dispatchAppCommand(BuiltinCommand cmd) const {
+bool BuiltinCommandDispatcher::dispatchAppCommand(BuiltinCommand cmd, const std::string& param) const {
+    ParamHandler paramHandler;
     Handler handler;
     {
         std::shared_lock lock(m_mutex);
-        if (const auto it = m_handlers.find(cmd); it != m_handlers.end()) {
+        if (const auto pit = m_paramHandlers.find(cmd); pit != m_paramHandlers.end()) {
+            paramHandler = pit->second;
+        } else if (const auto it = m_handlers.find(cmd); it != m_handlers.end()) {
             handler = it->second;
         }
+    }
+    if (paramHandler) {
+        paramHandler(param);
+        return true;
     }
     if (handler) {
         handler();
@@ -235,7 +251,7 @@ bool BuiltinCommandDispatcher::dispatchAppCommand(BuiltinCommand cmd) const {
     return false;
 }
 
-void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr) const {
+void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr, const std::string& param) const {
     // 继承父级 TraceId（无则自动生成），保持整条手势/命令执行日志链路统一追踪
     tools3000::core::TraceId::Scope scope(tools3000::core::TraceId::current());
 
@@ -249,7 +265,7 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         }
     }
     if (hasHandler(cmd)) {
-        dispatchAppCommand(cmd);
+        dispatchAppCommand(cmd, param);
         return;
     }
 
@@ -354,7 +370,13 @@ void BuiltinCommandDispatcher::execute(BuiltinCommand cmd, void* targetWindowPtr
         case BuiltinCommand::WindowKitMoveNextMonitor:
         case BuiltinCommand::WindowKitMinimizeToTray:
         case BuiltinCommand::WindowKitQuickSwitch:
-            dispatchAppCommand(cmd);
+        case BuiltinCommand::WindowKitOpenLayoutEditor:
+        case BuiltinCommand::WindowKitApplyLayout:
+        case BuiltinCommand::WindowKitLaunchWorkspace:
+        case BuiltinCommand::WindowKitStartWorkspaceCapture:
+        case BuiltinCommand::WindowKitRestoreAllTray:
+        case BuiltinCommand::WindowKitRescueOffscreen:
+            dispatchAppCommand(cmd, param);
             break;
     }
 }

@@ -68,13 +68,19 @@ enum class BuiltinCommand {
     WindowKitMoveNextMonitor, // 35: 窗口移至下一台显示器
     WindowKitMinimizeToTray,  // 36: 窗口最小化收纳至系统托盘
     WindowKitQuickSwitch,     // 37: 唤出 Quick Switch 窗口切换器
+    WindowKitOpenLayoutEditor,      // 38: 打开 SnapZones 分屏布局管理器
+    WindowKitApplyLayout,           // 39: 切换当前屏至指定分屏布局 (builtinParam = layoutId)
+    WindowKitLaunchWorkspace,       // 40: 一键启动指定桌面工作区 (builtinParam = workspaceId)
+    WindowKitStartWorkspaceCapture, // 41: 启动工作区红框捕获摆拍
+    WindowKitRestoreAllTray,        // 42: 还原全部托盘收纳窗口
+    WindowKitRescueOffscreen,       // 43: 找回越界离屏窗口
     PrevDesktop = PrevVirtualDesktop,
     NextDesktop = NextVirtualDesktop,
     SwitchDesktopLeft = PrevVirtualDesktop,   // 上一个虚拟桌面别名
     SwitchDesktopRight = NextVirtualDesktop   // 下一个虚拟桌面别名
 };
 
-inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::WindowKitQuickSwitch;
+inline constexpr BuiltinCommand kMaxBuiltinCommand = BuiltinCommand::WindowKitRescueOffscreen;
 
 /// 统一校验 BuiltinCommand 整数索引是否合法 (0 ~ kMaxBuiltinCommand)
 inline constexpr bool isValidBuiltinCommandIndex(int index) noexcept {
@@ -135,6 +141,7 @@ struct GestureAction {
     std::string luaScript;           // type == LuaScript (Lua 代码或脚本文件路径)
     std::vector<std::string> requestedPermissions; // type == LuaScript (声明的细粒度权限列表)
     BuiltinCommand builtinCmd;       // type == BuiltinCommand
+    std::string builtinParam;        // type == BuiltinCommand (可选参数，如 layoutId / workspaceId)
     std::string programPath;         // type == RunProgram
     std::string programArgs;         // type == RunProgram
     std::string runMode = "always_new"; // type == RunProgram ("activate_or_run" | "toggle_or_run" | "always_new")

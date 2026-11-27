@@ -315,7 +315,7 @@ html[data-surface="search"] #root {
     background: var(--search-drawer-bg);
     border: 1px solid var(--search-drawer-border);
     box-shadow: 0 16px 38px rgba(0, 0, 0, 0.28);
-    z-index: 950;
+    z-index: var(--z-dropdown);
     overflow: hidden;
 }
 

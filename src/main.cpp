@@ -134,7 +134,7 @@ static HWINEVENTHOOK g_fullscreenMoveSizeHook = nullptr;
 static tools3000::core::SubscriptionId g_hostThemeSubId = 0;
 static std::atomic<ULONGLONG> g_lastQuietIdleTrimTick{0};
 static uint32_t g_fullscreenGuardTickCounter = 0;
-static std::atomic<bool> g_quickLookEnabled{true};
+static std::atomic<bool> g_quickLookEnabled{false};
 
 namespace {
 
@@ -207,7 +207,8 @@ void syncForegroundFullscreenState(bool forceRefresh = false) {
 
     const bool remoteActive = tools3000::core::RemoteMasterEngine::instance().isRemoteForeground() ||
                               tools3000::core::KeyboardHook::instance().isRemoteSuspended();
-    tools3000::core::WindowKitController::instance().syncMutedFlags(suspendHotkeys || suspendGestures, remoteActive);
+    // 窗口管理仅在真全屏热键静默（如全屏独占游戏）或远程桌面时暂停，不因手势全屏绕过误静默 Alt+Tab
+    tools3000::core::WindowKitController::instance().syncMutedFlags(suspendHotkeys, remoteActive);
 
     auto& mouseHook = tools3000::core::MouseHook::instance();
     if (mouseHook.isFullscreenSuspended() != suspendGestures) {
@@ -1443,8 +1444,8 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     {
         auto& cfg = tools3000::core::ConfigManager::instance();
         const bool quickLookEnabled = cfg.has("/plugins/quick_look/enabled")
-            ? cfg.get<bool>("/plugins/quick_look/enabled", true)
-            : cfg.get<bool>("/quicklook/enabled", true);
+            ? cfg.get<bool>("/plugins/quick_look/enabled", false)
+            : cfg.get<bool>("/quicklook/enabled", false);
         g_quickLookEnabled.store(quickLookEnabled, std::memory_order_release);
         tools3000::core::EventBus::instance().subscribe<tools3000::core::QuickLookStateChangedEvent>(
             [](const tools3000::core::QuickLookStateChangedEvent& e) {
@@ -2900,10 +2901,19 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
             }
         }
 
-        // 2. ESC：先收 QuickLook / 非前台置顶剪贴板面板；当剪贴板面板位于前台获焦时，
+        // 2. 纯裸按 ESC（绝不拦截或干扰 Ctrl+Shift+Esc 任务管理器 / Ctrl+Esc 开始菜单 / Shift+Esc 浏览器任务管理器 / Alt+Esc）：
+        //    先收 QuickLook / 非前台置顶剪贴板面板；当剪贴板面板位于前台获焦时，
         //    放行 ESC 给前端执行分级退出（退出内联编辑 -> 退出分组编辑 -> 取消 Ctrl+A 多选 -> 隐藏窗口），
         //    杜绝全局钩子强吞 ESC 导致 Ctrl+A 全选残留锁死双击粘贴。
         if (vkCode == VK_ESCAPE) {
+            const bool ctrlDown = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+            const bool altDown = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+            const bool shiftDown = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+            const bool winDown = (GetAsyncKeyState(VK_LWIN) & 0x8000) != 0 ||
+                                 (GetAsyncKeyState(VK_RWIN) & 0x8000) != 0;
+            if (ctrlDown || altDown || shiftDown || winDown) {
+                return false;
+            }
             auto& clipWnd = tools3000::ui::ClipboardWindow::instance();
             if (clipWnd.isVisible() && !clipWnd.isForegroundActive()) {
                 tools3000::core::MainThreadDispatcher::instance().postDeferred([]() {

@@ -567,4 +567,84 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       { silent: true },
     );
   });
+
+  it('mounts workspace preview stage and meta card inside a sticky dock above the scrollable app list with live hover highlight', async () => {
+    const currentState: WindowManagerResponse = structuredClone(DEFAULT_WINDOW_MANAGER_RESPONSE);
+    currentState.enabled = true;
+    currentState.running = true;
+    currentState.settings.features.workspaces = true;
+    currentState.settings.workspaces.items = [
+      {
+        id: 'ws-sticky-1',
+        name: 'Workspace 2',
+        apps: [
+          {
+            id: 'app-1',
+            appName: 'Visual Studio Code',
+            exePath: 'C:\\Program Files\\Code\\Code.exe',
+            processName: 'Code.exe',
+            args: '',
+            monitorId: 'DISPLAY1',
+            monitorIndex: 0,
+            rect: { x: 100, y: 100, w: 1200, h: 800 },
+          },
+          {
+            id: 'app-2',
+            appName: 'Notepad',
+            exePath: 'C:\\Windows\\System32\\notepad.exe',
+            processName: 'notepad.exe',
+            args: '',
+            monitorId: 'DISPLAY1',
+            monitorIndex: 0,
+            minimized: true,
+          },
+        ],
+      },
+    ];
+
+    vi.spyOn(bridge, 'bridgeRequest').mockImplementation(async (method: string) => {
+      if (method === 'windowManager.getSettings') return currentState;
+      if (method === 'windowManager.getMonitors') {
+        return {
+          monitors: [
+            { id: 'DISPLAY1', name: 'Primary Display', width: 3456, height: 2160, dpi: 192, isPrimary: true },
+          ],
+        };
+      }
+      return {};
+    });
+
+    const { container } = await act(async () => render(<WindowManagerPage />));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('tab', { name: /Workspaces/i }));
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Edit' }));
+    });
+
+    const editor = container.querySelector('.ws-workbench-editor');
+    const header = container.querySelector('.ws-editor-header');
+    const stickyDock = container.querySelector('.ws-editor-sticky-dock');
+    const stageCard = stickyDock?.querySelector('.ws-stage-card');
+    const metaCard = stickyDock?.querySelector('.ws-meta-card');
+    const appGroups = container.querySelectorAll('.ws-app-group');
+
+    expect(editor).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(stickyDock).not.toBeNull();
+    expect(stageCard).not.toBeNull();
+    expect(metaCard).not.toBeNull();
+    // 编辑顶栏不在吸顶区内部，应用列表也在吸顶区下方独立滚动
+    expect(stickyDock?.contains(header!)).toBe(false);
+    expect(appGroups.length).toBe(2);
+    expect(stickyDock?.contains(appGroups[0]!)).toBe(false);
+
+    // 悬停下方最小化应用行时，上方吸顶舞台内的微缩任务栏图标同步高亮
+    const notepadRow = screen.getByText('Notepad').closest('.ws-app-row');
+    expect(notepadRow).not.toBeNull();
+    fireEvent.mouseEnter(notepadRow!);
+    const activeTaskbarBtn = stickyDock?.querySelector('.ws-stage-taskbar__item.is-active');
+    expect(activeTaskbarBtn).not.toBeNull();
+  });
 });

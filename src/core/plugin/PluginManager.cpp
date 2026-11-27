@@ -76,10 +76,15 @@ bool configuredEnabled(const std::string& id) {
         return true;
     }
     if (id == "remote_boost" || id == "remote") {
-        if (config.has("/plugins/remote_boost/enabled")) return config.get<bool>("/plugins/remote_boost/enabled", true);
-        if (config.has("/plugins/remote/enabled")) return config.get<bool>("/plugins/remote/enabled", true);
-        if (config.has("/remote_boost/enabled")) return config.get<bool>("/remote_boost/enabled", true);
-        return true;
+        if (config.has("/plugins/remote_boost/enabled")) return config.get<bool>("/plugins/remote_boost/enabled", false);
+        if (config.has("/plugins/remote/enabled")) return config.get<bool>("/plugins/remote/enabled", false);
+        if (config.has("/remote_boost/enabled")) return config.get<bool>("/remote_boost/enabled", false);
+        return false;
+    }
+    if (id == "file_locksmith" || id == "filelocksmith") {
+        if (config.has("/plugins/file_locksmith/enabled")) return config.get<bool>("/plugins/file_locksmith/enabled", false);
+        if (config.has("/general/shellMenuLocksmithEnabled")) return config.get<bool>("/general/shellMenuLocksmithEnabled", false);
+        return false;
     }
     if (id == "gesture") {
         // 手势插件加载状态仅受 /plugins/gesture/enabled 控制，绝不受运行期临时暂停 (/gesture/paused) 影响
@@ -166,14 +171,14 @@ void PluginManager::reconcilePluginConfigs() {
     patch["spotlight"]["enabled"] = spotlightEnabled;
     patch["plugins"]["spotlight"]["enabled"] = spotlightEnabled;
 
-    // 4. remote_boost: /remote_boost/enabled 与 /plugins/remote_boost/enabled
-    bool remoteEnabled = true;
+    // 4. remote_boost: /remote_boost/enabled 与 /plugins/remote_boost/enabled（默认关闭，按需开启）
+    bool remoteEnabled = false;
     if (cfg.has("/plugins/remote_boost/enabled")) {
-        remoteEnabled = cfg.get<bool>("/plugins/remote_boost/enabled", true);
+        remoteEnabled = cfg.get<bool>("/plugins/remote_boost/enabled", false);
     } else if (cfg.has("/plugins/remote/enabled")) {
-        remoteEnabled = cfg.get<bool>("/plugins/remote/enabled", true);
+        remoteEnabled = cfg.get<bool>("/plugins/remote/enabled", false);
     } else if (cfg.has("/remote_boost/enabled")) {
-        remoteEnabled = cfg.get<bool>("/remote_boost/enabled", true);
+        remoteEnabled = cfg.get<bool>("/remote_boost/enabled", false);
     }
     patch["remote_boost"]["enabled"] = remoteEnabled;
     patch["plugins"]["remote_boost"]["enabled"] = remoteEnabled;

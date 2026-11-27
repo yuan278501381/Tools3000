@@ -48,6 +48,7 @@ export interface SidebarProps {
 const SIDEBAR_KEYWORD_KEYS: Partial<Record<NavId, string>> = {
   general: 'sidebar.kw_general',
   plugins: 'sidebar.kw_plugins',
+  hotkeys: 'sidebar.kw_hotkeys',
   search: 'sidebar.kw_search',
   clipboard: 'sidebar.kw_clipboard',
   text_expander: 'sidebar.kw_text_expander',

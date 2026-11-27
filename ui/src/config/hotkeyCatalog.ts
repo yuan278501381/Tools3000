@@ -30,6 +30,20 @@ export const HOTKEY_LABEL_KEYS: Readonly<Record<string, string>> = {
   'Mute Microphone': 'general.shortcutMuteMicrophone',
   'Dialog Quick Jump': 'dialog.quickJumpHotkeyLabel',
   'Dialog Inline Search': 'dialog.inlineSearchHotkeyLabel',
+  // WindowKit 窗口管理全局快捷键（与 src/core/ipc/WindowKitController.cpp 1:1 精确对齐）
+  'WindowKit: Open Layout Editor': 'windowManager.hkOpenLayoutHub',
+  'WindowKit: Open Quick Switch': 'windowManager.hkOpenQuickSwitch',
+  'WindowKit: Toggle Always on Top': 'windowManager.hkToggleAlwaysOnTop',
+  'WindowKit: Move Next Zone': 'windowManager.hkMoveNextZone',
+  'WindowKit: Move Prev Zone': 'windowManager.hkMovePrevZone',
+  'WindowKit: Restore From Zone': 'windowManager.hkRestoreZone',
+  'WindowKit: Move Next Monitor': 'windowManager.hkMoveNextMonitor',
+  'WindowKit: Rescue Offscreen': 'windowManager.hkRescueOffscreen',
+  'WindowKit: Minimize To Tray': 'windowManager.hkMinimizeToTray',
+  'WindowKit: Restore All Tray': 'windowManager.hkRestoreAllTray',
+  'WindowKit: Opacity Up': 'windowManager.hkOpacityUp',
+  'WindowKit: Opacity Down': 'windowManager.hkOpacityDown',
+  'WindowKit: Opacity Reset': 'windowManager.hkOpacityReset',
   // 历史配置兼容别名
   capture: 'onboarding.shortcutCapture',
   recording: 'onboarding.shortcutRecord',
@@ -37,16 +51,27 @@ export const HOTKEY_LABEL_KEYS: Readonly<Record<string, string>> = {
   gesturePause: 'onboarding.shortcutGesturePause',
 };
 
+const WINDOWKIT_LAYOUT_HOTKEY_RE = /^WindowKit:\s*Layout Hotkey\s+(\d)$/;
+
 export function resolveHotkeyLabel(t: TFunction, name: string): string {
   const key = HOTKEY_LABEL_KEYS[name];
   if (key) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return String(t(key as any, { defaultValue: name }));
   }
+  const layoutMatch = WINDOWKIT_LAYOUT_HOTKEY_RE.exec(name);
+  if (layoutMatch) {
+    const digit = layoutMatch[1];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return String(t('windowManager.hkApplyLayoutSlot' as any, {
+      digit,
+      defaultValue: `Apply SnapZones Layout #${digit}`,
+    }));
+  }
   return name;
 }
 
-export type HotkeyDomainGroupId = 'core' | 'pin_ocr' | 'recording' | 'dialog' | 'input';
+export type HotkeyDomainGroupId = 'core' | 'pin_ocr' | 'recording' | 'dialog' | 'window_manager' | 'input';
 
 export interface HotkeyDomainGroupSpec {
   readonly id: HotkeyDomainGroupId;
@@ -56,11 +81,13 @@ export interface HotkeyDomainGroupSpec {
 }
 
 /**
- * 全局快捷键四域信息架构与高频优先级单一事实源（SSOT）：
+ * 全局快捷键多域信息架构与高频优先级单一事实源（SSOT）：
  * 1. 核心效率入口（截图、复用区域、剪贴板、文件搜索）置顶；
  * 2. 贴图与识别翻译（贴图四联、离线 OCR、划词翻译）次之；
  * 3. 高清录屏与场控（全局录屏在前，录制期暂停/快照/静音在后）；
- * 4. 输入与手势控制（手势暂停及后续扩展项兜底）。
+ * 4. 文件对话框助手（目录快跳与内联过滤）；
+ * 5. 窗口管理（分屏布局管理器、窗口速切、置顶、分区移动、托盘收纳、透明度及 0-9 布局快切）；
+ * 6. 输入与手势控制（手势暂停及后续扩展项兜底）。
  */
 export const HOTKEY_DOMAIN_GROUPS: readonly HotkeyDomainGroupSpec[] = [
   {
@@ -112,6 +139,26 @@ export const HOTKEY_DOMAIN_GROUPS: readonly HotkeyDomainGroupSpec[] = [
     ],
   },
   {
+    id: 'window_manager',
+    titleKey: 'nav.window_manager',
+    defaultTitle: 'Window Manager',
+    members: [
+      'WindowKit: Open Layout Editor',
+      'WindowKit: Open Quick Switch',
+      'WindowKit: Move Next Zone',
+      'WindowKit: Move Prev Zone',
+      'WindowKit: Restore From Zone',
+      'WindowKit: Move Next Monitor',
+      'WindowKit: Rescue Offscreen',
+      'WindowKit: Toggle Always on Top',
+      'WindowKit: Minimize To Tray',
+      'WindowKit: Restore All Tray',
+      'WindowKit: Opacity Up',
+      'WindowKit: Opacity Down',
+      'WindowKit: Opacity Reset',
+    ],
+  },
+  {
     id: 'input',
     titleKey: 'general.hotkeyGroupInput',
     defaultTitle: 'Input & Gesture Control',
@@ -136,7 +183,13 @@ const HOTKEY_META_MAP: ReadonlyMap<string, { groupId: HotkeyDomainGroupId; rank:
 })();
 
 export function getHotkeyPriorityRank(name: string): number {
-  return HOTKEY_META_MAP.get(name)?.rank ?? 10_000;
+  const exact = HOTKEY_META_MAP.get(name)?.rank;
+  if (exact !== undefined) return exact;
+  const layoutMatch = WINDOWKIT_LAYOUT_HOTKEY_RE.exec(name);
+  if (layoutMatch) {
+    return 5_000 + Number(layoutMatch[1]);
+  }
+  return 10_000;
 }
 
 export function sortHotkeysByPriority<T extends { name: string }>(entries: readonly T[]): T[] {
@@ -165,7 +218,9 @@ export function groupHotkeysByDomain<T extends { name: string }>(
 
   const sorted = sortHotkeysByPriority(entries);
   for (const item of sorted) {
-    const groupId = HOTKEY_META_MAP.get(item.name)?.groupId ?? 'input';
+    const mapped = HOTKEY_META_MAP.get(item.name)?.groupId;
+    const groupId: HotkeyDomainGroupId = mapped
+      ?? (WINDOWKIT_LAYOUT_HOTKEY_RE.test(item.name) ? 'window_manager' : 'input');
     buckets.get(groupId)?.push(item);
   }
 

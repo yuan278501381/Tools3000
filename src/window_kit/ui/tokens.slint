@@ -1,0 +1,104 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// ui/tokens.slint — Tools3000 跨端共享设计令牌（单一事实源）
+//                   100% 对齐 ui/src/index.css（Studio Alabaster 浅色 / Obsidian Atelier 深色）
+//                   + vibeslop/AltTabio 浅色/深色极简比例配色 + 动态主题色
+// ─────────────────────────────────────────────────────────────────────────────
+
+import { Palette } from "std-widgets.slint";
+
+export global ThemeTokens {
+    in-out property <bool> dark: false;
+    in-out property <color> accent: #3b82f6;
+    in-out property <string> font-family: "Microsoft YaHei UI";
+
+    public function sync-palette(is-dark: bool) {
+        root.dark = is-dark;
+        Palette.color-scheme = is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    // 动态强调色派生令牌（高对比度、深浅色自适应）
+    out property <color> accent-hover: root.dark ? root.accent.brighter(0.14) : root.accent.darker(0.10);
+    out property <color> accent-pressed: root.dark ? root.accent.darker(0.10) : root.accent.darker(0.18);
+    out property <color> accent-soft-bg: root.dark
+        ? root.accent.mix(#111216, 0.36)
+        : root.accent.mix(#ffffff, 0.18);
+    out property <color> accent-pill-bg: root.dark
+        ? root.accent.mix(#14161b, 0.42)
+        : root.accent.mix(#ffffff, 0.22);
+    out property <color> accent-subtle-border: root.dark
+        ? root.accent.with-alpha(0.55)
+        : root.accent.with-alpha(0.65);
+
+    // 主画布与卡片层级（对齐 Tools3000 Studio Alabaster / Obsidian Atelier）
+    out property <color> canvas-bg: root.dark ? #111216 : #fafafa;
+    out property <color> header-bg: root.dark ? #16181f : #f3f3f5;
+    out property <color> card-bg: root.dark ? #1a1c24 : #ffffff;
+    out property <color> card-hover-bg: root.dark ? #222530 : #f7f8fa;
+    out property <color> well-bg: root.dark ? #13151b : #f2f3f5;
+    out property <color> input-bg: root.dark ? #13151b : #ffffff;
+    out property <color> modal-bg: root.dark ? #1b1e27 : #ffffff;
+    out property <color> modal-scrim: root.dark ? #00000088 : #18181b38;
+    out property <color> menu-bg: root.dark ? #20232d : #ffffff;
+
+    // 边框、分割线与分屏缩略块色阶（1:1 复刻微软 FancyZones 清晰 3 层立体高光分隔边）
+    out property <color> border-subtle: root.dark ? #ffffff14 : #18181b14;
+    out property <color> border-strong: root.dark ? #ffffff24 : #18181b24;
+    out property <color> divider: root.dark ? #ffffff16 : #d4d4d8;
+    out property <color> zone-tile-bg: root.dark ? #2d3242 : #dcdde1;
+    out property <color> zone-tile-layer0: root.dark ? #242836 : #e6e7eb;
+    out property <color> zone-tile-layer1: root.dark ? #2e3344 : #dcdde2;
+    out property <color> zone-tile-layer2: root.dark ? #394055 : #d1d4db;
+    out property <color> zone-tile-stroke: root.dark ? #13151c : #ffffff;
+    out property <color> zone-tile-shadow: root.dark ? #00000060 : #18181b18;
+    out property <color> zone-tile-active-bg: root.dark
+        ? root.accent.mix(#262a37, 0.36)
+        : root.accent.mix(#e5e7eb, 0.28);
+    out property <color> zone-tile-active-layer0: root.dark
+        ? root.accent.mix(#1f2330, 0.26)
+        : root.accent.mix(#eef0f4, 0.20);
+    out property <color> zone-tile-active-layer1: root.dark
+        ? root.accent.mix(#262b3a, 0.36)
+        : root.accent.mix(#e4e7ee, 0.28);
+    out property <color> zone-tile-active-layer2: root.dark
+        ? root.accent.mix(#30374b, 0.48)
+        : root.accent.mix(#d8dde8, 0.38);
+    out property <color> zone-tile-active-stroke: root.dark ? #141720 : #ffffff;
+
+    // 按钮中性态
+    out property <color> btn-secondary-bg: root.dark ? #252834 : #e8e9ec;
+    out property <color> btn-secondary-hover: root.dark ? #2f3342 : #dcdee3;
+    out property <color> btn-ghost-hover: root.dark ? #ffffff10 : #18181b0c;
+
+    // 文本阶梯（严格遵守 WCAG AA 对比度）
+    out property <color> text-primary: root.dark ? #f4f4f6 : #18181b;
+    out property <color> text-secondary: root.dark ? #a8acb8 : #52525b;
+    out property <color> text-muted: root.dark ? #787d8c : #71717a;
+    out property <color> text-on-accent: #ffffff;
+
+    // 语义色
+    out property <color> danger: root.dark ? #f87171 : #dc2626;
+    out property <color> danger-hover-bg: root.dark ? #f8717122 : #dc262614;
+
+    // QuickSwitch（1:1 对标 vibeslop/AltTabio 浅色 #F3F3F3 / 深色 #111216 + Tools3000 强调色）
+    out property <color> qs-bg: root.dark ? #111216 : #f3f3f3;
+    out property <color> qs-border: root.dark ? #ffffff1f : #c8c8cc;
+    out property <color> qs-divider: root.dark ? #ffffff18 : #d0d0d0;
+    out property <color> qs-selected-bg: root.dark
+        ? root.accent.mix(#141720, 0.44)
+        : root.accent.mix(#ffffff, 0.22);
+    out property <color> qs-hover-bg: root.dark ? #ffffff0d : #0000000a;
+    out property <color> qs-close-hover: root.dark ? #ffffff1c : #00000014;
+    out property <color> qs-search-bg: root.dark ? #1a1d26 : #ffffff;
+    out property <color> qs-search-idle-bg: root.dark ? #171922 : #fafafb;
+    out property <color> qs-keycap-bg: root.dark ? #ffffff12 : #18181b0c;
+    out property <color> qs-keycap-border: root.dark ? #ffffff1e : #18181b18;
+    out property <color> qs-keycap-active-bg: root.dark
+        ? root.accent.mix(#1a1d26, 0.45)
+        : root.accent.mix(#ffffff, 0.25);
+    out property <color> qs-preview-border: root.dark ? #ffffff22 : #b8b8be;
+    out property <color> qs-badge-bg: root.dark ? #ffffff14 : #18181b10;
+
+    // 阴影色
+    out property <color> card-shadow: root.dark ? #00000055 : #18181b14;
+    out property <color> modal-shadow: root.dark ? #000000aa : #18181b2e;
+}

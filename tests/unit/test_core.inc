@@ -3314,6 +3314,18 @@ TEST(WinUtilsTest, SmartFullscreenSceneClassificationAndPolicyModes) {
     EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"ToDesk.exe", L"ToDesk_Remote"), Scene::MediaOrBrowser);
     EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"vmware.exe", L"VMUIFrame"), Scene::MediaOrBrowser);
 
+    // PPT / 幻灯片放映全屏 -> Presentation（按键回显、聚光灯、截图、录屏与快捷键绝不被全屏免打扰屏蔽）
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"POWERPNT.EXE", L"screenClass"), Scene::Presentation);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"wpp.exe", L"WppSlideShow"), Scene::Presentation);
+    EXPECT_EQ(WinUtils::classifyFullscreenScene(true, L"soffice.bin", L"SALFRAME"), Scene::Presentation);
+
+    for (const Mode mode : {Mode::Smart, Mode::StrictAll, Mode::GestureOnly, Mode::Off}) {
+        EXPECT_FALSE(WinUtils::shouldSuspendHotkeysForScene(Scene::Presentation, mode));
+        EXPECT_FALSE(WinUtils::shouldBypassCaptureForScene(Scene::Presentation, mode));
+        EXPECT_FALSE(WinUtils::shouldBypassOverlaysForScene(Scene::Presentation, mode));
+        EXPECT_EQ(WinUtils::shouldSuspendGesturesForScene(Scene::Presentation, mode), mode != Mode::Off);
+    }
+
     // 4. 四种策略模式下的精细拦截矩阵验证
     // (A) Smart 智能模式（默认）：打游戏停用快捷键+截图+手势；看电影保留快捷键+截图，仅停用手势与浮层
     EXPECT_TRUE(WinUtils::shouldSuspendHotkeysForScene(Scene::Game, Mode::Smart));
@@ -3877,6 +3889,93 @@ TEST(AtomicFileSecurityTest, RejectsDirectoryJunctionAndWritesNormalFilesSafely)
         EXPECT_TRUE(tools3000::common::pathContainsReparsePoint(hijackedFile));
         EXPECT_FALSE(tools3000::common::atomicWriteFileWithFlush(hijackedFile, "{\"pwned\":true}"));
         EXPECT_FALSE(std::filesystem::exists(realTargetDir / L"hijacked.json", ec));
+    }
+}
+
+TEST(AtomicFileSecurityTest, ScoopDoubleJunctionConfigInitAndSystemRootGuard) {
+    // 复现并防回退 Issue #37：Scoop 双层目录联接拓扑 (current -> 1.5.5 且 data -> persist\tools3000\data)
+    std::error_code ec;
+    const auto baseDir = std::filesystem::temp_directory_path(ec) /
+                         (L"tools3000_scoop_junction_" + std::to_wstring(GetCurrentProcessId()) +
+                          L"_" + std::to_wstring(GetTickCount64()));
+    const auto realVersionDir = baseDir / L"apps" / L"tools3000" / L"1.5.5";
+    const auto currentJunction = baseDir / L"apps" / L"tools3000" / L"current";
+    const auto persistDataDir = baseDir / L"persist" / L"tools3000" / L"data";
+    const auto versionDataJunction = realVersionDir / L"data";
+    const auto evilSysJunction = baseDir / L"evil_win_junction";
+    std::filesystem::create_directories(realVersionDir, ec);
+    std::filesystem::create_directories(persistDataDir, ec);
+
+    struct ScoopCleanup {
+        std::filesystem::path j1;
+        std::filesystem::path j2;
+        std::filesystem::path j3;
+        std::filesystem::path root;
+        ~ScoopCleanup() {
+            RemoveDirectoryW(j1.c_str());
+            RemoveDirectoryW(j2.c_str());
+            RemoveDirectoryW(j3.c_str());
+            std::error_code err;
+            std::filesystem::remove_all(root, err);
+        }
+    } cleanup{versionDataJunction, currentJunction, evilSysJunction, baseDir};
+
+    auto makeJunction = [](const std::filesystem::path& link, const std::filesystem::path& target) -> bool {
+        const std::wstring cmd = L"cmd.exe /d /s /c \"mklink /J \"" + link.wstring() +
+                                 L"\" \"" + target.wstring() + L"\" >nul 2>&1\"";
+        STARTUPINFOW si{sizeof(si)};
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_HIDE;
+        PROCESS_INFORMATION pi{};
+        std::wstring mutableCmd = cmd;
+        if (!CreateProcessW(nullptr, mutableCmd.data(), nullptr, nullptr, FALSE,
+                            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+            return false;
+        }
+        WaitForSingleObject(pi.hProcess, 5000);
+        DWORD exitCode = 1;
+        GetExitCodeProcess(pi.hProcess, &exitCode);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        const DWORD attrs = GetFileAttributesW(link.c_str());
+        return exitCode == 0 && attrs != INVALID_FILE_ATTRIBUTES &&
+               ((attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0);
+    };
+
+    if (makeJunction(currentJunction, realVersionDir) && makeJunction(versionDataJunction, persistDataDir)) {
+        // 1. 验证未创建的末尾子目录 (current\data\config) 也能经双层 Junction 展开为真实无重解析点路径
+        const auto scoopConfigDir = currentJunction / L"data" / L"config";
+        const auto resolvedConfigDir = WinUtils::resolveTrustedDirectoryPath(scoopConfigDir);
+        const auto expectedConfigDir = std::filesystem::canonical(persistDataDir, ec) / L"config";
+        EXPECT_FALSE(tools3000::common::pathContainsReparsePoint(resolvedConfigDir.wstring()));
+        EXPECT_EQ(WinUtils::toLower(resolvedConfigDir.wstring()),
+                  WinUtils::toLower(expectedConfigDir.wstring()));
+
+        // 2. 在持久化目录预置一个 0 字节空 config.json，验证 ConfigManager 静默自愈且原子刷盘成功、不留 .corrupt 文件
+        std::filesystem::create_directories(expectedConfigDir, ec);
+        {
+            std::ofstream emptyFile(expectedConfigDir / L"config.json", std::ios::binary | std::ios::trunc);
+        }
+        auto& cm = ConfigManager::instance();
+        ASSERT_TRUE(cm.initialize(scoopConfigDir, "config.json"));
+        cm.set("/general/scoopTest", true);
+        ASSERT_TRUE(cm.flush());
+        cm.shutdown();
+
+        // 校验物理文件真实写入且无 .corrupt 残留
+        std::ifstream ifs(expectedConfigDir / L"config.json", std::ios::binary);
+        std::string saved((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
+        EXPECT_NE(saved.find("\"scoopTest\": true"), std::string::npos);
+        for (const auto& entry : std::filesystem::directory_iterator(expectedConfigDir, ec)) {
+            EXPECT_EQ(entry.path().wstring().find(L".corrupt."), std::wstring::npos);
+        }
+    }
+
+    // 3. 安全红线负向验证：指向 %SystemRoot% 的恶意 Junction 绝对不能被 resolveTrustedDirectoryPath 放行
+    wchar_t winDir[MAX_PATH] = {};
+    if (GetWindowsDirectoryW(winDir, MAX_PATH) > 0 && makeJunction(evilSysJunction, std::filesystem::path(winDir))) {
+        const auto refused = WinUtils::resolveTrustedDirectoryPath(evilSysJunction / L"Temp");
+        EXPECT_TRUE(tools3000::common::pathContainsReparsePoint(refused.wstring()));
     }
 }
 
@@ -7101,12 +7200,12 @@ TEST(ScopedHotkeyAndPluginSwitchContractTest, QuickLookPluginTogglePersistsAndPu
     auto& bridge = MessageBridge::instance();
     bridge.registerBuiltinHandlers();
     const bool hadPluginKey = cfg.has("/plugins/quick_look/enabled");
-    const bool prevPluginVal = cfg.get<bool>("/plugins/quick_look/enabled", true);
+    const bool prevPluginVal = cfg.get<bool>("/plugins/quick_look/enabled", false);
     const bool hadLegacyKey = cfg.has("/quicklook/enabled");
-    const bool prevLegacyVal = cfg.get<bool>("/quicklook/enabled", true);
+    const bool prevLegacyVal = cfg.get<bool>("/quicklook/enabled", false);
 
     bool receivedEvent = false;
-    bool lastEventEnabled = true;
+    bool lastEventEnabled = false;
     const auto subId = EventBus::instance().subscribe<QuickLookStateChangedEvent>(
         [&](const QuickLookStateChangedEvent& e) {
             receivedEvent = true;
@@ -7126,6 +7225,15 @@ TEST(ScopedHotkeyAndPluginSwitchContractTest, QuickLookPluginTogglePersistsAndPu
     }
     EXPECT_TRUE(foundQuickLook);
 
+    // 开启 -> 关闭双向持久化与事件推送契约验证
+    const auto enableResp = nlohmann::json::parse(bridge.handleMessage(
+        R"({"id":9410,"method":"plugins.setEnabled","params":{"id":"quick_look","enabled":true}})"));
+    EXPECT_TRUE(enableResp["result"].value("success", false));
+    EXPECT_TRUE(receivedEvent);
+    EXPECT_TRUE(lastEventEnabled);
+    EXPECT_TRUE(cfg.get<bool>("/plugins/quick_look/enabled", false));
+    EXPECT_TRUE(cfg.get<bool>("/quicklook/enabled", false));
+
     const auto disableResp = nlohmann::json::parse(bridge.handleMessage(
         R"({"id":9411,"method":"plugins.setEnabled","params":{"id":"quick_look","enabled":false}})"));
     EXPECT_TRUE(disableResp["result"].value("success", false));
@@ -7137,8 +7245,8 @@ TEST(ScopedHotkeyAndPluginSwitchContractTest, QuickLookPluginTogglePersistsAndPu
 
     // 还原测试前配置，避免污染本机状态
     EventBus::instance().unsubscribe(subId);
-    cfg.set<bool>("/plugins/quick_look/enabled", hadPluginKey ? prevPluginVal : true);
-    cfg.set<bool>("/quicklook/enabled", hadLegacyKey ? prevLegacyVal : true);
+    cfg.set<bool>("/plugins/quick_look/enabled", hadPluginKey ? prevPluginVal : false);
+    cfg.set<bool>("/quicklook/enabled", hadLegacyKey ? prevLegacyVal : false);
 }
 
 TEST(MessageBridgeTest, WindowManagerEnabledRemainsActiveInPluginsGetAllEvenWhenAllSubFeaturesOff) {

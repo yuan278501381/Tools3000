@@ -2339,10 +2339,10 @@ void MessageBridge::registerBuiltinHandlers() {
         });
         existingIds.insert("file_locksmith");
 
-        // 内置核心模块：空格快速预览 (quick_look，关闭后底层钩子 0ms 原生放行空格键，与第三方预览工具零冲突)
+        // 内置核心模块：空格快速预览 (quick_look，默认关闭，关闭后底层钩子 0ms 原生放行空格键，与第三方预览工具零冲突)
         const bool quickLookEnabled = ConfigManager::instance().has("/plugins/quick_look/enabled")
-            ? ConfigManager::instance().get<bool>("/plugins/quick_look/enabled", true)
-            : ConfigManager::instance().get<bool>("/quicklook/enabled", true);
+            ? ConfigManager::instance().get<bool>("/plugins/quick_look/enabled", false)
+            : ConfigManager::instance().get<bool>("/quicklook/enabled", false);
         plugins.push_back({
             {"id", "quick_look"},
             {"name", "空格快速预览"},
@@ -3175,6 +3175,8 @@ void MessageBridge::registerBuiltinHandlers() {
         if (sanitizedPatch.contains("theme") || sanitizedPatch.contains("accentColor") ||
             sanitizedPatch.contains("trayIconTheme") || sanitizedPatch.contains("language") ||
             sanitizedPatch.contains("fontFamily")) {
+            // 实时同步主题、动态强调色与界面语种至纯 Rust WindowKit 引擎，确保深浅色与强调色毫秒级联动
+            WindowKitController::instance().notifyHostEnvironmentChanged();
             MessageBridge::instance().pushEvent("appearance:changed", {
                 {"theme", config.get<std::string>("/general/theme", "system")},
                 {"accentColor", config.get<std::string>("/general/accentColor", "blue")},

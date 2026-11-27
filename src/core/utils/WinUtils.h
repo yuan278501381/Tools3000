@@ -23,8 +23,9 @@ namespace tools3000::core {
 enum class FullscreenScene {
     None = 0,           ///< 非全屏，且不属于前台活动大型游戏
     Productivity = 1,   ///< 全屏生产力工具 / 系统桌面 / Tools3000 自身界面 (IDE、常规办公等)
-    MediaOrBrowser = 2, ///< 全屏影音播放 / 网页全屏视频 / 幻灯片演示 (PotPlayer、VLC、MPV、Bilibili、Chrome/Edge 视频等)
-    Game = 3            ///< 独占全屏游戏 / 无边框全屏游戏 / 已知电竞游戏 (Dota 2、CS2、LoL、Unity/Unreal/SDL/Steam 游戏等)
+    MediaOrBrowser = 2, ///< 全屏影音播放 / 网页全屏视频 / 远程桌面 (PotPlayer、VLC、MPV、Bilibili、Chrome/Edge 视频等)
+    Game = 3,           ///< 独占全屏游戏 / 无边框全屏游戏 / 已知电竞游戏 (Dota 2、CS2、LoL、Unity/Unreal/SDL/Steam 游戏等)
+    Presentation = 4    ///< 全屏幻灯片/PPT 演示 (PowerPoint / WPS 演示 / LibreOffice Impress)：保留按键回显、聚光灯、截图、录屏与快捷键，仅默认避让鼠标手势
 };
 
 /// 全屏智能防打扰策略模式枚举
@@ -43,8 +44,12 @@ public:
     /// 获取当前可执行文件完整路径（动态扩容支持超 MAX_PATH 长路径）
     static std::filesystem::path getExePath();
 
-    /// 获取可执行文件所在目录（动态扩容支持超 MAX_PATH 长路径）
+    /// 获取可执行文件所在目录（安全展开合法用户级目录联接/Scoop current，支持超 MAX_PATH 长路径）
     static std::filesystem::path getExeDirectory();
+
+    /// 安全展开目录路径中的合法用户级目录联接/符号链接（如 Scoop 的 current / persist\data），
+    /// 保留系统敏感目录（%SystemRoot%）与提权 SYSTEM 所有者防线；不安全时原样返回交由下游 fail-closed 拦截。
+    static std::filesystem::path resolveTrustedDirectoryPath(const std::filesystem::path& rawDir);
 
     /// 判断是否处于绿色便携模式 (Portable Mode)
     static bool isPortableMode();
@@ -254,8 +259,11 @@ public:
     /// 获取当前运行期全局全屏防打扰策略模式
     static FullscreenPolicyMode getFullscreenPolicyMode() noexcept;
 
-    /// 判定进程名或窗口类名是否属于专用影音播放器或全屏幻灯片演示软件 (PotPlayer / VLC / MPV / MPC-HC / Bilibili / PowerPoint 放映等)
+    /// 判定进程名或窗口类名是否属于专用影音播放器 (PotPlayer / VLC / MPV / MPC-HC / Bilibili 等)
     static bool isMediaPlayerProcessOrClass(std::wstring_view processName, std::wstring_view className) noexcept;
+
+    /// 判定进程名或窗口类名是否属于幻灯片/PPT 全屏演示软件 (PowerPoint / WPS 演示 / LibreOffice Impress 等)
+    static bool isPresentationProcessOrClass(std::wstring_view processName, std::wstring_view className) noexcept;
 
     /// 获取内置默认远程桌面与虚拟机客户端进程名白名单（单一事实源）
     static std::vector<std::string> defaultRemoteTargetProcesses();

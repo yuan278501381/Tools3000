@@ -248,6 +248,34 @@ public:
         dispatcher.registerHandler(BuiltinCommand::WindowKitQuickSwitch, []() {
             tools3000::core::WindowKitController::instance().execAction("open_quick_switch");
         });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitOpenLayoutEditor, []() {
+            tools3000::core::WindowKitController::instance().execAction("open_layout_editor");
+        });
+        dispatcher.registerParamHandler(BuiltinCommand::WindowKitApplyLayout, [](const std::string& layoutId) {
+            if (layoutId.empty()) {
+                tools3000::core::WindowKitController::instance().execAction("open_layout_editor");
+            } else {
+                tools3000::core::WindowKitController::instance().execAction(
+                    "apply_layout_by_id", {{"layoutId", layoutId}});
+            }
+        });
+        dispatcher.registerParamHandler(BuiltinCommand::WindowKitLaunchWorkspace, [](const std::string& workspaceId) {
+            if (workspaceId.empty()) {
+                tools3000::core::WindowKitController::instance().execAction("launch_workspace", 0);
+            } else {
+                tools3000::core::WindowKitController::instance().execAction(
+                    "launch_workspace", {{"workspaceId", workspaceId}});
+            }
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitStartWorkspaceCapture, []() {
+            tools3000::core::WindowKitController::instance().startWorkspaceCapture();
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitRestoreAllTray, []() {
+            tools3000::core::WindowKitController::instance().execAction("restore_all_tray");
+        });
+        dispatcher.registerHandler(BuiltinCommand::WindowKitRescueOffscreen, []() {
+            tools3000::core::WindowKitController::instance().execAction("rescue_offscreen");
+        });
 
         // 状态变化回调
         auto& gestureEngine = tools3000::gesture::GestureEngine::instance();
@@ -283,8 +311,10 @@ public:
             engine.setPaused(!engine.isPaused());
         });
         m_cancelSubscription = bus.subscribe<tools3000::core::CancelTransientUiEvent>([](const tools3000::core::CancelTransientUiEvent&) {
-            tools3000::gesture::GestureEngine::instance().cancelActiveGesture();
-            tools3000::core::WinUtils::emergencyFlushInputState();
+            // 仅当真实中止了正在绘制中的手势时才刷清可能残留的修饰键，绝不在普通空闲态按 Esc 时误发 SendInput(KEYUP) 破坏系统组合键 (Issue #38)
+            if (tools3000::gesture::GestureEngine::instance().cancelActiveGesture()) {
+                tools3000::core::WinUtils::emergencyFlushInputState();
+            }
         });
         m_sessionSubscription = bus.subscribe<tools3000::core::SystemSessionChangedEvent>([](const tools3000::core::SystemSessionChangedEvent&) {
             tools3000::gesture::GestureEngine::instance().cancelActiveGesture();

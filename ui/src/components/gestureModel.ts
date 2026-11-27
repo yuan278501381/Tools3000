@@ -61,6 +61,7 @@ export interface GestureMapping {
     luaScript?: string;
     permissions?: string[];
     builtinCmd?: number;
+    builtinParam?: string;
     programPath?: string;
     programArgs?: string;
     runMode?: ProgramRunMode;
@@ -103,6 +104,9 @@ export const BUILTIN_COMMAND_KEYS = [
   'gestureEditor.builtin.windowKitNextZone', 'gestureEditor.builtin.windowKitPrevZone',
   'gestureEditor.builtin.windowKitRestoreZone', 'gestureEditor.builtin.windowKitMoveNextMonitor',
   'gestureEditor.builtin.windowKitMinimizeToTray', 'gestureEditor.builtin.windowKitQuickSwitch',
+  'gestureEditor.builtin.windowKitOpenLayoutEditor', 'gestureEditor.builtin.windowKitApplyLayout',
+  'gestureEditor.builtin.windowKitLaunchWorkspace', 'gestureEditor.builtin.windowKitStartWorkspaceCapture',
+  'gestureEditor.builtin.windowKitRestoreAllTray', 'gestureEditor.builtin.windowKitRescueOffscreen',
 ] as const;
 
 export const CODE_TO_ARROWS: Record<string, string> = {

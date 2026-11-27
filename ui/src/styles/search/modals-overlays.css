@@ -5,7 +5,7 @@
 /* ── 世界级 Fluent / Glass 搜索结果右键上下文菜单 ─────────────────── */
 .search-context-menu {
     position: fixed;
-    z-index: 9999;
+    z-index: var(--z-modal-context);
     min-width: 240px;
     max-width: 320px;
     max-height: calc(100vh - 20px);
@@ -125,7 +125,8 @@
 .search-modal-overlay {
     position: fixed;
     inset: 0;
-    z-index: 10000;
+    z-index: var(--z-modal);
+    -webkit-app-region: no-drag;
     background: rgba(0, 0, 0, 0.45);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);

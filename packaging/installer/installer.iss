@@ -67,6 +67,8 @@ ShowLanguageDialog=no
 LanguageDetectionMethod=uilanguage
 ; 通知 Explorer 刷新文件关联与图标缓存
 ChangesAssociations=yes
+; 适度放宽安装向导尺寸，确保 8 语种完成页快速上手引导在高分屏下完整舒展不截断
+WizardSizePercent=110,118
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -77,6 +79,25 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "russian"; MessagesFile: "compiler:Languages\Russian.isl"
 Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[Messages]
+; 覆盖 Inno Setup 默认冗长机翻完成文案，保留单行清晰指引，为下方快速上手提示留出充足呼吸空间
+chinesesimplified.FinishedLabel=[name] 已安装完成。点击“完成”退出安装向导。
+chinesesimplified.FinishedLabelNoIcons=[name] 已安装完成。点击“完成”退出安装向导。
+chinesetraditional.FinishedLabel=[name] 已安裝完成。點擊「完成」結束安裝精靈。
+chinesetraditional.FinishedLabelNoIcons=[name] 已安裝完成。點擊「完成」結束安裝精靈。
+english.FinishedLabel=[name] has been installed. Click Finish to exit Setup.
+english.FinishedLabelNoIcons=[name] has been installed. Click Finish to exit Setup.
+japanese.FinishedLabel=[name] のインストールが完了しました。「完了」をクリックしてセットアップを終了してください。
+japanese.FinishedLabelNoIcons=[name] のインストールが完了しました。「完了」をクリックしてセットアップを終了してください。
+korean.FinishedLabel=[name] 설치가 완료되었습니다. 마침을 클릭하여 설치를 종료하세요.
+korean.FinishedLabelNoIcons=[name] 설치가 완료되었습니다. 마침을 클릭하여 설치를 종료하세요.
+russian.FinishedLabel=Установка [name] завершена. Нажмите «Завершить», чтобы выйти из мастера.
+russian.FinishedLabelNoIcons=Установка [name] завершена. Нажмите «Завершить», чтобы выйти из мастера.
+brazilianportuguese.FinishedLabel=O [name] foi instalado. Clique em Concluir para sair do instalador.
+brazilianportuguese.FinishedLabelNoIcons=O [name] foi instalado. Clique em Concluir para sair do instalador.
+spanish.FinishedLabel=[name] se ha instalado. Haga clic en Finalizar para salir del instalador.
+spanish.FinishedLabelNoIcons=[name] se ha instalado. Haga clic en Finalizar para salir del instalador.
 
 [CustomMessages]
 chinesesimplified.AppRunningPrompt=安装程序检测到 Tools3000 正在运行。%n%n是否自动关闭正在运行的 Tools3000 并继续安装？
@@ -286,14 +307,14 @@ russian.CompCapture=Скриншоты, закрепление и запись (
 brazilianportuguese.CompCapture=Captura, Pins e Gravação (Capture) — pins inteligentes, OCR e 60 FPS
 spanish.CompCapture=Captura, Pines y Grabación (Capture) — pines inteligentes, OCR y 60 FPS
 
-chinesesimplified.CompOcrOfflinePack=离线高精度文字识别引擎包 (PP-OCRv4 · 约 16MB) — 勾选后首次启动后台自动部署，大幅增强小字、中英代码混排、表格与倾斜文本识别精度
-chinesetraditional.CompOcrOfflinePack=離線高精度文字辨識引擎包 (PP-OCRv4 · 約 16MB) — 勾選後首次啟動背景自動部署，大幅提升小字、程式碼與表格辨識精度
-english.CompOcrOfflinePack=High-Precision Offline OCR Engine Pack (PP-OCRv4, ~16 MB) — Auto-downloads in background on first launch for superior table, code & small-text accuracy
-japanese.CompOcrOfflinePack=高精度オフライン OCR パック (PP-OCRv4・約 16MB) — 初回起動時にバックグラウンド自動取得し、コード・表・小文字の認識精度を向上
-korean.CompOcrOfflinePack=고정밀 오프라인 OCR 엔진 팩 (PP-OCRv4 · 약 16MB) — 첫 실행 시 백그라운드 자동 다운로드로 코드·표·작은 글자 인식 향상
-russian.CompOcrOfflinePack=Офлайн-пакет OCR высокой точности (PP-OCRv4, ~16 МБ) — автозагрузка при первом запуске для кода, таблиц и мелкого текста
-brazilianportuguese.CompOcrOfflinePack=Pacote OCR Offline de Alta Precisão (PP-OCRv4, ~16 MB) — download automático em segundo plano para tabelas, código e textos pequenos
-spanish.CompOcrOfflinePack=Paquete OCR Offline de Alta Precisión (PP-OCRv4, ~16 MB) — descarga automática en segundo plano para tablas, código y texto pequeño
+chinesesimplified.CompOcrOfflinePack=离线高精度文字识别引擎包 (PP-OCRv6 · 约 30 MB) — 勾选后首次启动后台自动部署，大幅提升截图、表格、代码与清晰图片多语种识别准确率
+chinesetraditional.CompOcrOfflinePack=離線高精度文字辨識引擎包 (PP-OCRv6 · 約 30 MB) — 勾選後首次啟動背景自動部署，大幅提升擷圖、表格、程式碼與清晰圖片多語種辨識準確率
+english.CompOcrOfflinePack=Offline OCR Engine Pack (PP-OCRv6, ~30 MB) — Auto-downloads in background on first launch for higher accuracy on screenshots, tables, code, and clean images
+japanese.CompOcrOfflinePack=オフライン OCR エンジンパック (PP-OCRv6・約 30 MB) — 初回起動時にバックグラウンド自動取得し、スクリーンショット・表・コード・鮮明画像の認識精度を向上
+korean.CompOcrOfflinePack=오프라인 OCR 엔진 팩 (PP-OCRv6 · 약 30 MB) — 첫 실행 시 백그라운드 자동 다운로드로 스크린샷·표·코드·선명한 이미지 인식 정확도 향상
+russian.CompOcrOfflinePack=Офлайн-пакет OCR (PP-OCRv6, ~30 МБ) — автозагрузка при первом запуске для точного распознавания скриншотов, таблиц, кода и чётких изображений
+brazilianportuguese.CompOcrOfflinePack=Pacote OCR Offline (PP-OCRv6, ~30 MB) — download automático em segundo plano para capturas, tabelas, código e imagens nítidas
+spanish.CompOcrOfflinePack=Paquete OCR Offline (PP-OCRv6, ~30 MB) — descarga automática en segundo plano para capturas, tablas, código e imágenes nítidas
 
 chinesesimplified.CompGesture=鼠标手势与触发角 (Gesture) — 右键手势轨迹、屏幕四角触发与边缘滚轮
 chinesetraditional.CompGesture=滑鼠手勢與觸發角 (Gesture) — 右鍵手勢軌跡、螢幕四角觸發與邊緣滾輪
@@ -349,6 +370,24 @@ russian.CompPicasaViewer=Просмотрщик фото Picasa (реализа�
 brazilianportuguese.CompPicasaViewer=Visualizador de Fotos Picasa (Recriação em Rust · Opcional) — Apenas visualizador leve (não é o pacote completo Google Picasa); associa automaticamente todos os formatos de imagem suportados
 spanish.CompPicasaViewer=Visor de Fotos Picasa (Recreación en Rust · Opcional) — Solo visor ligero de imágenes (no la suite completa de Google Picasa); asocia automáticamente todos los formatos compatibles al habilitarlo
 
+chinesesimplified.PostInstallTipsTitle=快速上手提示
+chinesetraditional.PostInstallTipsTitle=快速上手提示
+english.PostInstallTipsTitle=Quick Tips
+japanese.PostInstallTipsTitle=クイックガイド
+korean.PostInstallTipsTitle=빠른 시작 안내
+russian.PostInstallTipsTitle=Краткая подсказка
+brazilianportuguese.PostInstallTipsTitle=Dicas rápidas
+spanish.PostInstallTipsTitle=Consejos rápidos
+
+chinesesimplified.PostInstallTipsBody=1. 按需开关功能：安装后打开「设置 -> 功能模块」，可随时开启或关闭任意工具（关闭后零后台占用）。%n2. 文字识别 (OCR)：默认使用系统引擎（免下载，清晰文档够用）；如需识别照片、海报、表格代码、多语种或复杂排版，推荐在「设置 -> 文本识别与翻译」一键下载 PP-OCRv6 离线包（约 30 MB，覆盖 50 语种、全程本地离线）；对生僻易混字或模糊/反光实拍有更高精度要求时，可再按需叠加高精度精修包（+73 MB）。%n3. 划词与截图翻译：内置免费 AI 与双源引擎开箱即用，也可在「设置 -> 文本识别与翻译」切换通道或接入自有 API / 本地模型。
+chinesetraditional.PostInstallTipsBody=1. 按需開關功能：安裝後開啟「設定 -> 功能模組」，可隨時啟用或停用任意工具（停用後零背景佔用）。%n2. 文字辨識 (OCR)：預設使用系統引擎（免下載，清晰文件夠用）；如需辨識照片、海報、表格程式碼、多語種或複雜排版，建議在「設定 -> 文字辨識與翻譯」一鍵下載 PP-OCRv6 離線包（約 30 MB，涵蓋 50 語種、全程本機離線）；對生僻易混字或模糊／反光實拍有更高精度需求時，可再按需疊加高精度精修包（+73 MB）。%n3. 劃詞與擷圖翻譯：內建免費 AI 與雙源引擎開箱即用，亦可在「設定 -> 文字辨識與翻譯」切換通道或接入自有 API／本機模型。
+english.PostInstallTipsBody=1. Toggle Modules Anytime: Open Settings -> Modules to enable or disable any tool (disabled modules use zero background resources).%n2. Text Recognition (OCR): Uses built-in system OCR by default (no download, great for clean text). For photos, posters, tables, code, multilingual or complex layouts, we recommend downloading the PP-OCRv6 offline pack (~30 MB, 50 languages, 100% offline) in Settings -> OCR & Translation; add the High-Accuracy refinement pack (+73 MB) if you often need extra precision on rare characters or blurry/glare photos.%n3. Selection & Screenshot Translation: Free built-in AI and dual-engine providers work out of the box, or switch channels and add your own API / local model in Settings -> OCR & Translation.
+japanese.PostInstallTipsBody=1. 機能のオン／オフ：「設定 -> 機能モジュール」で各ツールをいつでも切替可能（無効時はバックグラウンド負荷ゼロ）。%n2. 文字認識 (OCR)：既定はシステム OCR（追加DL不要・鮮明な文書向け）。写真・ポスター・表・コード・多言語や複雑なレイアウトには「設定 -> OCR と翻訳」で PP-OCRv6 オフラインパック（約 30 MB・50言語対応・完全オフライン）の導入をおすすめします。難読字や不鮮明・反射写真の精度をさらに高めたい場合は高精度補正パック（+73 MB）も追加できます。%n3. 選択・スクリーンショット翻訳：無料の標準 AI／デュアルエンジンですぐに使え、「設定 -> OCR と翻訳」で独自 API やローカルモデルにも切り替えられます。
+korean.PostInstallTipsBody=1. 기능 모듈 전환: '설정 -> 기능 모듈'에서 원하는 도구를 언제든 켜고 끌 수 있습니다(비활성 시 백그라운드 점유 0).%n2. 문자 인식 (OCR): 기본 시스템 OCR은 별도 다운로드 없이 선명한 문서에 적합합니다. 사진·포스터·표·코드·다국어 또는 복잡한 문서에는 '설정 -> OCR 및 번역'에서 PP-OCRv6 오프라인 팩(약 30 MB, 50개 언어 지원, 100% 오프라인) 설치를 권장하며, 희귀 문자나 흐릿한·반사 사진의 정밀도를 더 높이려면 고정밀 보정 팩(+73 MB)을 추가로 설치할 수 있습니다.%n3. 드래그 및 캡처 번역: 기본 무료 AI·이중 엔진으로 바로 사용할 수 있으며 '설정 -> OCR 및 번역'에서 자체 API나 로컬 모델로 전환할 수 있습니다.
+russian.PostInstallTipsBody=1. Модули: включайте и отключайте любые инструменты в «Настройки -> Модули» (отключённые не тратят ресурсы).%n2. Распознавание текста (OCR): по умолчанию работает системный OCR без загрузок (достаточно для чёткого текста). Для фото, постеров, таблиц, кода, нескольких языков и сложной вёрстки рекомендуем загрузить офлайн-пакет PP-OCRv6 (~30 МБ, 50 языков, 100% офлайн) в «Настройки -> OCR и перевод»; для редких символов и размытых/бликующих снимков можно добавить пакет уточнения (+73 МБ).%n3. Перевод выделения и скриншотов: встроенный бесплатный ИИ и двойной движок готовы к работе сразу; в «Настройки -> OCR и перевод» можно сменить канал или подключить свой API / локальную модель.
+brazilianportuguese.PostInstallTipsBody=1. Módulos sob demanda: abra Configurações -> Módulos para ativar ou desativar qualquer ferramenta (módulos desativados consomem zero recursos).%n2. Reconhecimento de Texto (OCR): usa o OCR do sistema por padrão (sem download, ideal para texto nítido). Para fotos, pôsteres, tabelas, código, vários idiomas ou layouts complexos, recomendamos baixar o pacote offline PP-OCRv6 (~30 MB, 50 idiomas, 100% offline) em Configurações -> OCR e Tradução; adicione o pacote de refinamento de Alta Precisão (+73 MB) para caracteres raros ou fotos com reflexo/desfoque.%n3. Tradução de seleção e captura: IA gratuita e motor duplo prontos para uso; em Configurações -> OCR e Tradução você pode trocar de canal ou usar sua própria API / modelo local.
+spanish.PostInstallTipsBody=1. Módulos bajo demanda: abre Configuración -> Módulos para activar o desactivar cualquier herramienta (sin consumo al desactivar).%n2. Reconocimiento de texto (OCR): usa el OCR del sistema por defecto (sin descargas, suficiente para texto nítido). Para fotos, carteles, tablas, código, varios idiomas o diseños complejos, recomendamos descargar el paquete offline PP-OCRv6 (~30 MB, 50 idiomas, 100% sin conexión) en Configuración -> OCR y Traducción; añade el paquete de refinamiento de Alta Precisión (+73 MB) para caracteres poco comunes o fotos borrosas o con reflejos.%n3. Traducción de selección y captura: IA gratuita y motor dual listos para usar; en Configuración -> OCR y Traducción puedes cambiar de canal o configurar tu propia API / modelo local.
+
 [Types]
 Name: "full"; Description: "{cm:TypeFull}"
 Name: "compact"; Description: "{cm:TypeCompact}"
@@ -364,7 +403,8 @@ Name: "gesture"; Description: "{cm:CompGesture}"; Types: full compact
 Name: "keycast"; Description: "{cm:CompKeycast}"; Types: full
 Name: "dialogenhancer"; Description: "{cm:CompDialog}"; Types: full
 Name: "spotlight"; Description: "{cm:CompSpotlight}"; Types: full
-Name: "remote"; Description: "{cm:CompRemote}"; Types: full
+; 默认关闭的可选模块：远程协助增强（仅按需在「设置 -> 功能模块」或命令行 /COMPONENTS=remote 显式开启）
+Name: "remote"; Description: "{cm:CompRemote}"
 ; 可选独立组件：Rust 复刻轻量 Picasa 图片查看器（严禁挂在 full/compact 下，默认安装不勾选；勾选启用时自动关联全部支持图片格式）
 Name: "picasaviewer"; Description: "{cm:CompPicasaViewer}"
 
@@ -465,6 +505,9 @@ var
   InitialCompRemote: Boolean;
   InitialCompPicasaViewer: Boolean;
   UserVisitedComponentsPage: Boolean;
+  PostInstallTipsDivider: TBevel;
+  PostInstallTipsTitle: TNewStaticText;
+  PostInstallTipsBody: TNewStaticText;
 
 function SetTimer(hWnd: LongWord; nIDEvent, uElapse: LongWord; lpTimerFunc: LongWord): LongWord;
   external 'SetTimer@user32.dll stdcall';
@@ -1842,6 +1885,31 @@ begin
   DetailsMemo.Font.Size := 8;
   DetailsMemo.Visible := False;
 
+  // 创建安装完成页的「快速上手提示」精炼引导区（模块开关位置、OCR 引擎/离线包选择与翻译配置影响）
+  PostInstallTipsDivider := TBevel.Create(WizardForm);
+  PostInstallTipsDivider.Parent := WizardForm.FinishedPage;
+  PostInstallTipsDivider.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsDivider.Width := WizardForm.FinishedLabel.Width;
+  PostInstallTipsDivider.Height := ScaleY(2);
+  PostInstallTipsDivider.Shape := bsTopLine;
+
+  PostInstallTipsTitle := TNewStaticText.Create(WizardForm);
+  PostInstallTipsTitle.Parent := WizardForm.FinishedPage;
+  PostInstallTipsTitle.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsTitle.Width := WizardForm.FinishedLabel.Width;
+  PostInstallTipsTitle.AutoSize := False;
+  PostInstallTipsTitle.Height := ScaleY(18);
+  PostInstallTipsTitle.Font.Style := [fsBold];
+  PostInstallTipsTitle.Caption := CustomMessage('PostInstallTipsTitle');
+
+  PostInstallTipsBody := TNewStaticText.Create(WizardForm);
+  PostInstallTipsBody.Parent := WizardForm.FinishedPage;
+  PostInstallTipsBody.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsBody.Width := WizardForm.FinishedLabel.Width;
+  PostInstallTipsBody.WordWrap := True;
+  PostInstallTipsBody.AutoSize := True;
+  PostInstallTipsBody.Caption := CustomMessage('PostInstallTipsBody');
+
   TimerCallbackAddr := CreateCallback(@OnExtractTimer);
 
   // 静默安装或应用内一键自动更新时，在进入 wpPreparing / Restart Manager 之前先完成清场与 PFRO 自愈
@@ -1850,6 +1918,68 @@ begin
   begin
     PreClearProcessesBeforeRestartManager(WizardDirValue);
   end;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  // 安装流程极简化：不在安装向导中展示繁琐的功能模块勾选页；
+  // 全部功能模块统一于安装完成后在「设置 -> 功能模块」中按需随时开关（仍完整保留 CLI /COMPONENTS= 兼容）。
+  if PageID = wpSelectComponents then
+    Result := True;
+end;
+
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo, MemoTypeInfo,
+  MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+var
+  S: String;
+begin
+  S := '';
+  if MemoDirInfo <> '' then
+    S := S + MemoDirInfo + NewLine + NewLine;
+  if MemoGroupInfo <> '' then
+    S := S + MemoGroupInfo + NewLine + NewLine;
+  if MemoTasksInfo <> '' then
+    S := S + MemoTasksInfo + NewLine + NewLine;
+  Result := TrimRight(S);
+end;
+
+procedure LayoutFinishedPageTips();
+var
+  ShowTips: Boolean;
+  ContentTop, MaxRunTop: Integer;
+begin
+  ShowTips := not WizardForm.YesRadio.Visible;
+  PostInstallTipsDivider.Visible := ShowTips;
+  PostInstallTipsTitle.Visible := ShowTips;
+  PostInstallTipsBody.Visible := ShowTips;
+  if not ShowTips then Exit;
+
+  WizardForm.FinishedLabel.AdjustHeight;
+  ContentTop := WizardForm.FinishedLabel.Top + WizardForm.FinishedLabel.Height + ScaleY(8);
+
+  PostInstallTipsDivider.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsDivider.Top := ContentTop;
+  PostInstallTipsDivider.Width := WizardForm.FinishedLabel.Width;
+
+  PostInstallTipsTitle.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsTitle.Top := PostInstallTipsDivider.Top + ScaleY(8);
+  PostInstallTipsTitle.Width := WizardForm.FinishedLabel.Width;
+
+  PostInstallTipsBody.Left := WizardForm.FinishedLabel.Left;
+  PostInstallTipsBody.Top := PostInstallTipsTitle.Top + PostInstallTipsTitle.Height + ScaleY(4);
+  PostInstallTipsBody.Width := WizardForm.FinishedLabel.Width;
+  PostInstallTipsBody.AdjustHeight;
+
+  MaxRunTop := WizardForm.FinishedPage.Height - ScaleY(36);
+  WizardForm.RunList.Top := PostInstallTipsBody.Top + PostInstallTipsBody.Height + ScaleY(10);
+  if WizardForm.RunList.Top > MaxRunTop then
+  begin
+    PostInstallTipsBody.AutoSize := False;
+    PostInstallTipsBody.Height := MaxRunTop - PostInstallTipsBody.Top - ScaleY(8);
+    WizardForm.RunList.Top := MaxRunTop;
+  end;
+  WizardForm.RunList.Height := WizardForm.FinishedPage.Height - WizardForm.RunList.Top - ScaleY(4);
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -1882,6 +2012,7 @@ begin
       WizardForm.YesRadio.Checked := False;
       WizardForm.NoRadio.Checked := True;
     end;
+    LayoutFinishedPageTips();
   end;
   if CurPageID = wpInstalling then
   begin

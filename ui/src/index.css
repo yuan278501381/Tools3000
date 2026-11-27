@@ -107,6 +107,17 @@
   --sidebar-width: 224px;
   --sidebar-collapsed-width: 64px;
 
+  /* 全局层叠阶梯 (Single Source of Truth Z-Index Layers，严禁魔法数字导致顶栏穿透模态遮罩) */
+  --z-sidebar: 10;
+  --z-sticky-dock: 60;
+  --z-titlebar: 200;
+  --z-dropdown: 1200;
+  --z-popover: 1500;
+  --z-modal: 9500;
+  --z-modal-context: 9800;
+  --z-toast: 10500;
+  --z-resize-handles: 99999;
+
   /* 字体栈: 方案 B 单字重无损思源黑体优先 (Noto Sans SC · 饱满现代几何大中宫) */
   --font-sans: "Noto Sans SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
   --font-mono: "Cascadia Code", "Cascadia Mono", "Segoe UI Mono", "Consolas", "PingFang SC", "Microsoft YaHei UI", monospace;

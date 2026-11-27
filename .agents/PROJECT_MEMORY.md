@@ -6,6 +6,84 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-28] 重要新功能全触点同步交付铁律 & 出厂默认关闭策略（项目负责人明确确立）
+- **重要新功能全渠道同步清单（小修小补/微调免做，重要新功能/一级模块强制同步）**：
+  1. **新手向导 (`OnboardingModal.tsx`)**：在对应步骤卡片或可选能力导览中体现新功能价值与开启路径；
+  2. **功能模块页 (`PluginsPage.tsx` + `MessageBridge.cpp` + `PluginManager.cpp`)**：补齐中英 8 语种名称、定位描述、资源/输入影响提示与零残留启停开关；
+  3. **快捷键一览页 (`HotkeysPage.tsx` + `hotkeyCatalog.ts`)**：凡包含快捷键的新功能，必须归入对应业务域并补齐 8 语种名称映射与 0 裸英文门禁；
+  4. **托盘快捷控制舱 (`trayRegistry.ts`)**：常规后台效率模块同步注册快捷开关；**独立按需工具（如 Picasa 看图器这类不常驻的独立软件）不加托盘图标**，保持托盘克制极简；
+  5. **8 国多语言精细本地化 README (`README*.md`) 与涉及的演示动图/一览图**：严禁直译/机翻，须结合各语种用户的日常习惯、行文语气、风格以及当地熟悉的竞品软件/使用场景精细润色，并同步渲染更新 8 语种新功能演示动图（`docs/images/<locale>/*_demo.webp`）与常青总览海报（`docs/images/<locale>/feature_bento_overview.png`）；
+  6. **GitHub Pages 官网 (`docs/site/index.html`)**：同步更新功能矩阵、实机演示轮播、亮点文案、版本号与下载直链；
+  7. **关于页面技术栈 (`ui/src/pages/AboutPage.tsx`)**：凡新增重要底层框架、渲染引擎或推理框架，同步更新关于页面技术栈与开源致谢；
+  8. **内存治理策略页 (`ui/src/pages/PerformancePage.tsx`)**：凡新功能涉及独立进程、渲染表面、缓存上限、按需启停或冷路径回收策略，同步登记至内存治理全景矩阵（全部 9 大触点已同步固化至 `.agents/rules/agent.md` 第 10 节）。
+- **全新安装默认不开启的进阶/低频模块基线（2026-11-28 确立，零后台占用、按需启用）**：
+  - `remote_boost`（远控增强）、`file_locksmith`（文件占用解锁）、`caps_layer`（Caps 引导改键）、`window_manager`（窗口管理）、`quick_look`（空格预览）与 `picasa_viewer`（Picasa 图片查看器）在全新安装与出厂默认配置中一律默认关闭（`false`），用户可在「设置 -> 功能模块」随时按需一键启用；覆盖升级严禁重置老用户既有开关。
+- **全站文案克制规范**：
+  - 严禁在 UI 或安装引导中使用「强烈推荐」等营销式字眼，统一使用克制的「推荐」；
+  - 「全屏与游戏免打扰策略 / 全屏游戏/视频免打扰」等同类开关与选项标题统一精简为「全屏免打扰」（8 语种同步）；
+  - 离线 OCR 档位描述严格锚定 110 张实机基准数据：PP-OCRv6 标准包（~30 MB，推荐）已覆盖截图、表格代码、多语种及实拍照片/海报/书页/倾斜文档（80 实拍图检出 77/80 与高精度包持平）；+73 MB 高精度精修包（按需）聚焦生僻易混字、反光/模糊实拍细节与低置信度疑难行二次复核。
+- **全屏免打扰 PPT 演示一等公民与 Issue `#38` (`Ctrl+Shift+Esc`) 双防线根治（2026-11-28 落地）**：
+  1. **PPT / 幻灯片放映豁免 (`WinUtils.{h,cpp}`, `tests/unit/test_core.inc`)**：新增 `FullscreenScene::Presentation = 4` 与 `WinUtils::isPresentationProcessOrClass()`（覆盖 PowerPoint `powerpnt.exe`/`screenClass`/`PPTFrameClass`、WPS 演示 `wpp.exe`/`WppSlideShow`/`KWppSlideShowWindow`、LibreOffice Impress `soffice.bin`/`SALFRAME`），不再将其混入 `MediaOrBrowser`；全屏放映期间一律保留按键回显、聚光灯/鼠标特效、截图、录屏与全局快捷键，仅在非 `Off` 模式默认避让鼠标手势以保护原生右键翻页菜单；
+  2. **GitHub Issue `#38` (`Ctrl+Shift+Esc` 打开任务管理器失效，微信变关窗/Chrome 弹浏览器任务管理器) 双防线根治 (`src/main.cpp`, `GestureEngine.{h,cpp}`, `src/gesture/PluginEntry.cpp`, `tests/unit/test_gesture.inc`)**：
+     - *根因*：`main.cpp` 的 `vkCode == VK_ESCAPE` 拦截未检测修饰键，导致 `Ctrl+Shift+Esc` 也触发 `CancelTransientUiEvent`；`GesturePlugin` 订阅者无论是否在画手势都无条件执行 `WinUtils::emergencyFlushInputState()`，用 `SendInput(KEYUP)` 强行弹起用户正按住的 `Ctrl`/`Shift`，破坏内核 `Ctrl+Shift+Esc` 并向微信/Chrome 泄漏裸 `Esc`/`Shift+Esc`；
+     - *双防线*：① `main.cpp` 在 `vkCode == VK_ESCAPE` 入口过滤任何带 `Ctrl`/`Alt`/`Shift`/`Win` 的组合键 100% 原样放行；② `GestureEngine::cancelActiveGesture()` 改为返回 `bool`（仅真实中止追踪态手势才返回 `true`），空闲态绝不误触发 `emergencyFlushInputState()`；
+  3. **交互体验精修闭环**：
+     - 独立侧边栏固定第 3 一级菜单「快捷键一览」（`HotkeysPage.tsx`），内置全站热键检索，清零 `GeneralPage` 冗余区块；修复 `CloudBackupCard` 紧凑布局与去重开关文字；
+     - **「文本识别与翻译」3 页签重构**（`OcrPage.tsx` + `InPlaceTranslateCard.tsx`）：渐进式披露 3 选 1 翻译模式卡片（免费 AI 翻译 / 免费双源极速 / 自有 API 与本地模型），前两项零开发字段暴露，底部一屏可见即时测试条；
+     - **SnapZones 画布编辑器重塑**（`ZoneLayoutEditor.{tsx,css}`）：1:1 真实显示器纵横比居中舞台消除宽屏扁砖变形，补齐真实像素+百分比双标、通透玻璃叠层、8 向拖拽缩放、Figma 级磁吸对齐参考线（按 `Alt` 临时关闭）、一键整理、复制区域与右上角一键跳转真实桌面 1:1 全屏编辑；
+     - **CapsLayer 输入影响提示**：在功能模块卡片与 `CapsLayerPage` 顶部双端清晰提示启用后对「CapsLock 切中英文输入法」及游戏键位的影响。
+
+### [2026-11-28] WindowKit 全维度体验精修（独立输入钩子线程、FancyZones 3 层立体微缩、拖动零滞后与微信零残影边框）、手势/热键/安装包升级与 Issue `#37` Scoop 双层 Junction 根治 (`feat/window-kit-slint-ui`)
+- **核心痛点根治与架构沉淀**：
+  1. **Quick Switch (`Alt+Tab`) 漏给 Windows 原生切换器 + 搜索与 `1-9` 直达根治 (`src/window_kit/src/{main.rs,features/quick_switch.rs,ui_slint/mod.rs}`, `quick_switch.slint`, `src/main.cpp`)**：
+     - *三重根因*：① `WH_KEYBOARD_LL` 原装在主线程，主线程在 48 窗口图标提取/D2D/IO 时触发 Windows 300ms `LowLevelHooksTimeout` 放行原生 `Alt+Tab` 或静默摘钩；② `src/main.cpp` 原把 `suspendGestures` 误传给 `WindowKitController::syncMutedFlags`，导致普通手势绕过窗连带静音 `Alt+Tab`；③ 原搜索框 `height: 0px` 隐藏且按住 `Alt` 敲字母/数字属 `WM_SYSKEYDOWN` 被系统/Slint 忽略；
+     - *终局架构*：将 `WH_KEYBOARD_LL`/`WH_MOUSE_LL` 剥离至独立永不阻塞线程 `Tools3000-InputHooks`（回调 `< 0.01ms`），补全配对 `VK_TAB`/`VK_OEM_3` 抬起吞噬；QuickSwitch 开启期间由钩子直通拦截 `1-9`（含小键盘）直达切窗、`Alt + 方向/回车/Esc` 及 `Alt + A-Z/Space///Backspace` 自动锁定搜索态写入首字母；UI 改为常驻 `36px` 极简底部检索栏 + 行内 `20×20px` 微晶圆角 `1-9` 键帽 + `AttachThreadInput` 强焦点激活；`main.cpp` 改为仅按 `suspendHotkeys` 同步静音标志。
+  2. **SnapZones (FancyZones) 视觉对标并超越微软原版 (`layout_hub.slint`, `layout_hub.rs`, `snap_zones.rs`)**：
+     - 解决「焦点」3 层叠块因非选中态 `border-width: 0px` 且同色糊成灰块的问题：`ZoneThumbRect` 增设 `layer: int`，为叠层布局施加 3 阶明暗梯度 + `1.5px` 纯白/深曜石隔断描边 + 轻柔叠层阴影，并 1:1 复刻微软原版左上向右下 3 层错落比例；
+     - 将 `#1` 热键微章移至缩略槽右上角消除自定义卡片标题截断；上下文菜单改为基于 `context-menu-card-index` 动态紧贴对应卡片弹出；补齐 `FocusScope` `Escape` 逐级关闭；底层全屏预览与拖拽叠加层升级为 `6px` 精工高通透磨砂玻璃 + `2px` 锐利主题色边。
+  3. **活动窗口与置顶窗口边框：拖动零滞后 + 微信最小化/藏托盘六重零鬼影防线 (`focus_border.rs`, `always_on_top.rs`, `main.rs`)**：
+     - *物理本质与零滞后闭环*：Windows DWM 下跨进程独立 `WS_EX_LAYERED` 浮层无法与被鼠标拖拽的目标窗口同 VSync 提交，拖动必滞后 1~2 帧且缩放每帧重绘卡顿。终局对标并超越微软 PowerToys AlwaysOnTop：同时捕获 `EVENT_SYSTEM_MOVESIZESTART` 与自绘标题栏拖拽（微信/Chrome/VS Code/Electron 不发 `MOVESIZESTART`：左/右键按下 + 坐标位移嗅探），拖放/缩放瞬间 **0ms 瞬隐零拖影零重绘**，松手落位（`MOVESIZEEND` 或松键稳定 `24ms`）**0ms 严丝合缝贴合**；纯键盘切分屏/切窗走 **240Hz 零重绘 `SetWindowPos` 硬件瞬移**；
+     - *六重零鬼影防线*：增挂 `EVENT_OBJECT_HIDE`/`EVENT_OBJECT_CLOAKED` 0ms 瞬隐 + `280ms` 最小化动画抑制槽 + `(-16000)` 离屏坐标与 `MonitorFromRect(MONITOR_DEFAULTTONULL)` 全屏外隐藏校验 + `GetLayeredWindowAttributes` Alpha=0 假可见拦截 + 切窗时若 `gfx` 缺失或重绘失败强制先 `hide()` 绝不滞留旧框（并在 `TIMER_BORDER_RECONCILE`/`TIMER_ANIMATION_FRAME` 补齐 `ensure_gfx()` 与全浮层屏蔽掩码）；取消写死 `WS_EX_TOPMOST`，通过 `resolve_border_z_anchor` 紧贴目标窗口正上方不遮右键菜单与输入法。
+  4. **工作区编辑器吸顶预览控制台、全局快捷键独立分类与手势参数化调用 (`WorkspaceWorkbench.{tsx,css}`, `hotkeyCatalog.ts`, `GestureAction.{h,cpp}`, `BuiltinCommands.{h,cpp}`, `PluginEntry.cpp`, `GestureEditorModal.tsx`, `GesturePage.tsx`, 8 语种 JSON)**：
+     - 工作区编辑页用 `--z-sticky-dock: 60` + `IntersectionObserver` 哨兵固定吸顶微缩舞台与工作区配置卡（中矮屏/窄屏渐进仅吸顶舞台卡保列表空间），鼠标划过下方长应用列表始终实时联动预览；
+     - `hotkeyCatalog.ts` 新增独立 `'window_manager'` 分组并补齐 13 条 `WindowKit: *` 与动态 `0–9` 布局快切热键的 8 语种本地化；
+     - 手势内置命令追加 `38..43`（`kMaxBuiltinCommand = 43`：打开分屏布局管理器、切换指定分屏布局、一键启动指定工作区、捕获当前桌面为新工作区、还原全部托盘窗、找回离屏窗），全栈新增 `builtinParam` 与 `BuiltinCommandDispatcher::registerParamHandler`，前端动态下拉选择已配置分屏布局与工作区并在手势列表直显目标名称。
+  5. **安装包向导精简化与 8 语种快速上手引导 (`packaging/installer/installer.iss`)**：
+     - 通过 `ShouldSkipPage(wpSelectComponents)` 与 `UpdateReadyMemo` 跳过安装期模块勾选页与准备页冗长组件清单（仍 100% 兼容 CLI `/COMPONENTS=` 与覆盖升级保护既有 `config.json`），在完成页 `wpFinished` 新增自适应 8 语种精炼提示（告知「设置 -> 功能模块」随时按需开关、OCR 默认系统引擎 vs 16 MB 离线高精度 PP-OCRv4 包对识别率与体积的影响、以及「设置 -> 文本识别与翻译」翻译引擎设置建议）。
+  6. **GitHub Issue `#37` (`@zmj159809`) Scoop 安装后配置无法写入启动失败根治 (`WinUtils.{h,cpp}`, `ConfigManager.cpp`, `tests/unit/test_core.inc`)**：
+     - *根因*：Scoop 默认构造双层 NTFS Directory Junction（`current -> 1.5.5` 与 `data -> persist\tools3000\data`），导致未展开逻辑路径 `current\data\config\config.json` 触发 `AtomicFile.h::pathContainsReparsePoint()` 拦截（同时连带波及 `PluginManager` / `WindowKitController` / `MessageBridge::isSafePicasaViewerBinary`）；
+     - *零安全降级终局方案*：丝毫不弱化 `AtomicFile.h` 与各模块的重解析点防护红线；在根源目录解析层新增 `WinUtils::resolveTrustedDirectoryPath()`（支持向上寻找最近存在祖先并展开规范物理路径），经三重安全门禁（仅限本地盘符具体子目录、严禁指向 `%SystemRoot%`、提权运行时严禁指向 `SYSTEM`/`LocalService`/`NetworkService` 所有目录）安全展开 `getExeDirectory()`、`getAppDataDirectory()` 与 `ConfigManager::initialize()`（保持 `getExePath()` 原样不破坏 Scoop `current` 自启动升级语义），并在 `ConfigManager::load()` 静默自愈 0 字节空配置文件避免误留 0 字节 `.corrupt.*` 垃圾；新增真实 `mklink /J` Scoop 双层 Junction + `%SystemRoot%` 恶意联接拒绝单元测试守护。
+
+### [2026-11-27] WindowKit Slint 1.19.1 原生 Fluent UI 重塑（`renderer-software` 零黑屏、AltTabio 浅深美学与主题热同步, `feat/window-kit-slint-ui`）
+- **核心架构演进与技术选型决策**：
+  - 彻底替换 `Tools3000_WindowKit.exe` 内手绘 Direct2D 粗糙外观（净删 `-4000+` 行手绘布局胶水），引入 **Slint 1.19.1 + 官方 Fluent 主题 (`build.rs::with_style("fluent")`)** 与 **6 个声明式 `.slint` 文件**（[tokens.slint](file:///c:/repo/Tools3000/src/window_kit/ui/tokens.slint)、[icons.slint](file:///c:/repo/Tools3000/src/window_kit/ui/icons.slint)、[quick_switch.slint](file:///c:/repo/Tools3000/src/window_kit/ui/quick_switch.slint)、[layout_hub.slint](file:///c:/repo/Tools3000/src/window_kit/ui/layout_hub.slint)、[workspace_capture.slint](file:///c:/repo/Tools3000/src/window_kit/ui/workspace_capture.slint)、[window_kit.slint](file:///c:/repo/Tools3000/src/window_kit/ui/window_kit.slint)），零 Unicode Emoji，100% 矢量 Lucide SVG 图标；
+  - **渲染后端最终定型：`backend-winit` + `renderer-software` + `software-renderer-path`（已剔除 `renderer-femtovg`）**：
+    - 实机验证 `renderer-femtovg`（WGL OpenGL）在 Windows 锁屏、RDP 与 `PrintWindow(PW_RENDERFULLCONTENT)` 截图路径下整窗黑屏，且增加 GPU 驱动显存开销与二进制体积；
+    - 切至纯 CPU 脏矩形软件渲染器（`renderer-software`）后：0 OpenGL 驱动冲突、0 GPU 显存常驻、Win10 / Win11 / Server 2019–2025 / RDP / x64 & ARM64 100% 兼容、清晰叠加 60FPS 零拷贝 `DwmRegisterThumbnail` 实时预览，且 Release 产物从 `8.79 MB` 再降 **`500 KB` 至 `8.29 MB`**。
+  - **视觉 1:1 复刻与主题热同步**：
+    - **Quick Switch v2 (`Alt+Tab` & `Alt+\``)** 1:1 对标 `vibeslop/AltTabio` 极简桌面美学：无沉重顶栏，浅色柔和灰白 `#F3F3F3` / 深色曜石 `#111216`，1px 发丝可拖分割线，柔和动态主题色选中胶囊，按需底栏拼音检索与右侧高清 DWM 实时预览；
+    - **SnapZones v2 双层共视布局管理器 (`LayoutHub`)** 1:1 复刻 PowerToys FancyZones 浅深双色 Fluent 质感：Layer-1 全屏磨砂分区透视 + Layer-2 居中显示器卡片、虚拟桌面胶囊、6 大模板卡片、自定义分区卡、悬浮编辑菜单与 3 大居中弹窗、右下角 `+ 新建布局`；
+    - **Workspaces v2 捕获浮卡与启动进度窗**：全面升级为 Slint Fluent 卡片（保留每屏 4 条 `4px` 纯 GDI 正红细边）。
+- **根治的 5 个关键架构与跨模块暗坑**：
+  1. **Quick Switch 默认显示黑框根因**：`WindowKitController.cpp` 默认 `/general/theme` 硬编码 `"dark"`、`config.rs` 默认 `"dark"`、`win_utils.rs::is_system_dark_mode()` 注册表缺失回退 `true`，且 `MessageBridge.cpp` 修改 `general.updateSettings` 未即时通知 WindowKit。终局全链路统一默认 `"system"` + 浅色兜底，并在 `MessageBridge.cpp` 变更 `theme/accentColor/trayIconTheme/language/fontFamily` 时毫秒触发 `notifyHostEnvironmentChanged()` -> WindowKit 实时 `refresh_theme_if_open()` 与 Slint `ThemeTokens.sync-palette(is-dark)`（驱动 Fluent 内置控件 `Palette.color-scheme` 同步变色）；
+  2. **Slint 独立 UI 线程 `RefCell` 重入 panic 暗坑 (`ui_slint/mod.rs`)**：Slint 的 `set_*()` / `invoke_*()` 会同步触发 `.slint` `changed` 回调，在持有线程本地 `RefCell::borrow_mut()` 时调用会导致重入 panic 杀死 UI 线程。终局将 `SLINT_WIN_POOL` 与 `QS_THUMB_STATE` 物理分离，仅极短临界区 `ComponentHandle::clone_strong()` 取出强引用句柄后立即释放借用；
+  3. **Slint `Flickable` 内 `VerticalLayout` 叠字与绑定环 (binding loop) 暗坑 (`layout_hub.slint`)**：`Flickable` 子 `VerticalLayout` 必须显式设 `alignment: start;` 并为卡片行设定固定高度，根 `Rectangle` 显式声明 `x: 0px; y: 0px;`，卡片宽度绑定 `root.width` 而非反向引用父容器自宽；
+  4. **Slint `winit` 物理像素尺寸定位铁律 (`ui_slint/mod.rs`)**：无固定 `preferred-width/height` 的弹窗在 `show()` 前后均需显式同步 `PhysicalSize` + `PhysicalPosition` + `SetWindowPos`，防止回退 `800×600`；
+  5. **双层共视 Z-Order 与外部失焦收起 (`ui_slint/mod.rs`, `layout_hub.rs`)**：Layer-2 切页或重绘 Layer-1 后统一调用 `raise_layout_hub_above_preview()` 保持控制面板置顶，QuickSwitch 通过 `WindowEvent::Focused(false)` 实现点击外部自动收起。
+- **4K 实机全量验收与双架构实测数据（3456×2160 @ 150% DPI）**：
+  - 体积与双架构：x64 Release **`8.29 MB`**，ARM64 `cargo check --target aarch64-pc-windows-msvc` **0 error / 0 warning**；
+  - 测试与静态门禁：Rust **`40/40`**（0 warning）、C++ 关联测试 **`30/30`**、5 重仓内静态门禁（Logger/i18n/CSS/Typography/TrimWorkingSet）全绿；
+  - 5 张 4K 真机实拍图（QuickSwitch 浅/深、LayoutHub 浅/深、WorkspaceCapture 浅）逐张视觉审核 100% 达标；
+  - `scripts/verify_window_kit_live.ps1` 全动作 E2E + 20 轮高频压测零泄漏门禁全绿：托管冷启 **`61.3 ms`**（`WS=13.86 MB, GDI=0`）、QuickSwitch 首次惰性起 Slint **`76.3 ms`**（后续热切 **`~4–5 ms`**）、LayoutHub **`136.1 ms`**、正红四细边 **`29.1 ms`**、20 轮压测 3.5s 冷回收后工作集暴跌至 **`1.15 MB`**（`dH=-78, dGDI=-2, dUSR=0`）、优雅退出 **`66.6 ms`**、`ERROR=0`。
+
+### [2026-11-27] 全站 Z-Index 单一事实源层叠重构与 CodeQL `rust/access-invalid-pointer` (Alert `#2`) 根治
+- **前端模态遮罩被 TitleBar 穿透根因与全站清零**：
+  - *根因*：`.titlebar` 此前硬编码 `z-index: 1000`，形成高于 `.wn-backdrop (960)` 与 `.fb-backdrop (950)` 的独立 Flexbox Stacking Context，导致打开「版本更新日志」或「问题反馈」时，整条透明标题栏（特别是高对比白色瓷砖 Logo 与主题色蓝点）浮在暗幕上方；同期全仓排查出 `SearchApp` 中 `.category-ctx-menu (130)` / `.category-drag-ghost (120)` 低于 `.search-history-dropdown (950)` 与 `.search-view-settings-popover (1000)`，以及模态遮罩缺失 `-webkit-app-region: no-drag` 拖拽穿透风险；
+  - *终局方案*：在 `ui/src/index.css` 建立单一事实源 `--z-*` 分层令牌（`--z-sidebar: 10 < --z-titlebar: 200 < --z-dropdown: 1200 < --z-popover: 1500 < --z-modal: 9500 < --z-modal-context: 9800 < --z-toast: 10500 < --z-resize-handles: 99999`），全站全部模态框（`WhatsNewModal`/`FeedbackModal`/`OnboardingModal`/`UIKit Modal`/`SearchModal`）统一挂载 `var(--z-modal)` + `-webkit-app-region: no-drag`，将 `<AppToaster />` 提升至 `.app` 根层，并新增静态 CSS 解析防回退测试 `ui/src/components/ModalLayering.test.ts`。
+- **GitHub Code Scanning (CodeQL Alert `#2` · `rust/access-invalid-pointer`, High Severity) 彻底根治**：
+  - *根因*：`src/window_kit/src/core/win_utils.rs` 在 `CreateDIBSection(..., &mut bits, ...)` 前初始化 `bits = null_mut()` 并在其后调用 `std::ptr::write_bytes(bits, ...)` / `copy_nonoverlapping`，CodeQL `build-mode: none` 将 `null_mut()` 标记为无效指针源并触发 CWE-476/825 高危告警；同期全仓扫描检出 `src/viewer/src/assoc_dialog.rs` 的 `WICBitmap::Lock + GetDataPointer + from_raw_parts` 未做空指针与字节边界校验；
+  - *终局方案*：在 `win_utils.rs` 抽离单一事实源 `rasterize_hicon_to_bgra`，改用 `CreateDIBSection` + `PatBlt(BLACKNESS)` + `DrawIconEx` + `SelectObject(old)` + `GetDIBits` 直接读写安全 `Vec<u8>`，实现 **0 裸 DIB 指针解引用**并消除 `hicon_to_rgba8` / `hicon_to_png_data_url` 重复代码（`GlobalLock` 改用 `NonNull::new`）；`assoc_dialog.rs` 改用安全切片接口 `IWICBitmap::CopyPixels`，全仓同类模式清零。
+
 ### [2026-11-27] WindowKit v2 世界级全栈重塑：双层布局管理器、正红摆拍工作区、自由拖缩 Alt+Tab 与独立 Alt+`、Win10/Server 2019–2025 拓扑自愈 (`feat/window-kit-v2`)
 - **全栈范围与出厂零占用铁律**：
   - 全量覆盖 `src/window_kit/**`（纯 Rust 独立引擎，Release 仅 **`725 KB`**，0 WebView2）、`WindowKitController.{h,cpp}` / `MessageBridge.cpp` / `main.cpp`（C++ 宿主 Schema v3 桥接、5 项异步 IPC、3 条跨权限 `ChangeWindowMessageFilterEx` 回传消息、`--launch-workspace` 单实例静默转发、COM `IShellLinkW` 桌面快捷方式）、`src/gesture/**`（新增 6 项 WindowKit 内置手势命令 32–37，`kMaxBuiltinCommand = 37`）、以及前端 `WorkspaceWorkbench.{tsx,css}` / `WindowManagerPage.{tsx,css}` / `ZoneLayoutEditor.tsx` 与 8 国多语言（`zh`/`zh-TW`/`en`/`ja`/`ko`/`es`/`pt-BR`/`ru`，+101 `windowManager` 键 +6 `gestureEditor.builtin` 键）；

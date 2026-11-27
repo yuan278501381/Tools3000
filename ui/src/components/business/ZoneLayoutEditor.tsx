@@ -18,6 +18,7 @@ import {
   Maximize2,
   Merge,
   Minus,
+  Monitor,
   Plus,
   Rows,
   Scissors,
@@ -34,8 +35,45 @@ export interface ZoneLayoutEditorProps {
   showZoneNumbers?: boolean;
   zoneGap?: number;
   disabled?: boolean;
+  monitorWidth?: number;
+  monitorHeight?: number;
+  monitorLabel?: string;
+  onOpenFullscreenEditor?: () => void;
   onSelectLayout: (layoutId: string) => void;
   onChangeLayouts: (nextLayouts: SnapZoneLayout[], nextActiveId?: string) => void;
+}
+
+type CanvasDragHandle = 'move' | 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
+interface ActiveSnapGuides {
+  vertical: number[];
+  horizontal: number[];
+}
+
+function formatAspectRatioLabel(w: number, h: number): string {
+  if (w <= 0 || h <= 0) return '16:9';
+  const ratio = w / h;
+  const known: Array<[number, string]> = [
+    [16 / 9, '16:9'],
+    [16 / 10, '16:10'],
+    [21 / 9, '21:9'],
+    [32 / 9, '32:9'],
+    [3 / 2, '3:2'],
+    [4 / 3, '4:3'],
+    [9 / 16, '9:16'],
+    [10 / 16, '10:16'],
+  ];
+  for (const [target, label] of known) {
+    if (Math.abs(ratio - target) < 0.06) return label;
+  }
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const rw = Math.round(w);
+  const rh = Math.round(h);
+  const g = gcd(rw, rh) || 1;
+  const nw = Math.round(rw / g);
+  const nh = Math.round(rh / g);
+  if (nw <= 40 && nh <= 40) return `${nw}:${nh}`;
+  return `${ratio.toFixed(2)}:1`;
 }
 
 interface NormalizedZoneBox {
@@ -320,6 +358,10 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
   showZoneNumbers = true,
   zoneGap = 8,
   disabled = false,
+  monitorWidth = 1920,
+  monitorHeight = 1080,
+  monitorLabel,
+  onOpenFullscreenEditor,
   onSelectLayout,
   onChangeLayouts,
 }) => {
@@ -330,6 +372,16 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
     ids: [],
   });
   const [draftLayout, setDraftLayout] = useState<SnapZoneLayout | null>(null);
+  const [snapGuides, setSnapGuides] = useState<ActiveSnapGuides>({ vertical: [], horizontal: [] });
+
+  const safeMonitorW = monitorWidth > 200 ? Math.round(monitorWidth) : 1920;
+  const safeMonitorH = monitorHeight > 200 ? Math.round(monitorHeight) : 1080;
+  const monitorAspectRatio = safeMonitorW / safeMonitorH;
+  const isPortraitMonitor = monitorAspectRatio < 1;
+  const aspectLabel = useMemo(
+    () => formatAspectRatioLabel(safeMonitorW, safeMonitorH),
+    [safeMonitorW, safeMonitorH],
+  );
 
   const selectedZoneIds = useMemo(
     () => (selectionState.layoutId === activeLayoutId ? selectionState.ids : []),
@@ -485,10 +537,10 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
     window.addEventListener('pointerup', onUp);
   };
 
-  // ── 自由画布拖拽与角点缩放 ────────────────────────────────────────────────
+  // ── 自由画布八向拖拽、磁吸参考线与缩放 ─────────────────────────────────────
   const startCanvasZoneDrag = (
     zoneId: number,
-    mode: 'move' | 'resize',
+    handle: CanvasDragHandle,
     e: ReactPointerEvent<HTMLElement>,
   ) => {
     if (disabled || !currentLayout || currentLayout.type !== 'canvas' || !stageRef.current) return;
@@ -515,24 +567,167 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
     const startClientY = e.clientY;
     let latestLayout: SnapZoneLayout = currentLayout;
 
-    const snap2 = (val: number) => Math.round(val / 2) * 2;
+    // 收集画布基准线 + 其他区域边线作为磁吸目标（0/25/50/75/100 及相邻边）
+    const xTargets = new Set<number>([0, 25, 50, 75, 100]);
+    const yTargets = new Set<number>([0, 25, 50, 75, 100]);
+    for (const z of rawZones) {
+      if (z.id === zoneId) continue;
+      const ox = z.x * toPct;
+      const oy = z.y * toPct;
+      const ow = z.w * toPct;
+      const oh = z.h * toPct;
+      xTargets.add(ox);
+      xTargets.add(ox + ow / 2);
+      xTargets.add(ox + ow);
+      yTargets.add(oy);
+      yTargets.add(oy + oh / 2);
+      yTargets.add(oy + oh);
+    }
+    const xTargetArr = Array.from(xTargets);
+    const yTargetArr = Array.from(yTargets);
+    const SNAP_TOLERANCE = 1.8;
+
+    const snapCoord = (value: number, targets: number[]): { snapped: number; guide: number | null } => {
+      let best = value;
+      let bestDist = SNAP_TOLERANCE + 0.01;
+      let hitGuide: number | null = null;
+      for (const tVal of targets) {
+        const dist = Math.abs(value - tVal);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = tVal;
+          hitGuide = tVal;
+        }
+      }
+      return { snapped: best, guide: hitGuide };
+    };
+
+    const round1 = (val: number) => Math.round(val);
 
     const onMove = (ev: PointerEvent) => {
       const dxPct = ((ev.clientX - startClientX) / stageRect.width) * 100;
       const dyPct = ((ev.clientY - startClientY) / stageRect.height) * 100;
+      const disableSnap = ev.altKey;
 
       let nx = initX;
       let ny = initY;
       let nw = initW;
       let nh = initH;
+      const vGuides: number[] = [];
+      const hGuides: number[] = [];
 
-      if (mode === 'move') {
-        nx = clamp(snap2(initX + dxPct), 0, Math.max(0, 100 - initW));
-        ny = clamp(snap2(initY + dyPct), 0, Math.max(0, 100 - initH));
+      if (handle === 'move') {
+        nx = clamp(initX + dxPct, 0, Math.max(0, 100 - initW));
+        ny = clamp(initY + dyPct, 0, Math.max(0, 100 - initH));
+
+        if (!disableSnap) {
+          const leftSnap = snapCoord(nx, xTargetArr);
+          const rightSnap = snapCoord(nx + nw, xTargetArr);
+          const centerXSnap = snapCoord(nx + nw / 2, xTargetArr);
+          const xCandidates = [
+            leftSnap.guide !== null ? { dist: Math.abs(nx - leftSnap.snapped), x: leftSnap.snapped, g: leftSnap.guide } : null,
+            rightSnap.guide !== null ? { dist: Math.abs(nx + nw - rightSnap.snapped), x: rightSnap.snapped - nw, g: rightSnap.guide } : null,
+            centerXSnap.guide !== null ? { dist: Math.abs(nx + nw / 2 - centerXSnap.snapped), x: centerXSnap.snapped - nw / 2, g: centerXSnap.guide } : null,
+          ].filter((item): item is { dist: number; x: number; g: number } => item !== null);
+          if (xCandidates.length > 0) {
+            xCandidates.sort((a, b) => a.dist - b.dist);
+            nx = clamp(xCandidates[0].x, 0, Math.max(0, 100 - nw));
+            vGuides.push(xCandidates[0].g);
+          } else {
+            nx = round1(nx);
+          }
+
+          const topSnap = snapCoord(ny, yTargetArr);
+          const bottomSnap = snapCoord(ny + nh, yTargetArr);
+          const centerYSnap = snapCoord(ny + nh / 2, yTargetArr);
+          const yCandidates = [
+            topSnap.guide !== null ? { dist: Math.abs(ny - topSnap.snapped), y: topSnap.snapped, g: topSnap.guide } : null,
+            bottomSnap.guide !== null ? { dist: Math.abs(ny + nh - bottomSnap.snapped), y: bottomSnap.snapped - nh, g: bottomSnap.guide } : null,
+            centerYSnap.guide !== null ? { dist: Math.abs(ny + nh / 2 - centerYSnap.snapped), y: centerYSnap.snapped - nh / 2, g: centerYSnap.guide } : null,
+          ].filter((item): item is { dist: number; y: number; g: number } => item !== null);
+          if (yCandidates.length > 0) {
+            yCandidates.sort((a, b) => a.dist - b.dist);
+            ny = clamp(yCandidates[0].y, 0, Math.max(0, 100 - nh));
+            hGuides.push(yCandidates[0].g);
+          } else {
+            ny = round1(ny);
+          }
+        } else {
+          nx = round1(nx);
+          ny = round1(ny);
+        }
       } else {
-        nw = clamp(snap2(initW + dxPct), MIN_CANVAS_SIZE, Math.max(MIN_CANVAS_SIZE, 100 - initX));
-        nh = clamp(snap2(initH + dyPct), MIN_CANVAS_SIZE, Math.max(MIN_CANVAS_SIZE, 100 - initY));
+        const initRight = initX + initW;
+        const initBottom = initY + initH;
+        let left = initX;
+        let right = initRight;
+        let top = initY;
+        let bottom = initBottom;
+
+        if (handle.includes('w')) {
+          left = clamp(initX + dxPct, 0, initRight - MIN_CANVAS_SIZE);
+          if (!disableSnap) {
+            const s = snapCoord(left, xTargetArr);
+            if (s.guide !== null) {
+              left = clamp(s.snapped, 0, initRight - MIN_CANVAS_SIZE);
+              vGuides.push(s.guide);
+            } else {
+              left = round1(left);
+            }
+          } else {
+            left = round1(left);
+          }
+        }
+        if (handle.includes('e')) {
+          right = clamp(initRight + dxPct, initX + MIN_CANVAS_SIZE, 100);
+          if (!disableSnap) {
+            const s = snapCoord(right, xTargetArr);
+            if (s.guide !== null) {
+              right = clamp(s.snapped, initX + MIN_CANVAS_SIZE, 100);
+              vGuides.push(s.guide);
+            } else {
+              right = round1(right);
+            }
+          } else {
+            right = round1(right);
+          }
+        }
+        if (handle.includes('n')) {
+          top = clamp(initY + dyPct, 0, initBottom - MIN_CANVAS_SIZE);
+          if (!disableSnap) {
+            const s = snapCoord(top, yTargetArr);
+            if (s.guide !== null) {
+              top = clamp(s.snapped, 0, initBottom - MIN_CANVAS_SIZE);
+              hGuides.push(s.guide);
+            } else {
+              top = round1(top);
+            }
+          } else {
+            top = round1(top);
+          }
+        }
+        if (handle.includes('s')) {
+          bottom = clamp(initBottom + dyPct, initY + MIN_CANVAS_SIZE, 100);
+          if (!disableSnap) {
+            const s = snapCoord(bottom, yTargetArr);
+            if (s.guide !== null) {
+              bottom = clamp(s.snapped, initY + MIN_CANVAS_SIZE, 100);
+              hGuides.push(s.guide);
+            } else {
+              bottom = round1(bottom);
+            }
+          } else {
+            bottom = round1(bottom);
+          }
+        }
+
+        nx = left;
+        ny = top;
+        nw = Math.max(MIN_CANVAS_SIZE, right - left);
+        nh = Math.max(MIN_CANVAS_SIZE, bottom - top);
       }
+
+      setSnapGuides({ vertical: vGuides, horizontal: hGuides });
 
       const nextZones = rawZones.map((z) =>
         z.id === zoneId
@@ -552,6 +747,7 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
     const onUp = () => {
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerup', onUp);
+      setSnapGuides({ vertical: [], horizontal: [] });
       setDraftLayout(null);
       commitLayoutUpdate(latestLayout);
     };
@@ -745,6 +941,71 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
     const nextZones = rawZones.filter((z) => z.id !== zoneId);
     commitLayoutUpdate({ ...currentLayout, zones: nextZones });
     setSelectedZoneIds(nextZones[0] ? [nextZones[0].id] : []);
+  };
+
+  const handleDuplicateCanvasZone = (zoneId: number) => {
+    if (disabled || !currentLayout || currentLayout.type !== 'canvas') return;
+    const rawZones = Array.isArray(currentLayout.zones) ? currentLayout.zones : [];
+    const target = rawZones.find((z) => z.id === zoneId);
+    if (!target) return;
+    const scale = detectCanvasScale(rawZones);
+    const toPct = scale === 1 ? 100 : scale === 10000 ? 0.01 : 1;
+    const fromPct = scale === 1 ? 0.01 : scale === 10000 ? 100 : 1;
+    const nextId = rawZones.reduce((max, z) => Math.max(max, z.id), -1) + 1;
+    const w = target.w * toPct;
+    const h = target.h * toPct;
+    const x = clamp(target.x * toPct + 4, 0, Math.max(0, 100 - w));
+    const y = clamp(target.y * toPct + 4, 0, Math.max(0, 100 - h));
+    const cloned: SnapZoneCanvasRect = {
+      id: nextId,
+      x: Number((x * fromPct).toFixed(scale === 1 ? 4 : 0)),
+      y: Number((y * fromPct).toFixed(scale === 1 ? 4 : 0)),
+      w: Number((w * fromPct).toFixed(scale === 1 ? 4 : 0)),
+      h: Number((h * fromPct).toFixed(scale === 1 ? 4 : 0)),
+    };
+    commitLayoutUpdate({ ...currentLayout, zones: [...rawZones, cloned] });
+    setSelectedZoneIds([nextId]);
+  };
+
+  const handleTidyCanvasZones = () => {
+    if (disabled || !currentLayout || currentLayout.type !== 'canvas') return;
+    const rawZones = Array.isArray(currentLayout.zones) ? currentLayout.zones : [];
+    const count = rawZones.length;
+    if (count === 0) return;
+    const scale = detectCanvasScale(rawZones);
+    const fromPct = scale === 1 ? 0.01 : scale === 10000 ? 100 : 1;
+
+    const cols = isPortraitMonitor
+      ? Math.max(1, Math.floor(Math.sqrt(count)))
+      : Math.ceil(Math.sqrt(count));
+    const rows = Math.ceil(count / cols);
+    const rowPercents = normalizePercentsTo100(undefined, rows);
+
+    const nextZones: SnapZoneCanvasRect[] = [];
+    let cursor = 0;
+    let yAcc = 0;
+    for (let r = 0; r < rows; r++) {
+      const remaining = count - cursor;
+      const inThisRow = r === rows - 1 ? remaining : Math.min(cols, remaining);
+      const colPercents = normalizePercentsTo100(undefined, inThisRow);
+      const h = rowPercents[r];
+      let xAcc = 0;
+      for (let c = 0; c < inThisRow; c++) {
+        const w = colPercents[c];
+        const orig = rawZones[cursor];
+        nextZones.push({
+          id: orig.id,
+          x: Number((xAcc * fromPct).toFixed(scale === 1 ? 4 : 0)),
+          y: Number((yAcc * fromPct).toFixed(scale === 1 ? 4 : 0)),
+          w: Number((w * fromPct).toFixed(scale === 1 ? 4 : 0)),
+          h: Number((h * fromPct).toFixed(scale === 1 ? 4 : 0)),
+        });
+        xAcc += w;
+        cursor++;
+      }
+      yAcc += h;
+    }
+    commitLayoutUpdate({ ...currentLayout, zones: nextZones });
   };
 
   const handleUpdateCanvasZoneField = (
@@ -1043,6 +1304,27 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
                   <Button
                     variant="ghost"
                     size="sm"
+                    disabled={disabled}
+                    onClick={() => handleDuplicateCanvasZone(primarySelectedBox.zoneId)}
+                  >
+                    <Copy size={13} aria-hidden="true" />
+                    <span>{t('windowManager.duplicateZoneBtn', 'Duplicate')}</span>
+                  </Button>
+                )}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={disabled || boxes.length <= 1}
+                  onClick={handleTidyCanvasZones}
+                  title={t('windowManager.tidyZonesTip', 'Arrange all zones cleanly without overlap')}
+                >
+                  <LayoutGrid size={13} aria-hidden="true" />
+                  <span>{t('windowManager.tidyZonesBtn', 'Auto Arrange')}</span>
+                </Button>
+                {primarySelectedBox && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
                     disabled={disabled || boxes.length <= 1}
                     onClick={() => handleDeleteCanvasZone(primarySelectedBox.zoneId)}
                   >
@@ -1060,7 +1342,7 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
                       value={Math.round(primarySelectedBox.x)}
                       min={0}
                       max={90}
-                      step={2}
+                      step={1}
                       unit="%"
                       disabled={disabled}
                       ariaLabel="Zone X"
@@ -1073,7 +1355,7 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
                       value={Math.round(primarySelectedBox.y)}
                       min={0}
                       max={90}
-                      step={2}
+                      step={1}
                       unit="%"
                       disabled={disabled}
                       ariaLabel="Zone Y"
@@ -1086,7 +1368,7 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
                       value={Math.round(primarySelectedBox.w)}
                       min={MIN_CANVAS_SIZE}
                       max={100}
-                      step={2}
+                      step={1}
                       unit="%"
                       disabled={disabled}
                       ariaLabel="Zone Width"
@@ -1099,7 +1381,7 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
                       value={Math.round(primarySelectedBox.h)}
                       min={MIN_CANVAS_SIZE}
                       max={100}
-                      step={2}
+                      step={1}
                       unit="%"
                       disabled={disabled}
                       ariaLabel="Zone Height"
@@ -1111,91 +1393,159 @@ export const ZoneLayoutEditor: FC<ZoneLayoutEditorProps> = ({
             </div>
           )}
 
-          {/* ── 5. 16:9 交互式桌面预览画布 ────────────────────────────────── */}
-          <div className="zone-editor__monitor-shell">
-            <div ref={stageRef} className="zone-editor__stage">
-              {boxes.map((box) => {
-                const isSelected = validSelectedIds.includes(box.zoneId);
-                return (
-                  <div
-                    key={box.zoneId}
-                    role="button"
-                    tabIndex={disabled ? -1 : 0}
-                    aria-pressed={isSelected}
-                    className={`zone-editor__zone ${isSelected ? 'is-selected' : ''} ${
-                      currentLayout.type === 'canvas' ? 'zone-editor__zone--draggable' : ''
-                    }`}
-                    style={{
-                      left: `calc(${box.x}% + ${gapInsetPx}px)`,
-                      top: `calc(${box.y}% + ${gapInsetPx}px)`,
-                      width: `calc(${box.w}% - ${gapInsetPx * 2}px)`,
-                      height: `calc(${box.h}% - ${gapInsetPx * 2}px)`,
-                    }}
-                    onClick={(e) => handleZoneClick(box.zoneId, e.shiftKey || e.ctrlKey || e.metaKey)}
-                    onPointerDown={
-                      currentLayout.type === 'canvas'
-                        ? (e) => startCanvasZoneDrag(box.zoneId, 'move', e)
-                        : undefined
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault();
-                        handleZoneClick(box.zoneId, e.shiftKey || e.ctrlKey);
-                      }
-                    }}
-                  >
-                    {showZoneNumbers && (
-                      <span className="zone-editor__zone-number">{box.displayNumber}</span>
-                    )}
-                    <span className="zone-editor__zone-dim">
-                      {Math.round(box.w)}% x {Math.round(box.h)}%
-                    </span>
-                    {currentLayout.type === 'canvas' && (
-                      <span
-                        className="zone-editor__resize-handle"
-                        aria-label={t('windowManager.resizeZoneAria', 'Resize zone')}
-                        onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'resize', e)}
-                      >
-                        <Maximize2 size={11} aria-hidden="true" />
-                      </span>
-                    )}
-                  </div>
-                );
-              })}
-
-              {/* 网格列分割手柄 */}
-              {currentLayout.type === 'grid' &&
-                colDividerOffsets.map((offset, idx) => (
-                  <div
-                    key={`col-div-${idx}`}
-                    className="zone-editor__divider zone-editor__divider--col"
-                    style={{ left: `${offset}%` }}
-                    role="separator"
-                    aria-orientation="vertical"
-                    aria-label={t('windowManager.dragColDivider', 'Drag to resize column ratio')}
-                    onPointerDown={(e) => startGridDividerDrag('col', idx, e)}
-                  />
-                ))}
-
-              {/* 网格行分割手柄 */}
-              {currentLayout.type === 'grid' &&
-                rowDividerOffsets.map((offset, idx) => (
-                  <div
-                    key={`row-div-${idx}`}
-                    className="zone-editor__divider zone-editor__divider--row"
-                    style={{ top: `${offset}%` }}
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label={t('windowManager.dragRowDivider', 'Drag to resize row ratio')}
-                    onPointerDown={(e) => startGridDividerDrag('row', idx, e)}
-                  />
-                ))}
+          {/* ── 5. 真实显示器纵横比 1:1 居中预览舞台 ────────────────────────── */}
+          <div className="zone-editor__stage-backdrop">
+            <div className="zone-editor__stage-header">
+              <span className="zone-editor__monitor-spec">
+                <Monitor size={13} aria-hidden="true" />
+                <span>
+                  {monitorLabel
+                    ? `${monitorLabel} · ${safeMonitorW} × ${safeMonitorH} (${aspectLabel})`
+                    : `${safeMonitorW} × ${safeMonitorH} (${aspectLabel})`}
+                </span>
+              </span>
+              {onOpenFullscreenEditor && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={disabled}
+                  onClick={onOpenFullscreenEditor}
+                >
+                  <Maximize2 size={13} aria-hidden="true" />
+                  <span>{t('windowManager.editOnRealDesktopBtn', 'Edit 1:1 on Real Desktop')}</span>
+                </Button>
+              )}
             </div>
 
-            <div className="zone-editor__taskbar-mock" aria-hidden="true">
-              <span className="zone-editor__taskbar-pill" />
-              <span className="zone-editor__taskbar-pill" />
-              <span className="zone-editor__taskbar-pill" />
+            <div
+              className={`zone-editor__monitor-shell ${isPortraitMonitor ? 'is-portrait' : ''}`}
+              style={{
+                '--zone-monitor-aspect': `${safeMonitorW} / ${safeMonitorH}`,
+                '--zone-monitor-ratio': String(Number((safeMonitorW / safeMonitorH).toFixed(4))),
+              } as React.CSSProperties}
+            >
+              <div ref={stageRef} className="zone-editor__stage">
+                <span className="zone-editor__center-axis zone-editor__center-axis--v" aria-hidden="true" />
+                <span className="zone-editor__center-axis zone-editor__center-axis--h" aria-hidden="true" />
+
+                {boxes.map((box) => {
+                  const isSelected = validSelectedIds.includes(box.zoneId);
+                  const pxW = Math.round((box.w / 100) * safeMonitorW);
+                  const pxH = Math.round((box.h / 100) * safeMonitorH);
+                  const isCompactZone = box.w < 24 || box.h < 24;
+                  return (
+                    <div
+                      key={box.zoneId}
+                      role="button"
+                      tabIndex={disabled ? -1 : 0}
+                      aria-pressed={isSelected}
+                      className={`zone-editor__zone ${isSelected ? 'is-selected' : ''} ${
+                        currentLayout.type === 'canvas' ? 'zone-editor__zone--draggable zone-editor__zone--canvas' : ''
+                      } ${isCompactZone ? 'is-compact' : ''}`}
+                      style={{
+                        left: `calc(${box.x}% + ${gapInsetPx}px)`,
+                        top: `calc(${box.y}% + ${gapInsetPx}px)`,
+                        width: `calc(${box.w}% - ${gapInsetPx * 2}px)`,
+                        height: `calc(${box.h}% - ${gapInsetPx * 2}px)`,
+                      }}
+                      onClick={(e) => handleZoneClick(box.zoneId, e.shiftKey || e.ctrlKey || e.metaKey)}
+                      onPointerDown={
+                        currentLayout.type === 'canvas'
+                          ? (e) => startCanvasZoneDrag(box.zoneId, 'move', e)
+                          : undefined
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault();
+                          handleZoneClick(box.zoneId, e.shiftKey || e.ctrlKey);
+                        }
+                      }}
+                    >
+                      {showZoneNumbers && (
+                        <span className="zone-editor__zone-number">{box.displayNumber}</span>
+                      )}
+                      <span className="zone-editor__zone-px">
+                        {pxW} × {pxH}
+                      </span>
+                      {!isCompactZone && (
+                        <span className="zone-editor__zone-dim">
+                          {Math.round(box.w)}% × {Math.round(box.h)}%
+                        </span>
+                      )}
+                      {currentLayout.type === 'canvas' && !disabled && (
+                        <>
+                          <span className="zone-editor__edge-handle zone-editor__edge-handle--n" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'n', e)} />
+                          <span className="zone-editor__edge-handle zone-editor__edge-handle--s" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 's', e)} />
+                          <span className="zone-editor__edge-handle zone-editor__edge-handle--e" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'e', e)} />
+                          <span className="zone-editor__edge-handle zone-editor__edge-handle--w" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'w', e)} />
+                          <span className="zone-editor__corner-handle zone-editor__corner-handle--nw" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'nw', e)} />
+                          <span className="zone-editor__corner-handle zone-editor__corner-handle--ne" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'ne', e)} />
+                          <span className="zone-editor__corner-handle zone-editor__corner-handle--sw" onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'sw', e)} />
+                          <span
+                            className="zone-editor__resize-handle"
+                            aria-label={t('windowManager.resizeZoneAria', 'Resize zone')}
+                            onPointerDown={(e) => startCanvasZoneDrag(box.zoneId, 'se', e)}
+                          >
+                            <Maximize2 size={11} aria-hidden="true" />
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* 磁吸对齐参考线 */}
+                {snapGuides.vertical.map((pos, idx) => (
+                  <span
+                    key={`vg-${idx}-${pos}`}
+                    className="zone-editor__snap-guide zone-editor__snap-guide--v"
+                    style={{ left: `${pos}%` }}
+                    aria-hidden="true"
+                  />
+                ))}
+                {snapGuides.horizontal.map((pos, idx) => (
+                  <span
+                    key={`hg-${idx}-${pos}`}
+                    className="zone-editor__snap-guide zone-editor__snap-guide--h"
+                    style={{ top: `${pos}%` }}
+                    aria-hidden="true"
+                  />
+                ))}
+
+                {/* 网格列分割手柄 */}
+                {currentLayout.type === 'grid' &&
+                  colDividerOffsets.map((offset, idx) => (
+                    <div
+                      key={`col-div-${idx}`}
+                      className="zone-editor__divider zone-editor__divider--col"
+                      style={{ left: `${offset}%` }}
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label={t('windowManager.dragColDivider', 'Drag to resize column ratio')}
+                      onPointerDown={(e) => startGridDividerDrag('col', idx, e)}
+                    />
+                  ))}
+
+                {/* 网格行分割手柄 */}
+                {currentLayout.type === 'grid' &&
+                  rowDividerOffsets.map((offset, idx) => (
+                    <div
+                      key={`row-div-${idx}`}
+                      className="zone-editor__divider zone-editor__divider--row"
+                      style={{ top: `${offset}%` }}
+                      role="separator"
+                      aria-orientation="horizontal"
+                      aria-label={t('windowManager.dragRowDivider', 'Drag to resize row ratio')}
+                      onPointerDown={(e) => startGridDividerDrag('row', idx, e)}
+                    />
+                  ))}
+              </div>
+
+              <div className="zone-editor__taskbar-mock" aria-hidden="true">
+                <span className="zone-editor__taskbar-pill" />
+                <span className="zone-editor__taskbar-pill" />
+                <span className="zone-editor__taskbar-pill" />
+              </div>
             </div>
           </div>
 

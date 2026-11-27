@@ -567,17 +567,13 @@ export const CloudBackupCard: FC<CloudBackupCardProps> = ({ onConfigRestored }) 
 
       {/* ── 安全加密与自动策略 ── */}
       <div className="cloud-backup__options">
-        <SettingRow
+        <Toggle
+          id="cloud-backup-auto-exit"
           label={t('backup.autoOnExitLabel', 'Auto-backup on exit')}
           description={t('backup.autoOnExitDesc', 'Silently upload a fresh snapshot when Tools3000 exits normally')}
-        >
-          <Toggle
-            id="cloud-backup-auto-exit"
-            label={t('backup.autoOnExitLabel', 'Auto-backup on exit')}
-            checked={settings.enabled && settings.autoBackupOnExit}
-            onChange={(v) => setSettings((prev) => ({ ...prev, enabled: v ? true : prev.enabled, autoBackupOnExit: v }))}
-          />
-        </SettingRow>
+          checked={settings.enabled && settings.autoBackupOnExit}
+          onChange={(v) => setSettings((prev) => ({ ...prev, enabled: v ? true : prev.enabled, autoBackupOnExit: v }))}
+        />
 
         <SettingRow
           label={t('backup.keepCountLabel', 'Snapshot retention count')}
@@ -599,17 +595,13 @@ export const CloudBackupCard: FC<CloudBackupCardProps> = ({ onConfigRestored }) 
           />
         </SettingRow>
 
-        <SettingRow
+        <Toggle
+          id="cloud-backup-encrypt"
           label={t('backup.encryptionLabel', 'End-to-end encryption (AES-256-GCM)')}
           description={t('backup.encryptionDesc', 'Encrypt snapshots locally before upload so cloud providers cannot read your settings')}
-        >
-          <Toggle
-            id="cloud-backup-encrypt"
-            label={t('backup.encryptionLabel', 'End-to-end encryption (AES-256-GCM)')}
-            checked={settings.encryptionEnabled}
-            onChange={(v) => setSettings((prev) => ({ ...prev, encryptionEnabled: v }))}
-          />
-        </SettingRow>
+          checked={settings.encryptionEnabled}
+          onChange={(v) => setSettings((prev) => ({ ...prev, encryptionEnabled: v }))}
+        />
 
         {settings.encryptionEnabled && (
           <div className="cloud-backup__section">

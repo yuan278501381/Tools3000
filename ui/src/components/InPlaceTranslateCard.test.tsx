@@ -81,7 +81,7 @@ describe('InPlaceTranslateCard', () => {
     });
   });
 
-  it('defaults to Bilibili Index-Translate keyless AI provider when backend returns default snapshot', async () => {
+  it('defaults to Free AI mode hiding developer Base URL / API Key inputs and runs on-demand test', async () => {
     bridgeRequestMock.mockImplementation(async (method: string) => {
       if (method === 'translate.getSettings') {
         return {
@@ -114,7 +114,10 @@ describe('InPlaceTranslateCard', () => {
     render(<InPlaceTranslateCard />);
 
     expect(await screen.findByText('translate.badgePublicFreeAi')).toBeTruthy();
-    expect(await screen.findByText('translate.indexTranslateKeylessPlaceholder')).toBeTruthy();
+    expect(await screen.findByText('translate.indexTranslateNotice')).toBeTruthy();
+    // 渐进式披露：免费 AI 模式下严禁暴露 Base URL 与 API 密钥输入框
+    expect(document.getElementById('translate-openai-base-url')).toBeNull();
+    expect(document.getElementById('translate-openai-api-key')).toBeNull();
 
     const testBtn = await screen.findByRole('button', { name: /translate\.testConnectionBtn/i });
     fireEvent.click(testBtn);
@@ -133,13 +136,14 @@ describe('InPlaceTranslateCard', () => {
     expect(await screen.findByText(/218 ms/)).toBeTruthy();
   });
 
-  it('loads zero-config free settings and runs on-demand connection test', async () => {
+  it('loads zero-config free dual engine settings and runs on-demand connection test', async () => {
     render(<InPlaceTranslateCard />);
 
     await waitFor(() => {
       expect(bridgeRequestMock).toHaveBeenCalledWith('translate.getSettings', undefined, { silent: true });
     });
 
+    expect(document.getElementById('translate-openai-base-url')).toBeNull();
     const testBtn = await screen.findByRole('button', { name: /translate\.testConnectionBtn/i });
     fireEvent.click(testBtn);
 
@@ -154,7 +158,7 @@ describe('InPlaceTranslateCard', () => {
     expect(await screen.findByText(/你好，Tools3000！/)).toBeTruthy();
   });
 
-  it('switches to OpenAI-compatible provider and applies local Ollama offline preset', async () => {
+  it('reveals custom API panel and applies local Ollama offline preset', async () => {
     bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'translate.getSettings') {
         return {
@@ -213,7 +217,7 @@ describe('InPlaceTranslateCard', () => {
     });
   });
 
-  it('applies Bilibili Index-Translate free keyless preset and switches between 2B/9B/35B models', async () => {
+  it('switches from Custom API back to Free AI mode and toggles 2B/9B/35B models', async () => {
     bridgeRequestMock.mockImplementation(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'translate.getSettings') {
         return {
@@ -255,8 +259,8 @@ describe('InPlaceTranslateCard', () => {
 
     render(<InPlaceTranslateCard />);
 
-    const presetBtn = await screen.findByRole('button', { name: /translate\.presetIndexTranslate/i });
-    fireEvent.click(presetBtn);
+    const freeAiCard = await screen.findByRole('radio', { name: /translate\.modeFreeAiTitle/i });
+    fireEvent.click(freeAiCard);
 
     await waitFor(() => {
       expect(bridgeRequestMock).toHaveBeenCalledWith(
@@ -269,8 +273,6 @@ describe('InPlaceTranslateCard', () => {
       );
     });
 
-    // 命中免 Key 公网预设后显示公益提示与快捷模型切换按钮
-    expect(await screen.findByText('translate.indexTranslateKeylessPlaceholder')).toBeTruthy();
     expect(await screen.findByText('translate.indexTranslateNotice')).toBeTruthy();
 
     const fastModelBtn = await screen.findByRole('button', { name: /translate\.indexModelFast/i });

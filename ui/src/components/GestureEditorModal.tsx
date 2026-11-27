@@ -37,7 +37,16 @@ import {
 } from './gestureModel';
 import { getLocalizedGestureName } from '../utils/gestureI18n';
 import { bridgeRequest } from '../hooks/useBridge';
+import {
+  DEFAULT_WINDOW_MANAGER_SETTINGS,
+  type SnapZoneLayout,
+  type WindowManagerResponse,
+  type WorkspaceItem,
+} from '../types/windowManager';
 import './GestureEditorModal.css';
+
+const BUILTIN_CMD_APPLY_LAYOUT = 39;
+const BUILTIN_CMD_LAUNCH_WORKSPACE = 40;
 
 export interface GestureSaveOptions {
   replaceSimilarTracks?: boolean;
@@ -93,6 +102,11 @@ export const GestureEditorModal: FC<Props> = ({
     initialFocusTarget === 'instant' || initialFocusTarget === 'silent'
   );
   const [replaceSimilarTracks, setReplaceSimilarTracks] = useState(true);
+  const [wmLayouts, setWmLayouts] = useState<SnapZoneLayout[]>(DEFAULT_WINDOW_MANAGER_SETTINGS.snapZones.layouts);
+  const [wmActiveLayoutId, setWmActiveLayoutId] = useState<string>(
+    DEFAULT_WINDOW_MANAGER_SETTINGS.snapZones.activeLayoutId,
+  );
+  const [wmWorkspaces, setWmWorkspaces] = useState<WorkspaceItem[]>([]);
 
   const actionTypeRef = useRef<HTMLDivElement>(null);
   const actionDetailRef = useRef<HTMLDivElement>(null);
@@ -122,10 +136,30 @@ export const GestureEditorModal: FC<Props> = ({
     return () => window.clearTimeout(timer);
   }, [initialFocusTarget]);
 
-  // 弹窗挂载时开启录制免打扰保护模式，关闭时自动恢复全局拦截
+  // 弹窗挂载时开启录制免打扰保护模式，关闭时自动恢复全局拦截；同时静默加载分屏布局与工作区列表
   useEffect(() => {
+    let active = true;
     void bridgeRequest('gesture.setRecordingMode', { recording: true });
+    void bridgeRequest<WindowManagerResponse>('windowManager.getSettings', undefined, { silent: true })
+      .then((res) => {
+        if (!active || !res?.settings) return;
+        const layouts = res.settings.snapZones?.layouts;
+        if (Array.isArray(layouts) && layouts.length > 0) {
+          setWmLayouts(layouts);
+        }
+        if (typeof res.settings.snapZones?.activeLayoutId === 'string') {
+          setWmActiveLayoutId(res.settings.snapZones.activeLayoutId);
+        }
+        const items = res.settings.workspaces?.items;
+        if (Array.isArray(items)) {
+          setWmWorkspaces(items);
+        }
+      })
+      .catch(() => {
+        // 离线或窗口管理未就绪时保留默认内置布局兜底
+      });
     return () => {
+      active = false;
       void bridgeRequest('gesture.setRecordingMode', { recording: false });
     };
   }, []);
@@ -186,7 +220,15 @@ export const GestureEditorModal: FC<Props> = ({
       : [];
 
   const nameError = draft.action.name.trim() ? '' : t('gestureEditor.actionNameRequired', 'Action name is required');
-  const canSave = !codeError && !nameError;
+  const needsBuiltinTarget =
+    draft.action.type === 2 &&
+    (draft.action.builtinCmd === BUILTIN_CMD_APPLY_LAYOUT ||
+      draft.action.builtinCmd === BUILTIN_CMD_LAUNCH_WORKSPACE);
+  const builtinTargetError =
+    needsBuiltinTarget && !(draft.action.builtinParam ?? '').trim()
+      ? t('gestureEditor.targetRequiredError', 'Please select a target layout or workspace')
+      : '';
+  const canSave = !codeError && !nameError && !builtinTargetError;
 
   const setAction = (patch: Partial<GestureMapping['action']>) =>
     setDraft((d) => ({ ...d, action: { ...d.action, ...patch } }));
@@ -210,8 +252,17 @@ export const GestureEditorModal: FC<Props> = ({
         Array.isArray(draft.action.permissions) && draft.action.permissions.length > 0
           ? draft.action.permissions
           : [...DEFAULT_LOCAL_LUA_PERMISSIONS];
-    } else if (tVal === 2) action.builtinCmd = draft.action.builtinCmd ?? 0;
-    else if (tVal === 3) {
+    } else if (tVal === 2) {
+      action.builtinCmd = draft.action.builtinCmd ?? 0;
+      const param = (draft.action.builtinParam ?? '').trim();
+      if (
+        param &&
+        (action.builtinCmd === BUILTIN_CMD_APPLY_LAYOUT ||
+          action.builtinCmd === BUILTIN_CMD_LAUNCH_WORKSPACE)
+      ) {
+        action.builtinParam = param;
+      }
+    } else if (tVal === 3) {
       action.programPath = (draft.action.programPath ?? '').trim();
       action.programArgs = draft.action.programArgs ?? '';
       action.runMode = effectiveRunMode;
@@ -445,11 +496,127 @@ export const GestureEditorModal: FC<Props> = ({
                     .map((key, i) => ({ value: String(i), label: t(key) }))
                     // C-01: 过滤下标 17 (已下线的 radialMenu) 与与 26 重复的 6 (仅老配置仍可回显)
                     .filter((opt) => opt.value !== '17' && (opt.value !== '6' || draft.action.builtinCmd === 6))}
-                  onChange={(v: string) => setAction({ builtinCmd: Number(v) })}
+                  onChange={(v: string) => {
+                    const nextCmd = Number(v);
+                    const prevCmd = draft.action.builtinCmd ?? 0;
+                    const prevKey = BUILTIN_COMMAND_KEYS[prevCmd];
+                    const nextKey = BUILTIN_COMMAND_KEYS[nextCmd];
+                    const trimmedName = draft.action.name.trim();
+                    const prevDefaultLabel = prevKey ? t(prevKey) : '';
+                    const shouldAutoName =
+                      !trimmedName ||
+                      trimmedName === prevDefaultLabel ||
+                      (prevDefaultLabel !== '' && trimmedName.startsWith(`${prevDefaultLabel}: `));
+
+                    if (nextCmd === BUILTIN_CMD_APPLY_LAYOUT) {
+                      const defaultLayout =
+                        wmLayouts.find((l) => l.id === wmActiveLayoutId) ?? wmLayouts[0];
+                      const nextParam = defaultLayout?.id ?? '';
+                      const nextLabel = nextKey ? t(nextKey) : '';
+                      setAction({
+                        builtinCmd: nextCmd,
+                        builtinParam: nextParam,
+                        ...(shouldAutoName && defaultLayout
+                          ? { name: `${nextLabel}: ${defaultLayout.name}` }
+                          : {}),
+                      });
+                    } else if (nextCmd === BUILTIN_CMD_LAUNCH_WORKSPACE) {
+                      const defaultWs = wmWorkspaces[0];
+                      const nextParam = defaultWs?.id ?? '';
+                      const nextLabel = nextKey ? t(nextKey) : '';
+                      setAction({
+                        builtinCmd: nextCmd,
+                        builtinParam: nextParam,
+                        ...(shouldAutoName && defaultWs
+                          ? { name: `${nextLabel}: ${defaultWs.name}` }
+                          : {}),
+                      });
+                    } else {
+                      const nextLabel = nextKey ? t(nextKey) : '';
+                      setAction({
+                        builtinCmd: nextCmd,
+                        builtinParam: undefined,
+                        ...(shouldAutoName && nextLabel ? { name: nextLabel } : {}),
+                      });
+                    }
+                  }}
                   placement="auto"
                   portal
                 />
               </Field>
+              {draft.action.builtinCmd === BUILTIN_CMD_APPLY_LAYOUT && (
+                <div style={{ marginTop: '8px' }}>
+                  <Field
+                    label={t('gestureEditor.targetLayoutLabel', 'Target SnapZones Layout')}
+                    hint={t('gestureEditor.targetLayoutHint', 'Immediately activates this layout on the active monitor when triggered')}
+                    error={builtinTargetError}
+                  >
+                    <Select
+                      id="gesture-target-layout-select"
+                      value={draft.action.builtinParam ?? ''}
+                      placeholder={t('gestureEditor.targetLayoutPlaceholder', 'Select a SnapZones layout to apply')}
+                      options={wmLayouts.map((layout) => ({
+                        value: layout.id,
+                        label: layout.name,
+                      }))}
+                      onChange={(layoutId: string) => {
+                        const chosen = wmLayouts.find((l) => l.id === layoutId);
+                        const cmdLabel = t(BUILTIN_COMMAND_KEYS[BUILTIN_CMD_APPLY_LAYOUT]);
+                        const trimmedName = draft.action.name.trim();
+                        const shouldSyncName =
+                          !trimmedName ||
+                          trimmedName === cmdLabel ||
+                          trimmedName.startsWith(`${cmdLabel}: `);
+                        setAction({
+                          builtinParam: layoutId,
+                          ...(shouldSyncName && chosen ? { name: `${cmdLabel}: ${chosen.name}` } : {}),
+                        });
+                      }}
+                      placement="auto"
+                      portal
+                    />
+                  </Field>
+                </div>
+              )}
+              {draft.action.builtinCmd === BUILTIN_CMD_LAUNCH_WORKSPACE && (
+                <div style={{ marginTop: '8px' }}>
+                  <Field
+                    label={t('gestureEditor.targetWorkspaceLabel', 'Target Workspace')}
+                    hint={
+                      wmWorkspaces.length > 0
+                        ? t('gestureEditor.targetWorkspaceHint', 'Launches or repositions all apps saved in this workspace snapshot')
+                        : t('gestureEditor.noWorkspaceAvailableHint', 'No workspaces yet. Capture one first in Window Manager -> Workspaces')
+                    }
+                    error={builtinTargetError}
+                  >
+                    <Select
+                      id="gesture-target-workspace-select"
+                      value={draft.action.builtinParam ?? ''}
+                      placeholder={t('gestureEditor.targetWorkspacePlaceholder', 'Select a workspace to launch')}
+                      options={wmWorkspaces.map((ws) => ({
+                        value: ws.id,
+                        label: `${ws.name} (${t('gestureEditor.workspaceAppCountSuffix', { count: ws.apps.length })})`,
+                      }))}
+                      onChange={(wsId: string) => {
+                        const chosen = wmWorkspaces.find((w) => w.id === wsId);
+                        const cmdLabel = t(BUILTIN_COMMAND_KEYS[BUILTIN_CMD_LAUNCH_WORKSPACE]);
+                        const trimmedName = draft.action.name.trim();
+                        const shouldSyncName =
+                          !trimmedName ||
+                          trimmedName === cmdLabel ||
+                          trimmedName.startsWith(`${cmdLabel}: `);
+                        setAction({
+                          builtinParam: wsId,
+                          ...(shouldSyncName && chosen ? { name: `${cmdLabel}: ${chosen.name}` } : {}),
+                        });
+                      }}
+                      disabled={wmWorkspaces.length === 0}
+                      placement="auto"
+                      portal
+                    />
+                  </Field>
+                </div>
+              )}
               {draft.action.builtinCmd === 15 && onWebSearchEngineChange && (
                 <div style={{ marginTop: '8px' }}>
                   <Field label={t('gesture.webSearchEngine', 'Web Search Engine')}>

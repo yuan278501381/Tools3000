@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import type { TFunction } from 'i18next';
 import {
   HOTKEY_DOMAIN_GROUPS,
   HOTKEY_LABEL_KEYS,
   groupHotkeysByDomain,
+  resolveHotkeyLabel,
   sortHotkeysByPriority,
 } from './hotkeyCatalog';
 import zhLocale from '../i18n/locales/zh.json';
@@ -109,5 +111,60 @@ describe('hotkeyCatalog SSOT', () => {
       'Pause Gestures',
       'Future Custom Action',
     ]);
+  });
+
+  it('categorizes all WindowKit hotkeys and dynamic 0-9 layout hotkeys into window_manager with localized labels', () => {
+    const windowKitInput = [
+      { name: 'Pause Gestures', shortcut: 'Ctrl+Alt+Shift+W' },
+      { name: 'WindowKit: Toggle Always on Top', shortcut: 'Ctrl+Win+T' },
+      { name: 'WindowKit: Open Layout Editor', shortcut: 'Shift+Win+`' },
+      { name: 'WindowKit: Open Quick Switch', shortcut: 'Alt+Tab' },
+      { name: 'WindowKit: Minimize To Tray', shortcut: 'Ctrl+Win+Down' },
+      { name: 'WindowKit: Restore All Tray', shortcut: 'Ctrl+Shift+Win+Down' },
+      { name: 'WindowKit: Rescue Offscreen', shortcut: 'Ctrl+Win+G' },
+      { name: 'WindowKit: Move Next Zone', shortcut: 'Alt+Win+Right' },
+      { name: 'WindowKit: Move Prev Zone', shortcut: 'Alt+Win+Left' },
+      { name: 'WindowKit: Restore From Zone', shortcut: 'Alt+Win+Down' },
+      { name: 'WindowKit: Move Next Monitor', shortcut: 'Ctrl+Win+Right' },
+      { name: 'WindowKit: Opacity Up', shortcut: 'Ctrl+Win+Up' },
+      { name: 'WindowKit: Opacity Down', shortcut: 'Ctrl+Win+PageDown' },
+      { name: 'WindowKit: Opacity Reset', shortcut: 'Ctrl+Win+0' },
+      { name: 'WindowKit: Layout Hotkey 2', shortcut: 'Ctrl+Alt+Win+2' },
+      { name: 'WindowKit: Layout Hotkey 1', shortcut: 'Ctrl+Alt+Win+1' },
+    ];
+
+    const grouped = groupHotkeysByDomain(windowKitInput);
+    expect(grouped.map((g) => g.id)).toEqual(['window_manager', 'input']);
+    expect(grouped[0].items.map((x) => x.name)).toEqual([
+      'WindowKit: Open Layout Editor',
+      'WindowKit: Open Quick Switch',
+      'WindowKit: Move Next Zone',
+      'WindowKit: Move Prev Zone',
+      'WindowKit: Restore From Zone',
+      'WindowKit: Move Next Monitor',
+      'WindowKit: Rescue Offscreen',
+      'WindowKit: Toggle Always on Top',
+      'WindowKit: Minimize To Tray',
+      'WindowKit: Restore All Tray',
+      'WindowKit: Opacity Up',
+      'WindowKit: Opacity Down',
+      'WindowKit: Opacity Reset',
+      'WindowKit: Layout Hotkey 1',
+      'WindowKit: Layout Hotkey 2',
+    ]);
+    expect(grouped[1].items.map((x) => x.name)).toEqual(['Pause Gestures']);
+
+    const mockZhT = ((key: string, opts?: Record<string, unknown>) => {
+      const raw = readNestedKey(zhLocale as unknown as Record<string, unknown>, key);
+      if (typeof raw !== 'string') return String(opts?.defaultValue ?? key);
+      return raw.replace(/\{\{(\w+)\}\}/g, (_, k) => String(opts?.[k] ?? ''));
+    }) as unknown as TFunction;
+
+    for (const item of grouped[0].items) {
+      const label = resolveHotkeyLabel(mockZhT, item.name);
+      expect(label).not.toContain('WindowKit:');
+      expect(label.trim().length).toBeGreaterThan(0);
+    }
+    expect(resolveHotkeyLabel(mockZhT, 'WindowKit: Layout Hotkey 1')).toBe('切换分屏布局 #1');
   });
 });

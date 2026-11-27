@@ -28,7 +28,7 @@ Tools3000 將日常高頻使用的**檔案/應用/系統工具與原站圖示書
 ## 核心功能一覽
 
 <p align="center">
-  <img src="../images/zh-TW/feature_bento_overview.png" alt="Tools3000 十二大核心功能一圖速覽" width="100%" />
+  <img src="../images/zh-TW/feature_bento_overview.png" alt="Tools3000 十五大核心功能一圖速覽" width="100%" />
 </p>
 
 ---
@@ -102,6 +102,16 @@ Tools3000 將日常高頻使用的**檔案/應用/系統工具與原站圖示書
       <sub><b>文字擴展器</b> · 在任意視窗輸入 <code>;date</code> / <code>;sig</code> 秒速展開，支援動態巨集、密碼管理器避讓與零剪貼簿污染</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/zh-TW/window_manager_demo.webp" alt="原生視窗管理套件：SnapZones 磁吸分割、正紅細邊工作區快照與 Fluent 增強 Alt+Tab" width="100%" /><br />
+      <sub><b>原生視窗管理套件（按需啟用）</b> · SnapZones 等比磁吸分割、4px 正紅細邊工作區快照與增強 Alt+Tab / Alt+`（零顯存、關閉零處理程序）</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/zh-TW/caps_layer_demo.webp" alt="CapsLayer 引導改鍵：手不離主鍵區 IJKL 方向編輯與應用級映射" width="100%" /><br />
+      <sub><b>CapsLayer 引導改鍵（按需啟用）</b> · 按住 CapsLock + IJKL 盲打方向與編輯，支援應用級預設（關閉零掛鉤）</sub>
+    </td>
+  </tr>
 </table>
 
 | 模組 | 核心體驗 |
@@ -110,6 +120,8 @@ Tools3000 將日常高頻使用的**檔案/應用/系統工具與原站圖示書
 | **文件內容搜尋** | 使用 `content:` 直接穿透檢索 Word、Excel、PDF、PowerPoint、CAD 與原始碼內文，即時高亮上下文片段並點擊行號一鍵複製。 |
 | **剪貼簿歷史** | `Alt + V` 秒呼（支援系統匣右鍵開啟與系統匣面板一鍵開關），關機重啟不遺失歷史紀錄；卡片顯示複製來源軟體的真實彩色圖示與名稱，支援向現代瀏覽器輸入框、命令列終端機、無邊框軟體及 AI 開發工具智慧拖放直貼，以及 `Shift / Ctrl` 按序批次合併貼上與刪除、HTML/RTF 富文字、收藏分組、內嵌編輯、`Alt + 1..9` 瞬貼、一鍵隱藏已釘選與敏感應用排除。 |
 | **文字擴展器** | 在任意 Windows 應用輸入簡短觸發詞（如 `;date`、`;now`、`;sig`）瞬間展開完整片語與 15 類動態巨集（含 `{{date+Nd}}` 天數偏移、本地化星期 `{{weekday}}`、`{{uuid}}`、`{{timestamp}}`、`{{user}}`、剪貼簿與 `{{cursor}}` 游標定位）；預設相容中日韓全形符號觸發、支援保留觸發邊界鍵與即時展開預覽，內建密碼管理器自動避讓與隱私排除標記，關閉時零掛鉤零記憶體佔用。 |
+| **視窗管理套件（按需 · 預設關閉）** | 純 Rust + Slint Fluent 獨立引擎（零 WebView2、零 GPU 顯存，未開啟時零處理程序零佔用）：雙層共視 **SnapZones 分割**與 1:1 等比磁吸畫布、**工作區（Workspaces）** 4px 正紅細邊快照與桌面捷徑、自由拖縮 **視窗速切器（`Alt+Tab` 1–9 直達搜尋 & 獨立同應用 `Alt+``）**，以及零延遲焦點/置頂邊框。 |
+| **CapsLayer 引導改鍵（按需 · 預設關閉）** | 將 `CapsLock` 升級為主鍵區方向鍵（`I/J/K/L`）、編輯層與快速鍵引導層，支援依前景應用自動切換鍵位設定；預設關閉零掛鉤，啟用時附帶輸入法習慣提示。 |
 | **檔案對話框助手** | 在 Windows「開啟 / 另存新檔 / 選擇資料夾」及 Tools3000 自身彈窗上方自動顯示快捷導覽列，像 Listary 一樣直接輸入搜目錄一鍵跳轉，並嚴格保護另存檔名不被覆蓋。 |
 | **檔案佔用解鎖** | 刪不掉檔案時一鍵找出佔用程式：在檔案總管右鍵檔案或資料夾（可選僅按住 `Shift + 右鍵` 顯示）、搜尋結果右鍵，或在設定頁內直接選取檔案/資料夾，即可秒查佔用行程並一鍵安全解鎖；平時零記憶體常駐，不改動系統底層，關閉自動清理右鍵項。 |
 | **捲動長擷圖** | 網頁、文件與聊天紀錄自動捲動無縫拼接，右側即時預覽，支援首尾無損裁切（隨時可拖回還原）與長圖原位標註。 |
@@ -188,6 +200,8 @@ Tools3000 提供四重零黑盒驗證機制（完整揭露見 **[SECURITY.md](..
 | **Picasa 檢視器 / FastStone / Windows 相片** | 選用內建不到 2 MB 零相依的 Rust 復刻 Picasa 輕量檢視器（亦可完全獨立執行），還原經典動效並補足 4K High-DPI、WebP/AVIF/HEIC/SVG/RAW 與無損翻轉 | 需要原版 Google Picasa 相簿庫掃描管理、人臉辨識，或專業批次轉檔／RAW 後製修圖軟體 |
 | **Listary 對話框跳轉 / PowerToys File Locksmith** | 在 Windows「開啟 / 另存新檔」與自身彈窗內直接輸入搜目錄一鍵跳轉（嚴守另存檔名不覆蓋）；「檔案佔用解鎖」平時零常駐，右鍵檔案或頁內直選即可秒查佔用並一鍵解鎖 | 需要 Listary 全套自訂動作流／外部啟動器外掛，或深度核心控制碼層級分析 |
 | **Espanso / Beeftext / AutoHotkey 片語** | 內建原生文字擴展器（開箱即用，關閉時零駐留），支援即時／邊界雙模式觸發、日期／剪貼簿／游標動態巨集、密碼管理器自動避讓、即時體驗沙盒與 JSON 匯入匯出 | 需要複雜 YAML 表單彈窗、Shell 指令動態輸出或跨平台 Linux/macOS 同步設定 |
+| **PowerToys FancyZones & Workspaces / AltTab** | 按需啟用的純 Rust + Slint Fluent 視窗管理套件（零顯存、關閉零佔用）：雙層共視分割與磁吸畫布、正紅細邊工作區快照與桌面捷徑、增強 `Alt+Tab`（`1–9` 直達）與獨立 `Alt+`` | 需要 GlazeWM / Komorebi 等全自動動態平鋪視窗管理器 |
+| **CapsLock+ / AutoHotkey 改鍵** | 按需啟用的視覺化 CapsLayer 引導層（`Caps+IJKL` 方向/編輯）與應用級鍵位預設，免寫腳本（關閉零掛鉤） | 需要複雜自動化腳本或硬體級 QMK/VIA 鍵盤刷寫 |
 
 ---
 

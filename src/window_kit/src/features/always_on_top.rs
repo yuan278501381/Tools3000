@@ -11,6 +11,10 @@ use crate::core::win_utils::{
     get_window_dpi, get_window_visual_rect, is_foreground_fullscreen, is_hung_window,
     is_manageable_window, is_window_cloaked, resolve_foreground_or_target_hwnd, to_wide,
 };
+use crate::features::focus_border::{
+    is_invalid_or_minimized_rect, is_layered_zero_alpha, is_mouse_drag_button_down,
+    is_rect_visible_on_any_monitor, should_resume_after_drag,
+};
 use crate::render::d2d::{
     ease_out_cubic, rect_f, render_layered_window_d2d, rgb_a, rounded_rect, SharedGraphics,
 };
@@ -35,8 +39,11 @@ struct PinnedEntry {
     last_rect: RectI,
     last_zoomed: bool,
     last_visible: bool,
+    last_rendered_size: (i32, i32),
     /// 置顶开启瞬间触发的 230ms 柔和光晕脉冲计时器（收敛后立即清空，静止 0 CPU）
     pulse_started: Option<Instant>,
+    /// 拖动/缩放期零滞后隐身态：(is_system_movesize, last_seen_rect, last_motion_at)
+    drag_hidden: Option<(bool, RectI, Instant)>,
 }
 
 pub struct AlwaysOnTopManager {
@@ -55,7 +62,33 @@ impl AlwaysOnTopManager {
     }
 
     pub fn has_active_animation(&self) -> bool {
-        self.pinned.values().any(|e| e.pulse_started.is_some())
+        self.pinned
+            .values()
+            .any(|e| e.pulse_started.is_some() || e.drag_hidden.is_some())
+    }
+
+    /// 拖动/缩放已置顶窗口瞬间 0ms 隐藏边框（对标微软 PowerToys AlwaysOnTop，杜绝拖影滞后）
+    pub fn on_move_size_start(&mut self, hwnd: HWND) {
+        let key = hwnd.0 as isize;
+        if let Some(entry) = self.pinned.get_mut(&key) {
+            let rect = get_window_visual_rect(hwnd).unwrap_or(entry.last_rect);
+            entry.drag_hidden = Some((true, rect, Instant::now()));
+            if entry.last_visible {
+                if let Some(bh) = entry.border_hwnd {
+                    unsafe {
+                        let _ = ShowWindow(bh, SW_HIDE);
+                    }
+                }
+                entry.last_visible = false;
+            }
+        }
+    }
+
+    pub fn on_move_size_end(&mut self, hwnd: HWND) {
+        let key = hwnd.0 as isize;
+        if let Some(entry) = self.pinned.get_mut(&key) {
+            entry.drag_hidden = None;
+        }
     }
 
     /// 强制将指定窗口设为置顶状态（用于 Workspaces 场景态置顶叠加）
@@ -95,7 +128,9 @@ impl AlwaysOnTopManager {
                     last_rect: RectI::default(),
                     last_zoomed: false,
                     last_visible: false,
+                    last_rendered_size: (0, 0),
                     pulse_started: Some(Instant::now()),
+                    drag_hidden: None,
                 },
             );
             wk_info!(trace_id, "alwaysOnTop", "workspace-pinned hwnd=0x{:x}", key);
@@ -161,7 +196,9 @@ impl AlwaysOnTopManager {
                     last_rect: RectI::default(),
                     last_zoomed: false,
                     last_visible: false,
+                    last_rendered_size: (0, 0),
                     pulse_started: Some(Instant::now()),
+                    drag_hidden: None,
                 },
             );
             wk_info!(trace_id, "alwaysOnTop", "pinned hwnd=0x{:x}", key);
@@ -217,18 +254,20 @@ impl AlwaysOnTopManager {
                 continue;
             }
 
-            // 对标 PowerToys AlwaysOnTop：检测 DWMWA_CLOAKED（切虚拟桌面自动隐去）、最小化与独占全屏避让
+            // 对标 PowerToys AlwaysOnTop：检测 DWMWA_CLOAKED（切虚拟桌面自动隐去）、最小化、零透明与独占全屏避让
             let occluded_by_fullscreen = fg_is_fullscreen && fg_now != entry.target;
             let visible_target = unsafe {
                 IsWindowVisible(entry.target).as_bool()
                     && !IsIconic(entry.target).as_bool()
                     && !is_hung_window(entry.target)
                     && !is_window_cloaked(entry.target)
+                    && !is_layered_zero_alpha(entry.target, ex_style)
                     && !occluded_by_fullscreen
             };
 
             if !show_border || !visible_target {
                 entry.pulse_started = None;
+                entry.drag_hidden = None;
                 if entry.last_visible {
                     if let Some(bh) = entry.border_hwnd {
                         unsafe {
@@ -240,13 +279,48 @@ impl AlwaysOnTopManager {
                 continue;
             }
 
-            if entry.border_hwnd.is_none() {
-                entry.border_hwnd = create_border_window();
-            }
-            let (Some(bh), Some(g)) = (entry.border_hwnd, gfx) else {
+            let Some(rect) = get_window_visual_rect(entry.target) else {
                 continue;
             };
-            let Some(rect) = get_window_visual_rect(entry.target) else {
+            if is_invalid_or_minimized_rect(rect) || !is_rect_visible_on_any_monitor(rect) {
+                if entry.last_visible {
+                    if let Some(bh) = entry.border_hwnd {
+                        unsafe {
+                            let _ = ShowWindow(bh, SW_HIDE);
+                        }
+                    }
+                    entry.last_visible = false;
+                }
+                continue;
+            }
+
+            // 拖动/缩放零滞后抑制（支持标准 MOVESIZE 及自绘标题栏拖拽）
+            let mouse_down = is_mouse_drag_button_down();
+            if let Some((is_sys, last_seen, last_at)) = entry.drag_hidden {
+                if rect != last_seen {
+                    entry.drag_hidden = Some((is_sys, rect, Instant::now()));
+                    continue;
+                }
+                if !should_resume_after_drag(is_sys, mouse_down, last_at.elapsed().as_millis()) {
+                    continue;
+                }
+                entry.drag_hidden = None;
+            } else if entry.last_visible && rect != entry.last_rect && mouse_down {
+                entry.drag_hidden = Some((false, rect, Instant::now()));
+                if let Some(bh) = entry.border_hwnd {
+                    unsafe {
+                        let _ = ShowWindow(bh, SW_HIDE);
+                    }
+                }
+                entry.last_visible = false;
+                continue;
+            }
+
+            if entry.border_hwnd.is_none() {
+                entry.border_hwnd = create_border_window();
+                entry.last_rendered_size = (0, 0);
+            }
+            let (Some(bh), Some(g)) = (entry.border_hwnd, gfx) else {
                 continue;
             };
 
@@ -287,26 +361,33 @@ impl AlwaysOnTopManager {
             let h = rect.height() + pad * 2;
             let radius = if is_zoomed { 0.0 } else { 8.0 * scale };
 
-            let _ = render_layered_window_d2d(g, bh, bx, by, w, h, |rt| unsafe {
-                let inset = if is_zoomed {
-                    bw * 0.5
-                } else {
-                    pad as f32 - base_bw * 0.5
-                };
-                let r = rect_f(inset, inset, w as f32 - inset, h as f32 - inset);
-                let rr = rounded_rect(r, radius);
-                // 柔和外光晕（置顶开启瞬间 230ms 由 0.48 收束至 0.16 轻盈反馈）
-                if !is_zoomed {
-                    let glow_alpha = 0.16 + pulse_factor * 0.34;
-                    let glow_width = bw + (2.5 + pulse_factor * 3.0) * scale;
-                    if let Ok(glow) = rt.CreateSolidColorBrush(&rgb_a(border_color, glow_alpha), None) {
-                        rt.DrawRoundedRectangle(&rr, &glow, glow_width, None);
+            let need_redraw = entry.pulse_started.is_some()
+                || entry.last_rendered_size != (w, h)
+                || entry.last_zoomed != is_zoomed;
+
+            if need_redraw {
+                let _ = render_layered_window_d2d(g, bh, bx, by, w, h, |rt| unsafe {
+                    let inset = if is_zoomed {
+                        bw * 0.5
+                    } else {
+                        pad as f32 - base_bw * 0.5
+                    };
+                    let r = rect_f(inset, inset, w as f32 - inset, h as f32 - inset);
+                    let rr = rounded_rect(r, radius);
+                    // 柔和外光晕（置顶开启瞬间 230ms 由 0.48 收束至 0.16 轻盈反馈）
+                    if !is_zoomed {
+                        let glow_alpha = 0.16 + pulse_factor * 0.34;
+                        let glow_width = bw + (2.5 + pulse_factor * 3.0) * scale;
+                        if let Ok(glow) = rt.CreateSolidColorBrush(&rgb_a(border_color, glow_alpha), None) {
+                            rt.DrawRoundedRectangle(&rr, &glow, glow_width, None);
+                        }
                     }
-                }
-                if let Ok(brush) = rt.CreateSolidColorBrush(&rgb_a(border_color, 0.94), None) {
-                    rt.DrawRoundedRectangle(&rr, &brush, bw, None);
-                }
-            });
+                    if let Ok(brush) = rt.CreateSolidColorBrush(&rgb_a(border_color, 0.94), None) {
+                        rt.DrawRoundedRectangle(&rr, &brush, bw, None);
+                    }
+                });
+                entry.last_rendered_size = (w, h);
+            }
 
             unsafe {
                 let _ = SetWindowPos(
@@ -316,9 +397,15 @@ impl AlwaysOnTopManager {
                     by,
                     w,
                     h,
-                    SWP_NOACTIVATE,
+                    if need_redraw {
+                        SWP_NOACTIVATE
+                    } else {
+                        SWP_NOSIZE | SWP_NOACTIVATE
+                    },
                 );
-                let _ = ShowWindow(bh, SW_SHOWNOACTIVATE);
+                if !entry.last_visible {
+                    let _ = ShowWindow(bh, SW_SHOWNOACTIVATE);
+                }
             }
             entry.last_rect = rect;
             entry.last_zoomed = is_zoomed;

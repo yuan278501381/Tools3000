@@ -771,37 +771,17 @@ pub fn get_uwp_shell_icon(aumid: &str) -> Option<SafeIcon> {
     }
 }
 
-/// 将任意 Win32 HICON（含 1/4/8/32bpp、高 DPI、MSIX/UWP）通过 32bpp DIB + DrawIconEx + WIC WritePixels
-/// 100% 无损编码为紧凑 `data:image/png;base64,...`（供前端工作区微缩舞台展示真实彩色图标）
-pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
+/// 将任意 Win32 HICON 安全光栅化为 32bpp Top-Down BGRA 像素缓冲（零裸 DIB 指针解引用）
+///
+/// 全程仅通过 Win32 安全 API（`CreateDIBSection` + `PatBlt` + `DrawIconEx` + `GetDIBits`）
+/// 写入托管 `Vec<u8>`，绝不直接解引用 `CreateDIBSection` 输出指针，彻底消除 CWE-476/825
+/// 静态告警，同时确保跨进程 / 高 DPI / MSIX / 旧式无 Alpha 图标 100% 稳定提取。
+fn rasterize_hicon_to_bgra(hicon: HICON, target_px: u32) -> Option<(u32, Vec<u8>)> {
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, SelectObject, BITMAPINFO,
-        BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS,
+        CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDIBits, PatBlt,
+        SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, BLACKNESS, DIB_RGB_COLORS,
     };
-    use windows::Win32::Graphics::Imaging::{
-        CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
-        IWICBitmapEncoder, IWICImagingFactory, WICBitmapEncoderNoCache,
-    };
-    use windows::Win32::System::Com::StructuredStorage::{
-        CreateStreamOnHGlobal, GetHGlobalFromStream,
-    };
-    use windows::Win32::System::Com::{
-        CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
-        STATFLAG_NONAME, STATSTG,
-    };
-    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     use windows::Win32::UI::WindowsAndMessaging::{DrawIconEx, DI_NORMAL};
-
-    struct ComScope(bool);
-    impl Drop for ComScope {
-        fn drop(&mut self) {
-            if self.0 {
-                unsafe {
-                    CoUninitialize();
-                }
-            }
-        }
-    }
 
     if hicon.is_invalid() {
         return None;
@@ -811,12 +791,11 @@ pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
     let byte_len = (stride * sz) as usize;
 
     unsafe {
-        // 1. 通过 32bpp Top-Down DIB + DrawIconEx 光栅化任意位深/跨进程 HICON，彻底规避 CreateBitmapFromHICON 兼容性失败
         let hdc = CreateCompatibleDC(None);
         if hdc.is_invalid() {
             return None;
         }
-        let bmi = BITMAPINFO {
+        let mut bmi = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
                 biSize: size_of::<BITMAPINFOHEADER>() as u32,
                 biWidth: sz as i32,
@@ -828,16 +807,19 @@ pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
             },
             ..Default::default()
         };
-        let mut bits: *mut c_void = std::ptr::null_mut();
-        let hbmp = match CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(b) if !b.is_invalid() && !bits.is_null() => b,
+        let mut unused_bits: *mut c_void = std::ptr::null_mut();
+        let hbmp = match CreateDIBSection(hdc, &bmi, DIB_RGB_COLORS, &mut unused_bits, None, 0) {
+            Ok(b) if !b.is_invalid() => b,
             _ => {
                 let _ = DeleteDC(hdc);
                 return None;
             }
         };
-        std::ptr::write_bytes(bits as *mut u8, 0, byte_len);
+        let _ = unused_bits;
+
         let old = SelectObject(hdc, hbmp);
+        // 显式清空为全零 BGRA（透明底）后再光栅化 HICON
+        let _ = PatBlt(hdc, 0, 0, sz as i32, sz as i32, BLACKNESS);
         let drawn = DrawIconEx(
             hdc,
             0,
@@ -850,14 +832,27 @@ pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
             DI_NORMAL,
         )
         .is_ok();
-        let mut pixels = vec![0u8; byte_len];
-        if drawn {
-            std::ptr::copy_nonoverlapping(bits as *const u8, pixels.as_mut_ptr(), byte_len);
-        }
+        // 遵循 Win32 GetDIBits 契约：读取像素前必须先将位图反选出 DC
         SelectObject(hdc, old);
+
+        let mut pixels = vec![0u8; byte_len];
+        let copied_lines = if drawn {
+            GetDIBits(
+                hdc,
+                hbmp,
+                0,
+                sz,
+                Some(pixels.as_mut_ptr().cast()),
+                &mut bmi,
+                DIB_RGB_COLORS,
+            )
+        } else {
+            0
+        };
         let _ = DeleteObject(hbmp);
         let _ = DeleteDC(hdc);
-        if !drawn {
+
+        if !drawn || copied_lines != sz as i32 {
             return None;
         }
 
@@ -876,8 +871,81 @@ pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
             }
         }
 
-        // 2. 使用 WIC PNG Container Format (GUID_ContainerFormatPng) + WritePixels 编码为内存流
-        //    自动兜底线程 COM 初始化（S_OK/S_FALSE 成对卸载；RPC_E_CHANGED_MODE 沿用已有 MTA）
+        Some((sz, pixels))
+    }
+}
+
+/// 将任意 Win32 HICON（含 1/4/8/32bpp、高 DPI、MSIX/UWP）光栅化为直通 RGBA8 像素缓冲区（供 Slint 零拷贝渲染真实彩色应用图标）
+pub fn hicon_to_rgba8(hicon: HICON, target_px: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let (sz, mut pixels) = rasterize_hicon_to_bgra(hicon, target_px)?;
+    for px in pixels.chunks_exact_mut(4) {
+        px.swap(0, 2); // BGRA -> RGBA
+    }
+    Some((sz, sz, pixels))
+}
+
+/// 抽取指定窗口的高清 RGBA8 彩色图标（三级兜底：窗口 HICON -> UWP/MSIX Shell -> EXE Shell）
+pub fn extract_window_icon_rgba8(
+    hwnd: HWND,
+    exe_path: &str,
+    aumid: &str,
+    target_px: u32,
+) -> Option<(u32, u32, Vec<u8>)> {
+    if let Some(ico) = get_window_icon_safe(hwnd, exe_path, true) {
+        if let Some(rgba) = hicon_to_rgba8(ico.hicon, target_px) {
+            return Some(rgba);
+        }
+    }
+    if !aumid.trim().is_empty() {
+        if let Some(ico) = get_uwp_shell_icon(aumid) {
+            if let Some(rgba) = hicon_to_rgba8(ico.hicon, target_px) {
+                return Some(rgba);
+            }
+        }
+    }
+    if !exe_path.trim().is_empty() {
+        if let Some(ico) = get_exe_shell_icon(exe_path, true) {
+            if let Some(rgba) = hicon_to_rgba8(ico.hicon, target_px) {
+                return Some(rgba);
+            }
+        }
+    }
+    None
+}
+
+/// 将任意 Win32 HICON（含 1/4/8/32bpp、高 DPI、MSIX/UWP）通过安全 BGRA 光栅化 + WIC WritePixels
+/// 100% 无损编码为紧凑 `data:image/png;base64,...`（供前端工作区微缩舞台展示真实彩色图标）
+pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
+    use windows::Win32::Graphics::Imaging::{
+        CLSID_WICImagingFactory, GUID_ContainerFormatPng, GUID_WICPixelFormat32bppBGRA,
+        IWICBitmapEncoder, IWICImagingFactory, WICBitmapEncoderNoCache,
+    };
+    use windows::Win32::System::Com::StructuredStorage::{
+        CreateStreamOnHGlobal, GetHGlobalFromStream,
+    };
+    use windows::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        STATFLAG_NONAME, STATSTG,
+    };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+
+    struct ComScope(bool);
+    impl Drop for ComScope {
+        fn drop(&mut self) {
+            if self.0 {
+                unsafe {
+                    CoUninitialize();
+                }
+            }
+        }
+    }
+
+    let (sz, pixels) = rasterize_hicon_to_bgra(hicon, target_px)?;
+    let stride = sz * 4;
+
+    unsafe {
+        // 使用 WIC PNG Container Format (GUID_ContainerFormatPng) + WritePixels 编码为内存流
+        // 自动兜底线程 COM 初始化（S_OK/S_FALSE 成对卸载；RPC_E_CHANGED_MODE 沿用已有 MTA）
         let _com = ComScope(CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok());
         let wic: IWICImagingFactory =
             CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -908,11 +976,8 @@ pub fn hicon_to_png_data_url(hicon: HICON, target_px: u32) -> Option<String> {
             return None;
         }
         let hglobal = GetHGlobalFromStream(&stream).ok()?;
-        let ptr = GlobalLock(hglobal);
-        if ptr.is_null() {
-            return None;
-        }
-        let bytes = std::slice::from_raw_parts(ptr as *const u8, len).to_vec();
+        let non_null = std::ptr::NonNull::new(GlobalLock(hglobal).cast::<u8>())?;
+        let bytes = std::slice::from_raw_parts(non_null.as_ptr(), len).to_vec();
         let _ = GlobalUnlock(hglobal);
 
         Some(format!("data:image/png;base64,{}", encode_base64(&bytes)))
@@ -1587,9 +1652,9 @@ pub fn is_system_dark_mode() -> bool {
         )
         .is_err()
         {
-            return true;
+            return false;
         }
-        let mut data: u32 = 0;
+        let mut data: u32 = 1;
         let mut data_size = size_of::<u32>() as u32;
         let mut val_type = REG_VALUE_TYPE(0);
         let res = RegQueryValueExW(
@@ -1604,7 +1669,7 @@ pub fn is_system_dark_mode() -> bool {
         if res.is_ok() && val_type == REG_DWORD {
             data == 0
         } else {
-            true
+            false
         }
     }
 }
@@ -1776,7 +1841,8 @@ pub fn is_shell_taskbar_present() -> bool {
     }
 }
 
-/// 轻量调整顶层卡片不透明度（0..=255），供 QuickSwitch 平滑淡入动效使用
+/// 轻量调整顶层卡片不透明度（0..=255），供覆盖层平滑淡入动效使用
+#[allow(dead_code)]
 pub fn set_window_layered_alpha(hwnd: HWND, alpha: u8) {
     use windows::Win32::Foundation::COLORREF;
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -2115,6 +2181,19 @@ mod tests {
             data_url.starts_with("data:image/png;base64,iVBORw0KGgo"),
             "unexpected PNG data URL prefix: {}",
             &data_url[..data_url.len().min(48)]
+        );
+    }
+
+    #[test]
+    fn hicon_to_rgba8_rasterizes_system_icon_cleanly() {
+        use windows::Win32::UI::WindowsAndMessaging::{LoadIconW, IDI_APPLICATION};
+        let hicon = unsafe { LoadIconW(None, IDI_APPLICATION) }.expect("IDI_APPLICATION icon");
+        let (w, h, rgba) = hicon_to_rgba8(hicon, 32).expect("RGBA8 icon rasterization must succeed");
+        assert_eq!((w, h), (32, 32));
+        assert_eq!(rgba.len(), 32 * 32 * 4);
+        assert!(
+            rgba.chunks_exact(4).any(|px| px[3] > 0),
+            "rasterized RGBA8 icon must contain visible non-transparent pixels"
         );
     }
 }

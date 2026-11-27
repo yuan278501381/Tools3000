@@ -30,6 +30,7 @@ type DepPurposeKey =
   | 'about.depPurpose.rustClipboard'
   | 'about.depPurpose.rustCliMcp'
   | 'about.depPurpose.rustPicasaViewer'
+  | 'about.depPurpose.rustWindowKitSlint'
   | 'about.depPurpose.direct2d'
   | 'about.depPurpose.llHooks'
   | 'about.depPurpose.ddcBrightness'
@@ -68,6 +69,7 @@ const TECH_STACK: DependencyInfo[] = [
   { name: 'Rust Clipboard Kernel',          version: 'Edition 2021 · Zero-Deps',       purpose: 'about.depPurpose.rustClipboard' },
   { name: 'Rust CLI & MCP Server',          version: 'Edition 2021 · Zero-Deps · MCP', purpose: 'about.depPurpose.rustCliMcp' },
   { name: 'Rust Picasa Viewer',             version: 'D3D11 · DComp · resvg 0.45',     purpose: 'about.depPurpose.rustPicasaViewer' },
+  { name: 'Rust WindowKit & Slint Fluent',  version: 'Edition 2021 · Slint 1.19.1',    purpose: 'about.depPurpose.rustWindowKitSlint' },
   { name: 'Direct2D & DirectComposition',   version: 'GPU Hardware',                   purpose: 'about.depPurpose.direct2d' },
   { name: 'Win32 LL Hooks & Raw Input',     version: 'Native API',                     purpose: 'about.depPurpose.llHooks' },
   { name: 'DDC/CI & WMI Display',           version: 'dxva2 · root\\wmi',              purpose: 'about.depPurpose.ddcBrightness' },
@@ -76,7 +78,7 @@ const TECH_STACK: DependencyInfo[] = [
   { name: 'NTFS MFT & USN Journal',         version: 'Kernel I/O',                     purpose: 'about.depPurpose.ntfsEngine' },
   { name: 'PinyinEngine',                   version: 'Built-in',                       purpose: 'about.depPurpose.pinyin' },
   { name: 'PP-OCRv6 & MI-GAN 512',          version: 'DirectML GPU · 100% Offline',    purpose: 'about.depPurpose.ppocrDirectml' },
-  { name: 'WinHTTP & DPAPI Translate',      version: 'Index-Translate · BYOK',         purpose: 'about.depPurpose.winhttpTranslate' },
+  { name: 'WinHTTP & DPAPI Translate',      version: 'Free AI · Dual-Source · BYOK',   purpose: 'about.depPurpose.winhttpTranslate' },
   { name: 'OpenCV & quirc',                 version: '4.12',                           purpose: 'about.depPurpose.opencv' },
   { name: 'FFmpeg & WASAPI',                version: '8.1',                            purpose: 'about.depPurpose.ffmpeg' },
   { name: 'Windows.Media.Ocr & Pdf',        version: '100% Offline',                   purpose: 'about.depPurpose.windowsOcr' },

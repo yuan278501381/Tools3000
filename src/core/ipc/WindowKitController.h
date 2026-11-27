@@ -72,6 +72,7 @@ inline constexpr WPARAM kWindowKitActionApplyLayoutHotkeyDigit = 21;
 inline constexpr WPARAM kWindowKitActionStartWorkspaceCapture = 22;
 inline constexpr WPARAM kWindowKitActionPreviewBorderStyle = 23;
 inline constexpr WPARAM kWindowKitActionOpenLayoutEditorDirect = 24;
+inline constexpr WPARAM kWindowKitActionApplyLayoutById = 25;
 
 class TOOLS3000CORE_API WindowKitController {
 public:

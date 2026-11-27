@@ -46,6 +46,17 @@ fn main() {
     println!("cargo:rerun-if-changed=window_kit.manifest");
     println!("cargo:rerun-if-changed=window_kit.rc");
     println!("cargo:rerun-if-changed=../../resources/app.ico");
+    println!("cargo:rerun-if-changed=ui/window_kit.slint");
+    println!("cargo:rerun-if-changed=ui/tokens.slint");
+    println!("cargo:rerun-if-changed=ui/icons.slint");
+    println!("cargo:rerun-if-changed=ui/quick_switch.slint");
+    println!("cargo:rerun-if-changed=ui/layout_hub.slint");
+    println!("cargo:rerun-if-changed=ui/workspace_capture.slint");
+
+    // 0. 编译 Slint 声明式 UI（统一 Fluent 风格，编译期生成零开销 Rust 状态机）
+    let slint_cfg = slint_build::CompilerConfiguration::new().with_style("fluent".into());
+    slint_build::compile_with_config("ui/window_kit.slint", slint_cfg)
+        .expect("编译 Slint UI (ui/window_kit.slint) 失败");
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     if target_os != "windows" {

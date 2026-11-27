@@ -8,7 +8,7 @@
  *      与下方分组应用列表双向实时悬停高亮联动；支持手风琴展开精调管理员/CLI/状态/坐标/分区槽位/置顶/透明度
  * ───────────────────────────────────────────────────────────────────────────── */
 
-import { useMemo, useState, type FC } from 'react';
+import { useEffect, useMemo, useRef, useState, type FC } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   AppWindow,
@@ -168,6 +168,37 @@ export const WorkspaceWorkbench: FC<WorkspaceWorkbenchProps> = ({
   const [quickCaptureName, setQuickCaptureName] = useState('');
   const [hoveredAppIdx, setHoveredAppIdx] = useState<number | null>(null);
   const [expandedAppIndices, setExpandedAppIndices] = useState<Record<number, boolean>>({});
+  const [stuckWorkspaceId, setStuckWorkspaceId] = useState<string | null>(null);
+  const stickySentinelRef = useRef<HTMLDivElement>(null);
+  const appRowRefs = useRef<Record<number, HTMLDivElement | null>>({});
+
+  const editingWorkspaceId = editingWorkspace?.id ?? null;
+  const isDockStuck = Boolean(editingWorkspaceId && stuckWorkspaceId === editingWorkspaceId);
+
+  useEffect(() => {
+    if (!editingWorkspaceId) return;
+    const sentinel = stickySentinelRef.current;
+    if (!sentinel || typeof IntersectionObserver !== 'function') return;
+
+    const scrollRoot = sentinel.closest('.app__content') as HTMLElement | null;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry) return;
+        const rootTop = entry.rootBounds ? entry.rootBounds.top : 0;
+        const stuck = !entry.isIntersecting && entry.boundingClientRect.top <= rootTop + 1;
+        setStuckWorkspaceId(stuck ? editingWorkspaceId : null);
+      },
+      {
+        root: scrollRoot,
+        threshold: [0, 1],
+      },
+    );
+    observer.observe(sentinel);
+    return () => {
+      observer.disconnect();
+    };
+  }, [editingWorkspaceId]);
 
   const effectiveUnrelated: UnrelatedWindowAction =
     unrelatedAction || (minimizeUnrelated ? 'minimize' : 'keep');
@@ -260,8 +291,15 @@ export const WorkspaceWorkbench: FC<WorkspaceWorkbenchProps> = ({
       : undefined;
     const boundZoneCount = computeZoneCountForLayout(boundLayout);
 
-    const toggleExpand = (idx: number) => {
+    const toggleExpand = (idx: number, scrollRowIntoView = false) => {
+      const willExpand = !expandedAppIndices[idx];
       setExpandedAppIndices((prev) => ({ ...prev, [idx]: !prev[idx] }));
+      if (scrollRowIntoView && willExpand) {
+        const targetRow = appRowRefs.current[idx];
+        if (targetRow && typeof targetRow.scrollIntoView === 'function') {
+          targetRow.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      }
     };
 
     const updateAppAt = (idx: number, patch: Partial<WorkspaceAppEntry>) => {
@@ -284,6 +322,9 @@ export const WorkspaceWorkbench: FC<WorkspaceWorkbenchProps> = ({
       return (
         <div
           key={`${app.id ?? app.processName}-${idx}`}
+          ref={(el) => {
+            appRowRefs.current[idx] = el;
+          }}
           className={`ws-app-row ${isHovered ? 'is-hovered' : ''} ${isExpanded ? 'is-expanded' : ''}`}
           onMouseEnter={() => setHoveredAppIdx(idx)}
           onMouseLeave={() => setHoveredAppIdx((prev) => (prev === idx ? null : prev))}
@@ -591,218 +632,231 @@ export const WorkspaceWorkbench: FC<WorkspaceWorkbenchProps> = ({
           </div>
         </div>
 
-        {/* 顶部双层交互式微缩桌面舞台 + 底部任务栏（复刻并超越图 3 & 图 4） */}
-        <Card className="ws-stage-card">
-          <div className="ws-stage-monitors">
-            {screenGroups.map(({ mon, screenIdx, entries }) => {
-              const hoveredEntry = entries.find((e) => e.index === hoveredAppIdx);
-              const aspectRatio = `${Math.max(1, mon.width)} / ${Math.max(1, mon.height)}`;
-              return (
-                <div key={`${mon.id}-${screenIdx}`} className="ws-stage-screen-col">
-                  <div className="ws-stage-screen" style={{ aspectRatio }}>
-                    {entries.length === 0 ? (
-                      <div className="ws-stage-empty-screen">
-                        <Monitor size={18} aria-hidden="true" />
-                      </div>
-                    ) : (
-                      entries.map(({ app, index }, order) => {
-                        const box = getNormalizedStageBox(app, mon);
-                        const isActive = hoveredAppIdx === index;
-                        const isDimmed = hoveredAppIdx !== null && !isActive;
-                        return (
-                          <button
-                            key={`stage-win-${index}`}
-                            type="button"
-                            className={`ws-stage-window ${isActive ? 'is-active' : ''} ${
-                              isDimmed ? 'is-dimmed' : ''
-                            }`}
-                            style={{
-                              left: `${box.left}%`,
-                              top: `${box.top}%`,
-                              width: `${box.width}%`,
-                              height: `${box.height}%`,
-                              zIndex: isActive ? 50 : order + 1,
-                            }}
-                            title={app.appName || app.processName}
-                            onMouseEnter={() => setHoveredAppIdx(index)}
-                            onMouseLeave={() =>
-                              setHoveredAppIdx((prev) => (prev === index ? null : prev))
-                            }
-                            onClick={() => toggleExpand(index)}
-                          >
-                            {app.iconDataUrl ? (
-                              <img
-                                src={app.iconDataUrl}
-                                alt=""
-                                className="ws-stage-window__icon"
-                              />
-                            ) : (
-                              <AppWindow size={18} aria-hidden="true" />
-                            )}
-                          </button>
-                        );
-                      })
-                    )}
-                    {hoveredEntry && (
-                      <div className="ws-stage-hover-caption">
-                        {hoveredEntry.app.appName || hoveredEntry.app.processName}
-                      </div>
-                    )}
-                  </div>
+        {/* 吸顶哨兵：当预览区顶边抵达滚动视口顶部时触发悬浮投影 */}
+        <div
+          ref={stickySentinelRef}
+          className="ws-editor-sticky-sentinel"
+          aria-hidden="true"
+        />
 
-                  {/* 底部微缩任务栏（展示全部最小化应用图标，悬停双向联动发光） */}
-                  {screenIdx === 0 && minimizedApps.length > 0 && (
-                    <div
-                      className={`ws-stage-taskbar ${
-                        minimizedApps.some((m) => m.index === hoveredAppIdx) ? 'is-active' : ''
-                      }`}
-                      aria-label={t('windowManager.wsMinimizedAppsGroup', 'Minimized apps')}
-                    >
-                      {minimizedApps.map(({ app, index }) => {
-                        const isActive = hoveredAppIdx === index;
-                        return (
-                          <button
-                            key={`tb-${index}`}
-                            type="button"
-                            className={`ws-stage-taskbar__item ${isActive ? 'is-active' : ''}`}
-                            title={app.appName || app.processName}
-                            onMouseEnter={() => setHoveredAppIdx(index)}
-                            onMouseLeave={() =>
-                              setHoveredAppIdx((prev) => (prev === index ? null : prev))
-                            }
-                            onClick={() => toggleExpand(index)}
-                          >
-                            {app.iconDataUrl ? (
-                              <img src={app.iconDataUrl} alt="" className="ws-stage-taskbar__icon" />
-                            ) : (
-                              <AppWindow size={13} aria-hidden="true" />
-                            )}
-                          </button>
-                        );
-                      })}
+        {/* 吸顶控制台：第一条边界到顶后固定不动，保障下方应用列表悬停始终实时联动预览 */}
+        <div
+          className={`ws-editor-sticky-dock ${isDockStuck ? 'is-stuck' : ''}`}
+          data-stuck={isDockStuck ? 'true' : 'false'}
+        >
+          {/* 顶部双层交互式微缩桌面舞台 + 底部任务栏（复刻并超越图 3 & 图 4） */}
+          <Card className="ws-stage-card">
+            <div className="ws-stage-monitors">
+              {screenGroups.map(({ mon, screenIdx, entries }) => {
+                const hoveredEntry = entries.find((e) => e.index === hoveredAppIdx);
+                const aspectRatio = `${Math.max(1, mon.width)} / ${Math.max(1, mon.height)}`;
+                return (
+                  <div key={`${mon.id}-${screenIdx}`} className="ws-stage-screen-col">
+                    <div className="ws-stage-screen" style={{ aspectRatio }}>
+                      {entries.length === 0 ? (
+                        <div className="ws-stage-empty-screen">
+                          <Monitor size={18} aria-hidden="true" />
+                        </div>
+                      ) : (
+                        entries.map(({ app, index }, order) => {
+                          const box = getNormalizedStageBox(app, mon);
+                          const isActive = hoveredAppIdx === index;
+                          const isDimmed = hoveredAppIdx !== null && !isActive;
+                          return (
+                            <button
+                              key={`stage-win-${index}`}
+                              type="button"
+                              className={`ws-stage-window ${isActive ? 'is-active' : ''} ${
+                                isDimmed ? 'is-dimmed' : ''
+                              }`}
+                              style={{
+                                left: `${box.left}%`,
+                                top: `${box.top}%`,
+                                width: `${box.width}%`,
+                                height: `${box.height}%`,
+                                zIndex: isActive ? 50 : order + 1,
+                              }}
+                              title={app.appName || app.processName}
+                              onMouseEnter={() => setHoveredAppIdx(index)}
+                              onMouseLeave={() =>
+                                setHoveredAppIdx((prev) => (prev === index ? null : prev))
+                              }
+                              onClick={() => toggleExpand(index, true)}
+                            >
+                              {app.iconDataUrl ? (
+                                <img
+                                  src={app.iconDataUrl}
+                                  alt=""
+                                  className="ws-stage-window__icon"
+                                />
+                              ) : (
+                                <AppWindow size={18} aria-hidden="true" />
+                              )}
+                            </button>
+                          );
+                        })
+                      )}
+                      {hoveredEntry && (
+                        <div className="ws-stage-hover-caption">
+                          {hoveredEntry.app.appName || hoveredEntry.app.processName}
+                        </div>
+                      )}
                     </div>
-                  )}
 
-                  <span className="ws-stage-screen-label">
-                    {t('windowManager.wsScreenLabel', 'Screen {{num}}', { num: screenIdx + 1 })} ·{' '}
-                    {mon.width}x{mon.height}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
+                    {/* 底部微缩任务栏（展示全部最小化应用图标，悬停双向联动发光） */}
+                    {screenIdx === 0 && minimizedApps.length > 0 && (
+                      <div
+                        className={`ws-stage-taskbar ${
+                          minimizedApps.some((m) => m.index === hoveredAppIdx) ? 'is-active' : ''
+                        }`}
+                        aria-label={t('windowManager.wsMinimizedAppsGroup', 'Minimized apps')}
+                      >
+                        {minimizedApps.map(({ app, index }) => {
+                          const isActive = hoveredAppIdx === index;
+                          return (
+                            <button
+                              key={`tb-${index}`}
+                              type="button"
+                              className={`ws-stage-taskbar__item ${isActive ? 'is-active' : ''}`}
+                              title={app.appName || app.processName}
+                              onMouseEnter={() => setHoveredAppIdx(index)}
+                              onMouseLeave={() =>
+                                setHoveredAppIdx((prev) => (prev === index ? null : prev))
+                              }
+                              onClick={() => toggleExpand(index, true)}
+                            >
+                              {app.iconDataUrl ? (
+                                <img src={app.iconDataUrl} alt="" className="ws-stage-taskbar__icon" />
+                              ) : (
+                                <AppWindow size={13} aria-hidden="true" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
 
-          <div className="ws-stage-footer">
-            <span className="ws-stage-hint">
-              {t(
-                'windowManager.wsStageInteractiveHint',
-                'Hover any app below to highlight its live position on screen or taskbar; click to fine-tune.',
-              )}
-            </span>
-            <div className="ws-stage-footer__btns">
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={busyAction === 'start_workspace_capture'}
-                onClick={() => onStartRedFrameCapture(editingWorkspace.id)}
-              >
-                <Camera size={13} aria-hidden="true" />
-                <span>{t('windowManager.wsLaunchAndEditBtn', 'Launch and edit')}</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={!canRestoreSnapshot}
-                onClick={onRestoreEditingSnapshot}
-              >
-                <RotateCcw size={13} aria-hidden="true" />
-                <span>{t('windowManager.wsRestoreSnapshotBtn', 'Revert')}</span>
-              </Button>
+                    <span className="ws-stage-screen-label">
+                      {t('windowManager.wsScreenLabel', 'Screen {{num}}', { num: screenIdx + 1 })} ·{' '}
+                      {mon.width}x{mon.height}
+                    </span>
+                  </div>
+                );
+              })}
             </div>
-          </div>
-        </Card>
 
-        {/* 工作区名称、桌面快捷方式、移动现有窗口、SnapZones 联动布局与三态清场策略 */}
-        <Card className="ws-meta-card">
-          <div className="ws-meta-grid">
-            <div className="ws-detail-field">
-              <span className="ws-detail-label">
-                {t('windowManager.wsNameFieldLabel', 'Workspace name')}
-              </span>
-              <TextInput
-                value={editingWorkspace.name}
-                placeholder={t(
-                  'windowManager.workspaceNamePlaceholder',
-                  'Workspace name (e.g. Deep Coding, Morning Briefing)',
+            <div className="ws-stage-footer">
+              <span className="ws-stage-hint">
+                {t(
+                  'windowManager.wsStageInteractiveHint',
+                  'Hover any app below to highlight its live position on screen or taskbar; click to fine-tune.',
                 )}
-                ariaLabel={t('windowManager.wsNameFieldLabel', 'Workspace name')}
-                onChange={(name) => onChangeEditingWorkspace({ ...editingWorkspace, name })}
-              />
-            </div>
-
-            <div className="ws-detail-field">
-              <span className="ws-detail-label">
-                {t('windowManager.wsBoundLayoutLabel', 'Linked SnapZones Layout')}
               </span>
-              <Select
-                value={editingWorkspace.boundLayoutId || ''}
-                options={[
-                  { value: '', label: t('windowManager.wsNoBoundLayout', 'None (Keep Current)') },
-                  ...layouts
-                    .filter((l) => l.type !== 'none')
-                    .map((l) => ({ value: l.id, label: l.name })),
-                ]}
-                onChange={(val) =>
-                  onChangeEditingWorkspace({ ...editingWorkspace, boundLayoutId: val })
-                }
-              />
+              <div className="ws-stage-footer__btns">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busyAction === 'start_workspace_capture'}
+                  onClick={() => onStartRedFrameCapture(editingWorkspace.id)}
+                >
+                  <Camera size={13} aria-hidden="true" />
+                  <span>{t('windowManager.wsLaunchAndEditBtn', 'Launch and edit')}</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={!canRestoreSnapshot}
+                  onClick={onRestoreEditingSnapshot}
+                >
+                  <RotateCcw size={13} aria-hidden="true" />
+                  <span>{t('windowManager.wsRestoreSnapshotBtn', 'Revert')}</span>
+                </Button>
+              </div>
+            </div>
+          </Card>
+
+          {/* 工作区名称、桌面快捷方式、移动现有窗口、SnapZones 联动布局与三态清场策略 */}
+          <Card className="ws-meta-card">
+            <div className="ws-meta-grid">
+              <div className="ws-detail-field">
+                <span className="ws-detail-label">
+                  {t('windowManager.wsNameFieldLabel', 'Workspace name')}
+                </span>
+                <TextInput
+                  value={editingWorkspace.name}
+                  placeholder={t(
+                    'windowManager.workspaceNamePlaceholder',
+                    'Workspace name (e.g. Deep Coding, Morning Briefing)',
+                  )}
+                  ariaLabel={t('windowManager.wsNameFieldLabel', 'Workspace name')}
+                  onChange={(name) => onChangeEditingWorkspace({ ...editingWorkspace, name })}
+                />
+              </div>
+
+              <div className="ws-detail-field">
+                <span className="ws-detail-label">
+                  {t('windowManager.wsBoundLayoutLabel', 'Linked SnapZones Layout')}
+                </span>
+                <Select
+                  value={editingWorkspace.boundLayoutId || ''}
+                  options={[
+                    { value: '', label: t('windowManager.wsNoBoundLayout', 'None (Keep Current)') },
+                    ...layouts
+                      .filter((l) => l.type !== 'none')
+                      .map((l) => ({ value: l.id, label: l.name })),
+                  ]}
+                  onChange={(val) =>
+                    onChangeEditingWorkspace({ ...editingWorkspace, boundLayoutId: val })
+                  }
+                />
+              </div>
+
+              <div className="ws-detail-field">
+                <span className="ws-detail-label">
+                  {t('windowManager.wsUnrelatedActionLabel', 'Unrelated Windows')}
+                </span>
+                <Select
+                  value={editingWorkspace.unrelatedAction || ''}
+                  options={[
+                    { value: '', label: t('windowManager.wsUnrelatedFollowGlobal', 'Follow Global Setting') },
+                    { value: 'keep', label: t('windowManager.wsUnrelatedKeep', 'Keep Unchanged') },
+                    { value: 'minimize', label: t('windowManager.wsUnrelatedMinimize', 'Minimize to Taskbar') },
+                    { value: 'minimize_to_tray', label: t('windowManager.wsUnrelatedTray', 'Tuck into System Tray') },
+                  ]}
+                  onChange={(val) =>
+                    onChangeEditingWorkspace({
+                      ...editingWorkspace,
+                      unrelatedAction: (val || undefined) as UnrelatedWindowAction | undefined,
+                    })
+                  }
+                />
+              </div>
             </div>
 
-            <div className="ws-detail-field">
-              <span className="ws-detail-label">
-                {t('windowManager.wsUnrelatedActionLabel', 'Unrelated Windows')}
-              </span>
-              <Select
-                value={editingWorkspace.unrelatedAction || ''}
-                options={[
-                  { value: '', label: t('windowManager.wsUnrelatedFollowGlobal', 'Follow Global Setting') },
-                  { value: 'keep', label: t('windowManager.wsUnrelatedKeep', 'Keep Unchanged') },
-                  { value: 'minimize', label: t('windowManager.wsUnrelatedMinimize', 'Minimize to Taskbar') },
-                  { value: 'minimize_to_tray', label: t('windowManager.wsUnrelatedTray', 'Tuck into System Tray') },
-                ]}
-                onChange={(val) =>
-                  onChangeEditingWorkspace({
-                    ...editingWorkspace,
-                    unrelatedAction: (val || undefined) as UnrelatedWindowAction | undefined,
-                  })
-                }
-              />
+            <div className="ws-meta-checks">
+              <label className="ws-inline-check">
+                <Toggle
+                  id="ws-edit-create-shortcut"
+                  checked={Boolean(editingWorkspace.createDesktopShortcut)}
+                  onChange={(checked) =>
+                    onChangeEditingWorkspace({ ...editingWorkspace, createDesktopShortcut: checked })
+                  }
+                />
+                <span>{t('windowManager.wsCreateDesktopShortcutLabel', 'Create desktop shortcut')}</span>
+              </label>
+              <label className="ws-inline-check">
+                <Toggle
+                  id="ws-edit-move-existing"
+                  checked={editingWorkspace.moveExistingWindows !== false}
+                  onChange={(checked) =>
+                    onChangeEditingWorkspace({ ...editingWorkspace, moveExistingWindows: checked })
+                  }
+                />
+                <span>{t('windowManager.wsMoveExistingLabel', 'Move existing windows')}</span>
+              </label>
             </div>
-          </div>
-
-          <div className="ws-meta-checks">
-            <label className="ws-inline-check">
-              <Toggle
-                id="ws-edit-create-shortcut"
-                checked={Boolean(editingWorkspace.createDesktopShortcut)}
-                onChange={(checked) =>
-                  onChangeEditingWorkspace({ ...editingWorkspace, createDesktopShortcut: checked })
-                }
-              />
-              <span>{t('windowManager.wsCreateDesktopShortcutLabel', 'Create desktop shortcut')}</span>
-            </label>
-            <label className="ws-inline-check">
-              <Toggle
-                id="ws-edit-move-existing"
-                checked={editingWorkspace.moveExistingWindows !== false}
-                onChange={(checked) =>
-                  onChangeEditingWorkspace({ ...editingWorkspace, moveExistingWindows: checked })
-                }
-              />
-              <span>{t('windowManager.wsMoveExistingLabel', 'Move existing windows')}</span>
-            </label>
-          </div>
-        </Card>
+          </Card>
+        </div>
 
         {/* 分组应用列表：Screen 1 / Screen 2 ... + 最小化应用 */}
         {editingWorkspace.apps.length === 0 ? (

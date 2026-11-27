@@ -55,7 +55,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::Graphics::Imaging::{
     CLSID_WICImagingFactory, GUID_WICPixelFormat32bppPBGRA, IWICImagingFactory,
-    WICBitmapCacheOnLoad, WICBitmapDitherTypeNone, WICBitmapLockRead, WICBitmapPaletteTypeCustom,
+    WICBitmapCacheOnLoad, WICBitmapDitherTypeNone, WICBitmapPaletteTypeCustom,
     WICRect,
 };
 use windows::Win32::System::Com::{
@@ -1508,17 +1508,11 @@ pub fn dump_assoc_dialog_preview(
             Width: phys_w as i32,
             Height: phys_h as i32,
         };
-        let lock = wic_bmp
-            .Lock(&lock_rc, WICBitmapLockRead.0 as u32)
-            .map_err(|e| format!("WIC Lock failed: {e}"))?;
-        let stride = lock
-            .GetStride()
-            .map_err(|e| format!("GetStride failed: {e}"))?;
-        let mut buf_sz = 0u32;
-        let mut ptr: *mut u8 = std::ptr::null_mut();
-        lock.GetDataPointer(&mut buf_sz, &mut ptr)
-            .map_err(|e| format!("GetDataPointer failed: {e}"))?;
-        let raw = std::slice::from_raw_parts(ptr, buf_sz as usize);
+        let stride = phys_w * 4;
+        let mut raw = vec![0u8; (stride * phys_h) as usize];
+        wic_bmp
+            .CopyPixels(&lock_rc, stride, &mut raw)
+            .map_err(|e| format!("WIC CopyPixels failed: {e}"))?;
         let mut rgba_out = vec![0u8; (phys_w * phys_h * 4) as usize];
         for y in 0..phys_h as usize {
             let src_row = &raw[y * stride as usize..y * stride as usize + phys_w as usize * 4];
@@ -1545,7 +1539,6 @@ pub fn dump_assoc_dialog_preview(
                 dst_row[s + 3] = 255;
             }
         }
-        drop(lock);
         if com_ok {
             CoUninitialize();
         }

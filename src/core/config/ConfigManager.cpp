@@ -66,13 +66,14 @@ bool ConfigManager::initialize(const std::filesystem::path& configDir, const std
         shutdown();
     }
 
+    const std::filesystem::path resolvedConfigDir = WinUtils::resolveTrustedDirectoryPath(configDir);
     std::error_code ec;
-    std::filesystem::create_directories(configDir, ec);
+    std::filesystem::create_directories(resolvedConfigDir, ec);
     if (ec) {
-        LOG_ERROR("无法创建配置目录: path={}, error={}", WinUtils::pathToUtf8(configDir), ec.message());
+        LOG_ERROR("无法创建配置目录: path={}, error={}", WinUtils::pathToUtf8(resolvedConfigDir), ec.message());
         return false;
     }
-    m_configFilePath = configDir / WinUtils::utf8ToPath(filename);
+    m_configFilePath = WinUtils::resolveTrustedDirectoryPath(resolvedConfigDir) / WinUtils::utf8ToPath(filename);
     {
         std::lock_guard ioLock(m_ioMutex);
         m_hasFileStamp = false;
@@ -167,18 +168,29 @@ bool ConfigManager::load(bool* changed) {
     json loaded = json::object();
     bool shouldCreate = false;
     try {
-        if (!std::filesystem::exists(m_configFilePath)) {
+        std::error_code existsEc;
+        if (!std::filesystem::exists(m_configFilePath, existsEc) || existsEc) {
             LOG_INFO("配置文件不存在, 将使用默认配置并创建文件: {}", WinUtils::pathToUtf8(m_configFilePath));
             shouldCreate = true;
+        } else {
+            std::error_code sizeEc;
+            const auto fileSize = std::filesystem::file_size(m_configFilePath, sizeEc);
+            if (!sizeEc && fileSize == 0) {
+                // 0 字节空文件（典型如 Scoop 首次持久化或中断遗留占位文件）：直接静默按默认配置重建，避免误报损坏并留下 0 字节 .corrupt 垃圾文件
+                LOG_INFO("配置文件不存在, 将使用默认配置并创建文件: {}", WinUtils::pathToUtf8(m_configFilePath));
+                shouldCreate = true;
+            }
         }
 
-        std::ifstream file(m_configFilePath);
-        if (file.is_open()) {
-            loaded = json::parse(file, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
-            if (!loaded.is_object()) {
-                throw std::runtime_error("配置根节点必须是 JSON 对象");
+        if (!shouldCreate) {
+            std::ifstream file(m_configFilePath);
+            if (file.is_open()) {
+                loaded = json::parse(file, nullptr, /*allow_exceptions=*/true, /*ignore_comments=*/true);
+                if (!loaded.is_object()) {
+                    throw std::runtime_error("配置根节点必须是 JSON 对象");
+                }
+                LOG_INFO("配置文件加载成功, 键数量={}", loaded.size());
             }
-            LOG_INFO("配置文件加载成功, 键数量={}", loaded.size());
         }
     } catch (const std::exception& e) {
         bool hasValidConfig = false;

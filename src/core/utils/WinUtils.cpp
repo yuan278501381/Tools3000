@@ -8,6 +8,7 @@
 #include "core/logger/Logger.h"
 
 #include <windows.h>
+#include <aclapi.h>
 #include <winioctl.h>
 #include <shellapi.h>
 #include <wincrypt.h>
@@ -103,8 +104,137 @@ std::filesystem::path WinUtils::getExePath() {
     return {};
 }
 
+namespace {
+
+std::wstring stripExtendedLocalDrivePrefix(std::wstring pathStr) {
+    if (pathStr.size() >= 7 && pathStr.starts_with(L"\\\\?\\") &&
+        std::iswalpha(pathStr[4]) && pathStr[5] == L':' && pathStr[6] == L'\\' &&
+        pathStr.size() - 4 < MAX_PATH) {
+        return pathStr.substr(4);
+    }
+    return pathStr;
+}
+
+std::wstring normalizeComparePath(std::wstring pathStr) {
+    pathStr = stripExtendedLocalDrivePrefix(std::move(pathStr));
+    for (wchar_t& ch : pathStr) {
+        if (ch == L'/') ch = L'\\';
+        ch = static_cast<wchar_t>(std::towlower(ch));
+    }
+    while (pathStr.size() > 3 && !pathStr.empty() && pathStr.back() == L'\\') {
+        pathStr.pop_back();
+    }
+    return pathStr;
+}
+
+bool isUnderDirectoryPrefix(const std::wstring& normTarget, const std::wstring& normBase) {
+    if (normBase.empty() || normTarget.size() < normBase.size()) {
+        return false;
+    }
+    if (normTarget.compare(0, normBase.size(), normBase) != 0) {
+        return false;
+    }
+    return normTarget.size() == normBase.size() || normTarget[normBase.size()] == L'\\';
+}
+
+bool isSafeResolvedLocalDirectory(const std::filesystem::path& resolved, bool requireNonSystemOwner) noexcept {
+    const std::wstring norm = normalizeComparePath(resolved.wstring());
+    // 1. 必须为本地驱动器下的具体子目录（排除驱动器根目录本身、UNC 共享及 \\.\ 设备命名空间）
+    if (norm.size() <= 3 || !std::iswalpha(norm[0]) || norm[1] != L':' || norm[2] != L'\\') {
+        return false;
+    }
+
+    // 2. 严禁任何重解析点解析到 %SystemRoot%（如 C:\Windows 及其任意子目录）
+    wchar_t winDirBuf[MAX_PATH] = {};
+    const UINT winDirLen = GetWindowsDirectoryW(winDirBuf, MAX_PATH);
+    if (winDirLen > 0 && winDirLen < MAX_PATH) {
+        const std::wstring normWinDir = normalizeComparePath(std::wstring(winDirBuf, winDirLen));
+        if (isUnderDirectoryPrefix(norm, normWinDir)) {
+            return false;
+        }
+    }
+
+    // 3. 提权运行时经过重解析点跳转的目标目录，严禁归属 SYSTEM / LocalService / NetworkService
+    if (requireNonSystemOwner) {
+        PSID ownerSid = nullptr;
+        PSECURITY_DESCRIPTOR sd = nullptr;
+        const DWORD secErr = GetNamedSecurityInfoW(
+            resolved.c_str(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &ownerSid,
+            nullptr,
+            nullptr,
+            nullptr,
+            &sd);
+        if (secErr != ERROR_SUCCESS || !ownerSid) {
+            if (sd) LocalFree(sd);
+            return false;
+        }
+        const bool isSystemOwned =
+            IsWellKnownSid(ownerSid, WinLocalSystemSid) ||
+            IsWellKnownSid(ownerSid, WinLocalServiceSid) ||
+            IsWellKnownSid(ownerSid, WinNetworkServiceSid);
+        LocalFree(sd);
+        if (isSystemOwned) {
+            return false;
+        }
+    }
+    return true;
+}
+
+} // namespace
+
+std::filesystem::path WinUtils::resolveTrustedDirectoryPath(const std::filesystem::path& rawDir) {
+    if (rawDir.empty()) {
+        return rawDir;
+    }
+
+    // 向上定位最近存在的祖先目录（支持首次启动时末尾 config / logs 子目录尚未创建的场景）
+    std::filesystem::path probe = rawDir.lexically_normal();
+    std::vector<std::filesystem::path> missingTail;
+    std::error_code ec;
+    while (!probe.empty() && !std::filesystem::exists(probe, ec)) {
+        ec.clear();
+        const auto parent = probe.parent_path();
+        if (parent.empty() || parent == probe) {
+            return rawDir;
+        }
+        if (!probe.filename().empty()) {
+            missingTail.push_back(probe.filename());
+        }
+        probe = parent;
+    }
+    if (ec || probe.empty() || !std::filesystem::is_directory(probe, ec) || ec) {
+        return rawDir;
+    }
+
+    const std::filesystem::path canonicalBaseRaw = std::filesystem::canonical(probe, ec);
+    if (ec || canonicalBaseRaw.empty()) {
+        return rawDir;
+    }
+    std::filesystem::path canonicalBase(stripExtendedLocalDrivePrefix(canonicalBaseRaw.wstring()));
+
+    // 检查是否确实经过了重解析点（Directory Junction / Symlink）
+    const bool traversedReparse =
+        normalizeComparePath(probe.wstring()) != normalizeComparePath(canonicalBase.wstring());
+    if (traversedReparse) {
+        const bool elevated = isProcessElevated();
+        if (!isSafeResolvedLocalDirectory(canonicalBase, elevated)) {
+            // 不信任的目标（如指向 %SystemRoot% / UNC / SYSTEM 拥有目录）：拒绝解析，交由下游 fail-closed 拦截
+            return rawDir;
+        }
+    }
+
+    std::filesystem::path result = std::move(canonicalBase);
+    for (auto it = missingTail.rbegin(); it != missingTail.rend(); ++it) {
+        result /= *it;
+    }
+    return result;
+}
+
 std::filesystem::path WinUtils::getExeDirectory() {
-    return getExePath().parent_path();
+    return resolveTrustedDirectoryPath(getExePath().parent_path());
 }
 
 bool WinUtils::isPortableMode() {
@@ -130,32 +260,35 @@ std::filesystem::path WinUtils::getAppDataDirectory() {
         if (copied > 0 && copied < overrideLength) {
             std::filesystem::path overridePath(overrideBuffer.data());
             if (overridePath.is_absolute()) {
+                overridePath = resolveTrustedDirectoryPath(overridePath);
                 std::filesystem::create_directories(overridePath, ec);
-                if (!ec) return overridePath;
+                if (!ec) return resolveTrustedDirectoryPath(overridePath);
                 ec.clear();
             }
         }
     }
     
     // 1. 便携模式检测：若主程序同级目录下存在 .tools3000 或 data 目录，优先作为数据根目录
+    //    通过 resolveTrustedDirectoryPath 安全展开 Scoop persist\data 等合法目录联接，
+    //    确保下游原子刷盘与安全校验均落于无重解析点的真实物理目录。
     if (std::filesystem::is_directory(exeDir / L".tools3000", ec)) {
-        return exeDir / L".tools3000";
+        return resolveTrustedDirectoryPath(exeDir / L".tools3000");
     }
     if (std::filesystem::is_directory(exeDir / L"data", ec)) {
-        return exeDir / L"data";
+        return resolveTrustedDirectoryPath(exeDir / L"data");
     }
     if (std::filesystem::is_directory(exeDir / L"portable_data", ec)) {
-        return exeDir / L"portable_data";
+        return resolveTrustedDirectoryPath(exeDir / L"portable_data");
     }
 
     // 2. 标准系统模式：回退到 %LOCALAPPDATA%\Tools3000
     wchar_t path[MAX_PATH] = {};
     if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, 0, path))) {
-        auto dir = std::filesystem::path(path) / L"Tools3000";
+        auto dir = resolveTrustedDirectoryPath(std::filesystem::path(path) / L"Tools3000");
         std::filesystem::create_directories(dir, ec);
-        return dir;
+        return resolveTrustedDirectoryPath(dir);
     }
-    return exeDir / L"data";
+    return resolveTrustedDirectoryPath(exeDir / L"data");
 }
 
 std::filesystem::path WinUtils::getLogDirectory() {
@@ -2250,8 +2383,7 @@ bool WinUtils::isMediaPlayerProcessOrClass(std::wstring_view processName,
             L"douyin.exe", L"baofeng.exe", L"xmp.exe", L"qqplayer.exe",
             L"kodi.exe", L"plex.exe", L"plexhtpc.exe", L"jellyfinmediaplayer.exe", L"embytheater.exe",
             L"cloudmusic.exe", L"qqmusic.exe", L"kugou.exe", L"kuwomusic.exe",
-            L"spotify.exe", L"foobar2000.exe", L"aimp.exe", L"musicbee.exe",
-            L"powerpnt.exe", L"wpp.exe"
+            L"spotify.exe", L"foobar2000.exe", L"aimp.exe", L"musicbee.exe"
         };
         for (const auto& mp : kMediaProcesses) {
             if (equalsIgnoreCaseAscii(procFile, mp)) return true;
@@ -2261,10 +2393,46 @@ bool WinUtils::isMediaPlayerProcessOrClass(std::wstring_view processName,
     if (!className.empty()) {
         static constexpr std::wstring_view kMediaClasses[] = {
             L"PotPlayer", L"PotPlayer64", L"MediaPlayerClassicW",
-            L"mpv", L"VLC DirectX", L"WMPlayerApp", L"screenClass"
+            L"mpv", L"VLC DirectX", L"WMPlayerApp"
         };
         for (const auto& mc : kMediaClasses) {
             if (equalsIgnoreCaseAscii(className, mc)) return true;
+        }
+    }
+    return false;
+}
+
+bool WinUtils::isPresentationProcessOrClass(std::wstring_view processName,
+                                            std::wstring_view className) noexcept {
+    if (!className.empty()) {
+        // PowerPoint 全屏放映窗口类名 (screenClass) 与演示者视图 / WPS 演示全屏放映窗
+        static constexpr std::wstring_view kPresentationClasses[] = {
+            L"screenClass",
+            L"PPTFrameClass",
+            L"PP10FrameClass",
+            L"PP11FrameClass",
+            L"PP12FrameClass",
+            L"WppSlideShow",
+            L"KWppSlideShowWindow",
+            L"SALFRAME" // LibreOffice Impress 全屏放映
+        };
+        for (const auto& pc : kPresentationClasses) {
+            if (equalsIgnoreCaseAscii(className, pc)) return true;
+        }
+    }
+
+    const std::wstring_view procFile = extractFileNameView(processName);
+    if (!procFile.empty()) {
+        static constexpr std::wstring_view kPresentationProcesses[] = {
+            L"powerpnt.exe",
+            L"wpp.exe",
+            L"soffice.bin",
+            L"simpress.exe",
+            L"focusky.exe",
+            L"prezi.exe"
+        };
+        for (const auto& pp : kPresentationProcesses) {
+            if (equalsIgnoreCaseAscii(procFile, pp)) return true;
         }
     }
     return false;
@@ -2327,8 +2495,15 @@ FullscreenScene WinUtils::classifyFullscreenScene(bool isFullscreen,
     const std::wstring_view procFile = extractFileNameView(
         !processName.empty() ? processName : exePath);
 
-    // 2. 专用影音播放器、幻灯片放映与远程桌面/虚拟机全屏会话
-    //    (PotPlayer / VLC / MPV / Bilibili / PowerPoint / MSTSC / ToDesk / 向日葵 / VMware 等)
+    // 1.5. 幻灯片 / PPT 全屏演示软件（PowerPoint / WPS 演示 / LibreOffice Impress 等）：
+    //      按键回显、鼠标聚光灯、截图、录屏与全局快捷键在 PPT 演示时属于刚需，绝不可被全屏免打扰屏蔽，
+    //      仅默认避让鼠标手势以保护 PPT 放映原生右键翻页/激光笔菜单。
+    if (isPresentationProcessOrClass(procFile, className)) {
+        return FullscreenScene::Presentation;
+    }
+
+    // 2. 专用影音播放器与远程桌面/虚拟机全屏会话
+    //    (PotPlayer / VLC / MPV / Bilibili / MSTSC / ToDesk / 向日葵 / VMware 等)
     if (isMediaPlayerProcessOrClass(procFile, className) ||
         isRemoteDesktopOrVmProcessOrClass(procFile, className)) {
         return FullscreenScene::MediaOrBrowser;
@@ -2391,7 +2566,8 @@ FullscreenScene WinUtils::classifyWindowScene(HWND hwnd) {
     // 注意：非全屏状态下不单凭通用引擎类名（如 SDL_app / GLFW30）判定，避免误伤 scrcpy 或桌面开发工具。
     const std::wstring_view procFile = extractFileNameView(
         !procName.empty() ? std::wstring_view(procName) : std::wstring_view(procPath));
-    if (!isMediaPlayerProcessOrClass(procFile, className) &&
+    if (!isPresentationProcessOrClass(procFile, className) &&
+        !isMediaPlayerProcessOrClass(procFile, className) &&
         !isRemoteDesktopOrVmProcessOrClass(procFile, className) &&
         !isNonGameLauncherOrUtilityProcessName(procFile) &&
         (isExplicitCompetitiveOr3DGameProcessName(procFile) ||
@@ -2430,6 +2606,10 @@ bool WinUtils::shouldSuspendGesturesForScene(FullscreenScene scene,
         return false;
     }
     if (scene == FullscreenScene::Game) {
+        return true;
+    }
+    if (scene == FullscreenScene::Presentation) {
+        // PPT/幻灯片全屏演示时默认避让鼠标手势，保护原生右键翻页/激光笔菜单（Off 模式下不避让）
         return true;
     }
     if (scene == FullscreenScene::MediaOrBrowser) {

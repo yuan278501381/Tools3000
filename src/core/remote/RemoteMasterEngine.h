@@ -31,7 +31,7 @@ namespace tools3000::core {
 
 /// 远程协助主控增强配置结构体
 struct TOOLS3000CORE_API RemoteMasterSettings {
-    bool enabled = true;                     // 远程主控增强总开关
+    bool enabled = false;                    // 远程主控增强总开关（默认关闭，按需在功能模块中开启）
     bool hotkeyTunnelEnabled = true;         // 沉浸式系统热键直通
     bool emergencyFlushEnabled = true;       // 修饰键卡死急救
     bool doubleRightCtrlTrigger = false;     // 双击右 Ctrl 快捷急救 (默认关闭，避免与聚光灯双击 Ctrl 冲突)

@@ -8,7 +8,8 @@
 .wn-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 960;
+  z-index: var(--z-modal);
+  -webkit-app-region: no-drag;
   background: rgba(10, 14, 22, 0.58);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);

@@ -14,10 +14,7 @@ pub const CONTROL_WINDOW_CLASS: &str = "Tools3000_WindowKit_Control";
 pub const QUICK_SWITCH_WINDOW_CLASS: &str = "Tools3000_WindowKit_QuickSwitch";
 pub const SNAP_ZONES_WINDOW_CLASS: &str = "Tools3000_WindowKit_SnapZones";
 pub const LAYOUT_EDITOR_WINDOW_CLASS: &str = "Tools3000_WindowKit_LayoutEditor";
-pub const LAYOUT_HUB_WINDOW_CLASS: &str = "Tools3000_WindowKit_LayoutHub";
 pub const WORKSPACE_CAPTURE_FRAME_CLASS: &str = "Tools3000_WindowKit_CaptureFrame";
-pub const WORKSPACE_CAPTURE_CARD_CLASS: &str = "Tools3000_WindowKit_CaptureCard";
-pub const WORKSPACE_PROGRESS_WINDOW_CLASS: &str = "Tools3000_WindowKit_WorkspaceProgress";
 pub const PIN_BORDER_WINDOW_CLASS: &str = "Tools3000_WindowKit_PinBorder";
 pub const FOCUS_BORDER_WINDOW_CLASS: &str = "Tools3000_WindowKit_FocusBorder";
 
@@ -40,12 +37,11 @@ pub const WM_WK_INTERNAL_ALT_DRAG_EVENT: u32 = WM_APP + 102;
 pub const WM_WK_INTERNAL_OPACITY_WHEEL: u32 = WM_APP + 103;
 pub const WM_WK_INTERNAL_TRAY_CALLBACK: u32 = WM_APP + 104;
 pub const WM_WK_INTERNAL_SNAP_RIGHT_CLICK: u32 = WM_APP + 106;
-pub const WM_WK_INTERNAL_QUICK_SWITCH_KEY: u32 = WM_APP + 107;
 pub const WM_WK_INTERNAL_WORKSPACE_DONE: u32 = WM_APP + 109;
 pub const WM_WK_INTERNAL_EDITOR_EVENT: u32 = WM_APP + 110;
-pub const WM_WK_INTERNAL_HUB_EVENT: u32 = WM_APP + 111;
-pub const WM_WK_INTERNAL_CAPTURE_EVENT: u32 = WM_APP + 112;
 pub const WM_WK_INTERNAL_WORKSPACE_PROGRESS: u32 = WM_APP + 113;
+pub const WM_WK_INTERNAL_SLINT_EVENT: u32 = WM_APP + 114;
+pub const WM_WK_INTERNAL_QS_KEY: u32 = WM_APP + 115;
 
 /// WM_WK_EXECUTE_ACTION (WM_APP + 2) 的 wParam 动作编码契约
 pub const ACTION_TOGGLE_ALWAYS_ON_TOP: usize = 1;
@@ -72,6 +68,7 @@ pub const ACTION_APPLY_LAYOUT_HOTKEY_DIGIT: usize = 21;
 pub const ACTION_START_WORKSPACE_CAPTURE: usize = 22;
 pub const ACTION_PREVIEW_BORDER_STYLE: usize = 23;
 pub const ACTION_OPEN_LAYOUT_EDITOR_DIRECT: usize = 24;
+pub const ACTION_APPLY_LAYOUT_BY_ID: usize = 25;
 
 /// 静音标志位（WM_APP + 3 的 wParam 位掩码）
 pub const MUTED_FLAG_FULLSCREEN: usize = 1 << 0;
@@ -105,11 +102,8 @@ pub const WORKSPACE_MATCH_TIMEOUT_MS: u64 = 8000;
 pub const WORKSPACE_POLL_INTERVAL_MS: u64 = 150;
 
 /// 动效时长与物理阻尼参数（对标原生桌面丝滑体验）
-pub const ANIM_QUICK_SWITCH_FADE_MS: f32 = 115.0;
-pub const ANIM_THUMBNAIL_FADE_MS: f32 = 95.0;
 pub const ANIM_SNAP_OVERLAY_FADE_MS: f32 = 110.0;
 pub const ANIM_AOT_PULSE_MS: f32 = 230.0;
-pub const ANIM_FOCUS_FADE_MS: f32 = 115.0;
 pub const SNAP_UNSNAP_RESTORE_DRAG_PX: i32 = 18;
 pub const SNAP_TOP_EDGE_CANCEL_PX: i32 = 160;
 
@@ -149,6 +143,3 @@ pub const SNAP_MULTI_ZONE_EDGE_THRESHOLD_PX: i32 = 28;
 pub const SNAP_TOP_EDGE_TRIGGER_PX: i32 = 10;
 pub const ALT_DRAG_MIN_WINDOW_WIDTH: i32 = 160;
 pub const ALT_DRAG_MIN_WINDOW_HEIGHT: i32 = 100;
-pub const QUICK_SWITCH_MAX_VISIBLE_ROWS: usize = 9;
-pub const QUICK_SWITCH_ROW_COMFORTABLE_DIP: f32 = 46.0;
-pub const QUICK_SWITCH_ROW_COMPACT_DIP: f32 = 38.0;

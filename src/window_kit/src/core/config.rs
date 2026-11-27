@@ -1153,7 +1153,7 @@ impl Default for WindowKitConfig {
         Self {
             schema_version: 3,
             enabled: false,
-            theme: "dark".to_string(),
+            theme: "system".to_string(),
             accent_color: "#3B82F6".to_string(),
             ui_lang: "zh".to_string(),
             log_dir: String::new(),
@@ -2183,5 +2183,19 @@ mod tests {
             cfg.layout_for_monitor("MON-1", Some("99999999-9999-9999-9999-999999999999")).id,
             "template_columns"
         );
+    }
+
+    #[test]
+    fn default_theme_follows_system_and_honors_explicit_light_dark() {
+        let def = WindowKitConfig::default();
+        assert_eq!(def.theme, "system");
+
+        let light = WindowKitConfig::from_json_str(r##"{"theme":"light","accentColor":"#3b82f6"}"##)
+            .expect("light config");
+        assert!(!light.is_dark_theme());
+
+        let dark = WindowKitConfig::from_json_str(r##"{"theme":"dark","accentColor":"#8b5cf6"}"##)
+            .expect("dark config");
+        assert!(dark.is_dark_theme());
     }
 }

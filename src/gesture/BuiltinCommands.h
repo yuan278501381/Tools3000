@@ -34,19 +34,23 @@ std::wstring buildWebSearchUrl(std::wstring_view rawText, std::string_view engin
 class BuiltinCommandDispatcher {
 public:
     using Handler = std::function<void()>;
+    using ParamHandler = std::function<void(const std::string&)>;
 
     static BuiltinCommandDispatcher& instance();
 
-    /// 注册应用级命令的回调 (由 main.cpp 在初始化时调用)。
+    /// 注册应用级命令的无参回调 (由 main.cpp / PluginEntry 在初始化时调用)。
     /// 例如 TakeScreenshot / StartRecording / PauseGestures。
     void registerHandler(BuiltinCommand cmd, Handler handler);
+
+    /// 注册支持附加字符串参数的应用级命令回调（如按 layoutId 切换分屏布局、按 workspaceId 启动工作区）。
+    void registerParamHandler(BuiltinCommand cmd, ParamHandler handler);
 
     /// 清理所有应用级命令回调。调用方必须先停止手势动作线程。
     void clearHandlers();
 
     /// 执行一条内置命令。窗口管理类命令优先作用于鼠标下方的目标窗口。
-    /// 线程安全: 仅读取 m_handlers (注册发生在启动阶段，执行发生在手势线程)。
-    void execute(BuiltinCommand cmd, void* targetWindow = nullptr) const;
+    /// 线程安全: 仅读取 m_handlers / m_paramHandlers (注册发生在启动阶段，执行发生在手势线程)。
+    void execute(BuiltinCommand cmd, void* targetWindow = nullptr, const std::string& param = {}) const;
 
     /// 查询是否已注册特定命令的 Handler 回调
     bool hasHandler(BuiltinCommand cmd) const;
@@ -57,9 +61,10 @@ private:
     BuiltinCommandDispatcher& operator=(const BuiltinCommandDispatcher&) = delete;
 
     /// 通过已注册的 Handler 触发应用级命令; 未注册时记录警告。返回是否已处理。
-    bool dispatchAppCommand(BuiltinCommand cmd) const;
+    bool dispatchAppCommand(BuiltinCommand cmd, const std::string& param = {}) const;
 
     std::unordered_map<BuiltinCommand, Handler> m_handlers;
+    std::unordered_map<BuiltinCommand, ParamHandler> m_paramHandlers;
     mutable std::shared_mutex m_mutex;
 };
 

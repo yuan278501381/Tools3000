@@ -2,12 +2,16 @@
  * CloudBackupCard.css — 配置云备份与同步盘卡片样式 (@container 自适应 · 零悬空令牌)
  * ───────────────────────────────────────────────────────────────────────────── */
 
-.cloud-backup-card {
+.uikit-card.cloud-backup-card {
   container-type: inline-size;
   margin-top: 12px;
+}
+
+.uikit-card.cloud-backup-card > .uikit-card__body {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  padding: 18px 20px;
 }
 
 .cloud-backup__header {
@@ -67,6 +71,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 2px;
 }
 
 .cloud-backup__provider-btn {
@@ -100,7 +105,7 @@
 .cloud-backup__section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .cloud-backup__grid {
@@ -213,13 +218,21 @@
 .cloud-backup__options {
   border-top: 1px solid var(--card-border);
   padding-top: 8px;
+  display: flex;
+  flex-direction: column;
+}
+
+.cloud-backup__options > .uikit-toggle--with-text,
+.cloud-backup__options > .uikit-setting-row {
+  padding: 12px 4px;
 }
 
 .cloud-backup__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  padding-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--hairline);
 }
 
 .cloud-backup__snapshots {

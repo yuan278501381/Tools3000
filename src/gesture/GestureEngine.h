@@ -151,7 +151,8 @@ public:
     void setTrailCallback(TrailRenderCallback callback);
 
     /// 取消当前追踪（左键、Esc、钩子熔断时调用）
-    void cancelActiveGesture();
+    /// 中止当前活跃手势追踪；仅当确实存在进行中的手势并完成取消时返回 true
+    bool cancelActiveGesture();
 
     /// 供单元测试直接同步喂入鼠标事件（无需挂载系统级 WH_MOUSE_LL 钩子）
     bool handleMouseEventForTesting(const MouseEvent& event) { return onMouseEvent(event); }

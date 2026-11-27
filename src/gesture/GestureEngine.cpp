@@ -2369,13 +2369,14 @@ void GestureEngine::reinjectTriggerClick(MouseEventType triggerOverride, bool do
     }
 }
 
-void GestureEngine::cancelActiveGesture() {
+bool GestureEngine::cancelActiveGesture() {
     std::lock_guard lock(m_mutex);
     if (m_state.load(std::memory_order_relaxed) == GestureState::Tracking) {
         cancelTracking();
-    } else {
-        MouseHook::instance().resetTriggerState();
+        return true;
     }
+    MouseHook::instance().resetTriggerState();
+    return false;
 }
 
 void GestureEngine::cancelTracking() {

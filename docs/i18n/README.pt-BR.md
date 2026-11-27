@@ -28,7 +28,7 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
 ## Visão geral
 
 <p align="center">
-  <img src="../images/pt-BR/feature_bento_overview.png" alt="Visão geral dos doze recursos principais do Tools3000" width="100%" />
+  <img src="../images/pt-BR/feature_bento_overview.png" alt="Visão Geral das 15 Ferramentas Principais do Tools3000" width="100%" />
 </p>
 
 ---
@@ -102,6 +102,16 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
       <sub><b>Expansor de Texto</b> · Digite <code>;date</code> ou <code>;sig</code> em qualquer app com macros dinâmicas, proteção para senhas e zero poluição da área de transferência</sub>
     </td>
   </tr>
+  <tr>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/pt-BR/window_manager_demo.webp" alt="Gerenciador de Janelas Nativo: SnapZones magnético, captura de Workspaces e Alt+Tab Fluent" width="100%" /><br />
+      <sub><b>Gerenciador de Janelas (Opcional)</b> · SnapZones magnético 1:1, captura de Workspaces com borda vermelha e Alt+Tab / Alt+` Fluent (0 VRAM, 0 RAM off)</sub>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <img src="../images/pt-BR/caps_layer_demo.webp" alt="CapsLayer: navegação com CapsLock + IJKL e perfis por aplicativo" width="100%" /><br />
+      <sub><b>CapsLayer (Opcional)</b> · CapsLock + IJKL para setas e edição sem mover os pulsos, com perfis por app (0 hooks desligado)</sub>
+    </td>
+  </tr>
 </table>
 
 | Módulo | O que faz |
@@ -110,6 +120,8 @@ O Tools3000 reúne em um único aplicativo nativo para Windows as ferramentas es
 | **Busca no Conteúdo** | Use `content:` para pesquisar dentro de Word, Excel, PDF, PowerPoint, CAD e código-fonte com trechos destacados e cópia da linha em um clique. |
 | **Histórico Persistente de Transferência** | Acione com `Alt + V` (ou pelo menu e central rápida da bandeja) mantendo todo o histórico após reiniciar; exibe ícones coloridos reais e nomes amigáveis dos apps de origem, suporta arrastar-e-soltar universal em navegadores, terminais e IDEs de IA, colagem mesclada `Shift / Ctrl`, HTML/RTF, grupos, edição no local, `Alt + 1..9`, ocultação de fixados em outras abas e exclusão de apps sensíveis. |
 | **Expansor de Texto** | Digite gatilhos curtos (`;date`, `;now`, `;sig`) em qualquer app Windows para expandir frases e 15 macros dinâmicos (`{{date+Nd}}`, `{{weekday}}`, `{{uuid}}`, `{{timestamp}}`, `{{user}}`, área de transferência e `{{cursor}}`) com pré-visualização ao vivo, retenção opcional do delimitador, pausa automática em gerenciadores de senha e zero ganchos/RAM quando desligado. |
+| **Gerenciador de Janelas (Opcional · Desligado por Padrão)** | Motor independente Rust + Slint Fluent (sem WebView2 e sem GPU VRAM; 0 processos e 0 RAM quando desligado): **SnapZones** em camada dupla com grade magnética 1:1, captura de **Workspaces** com borda vermelha de 4px + atalho `.lnk`, **Alt+Tab Fluent** redimensionável (`1–9` e busca) + **`Alt+``** no mesmo app e bordas de foco sem atraso. |
+| **CapsLayer (Opcional · Desligado por Padrão)** | Transforma `CapsLock` em camada ergonômica de setas (`I/J/K/L`), edição e atalhos com perfis automáticos por aplicativo; desligado por padrão com 0 hooks. |
 | **Assistente de Diálogos** | Acopla automaticamente uma barra de acesso rápido com busca inline de pastas estilo Listary nas janelas Abrir / Salvar Como / Escolher Pasta do Windows e nos diálogos do próprio Tools3000, protegendo o nome preenchido ao salvar. |
 | **Desbloqueio de Arquivos** | Quando um arquivo não pode ser excluído, descubra qual programa o está travando e libere com segurança — pelo menu direito do Explorer (opcionalmente apenas com `Shift + Clique Direito`), nos resultados da busca ou na página própria em Configurações. Consome 0 MB ocioso, não altera o sistema e remove o menu automaticamente ao desativar. |
 | **Captura com Rolagem** | Costure automaticamente páginas longas, chats e documentos com prévia lateral ao vivo, recorte não destrutivo de topo/rodapé e anotação direta na imagem longa. |
@@ -188,6 +200,8 @@ Cada utilitário clássico tem seus pontos fortes avançados. O Tools3000 reúne
 | **Picasa Photo Viewer / FastStone / Fotos do Windows** | Visualizador leve Picasa opcional em Rust (< 2 MB, zero dependências, executável independente): animações clássicas com 4K High-DPI, WebP/AVIF/HEIC/SVG/RAW e espelhamento sem perdas | Quando precisa da biblioteca de álbuns e reconhecimento facial do Google Picasa completo ou edição RAW avançada em lote |
 | **Listary Dialog Jump / PowerToys File Locksmith** | Busca inline estilo Listary nas janelas Abrir/Salvar do Windows protegendo o nome do arquivo; Desbloqueio de Arquivos com 0 MB ocioso via menu direito ou página dedicada | Fluxos personalizados completos do Listary ou inspeção profunda de handles do kernel |
 | **Espanso / Beeftext / Snippets AutoHotkey** | Expansor nativo integrado (pronto para uso, zero ganchos quando desligado) com disparo imediato ou por delimitador, macros de data/clipboard/cursor, exclusão automática de gerenciadores de senha, área de teste ao vivo e JSON | Formulários YAML complexos, saída dinâmica de scripts shell ou sincronização entre Linux/macOS |
+| **PowerToys FancyZones & Workspaces / AltTab** | Motor opcional Rust + Slint Fluent (0 VRAM, 0 RAM desligado): SnapZones 1:1 magnético, captura de Workspaces com atalho, `Alt+Tab` com busca e `1–9`, além de `Alt+`` no mesmo app | Gerenciadores de mosaico dinâmico completos como GlazeWM ou Komorebi |
+| **AutoHotkey / SharpKeys / CapsLock+** | Camada visual CapsLayer (`Caps+IJKL`) com perfis por aplicativo sem escrever scripts (0 hooks desligado) | Macros complexas em script ou remapeamento em firmware QMK/VIA |
 
 ---
 

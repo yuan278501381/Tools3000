@@ -1,11 +1,13 @@
 /* ─────────────────────────────────────────────────────────────────────────────
- * InPlaceTranslateCard — 微信级截图识别原位翻译配置卡片
+ * InPlaceTranslateCard — 划词与截图原位翻译统一配置工作台 (3 场景渐进式披露)
  *
- * 核心能力:
- *   1. 免 Key 免费双源 (Edge 主通道 + Google 自动备援) 零配置开箱即用；
- *   2. OpenAI 兼容接口 (OpenAI / DeepSeek / Gemini / 中转站 / 本地离线 Ollama) 一键预设；
- *   3. DeepL 官方 API (Free / Pro 自动路由) 与 DPAPI 加密秘钥管理（仅显示脱敏摘要）；
- *   4. 按需联网连通性自测（loading 防重入旋转态 + 耗时/通道/译文样例反馈）。
+ * 核心体验架构:
+ *   1. 互译语言区块：主目标语言 + 双向互译副语言，直白举例说明；
+ *   2. 3 选 1 场景卡片：
+ *      - 免费 AI 翻译 (默认 · 免配置)：仅露 3 档速度/质量切换，零技术字段干扰；
+ *      - 免费极速双源 (Bing / Google)：仅露优先线路切换，开箱即用；
+ *      - 自有 API / 本地模型：仅主动点选时展开 OpenAI / DeepSeek / Gemini / DeepL / Ollama 全部极客配置与 DPAPI 加密秘钥管理；
+ *   3. 底部一屏直达「测试翻译效果」（按需联网、实时回显延迟与译文样例）。
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { useState, useEffect, useCallback, type FC } from 'react';
@@ -13,7 +15,17 @@ import { Card, SettingRow, SettingGroup, Badge, Select, Button, TextInput, Numbe
 import { bridgeRequest } from '../hooks/useBridge';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
-import { Languages, PlugZap, Loader2, ShieldCheck, Check, Trash2 } from 'lucide-react';
+import {
+  Languages,
+  PlugZap,
+  Loader2,
+  ShieldCheck,
+  Check,
+  Trash2,
+  Sparkles,
+  Zap,
+  KeyRound,
+} from 'lucide-react';
 import './InPlaceTranslateCard.css';
 
 interface TranslateSettingsPayload {
@@ -47,21 +59,24 @@ interface TranslateProbeResponse {
   errorMessage?: string;
 }
 
-type OpenAiPresetLabelKey =
-  | 'translate.presetIndexTranslate'
+type TranslateChannelMode = 'free_ai' | 'free_dual' | 'custom';
+
+type CustomPresetLabelKey =
   | 'translate.presetOpenAi'
   | 'translate.presetDeepSeek'
-  | 'translate.presetOllama'
-  | 'translate.presetGemini';
+  | 'translate.presetGemini'
+  | 'translate.presetDeepL'
+  | 'translate.presetOllama';
 
 type IndexTranslateModelLabelKey =
   | 'translate.indexModelFast'
   | 'translate.indexModelBalanced'
   | 'translate.indexModelFlagship';
 
-interface OpenAiPreset {
-  id: string;
-  labelKey: OpenAiPresetLabelKey;
+interface CustomPreset {
+  id: 'openai' | 'deepseek' | 'gemini' | 'deepl' | 'ollama';
+  kind: 'openai' | 'deepl';
+  labelKey: CustomPresetLabelKey;
   baseUrl: string;
   model: string;
 }
@@ -79,12 +94,12 @@ const INDEX_TRANSLATE_MODELS: readonly IndexTranslateModelOption[] = [
   { id: 'Index-Translate-35B-A3B', labelKey: 'translate.indexModelFlagship' },
 ];
 
-const OPENAI_PRESETS: readonly OpenAiPreset[] = [
-  { id: 'index_translate', labelKey: 'translate.presetIndexTranslate', baseUrl: INDEX_TRANSLATE_BASE_URL, model: 'Index-Translate-9B' },
-  { id: 'openai', labelKey: 'translate.presetOpenAi', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
-  { id: 'deepseek', labelKey: 'translate.presetDeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
-  { id: 'ollama', labelKey: 'translate.presetOllama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
-  { id: 'gemini', labelKey: 'translate.presetGemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.0-flash' },
+const CUSTOM_PRESETS: readonly CustomPreset[] = [
+  { id: 'openai', kind: 'openai', labelKey: 'translate.presetOpenAi', baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' },
+  { id: 'deepseek', kind: 'openai', labelKey: 'translate.presetDeepSeek', baseUrl: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
+  { id: 'gemini', kind: 'openai', labelKey: 'translate.presetGemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', model: 'gemini-2.0-flash' },
+  { id: 'deepl', kind: 'deepl', labelKey: 'translate.presetDeepL', baseUrl: '', model: '' },
+  { id: 'ollama', kind: 'openai', labelKey: 'translate.presetOllama', baseUrl: 'http://127.0.0.1:11434/v1', model: 'qwen2.5:7b' },
 ];
 
 const DEFAULT_TRANSLATE_SETTINGS: TranslateSettingsPayload = {
@@ -102,11 +117,27 @@ const DEFAULT_TRANSLATE_SETTINGS: TranslateSettingsPayload = {
   timeoutSec: 15,
 };
 
+function isBilibiliIndexUrl(url: string): boolean {
+  return /^https:\/\/index-translate\.bilibili\.com(?:\/|$)/i.test(url.trim());
+}
+
+function isLocalOllamaUrl(url: string): boolean {
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(\/|$)/i.test(url.trim());
+}
+
+function deriveChannelMode(provider: TranslateSettingsPayload['provider'], baseUrl: string): TranslateChannelMode {
+  if (provider === 'free_auto') return 'free_dual';
+  if (provider === 'openai' && isBilibiliIndexUrl(baseUrl)) return 'free_ai';
+  return 'custom';
+}
+
 export const InPlaceTranslateCard: FC = () => {
   const { t } = useTranslation();
   const [settings, setSettings] = useState<TranslateSettingsPayload>(DEFAULT_TRANSLATE_SETTINGS);
   const [loaded, setLoaded] = useState(false);
 
+  const [uiMode, setUiMode] = useState<TranslateChannelMode>('free_ai');
+  const [customSubProvider, setCustomSubProvider] = useState<'openai' | 'deepl'>('openai');
   const [openaiBaseUrlDraft, setOpenaiBaseUrlDraft] = useState(DEFAULT_TRANSLATE_SETTINGS.openaiBaseUrl);
   const [openaiModelDraft, setOpenaiModelDraft] = useState(DEFAULT_TRANSLATE_SETTINGS.openaiModel);
   const [openaiKeyDraft, setOpenaiKeyDraft] = useState('');
@@ -127,6 +158,13 @@ export const InPlaceTranslateCard: FC = () => {
       timeoutSec: typeof data.timeoutSec === 'number' ? data.timeoutSec : 15,
     };
     setSettings(merged);
+    const derived = deriveChannelMode(merged.provider, merged.openaiBaseUrl);
+    setUiMode(derived);
+    if (merged.provider === 'deepl') {
+      setCustomSubProvider('deepl');
+    } else if (derived === 'custom') {
+      setCustomSubProvider('openai');
+    }
     setOpenaiBaseUrlDraft(merged.openaiBaseUrl);
     setOpenaiModelDraft(merged.openaiModel);
     setDeeplEndpointDraft(merged.deeplEndpoint);
@@ -162,10 +200,53 @@ export const InPlaceTranslateCard: FC = () => {
     }
   }, [applyServerSnapshot, t]);
 
-  const handleApplyPreset = (preset: OpenAiPreset) => {
+  const handleSelectChannelMode = (nextMode: TranslateChannelMode) => {
+    setProbeResult(null);
+    if (nextMode === 'free_ai') {
+      const preferredModel = INDEX_TRANSLATE_MODELS.some((m) => m.id === openaiModelDraft.trim())
+        ? openaiModelDraft.trim()
+        : 'Index-Translate-9B';
+      setUiMode('free_ai');
+      setOpenaiBaseUrlDraft(INDEX_TRANSLATE_BASE_URL);
+      setOpenaiModelDraft(preferredModel);
+      void patchSettings({
+        provider: 'openai',
+        openaiBaseUrl: INDEX_TRANSLATE_BASE_URL,
+        openaiModel: preferredModel,
+      });
+      return;
+    }
+
+    if (nextMode === 'free_dual') {
+      setUiMode('free_dual');
+      void patchSettings({ provider: 'free_auto' });
+      return;
+    }
+
+    // 切换至「自有 API / 本地模型」：若草稿仍是免费公网地址，预填 OpenAI 模板等待用户确认/切换预设
+    setUiMode('custom');
+    if (settings.provider === 'deepl') {
+      setCustomSubProvider('deepl');
+    } else {
+      setCustomSubProvider('openai');
+      if (isBilibiliIndexUrl(openaiBaseUrlDraft) || !openaiBaseUrlDraft.trim()) {
+        setOpenaiBaseUrlDraft('https://api.openai.com/v1');
+        setOpenaiModelDraft('gpt-4o-mini');
+      }
+    }
+  };
+
+  const handleApplyCustomPreset = (preset: CustomPreset) => {
+    setProbeResult(null);
+    setUiMode('custom');
+    if (preset.kind === 'deepl') {
+      setCustomSubProvider('deepl');
+      void patchSettings({ provider: 'deepl' }, true);
+      return;
+    }
+    setCustomSubProvider('openai');
     setOpenaiBaseUrlDraft(preset.baseUrl);
     setOpenaiModelDraft(preset.model);
-    setProbeResult(null);
     void patchSettings({
       provider: 'openai',
       openaiBaseUrl: preset.baseUrl,
@@ -178,7 +259,7 @@ export const InPlaceTranslateCard: FC = () => {
     setProbeResult(null);
     void patchSettings({
       provider: 'openai',
-      openaiBaseUrl: openaiBaseUrlDraft.trim() || INDEX_TRANSLATE_BASE_URL,
+      openaiBaseUrl: INDEX_TRANSLATE_BASE_URL,
       openaiModel: modelId,
     }, true);
   };
@@ -187,13 +268,15 @@ export const InPlaceTranslateCard: FC = () => {
     if (savingCredentials) return;
     setSavingCredentials(true);
     try {
-      const payload: Record<string, unknown> = settings.provider === 'openai'
+      const payload: Record<string, unknown> = customSubProvider === 'openai'
         ? {
+            provider: 'openai',
             openaiBaseUrl: openaiBaseUrlDraft.trim(),
             openaiModel: openaiModelDraft.trim(),
             ...(openaiKeyDraft.trim() ? { openaiApiKey: openaiKeyDraft.trim() } : {}),
           }
         : {
+            provider: 'deepl',
             deeplEndpoint: deeplEndpointDraft.trim(),
             ...(deeplKeyDraft.trim() ? { deeplApiKey: deeplKeyDraft.trim() } : {}),
           };
@@ -228,18 +311,27 @@ export const InPlaceTranslateCard: FC = () => {
     setTesting(true);
     setProbeResult(null);
     try {
+      const effectiveProvider: TranslateSettingsPayload['provider'] =
+        uiMode === 'free_dual'
+          ? 'free_auto'
+          : uiMode === 'free_ai'
+            ? 'openai'
+            : customSubProvider;
+
       const candidate: Record<string, unknown> = {
-        provider: settings.provider,
+        provider: effectiveProvider,
         targetLang: settings.targetLang,
         secondaryTargetLang: settings.secondaryTargetLang,
         freePrimary: settings.freePrimary,
         timeoutSec: settings.timeoutSec,
       };
-      if (settings.provider === 'openai') {
-        candidate.openaiBaseUrl = openaiBaseUrlDraft.trim();
+      if (effectiveProvider === 'openai') {
+        candidate.openaiBaseUrl = uiMode === 'free_ai' ? INDEX_TRANSLATE_BASE_URL : openaiBaseUrlDraft.trim();
         candidate.openaiModel = openaiModelDraft.trim();
-        if (openaiKeyDraft.trim()) candidate.openaiApiKey = openaiKeyDraft.trim();
-      } else if (settings.provider === 'deepl') {
+        if (uiMode === 'custom' && openaiKeyDraft.trim()) {
+          candidate.openaiApiKey = openaiKeyDraft.trim();
+        }
+      } else if (effectiveProvider === 'deepl') {
         candidate.deeplEndpoint = deeplEndpointDraft.trim();
         if (deeplKeyDraft.trim()) candidate.deeplApiKey = deeplKeyDraft.trim();
       }
@@ -279,81 +371,28 @@ export const InPlaceTranslateCard: FC = () => {
     { value: 'pt', label: t('translate.langPt') },
   ];
 
-  const isLocalOllama =
-    settings.provider === 'openai' &&
-    /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(?::\d+)?(\/|$)/i.test(openaiBaseUrlDraft.trim());
+  const isLocalOllama = uiMode === 'custom' && customSubProvider === 'openai' && isLocalOllamaUrl(openaiBaseUrlDraft);
 
-  const isIndexTranslate =
-    settings.provider === 'openai' &&
-    /^https:\/\/index-translate\.bilibili\.com(?:\/|$)/i.test(openaiBaseUrlDraft.trim());
-
-  const byokDirty = settings.provider === 'openai'
-    ? (openaiBaseUrlDraft.trim() !== settings.openaiBaseUrl ||
-       openaiModelDraft.trim() !== settings.openaiModel ||
-       (!isIndexTranslate && openaiKeyDraft.trim().length > 0))
-    : (deeplEndpointDraft.trim() !== settings.deeplEndpoint ||
-       deeplKeyDraft.trim().length > 0);
+  const byokDirty = uiMode === 'custom' && (
+    customSubProvider === 'openai'
+      ? (settings.provider !== 'openai' ||
+         openaiBaseUrlDraft.trim() !== settings.openaiBaseUrl ||
+         openaiModelDraft.trim() !== settings.openaiModel ||
+         openaiKeyDraft.trim().length > 0)
+      : (settings.provider !== 'deepl' ||
+         deeplEndpointDraft.trim() !== settings.deeplEndpoint ||
+         deeplKeyDraft.trim().length > 0)
+  );
 
   if (!loaded) {
     return null;
   }
 
   return (
-    <SettingGroup title={t('translate.groupTitle')} icon={<Languages size={20} strokeWidth={2.5} aria-hidden="true" />}>
-      <Card>
-        <div className="translate-card">
-          <SettingRow
-            label={
-              <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)', flexWrap: 'wrap' }}>
-                <span>{t('translate.providerTitle')}</span>
-                <Badge
-                  text={
-                    isLocalOllama
-                      ? t('translate.badgeLocalOffline')
-                      : isIndexTranslate
-                        ? t('translate.badgePublicFreeAi')
-                        : settings.provider === 'free_auto'
-                          ? t('translate.badgeZeroConfig')
-                          : t('translate.badgeByokEncrypted')
-                  }
-                  variant={isLocalOllama || isIndexTranslate || settings.provider === 'free_auto' ? 'success' : 'primary'}
-                />
-              </div>
-            }
-            description={t('translate.providerDesc')}
-          >
-            <Select
-              id="translate-provider"
-              value={settings.provider}
-              onChange={(val) => {
-                setProbeResult(null);
-                void patchSettings({ provider: val });
-              }}
-              options={[
-                { value: 'openai', label: t('translate.providerOpenAi') },
-                { value: 'free_auto', label: t('translate.providerFreeAuto') },
-                { value: 'deepl', label: t('translate.providerDeepL') },
-              ]}
-            />
-          </SettingRow>
-
-          {settings.provider === 'free_auto' && (
-            <SettingRow
-              label={t('translate.freePrimaryTitle')}
-              description={t('translate.freePrimaryDesc')}
-            >
-              <Select
-                id="translate-free-primary"
-                value={settings.freePrimary}
-                onChange={(val) => void patchSettings({ freePrimary: val })}
-                options={[
-                  { value: 'edge', label: t('translate.freePrimaryEdge') },
-                  { value: 'google', label: t('translate.freePrimaryGoogle') },
-                ]}
-              />
-            </SettingRow>
-          )}
-
+    <div className="translate-workbench">
+      {/* ── 1. 互译语言 ─────────────────────────────────────────────────── */}
+      <SettingGroup title={t('translate.languagesGroupTitle', 'Translation Languages')} icon={<Languages size={18} strokeWidth={2.2} aria-hidden="true" />}>
+        <Card>
           <SettingRow
             label={t('translate.targetLangTitle')}
             description={t('translate.targetLangDesc')}
@@ -377,23 +416,145 @@ export const InPlaceTranslateCard: FC = () => {
               options={languageOptions}
             />
           </SettingRow>
+        </Card>
+      </SettingGroup>
 
-          {settings.provider === 'openai' && (
-            <SettingRow
-              layout="vertical"
-              label={t('translate.openaiConfigTitle')}
-              description={t('translate.openaiConfigDesc')}
-            >
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', width: '100%' }}>
+      {/* ── 2. 翻译通道 (3 选 1 场景化卡片 + 渐进式披露) ────────────────── */}
+      <SettingGroup
+        title={t('translate.groupTitle')}
+        icon={<Sparkles size={18} strokeWidth={2.2} aria-hidden="true" />}
+        actions={
+          <Badge
+            text={
+              isLocalOllama
+                ? t('translate.badgeLocalOffline')
+                : uiMode === 'free_ai'
+                  ? t('translate.badgePublicFreeAi')
+                  : uiMode === 'free_dual'
+                    ? t('translate.badgeZeroConfig')
+                    : t('translate.badgeByokEncrypted')
+            }
+            variant={isLocalOllama || uiMode !== 'custom' ? 'success' : 'primary'}
+          />
+        }
+      >
+        <Card>
+          <div className="translate-card">
+            <div className="translate-card__mode-grid" role="radiogroup" aria-label={t('translate.providerTitle')}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={uiMode === 'free_ai'}
+                className={`translate-card__mode-card ${uiMode === 'free_ai' ? 'is-active' : ''}`}
+                onClick={() => handleSelectChannelMode('free_ai')}
+              >
+                <div className="translate-card__mode-head">
+                  <Sparkles size={15} className="translate-card__mode-icon" aria-hidden="true" />
+                  <span className="translate-card__mode-title">
+                    {t('translate.modeFreeAiTitle', 'Free AI Translation')}
+                  </span>
+                </div>
+                <span className="translate-card__mode-desc">
+                  {t('translate.modeFreeAiDesc', 'Default & no key needed. Natural phrasing with automatic fallback on peak load.')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="radio"
+                aria-checked={uiMode === 'free_dual'}
+                className={`translate-card__mode-card ${uiMode === 'free_dual' ? 'is-active' : ''}`}
+                onClick={() => handleSelectChannelMode('free_dual')}
+              >
+                <div className="translate-card__mode-head">
+                  <Zap size={15} className="translate-card__mode-icon" aria-hidden="true" />
+                  <span className="translate-card__mode-title">
+                    {t('translate.modeFreeDualTitle', 'Fast Dual Engine')}
+                  </span>
+                </div>
+                <span className="translate-card__mode-desc">
+                  {t('translate.modeFreeDualDesc', 'Free Bing / Google with automatic failover. Fast and steady for quick lookups.')}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                role="radio"
+                aria-checked={uiMode === 'custom'}
+                className={`translate-card__mode-card ${uiMode === 'custom' ? 'is-active' : ''}`}
+                onClick={() => handleSelectChannelMode('custom')}
+              >
+                <div className="translate-card__mode-head">
+                  <KeyRound size={15} className="translate-card__mode-icon" aria-hidden="true" />
+                  <span className="translate-card__mode-title">
+                    {t('translate.modeCustomTitle', 'Custom API / Local Model')}
+                  </span>
+                </div>
+                <span className="translate-card__mode-desc">
+                  {t('translate.modeCustomDesc', 'Connect OpenAI, DeepSeek, Gemini, DeepL, or offline Ollama with encrypted keys.')}
+                </span>
+              </button>
+            </div>
+
+            {/* 场景 1：免费 AI 翻译（仅保留极简 3 档速度/质量切换，零技术字段） */}
+            {uiMode === 'free_ai' && (
+              <div className="translate-card__mode-panel">
+                <div className="translate-card__index-header">
+                  <span className="translate-card__field-label">{t('translate.indexTranslateModelsLabel')}</span>
+                  <div className="translate-card__presets">
+                    {INDEX_TRANSLATE_MODELS.map((item) => {
+                      const isActiveModel = openaiModelDraft.trim().toLowerCase() === item.id.toLowerCase();
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          className={`translate-card__preset-btn${isActiveModel ? ' translate-card__preset-btn--active' : ''}`}
+                          onClick={() => handleSelectIndexModel(item.id)}
+                        >
+                          <span>{t(item.labelKey)}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                <p className="translate-card__index-notice">{t('translate.indexTranslateNotice')}</p>
+              </div>
+            )}
+
+            {/* 场景 2：免费极速双源（仅优先线路选择） */}
+            {uiMode === 'free_dual' && (
+              <SettingRow
+                label={t('translate.freePrimaryTitle')}
+                description={t('translate.freePrimaryDesc')}
+              >
+                <Select
+                  id="translate-free-primary"
+                  value={settings.freePrimary}
+                  onChange={(val) => void patchSettings({ freePrimary: val })}
+                  options={[
+                    { value: 'edge', label: t('translate.freePrimaryEdge') },
+                    { value: 'google', label: t('translate.freePrimaryGoogle') },
+                  ]}
+                />
+              </SettingRow>
+            )}
+
+            {/* 场景 3：自有 API / 本地模型（仅主动点选时展开） */}
+            {uiMode === 'custom' && (
+              <div className="translate-card__custom-panel">
                 <div className="translate-card__presets">
-                  {OPENAI_PRESETS.map((preset) => {
-                    const isActive = openaiBaseUrlDraft.trim().toLowerCase() === preset.baseUrl.toLowerCase();
+                  {CUSTOM_PRESETS.map((preset) => {
+                    const isActive =
+                      preset.kind === 'deepl'
+                        ? customSubProvider === 'deepl'
+                        : customSubProvider === 'openai' &&
+                          openaiBaseUrlDraft.trim().toLowerCase() === preset.baseUrl.toLowerCase();
                     return (
                       <button
                         key={preset.id}
                         type="button"
                         className={`translate-card__preset-btn${isActive ? ' translate-card__preset-btn--active' : ''}`}
-                        onClick={() => handleApplyPreset(preset)}
+                        onClick={() => handleApplyCustomPreset(preset)}
                       >
                         <span>{t(preset.labelKey)}</span>
                       </button>
@@ -401,75 +562,44 @@ export const InPlaceTranslateCard: FC = () => {
                   })}
                 </div>
 
-                <div className="translate-card__fields-grid">
-                  <div className="translate-card__field">
-                    <label htmlFor="translate-openai-base-url" className="translate-card__field-label">
-                      <span>{t('translate.openaiBaseUrlLabel')}</span>
-                    </label>
-                    <TextInput
-                      id="translate-openai-base-url"
-                      value={openaiBaseUrlDraft}
-                      onChange={setOpenaiBaseUrlDraft}
-                      placeholder={INDEX_TRANSLATE_BASE_URL}
-                    />
-                  </div>
-
-                  <div className="translate-card__field">
-                    <label htmlFor="translate-openai-model" className="translate-card__field-label">
-                      <span>{t('translate.openaiModelLabel')}</span>
-                    </label>
-                    <TextInput
-                      id="translate-openai-model"
-                      value={openaiModelDraft}
-                      onChange={setOpenaiModelDraft}
-                      placeholder={isIndexTranslate ? 'Index-Translate-9B' : 'gpt-4o-mini'}
-                    />
-                  </div>
-
-                  {isIndexTranslate && (
-                    <div className="translate-card__field translate-card__field--full">
-                      <div className="translate-card__index-box">
-                        <div className="translate-card__index-header">
-                          <span className="translate-card__field-label">{t('translate.indexTranslateModelsLabel')}</span>
-                          <div className="translate-card__presets">
-                            {INDEX_TRANSLATE_MODELS.map((item) => {
-                              const isActiveModel = openaiModelDraft.trim().toLowerCase() === item.id.toLowerCase();
-                              return (
-                                <button
-                                  key={item.id}
-                                  type="button"
-                                  className={`translate-card__preset-btn${isActiveModel ? ' translate-card__preset-btn--active' : ''}`}
-                                  onClick={() => handleSelectIndexModel(item.id)}
-                                >
-                                  <span>{t(item.labelKey)}</span>
-                                </button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                        <p className="translate-card__index-notice">{t('translate.indexTranslateNotice')}</p>
-                      </div>
+                {customSubProvider === 'openai' ? (
+                  <div className="translate-card__fields-grid">
+                    <div className="translate-card__field">
+                      <label htmlFor="translate-openai-base-url" className="translate-card__field-label">
+                        <span>{t('translate.openaiBaseUrlLabel')}</span>
+                      </label>
+                      <TextInput
+                        id="translate-openai-base-url"
+                        value={openaiBaseUrlDraft}
+                        onChange={setOpenaiBaseUrlDraft}
+                        placeholder="https://api.openai.com/v1"
+                      />
                     </div>
-                  )}
 
-                  <div className="translate-card__field translate-card__field--full">
-                    <label htmlFor="translate-openai-api-key" className="translate-card__field-label">
-                      <span>{t('translate.apiKeyLabel')}</span>
-                      {settings.hasOpenaiApiKey && (
-                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                          <ShieldCheck size={14} strokeWidth={2.2} aria-hidden="true" />
-                          <span>{t('translate.keySavedHint')}</span>
-                          <CodeBadge>{settings.openaiApiKeyMasked}</CodeBadge>
-                        </span>
-                      )}
-                    </label>
-                    <div className="translate-card__key-row">
-                      {isIndexTranslate ? (
-                        <div className="translate-card__keyless-note">
-                          <ShieldCheck size={15} strokeWidth={2.2} aria-hidden="true" />
-                          <span>{t('translate.indexTranslateKeylessPlaceholder')}</span>
-                        </div>
-                      ) : (
+                    <div className="translate-card__field">
+                      <label htmlFor="translate-openai-model" className="translate-card__field-label">
+                        <span>{t('translate.openaiModelLabel')}</span>
+                      </label>
+                      <TextInput
+                        id="translate-openai-model"
+                        value={openaiModelDraft}
+                        onChange={setOpenaiModelDraft}
+                        placeholder="gpt-4o-mini"
+                      />
+                    </div>
+
+                    <div className="translate-card__field translate-card__field--full">
+                      <label htmlFor="translate-openai-api-key" className="translate-card__field-label">
+                        <span>{t('translate.apiKeyLabel')}</span>
+                        {settings.hasOpenaiApiKey && (
+                          <span className="translate-card__key-saved">
+                            <ShieldCheck size={14} strokeWidth={2.2} aria-hidden="true" />
+                            <span>{t('translate.keySavedHint')}</span>
+                            <CodeBadge>{settings.openaiApiKeyMasked}</CodeBadge>
+                          </span>
+                        )}
+                      </label>
+                      <div className="translate-card__key-row">
                         <div className="translate-card__key-input">
                           <TextInput
                             id="translate-openai-api-key"
@@ -485,109 +615,96 @@ export const InPlaceTranslateCard: FC = () => {
                             }
                           />
                         </div>
-                      )}
-                      {settings.hasOpenaiApiKey && (
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          disabled={savingCredentials}
-                          onClick={() => void handleClearKey('openai')}
-                        >
-                          <Trash2 size={14} strokeWidth={2.2} aria-hidden="true" />
-                          <span>{t('translate.clearKeyBtn')}</span>
-                        </Button>
-                      )}
+                        {settings.hasOpenaiApiKey && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={savingCredentials}
+                            onClick={() => void handleClearKey('openai')}
+                          >
+                            <Trash2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                            <span>{t('translate.clearKeyBtn')}</span>
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </div>
-            </SettingRow>
-          )}
+                ) : (
+                  <div className="translate-card__fields-grid">
+                    <div className="translate-card__field translate-card__field--full">
+                      <label htmlFor="translate-deepl-api-key" className="translate-card__field-label">
+                        <span>{t('translate.deeplKeyLabel')}</span>
+                        {settings.hasDeeplApiKey && (
+                          <span className="translate-card__key-saved">
+                            <ShieldCheck size={14} strokeWidth={2.2} aria-hidden="true" />
+                            <span>{t('translate.keySavedHint')}</span>
+                            <CodeBadge>{settings.deeplApiKeyMasked}</CodeBadge>
+                          </span>
+                        )}
+                      </label>
+                      <div className="translate-card__key-row">
+                        <div className="translate-card__key-input">
+                          <TextInput
+                            id="translate-deepl-api-key"
+                            type="password"
+                            value={deeplKeyDraft}
+                            onChange={setDeeplKeyDraft}
+                            placeholder={
+                              settings.hasDeeplApiKey
+                                ? t('translate.keyKeepExistingPlaceholder')
+                                : t('translate.deeplKeyPlaceholder')
+                            }
+                          />
+                        </div>
+                        {settings.hasDeeplApiKey && (
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            disabled={savingCredentials}
+                            onClick={() => void handleClearKey('deepl')}
+                          >
+                            <Trash2 size={14} strokeWidth={2.2} aria-hidden="true" />
+                            <span>{t('translate.clearKeyBtn')}</span>
+                          </Button>
+                        )}
+                      </div>
+                    </div>
 
-          {settings.provider === 'deepl' && (
-            <SettingRow
-              layout="vertical"
-              label={t('translate.deeplConfigTitle')}
-              description={t('translate.deeplConfigDesc')}
-            >
-              <div className="translate-card__fields-grid">
-                <div className="translate-card__field translate-card__field--full">
-                  <label htmlFor="translate-deepl-api-key" className="translate-card__field-label">
-                    <span>{t('translate.deeplKeyLabel')}</span>
-                    {settings.hasDeeplApiKey && (
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
-                        <ShieldCheck size={14} strokeWidth={2.2} aria-hidden="true" />
-                        <span>{t('translate.keySavedHint')}</span>
-                        <CodeBadge>{settings.deeplApiKeyMasked}</CodeBadge>
-                      </span>
-                    )}
-                  </label>
-                  <div className="translate-card__key-row">
-                    <div className="translate-card__key-input">
+                    <div className="translate-card__field translate-card__field--full">
+                      <label htmlFor="translate-deepl-endpoint" className="translate-card__field-label">
+                        <span>{t('translate.deeplEndpointLabel')}</span>
+                      </label>
                       <TextInput
-                        id="translate-deepl-api-key"
-                        type="password"
-                        value={deeplKeyDraft}
-                        onChange={setDeeplKeyDraft}
-                        placeholder={
-                          settings.hasDeeplApiKey
-                            ? t('translate.keyKeepExistingPlaceholder')
-                            : t('translate.deeplKeyPlaceholder')
-                        }
+                        id="translate-deepl-endpoint"
+                        value={deeplEndpointDraft}
+                        onChange={setDeeplEndpointDraft}
+                        placeholder={t('translate.deeplEndpointPlaceholder')}
                       />
                     </div>
-                    {settings.hasDeeplApiKey && (
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        disabled={savingCredentials}
-                        onClick={() => void handleClearKey('deepl')}
-                      >
-                        <Trash2 size={14} strokeWidth={2.2} aria-hidden="true" />
-                        <span>{t('translate.clearKeyBtn')}</span>
-                      </Button>
-                    )}
                   </div>
-                </div>
+                )}
 
-                <div className="translate-card__field translate-card__field--full">
-                  <label htmlFor="translate-deepl-endpoint" className="translate-card__field-label">
-                    <span>{t('translate.deeplEndpointLabel')}</span>
-                  </label>
-                  <TextInput
-                    id="translate-deepl-endpoint"
-                    value={deeplEndpointDraft}
-                    onChange={setDeeplEndpointDraft}
-                    placeholder={t('translate.deeplEndpointPlaceholder')}
+                <SettingRow
+                  label={t('translate.timeoutTitle')}
+                  description={t('translate.timeoutDesc')}
+                >
+                  <NumberInput
+                    id="translate-timeout-sec"
+                    value={settings.timeoutSec}
+                    min={3}
+                    max={60}
+                    step={1}
+                    unit={t('translate.unitSec')}
+                    onChange={(val) => void patchSettings({ timeoutSec: val })}
                   />
-                </div>
+                </SettingRow>
               </div>
-            </SettingRow>
-          )}
+            )}
 
-          <SettingRow
-            label={t('translate.timeoutTitle')}
-            description={t('translate.timeoutDesc')}
-          >
-            <NumberInput
-              id="translate-timeout-sec"
-              value={settings.timeoutSec}
-              min={3}
-              max={60}
-              step={1}
-              unit={t('translate.unitSec')}
-              onChange={(val) => void patchSettings({ timeoutSec: val })}
-            />
-          </SettingRow>
-
-          <SettingRow
-            layout="vertical"
-            label={t('translate.verifyTitle')}
-            description={t('translate.verifyDesc')}
-          >
-            <div className="translate-card__footer">
+            {/* 底部固定连通性测试栏（一屏直接可见） */}
+            <div className="translate-card__verify-bar">
               <div className="translate-card__actions">
-                {settings.provider !== 'free_auto' && (
+                {uiMode === 'custom' && (
                   <Button
                     variant="primary"
                     size="sm"
@@ -595,7 +712,7 @@ export const InPlaceTranslateCard: FC = () => {
                     onClick={() => void handleSaveByok()}
                   >
                     {savingCredentials ? (
-                      <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                      <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" className="uikit-spin-icon" />
                     ) : (
                       <Check size={15} strokeWidth={2.2} aria-hidden="true" />
                     )}
@@ -604,13 +721,13 @@ export const InPlaceTranslateCard: FC = () => {
                 )}
 
                 <Button
-                  variant={settings.provider === 'free_auto' || isIndexTranslate ? 'primary' : 'secondary'}
+                  variant={uiMode === 'custom' ? 'secondary' : 'primary'}
                   size="sm"
                   disabled={testing}
                   onClick={() => void handleTestConnection()}
                 >
                   {testing ? (
-                    <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" style={{ animation: 'spin 1s linear infinite' }} />
+                    <Loader2 size={15} strokeWidth={2.2} aria-hidden="true" className="uikit-spin-icon" />
                   ) : (
                     <PlugZap size={15} strokeWidth={2.2} aria-hidden="true" />
                   )}
@@ -640,9 +757,9 @@ export const InPlaceTranslateCard: FC = () => {
                 </div>
               )}
             </div>
-          </SettingRow>
-        </div>
-      </Card>
-    </SettingGroup>
+          </div>
+        </Card>
+      </SettingGroup>
+    </div>
   );
 };

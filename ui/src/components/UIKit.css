@@ -348,9 +348,25 @@
 .uikit-group__header {
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
   margin-bottom: 10px;
   padding-left: 2px;
+}
+
+.uikit-group__heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.uikit-group__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .uikit-group__icon {
@@ -573,7 +589,7 @@
   position: absolute;
   left: 0;
   right: 0;
-  z-index: 1000;
+  z-index: var(--z-dropdown);
   min-width: 100%;
   max-height: 220px;
   overflow-y: auto;
@@ -778,6 +794,7 @@
 .uikit-modal__overlay {
   position: fixed;
   inset: 0;
+  -webkit-app-region: no-drag;
   background: var(--bg-overlay, rgba(0, 0, 0, 0.55));
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
@@ -786,7 +803,7 @@
   align-items: safe center;
   justify-content: center;
   justify-content: safe center;
-  z-index: 9999;
+  z-index: var(--z-modal);
   animation: fadeIn 0.2s ease;
   padding: 16px;
   overflow-y: auto;
