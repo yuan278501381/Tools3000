@@ -2616,3 +2616,121 @@ TEST(OverlayZeroDropArchitectureTest, ClickRippleAndTrailMustStayClickThroughAnd
         spot.shutdown();
     }
 }
+
+TEST(OverlayZeroDropArchitectureTest, MouseShakeDetectorRejectsDailyNoiseAndHonorsMinDistance) {
+    using namespace tools3000::core;
+    using namespace tools3000::ui;
+
+    MouseShakeDetector det;
+    MouseShakeConfig cfg;
+    cfg.reversalThreshold = 4;
+    cfg.minDistanceDip = 400;
+
+    // 1. 45° 斜线直线滑动（每步 |dx| 与 |dy| 交替略大）：旧算法必误触，新双轴独立算法 0 折返、0 误触
+    int x = 100, y = 900;
+    int64_t t = 1000;
+    bool triggered = false;
+    for (int i = 0; i < 40; ++i) {
+        x += (i % 2 == 0) ? 24 : 18;
+        y -= (i % 2 == 0) ? 18 : 24;
+        t += 8;
+        if (det.feed(x, y, t, 1.0f, false, cfg)) {
+            triggered = true;
+        }
+    }
+    EXPECT_FALSE(triggered) << "Diagonal straight cursor motion must never trigger shake detection";
+    EXPECT_EQ(det.currentMaxReversals(), 0);
+
+    // 2. 小幅手抖/微调（单程仅 20 DIP < 32 DIP，来回 25 次）：必须 0 折返、0 误触
+    det.reset();
+    t = 5000;
+    triggered = false;
+    det.feed(500, 500, t, 1.0f, false, cfg);
+    for (int i = 0; i < 25; ++i) {
+        t += 12;
+        const int nx = (i % 2 == 0) ? 520 : 500;
+        if (det.feed(nx, 500, t, 1.0f, false, cfg)) {
+            triggered = true;
+        }
+    }
+    EXPECT_FALSE(triggered) << "Micro jitter (< 32 DIP) must not accumulate shake reversals";
+
+    // 3. 慢速来回浏览（单程 120 DIP，但平均速度 ~460 DIP/s < 700 DIP/s）：不误触
+    det.reset();
+    t = 10000;
+    triggered = false;
+    det.feed(400, 400, t, 1.0f, false, cfg);
+    for (int i = 0; i < 6; ++i) {
+        const int targetX = (i % 2 == 0) ? 520 : 400;
+        const int startX = (i % 2 == 0) ? 400 : 520;
+        for (int s = 1; s <= 4; ++s) {
+            t += 65; // 每趟 260ms -> 120/0.26 = 461 DIP/s
+            const int curX = startX + ((targetX - startX) * s) / 4;
+            if (det.feed(curX, 400, t, 1.0f, false, cfg)) {
+                triggered = true;
+            }
+        }
+    }
+    EXPECT_FALSE(triggered) << "Slow casual mouse movement must not trigger shake spotlight";
+
+    // 4. 鼠标按键按住拖拽期间快速往返甩动：自动静默不误触
+    det.reset();
+    t = 20000;
+    triggered = false;
+    det.feed(400, 400, t, 1.0f, true, cfg);
+    for (int i = 0; i < 8; ++i) {
+        t += 25;
+        const int nx = (i % 2 == 0) ? 620 : 400;
+        if (det.feed(nx, 400, t, 1.0f, true, cfg)) {
+            triggered = true;
+        }
+    }
+    EXPECT_FALSE(triggered) << "Dragging with mouse button held must suppress shake detection";
+
+    // 5. 最小移动距离门槛校验：配置 4 次折返 + 800 DIP，小幅快甩 4 下 (~250 DIP) 不触发，甩足 800 DIP 立即命中
+    det.reset();
+    MouseShakeConfig highDistCfg{4, 800};
+    t = 30000;
+    det.feed(500, 500, t, 1.0f, false, highDistCfg);
+    det.feed(550, 500, t += 20, 1.0f, false, highDistCfg); // 初始冲程 50 DIP
+    bool smallShakeHit = false;
+    for (int i = 0; i < 4; ++i) {
+        t += 25;
+        const int nx = (i % 2 == 0) ? 500 : 550; // 4 次折返仅累计 250 DIP < 800 DIP
+        if (det.feed(nx, 500, t, 1.0f, false, highDistCfg)) {
+            smallShakeHit = true;
+        }
+    }
+    EXPECT_FALSE(smallShakeHit) << "Reversals met but total distance below shakeMinDistance must not trigger";
+
+    // 改用大幅度快速甩动（单程 200 DIP，4 次折返累计 1000 DIP >= 800 DIP）在 200% DPI 下稳定命中
+    det.reset();
+    t = 40000;
+    det.feed(400, 400, t, 2.0f, false, highDistCfg);
+    det.feed(800, 400, t += 30, 2.0f, false, highDistCfg); // 400px / 2.0 = 200 DIP
+    bool largeShakeHit = false;
+    for (int i = 0; i < 4; ++i) {
+        t += 35;
+        const int nx = (i % 2 == 0) ? 400 : 800; // 每次 200 DIP, 速度 ~5700 DIP/s
+        if (det.feed(nx, 400, t, 2.0f, false, highDistCfg)) {
+            largeShakeHit = true;
+            break;
+        }
+    }
+    EXPECT_TRUE(largeShakeHit) << "Intentional fast shake exceeding both reversals and shakeMinDistance must trigger";
+
+    // 6. 验证 SpotlightSettings 持久化与边界钳制 [100, 2000]
+    auto& spot = SpotlightOverlay::instance();
+    const auto prev = spot.getSettings();
+    auto s = prev;
+    s.shakeMinDistance = 50; // 低于下限自动钳制至 100
+    spot.updateSettings(s);
+    EXPECT_EQ(spot.getSettings().shakeMinDistance, MouseShakeDetector::kMinDistanceDipFloor);
+    s.shakeMinDistance = 9999; // 高于上限自动钳制至 2000
+    spot.updateSettings(s);
+    EXPECT_EQ(spot.getSettings().shakeMinDistance, MouseShakeDetector::kMaxDistanceDipCeiling);
+    s.shakeMinDistance = 650;
+    spot.updateSettings(s);
+    EXPECT_EQ(spot.getSettings().shakeMinDistance, 650);
+    spot.updateSettings(prev);
+}

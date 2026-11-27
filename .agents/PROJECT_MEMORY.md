@@ -6,6 +6,12 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-27] 摇晃鼠标寻光标四重物理抗误触引擎与最小移动距离配置 (Issue `#33 @LiangDongXing-cn`, `fix/shake-mouse-distance-detector`)
+- **日常高频误触发根因**：旧版 `SpotlightOverlayInputController.cpp` 将 `delta = (|dx| >= |dy|) ? dx : dy` 混用为单一 `dir = +/-1`（45° 斜线滑行时 `|dx|` 与 `|dy|` 交替略大，100ms 内即可伪造 10+ 次假折返），且仅按 `6 DIP` 单点位移计数、无单程摆幅/总距离/速度/停顿断链/拖拽静默门槛，导致阈值调至 `10` 仍频繁误弹聚焦圈。
+- **终局方案 (`src/core/mouse/MouseShakeDetector.h`, `SpotlightOverlay.{h,cpp}`, `SpotlightOverlayInputController.cpp`, `src/main.cpp`, `SpotlightPage.tsx`, 8 套 `locales/*.json`, `test_ui_lifecycle.inc`)**：
+  - 抽离零 Win32 依赖纯状态机 `MouseShakeDetector`：① **X/Y 双轴独立追踪**彻底消除斜线伪折返；② **单程摆幅死区 `>= 32 DIP`** 屏蔽手抖与高回报率微噪；③ **时间窗累计移动距离 `shakeMinDistance`（默认 `400 px`, `[100, 2000]` 可配置）+ 爆发时间窗 `<= 750ms` + 停顿 `> 220ms` 断链 + 均速 `>= 700 DIP/s`**；④ **按住左/右/中键拖拽自动静默**（框选/画手势 0 误触）；
+  - 全链路接入 `config.json` (`/spotlight/shakeMinDistance`)、IPC 桥接、前端设置项与 8 国语言包，补齐 45° 斜移 / 手抖 / 慢速浏览 / 拖拽 / 距离门槛 / 高 DPI 归一化全场景单测。
+
 ### [2026-11-27] `v1.5.3` 热修：根治 `WS_EX_NOREDIRECTIONBITMAP` 缺 `WS_EX_LAYERED` 导致的点击光圈/轨迹/手势浮层跨进程吞左键回归 (`fix/overlay-click-through-regression`)
 - **致命 Win32 内核暗坑铁律（已实机 `WindowFromPoint` + `PrintWindow(PW_RENDERFULLCONTENT)` 实证）**：
   - 在 Windows 内核（`win32k`）中，`WS_EX_TRANSPARENT` + `WM_NCHITTEST -> HTTRANSPARENT` **仅在窗口同时具备 `WS_EX_LAYERED` 时才对跨线程/跨进程鼠标与触控命中测试实现穿透**；
