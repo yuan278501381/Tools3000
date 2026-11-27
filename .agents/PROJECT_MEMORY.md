@@ -6,6 +6,16 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-27] `v1.5.3` 热修：根治 `WS_EX_NOREDIRECTIONBITMAP` 缺 `WS_EX_LAYERED` 导致的点击光圈/轨迹/手势浮层跨进程吞左键回归 (`fix/overlay-click-through-regression`)
+- **致命 Win32 内核暗坑铁律（已实机 `WindowFromPoint` + `PrintWindow(PW_RENDERFULLCONTENT)` 实证）**：
+  - 在 Windows 内核（`win32k`）中，`WS_EX_TRANSPARENT` + `WM_NCHITTEST -> HTTRANSPARENT` **仅在窗口同时具备 `WS_EX_LAYERED` 时才对跨线程/跨进程鼠标与触控命中测试实现穿透**；
+  - `v1.5.2` 为省 4K GDI 重定向表面将 `MouseFeedbackOverlayBase`、`WinUtils::applyTaskbarSafeOverlayStyle` 与 `GestureInputPolicy::normalizeGestureCompositorOverlayExStyle` 改为 `WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT` 并显式剥离 `WS_EX_LAYERED`，导致开启「显示点击光圈」后，物理鼠标按下 1~3ms 弹出不穿透 `TOPMOST` 浮层直接吞噬 `WM_LBUTTONUP`，表现为全系统左键失灵、设置开关点不回去、托盘无法点击退出（而触屏点击因带 `LLMHF_INJECTED` 未触发浮层反而可点）；
+  - 同时排除伪方案：`SetWindowRgn(Empty)` 虽不拦截点击但会把 DirectComposition SwapChain 画面一并裁黑不可见；
+  - **终局黄金样式组合**：所有 DirectComposition 点击穿透浮层强制使用 **`WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE`**（不调用 `UpdateLayeredWindow` 即不分配 33MB GDI 重定向图，实测 4K 私有内存仅 `+140 KB`、Tier 1 `FLIP_DISCARD` 零掉帧 100% 保留、`PrintWindow` 画面 100% 可见、跨线程 `WindowFromPoint` 100% 穿透）。
+- **并发修复与防回退守护 (`MouseFeedbackOverlayBase.cpp`, `WinUtils.cpp`, `GestureInputPolicy.h`, `SpotlightOverlayInputController.cpp`, `test_ui_lifecycle.inc`, `test_gesture.inc`)**：
+  - 同步修复 `SpotlightOverlayInputController::onMouseDown` 在 `m_animState == Idle` 时漏判 `m_ripples.empty() && m_trail.empty()` 导致 380ms 内快速连点左键误触发 `hideNow()` 吞掉二次水波纹的问题；
+  - 新增 `OverlayZeroDropArchitectureTest.ClickRippleAndTrailMustStayClickThroughAndNeverSwallowRapidClicks` 与更新 `GestureTrailOverlayTest.LocalHysteresisSwapChainLowVramAndZeroRedirection`：强断言 `WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT`、活跃态跨线程 `WindowFromPoint != overlayHwnd`、连点不误隐藏及 `PrintWindow(PW_RENDERFULLCONTENT)` 画面可渲染；实机基准保持 `tier=1, dropRate=0%, SetWindowPos=1, surfaceRebuilds=1`。
+
 ### [2026-11-27] 全特效跨系统零掉帧架构 (Issue `#33`)、截图另存为卡死与 Win10/Server PP-OCRv6 离线识别全空根治 (`fix/overlay-vsync-saveas-ocr-win10`)
 - **1. 鼠标聚光灯与全系列桌面特效零掉帧架构（GitHub Issue `#33 @LiangDongXing-cn`）(`MouseFeedbackOverlayBase.{h,cpp}`, `MouseStreamCore.{h,cpp}`, `SpotlightOverlay*`, `KeycastOverlay.{h,cpp}`, `ToastOverlay.{h,cpp}`, `CinemaZoomEngine.{h,cpp}`, `WinUtils.cpp`, `ConfigManager.{h,cpp}`, `test_ui_lifecycle.inc`)**：
   - *五重掉帧根因*：① `MouseFeedbackOverlayBase` 旧管线逐帧 `CreateSurface` + `IDCompositionSurface::BeginDraw` 且在 `endFrameAndPresent` 之后才 `SetWindowPos`，引发跨管线错帧与高频重分配；② `MouseStreamCore` 使用 `GetTickCount()`（15.625ms 锯齿）；③ 渲染循环无真正 VSync 节拍控制与 RDP/WARP 防空转兜底；④ `SpotlightOverlayRenderer` 每帧新建大量 COM `ID2D1SolidColorBrush`、读取 `ConfigManager` 强调色锁争用、全屏暗角整屏跑径向渐变；⑤ `KeycastOverlay` / `ToastOverlay` 依赖 15.6ms `WM_TIMER` 固定步长积分，且冷启重建 GPU 上下文时吞掉开场动画。

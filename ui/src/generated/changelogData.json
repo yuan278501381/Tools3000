@@ -1,13 +1,72 @@
 {
   "schemaVersion": 2,
-  "totalKnownReleases": 37,
-  "bundledCount": 37,
+  "totalKnownReleases": 38,
+  "bundledCount": 38,
   "releases": [
+    {
+      "version": "1.5.3",
+      "tag": "v1.5.3",
+      "kind": "patch",
+      "publishedAt": "2026-11-27T14:17:46+08:00",
+      "zh": {
+        "summary": "欢迎升级至 **Tools3000 v1.5.3**。本版本以已正式发布的 **v1.5.2** 为对比基线，紧急修复了 `v1.5.2` 在开启鼠标点击光圈、鼠标轨迹或使用鼠标手势时可能拦截鼠标点击的问题，同时 100% 完整保留 `v1.5.2` 的零掉帧与低显存优化：",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 2,
+          "total": 2
+        },
+        "sections": [
+          {
+            "title": "紧急修复开启「显示点击光圈 / 鼠标轨迹」后鼠标左键被拦截失灵的问题",
+            "category": "fix",
+            "items": [
+              "彻底修复 `v1.5.2` 开启鼠标点击光圈或鼠标流光轨迹后，透明特效浮层未对跨进程窗口完全穿透，导致设置页开关点不回去、系统托盘菜单及其他软件点击无响应的问题；",
+              "同步修复鼠标手势轨迹浮层在淡出瞬间可能拦截跨应用点击的同类隐患；",
+              "修复后 100% 完整保留 `v1.5.2` 的硬件垂直同步零掉帧渲染管线与低显存占用，不会引入任何掉帧回退。"
+            ]
+          },
+          {
+            "title": "修复快速连点鼠标时点击光圈被提前中断的问题",
+            "category": "fix",
+            "items": [
+              "修复在点击光圈播放期间（约 380ms 内）连续点击左键或双击时，前一次光圈被误清、第二次点击波纹未正常显示的问题，现在每次连点与双击均能清晰独立呈现。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "summary": "Welcome to **Tools3000 v1.5.3** (compared against **v1.5.2**). This urgent hotfix resolves a click-through regression introduced in `v1.5.2` when Mouse Click Ripples, Pointer Trails, or Mouse Gesture overlays are active, while preserving 100% of the `v1.5.2` zero-stutter performance and low-VRAM architecture:",
+        "counts": {
+          "feature": 0,
+          "improvement": 0,
+          "fix": 2,
+          "total": 2
+        },
+        "sections": [
+          {
+            "title": "Fixed Mouse Clicks Being Blocked When Click Ripples or Pointer Trails Are Enabled",
+            "category": "fix",
+            "items": [
+              "Fixed a regression in `v1.5.2` where enabling **Show Click Ripple** or **Show Pointer Trail** caused the topmost effect overlay to intercept mouse button release and subsequent clicks across Settings, the system tray menu, and other applications.",
+              "Restored full cross-process mouse and touch click-through across both Mouse Effects and Mouse Gesture overlays while keeping the zero-stutter VSync hardware SwapChain and low-VRAM memory optimizations completely intact."
+            ]
+          },
+          {
+            "title": "Fixed Rapid Double-Clicks Cutting Off Click Ripple Animations",
+            "category": "fix",
+            "items": [
+              "Fixed an edge case where clicking a second time within the active ripple duration (~380 ms) prematurely dismissed the ripple overlay instead of rendering each rapid click cleanly."
+            ]
+          }
+        ]
+      }
+    },
     {
       "version": "1.5.2",
       "tag": "v1.5.2",
       "kind": "patch",
-      "publishedAt": "2026-11-27T13:27:52+08:00",
+      "publishedAt": "2026-11-27T13:35:11+08:00",
       "zh": {
         "summary": "欢迎升级至 **Tools3000 v1.5.2**。本版本以已正式发布的 **v1.5.1** 为对比基线，重点根治桌面特效与鼠标手势掉帧、截图另存为假死、Windows 10/Server 离线识字为空与模型包下载偶发卡死等高频痛点，并全面上线识字与翻译深度链路实时进度反馈：",
         "counts": {

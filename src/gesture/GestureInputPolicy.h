@@ -345,12 +345,14 @@ inline LONG_PTR normalizeGestureOverlayExStyle(LONG_PTR current) noexcept {
     return (current | required) & ~static_cast<LONG_PTR>(WS_EX_APPWINDOW);
 }
 
-/// DirectComposition 硬件合成窗口扩展样式：使用 WS_EX_NOREDIRECTIONBITMAP 零 GDI 重定向表面（4K 屏立省 ~30MB 显存）
+/// DirectComposition 硬件合成窗口扩展样式：
+/// 同时保留 WS_EX_NOREDIRECTIONBITMAP（零 GDI 重定向表面，4K 屏立省 ~30MB 显存）
+/// 与 WS_EX_LAYERED | WS_EX_TRANSPARENT（Windows 内核跨线程/跨进程点击穿透必备，缺 WS_EX_LAYERED 会拦截下方窗口点击）。
 inline LONG_PTR normalizeGestureCompositorOverlayExStyle(LONG_PTR current) noexcept {
-    constexpr LONG_PTR required = WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT |
+    constexpr LONG_PTR required = WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT |
                                   WS_EX_TOPMOST | WS_EX_NOACTIVATE |
                                   WS_EX_TOOLWINDOW;
-    constexpr LONG_PTR forbidden = WS_EX_APPWINDOW | WS_EX_LAYERED;
+    constexpr LONG_PTR forbidden = WS_EX_APPWINDOW;
     return (current | required) & ~forbidden;
 }
 

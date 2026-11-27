@@ -5201,14 +5201,16 @@ TEST(GestureAuditRegressionTest, TranslateTShape180ReversalRecognitionAndNoFalse
 
 TEST(GestureTrailOverlayTest, LocalHysteresisSwapChainLowVramAndZeroRedirection) {
     using namespace tools3000::gesture;
-    // 1. 验证纯函数扩展样式策略：合成模式带 WS_EX_NOREDIRECTIONBITMAP 且不含 WS_EX_LAYERED / WS_EX_APPWINDOW
-    const LONG_PTR compEx = normalizeGestureCompositorOverlayExStyle(WS_EX_LAYERED | WS_EX_APPWINDOW);
+    // 1. 验证纯函数扩展样式策略：合成模式同时保留 WS_EX_NOREDIRECTIONBITMAP（零重定向显存）
+    //    与 WS_EX_LAYERED | WS_EX_TRANSPARENT（Windows 内核跨线程/跨进程点击穿透必备），且严禁含 WS_EX_APPWINDOW
+    const LONG_PTR compEx = normalizeGestureCompositorOverlayExStyle(WS_EX_APPWINDOW);
     EXPECT_NE(compEx & WS_EX_NOREDIRECTIONBITMAP, 0);
-    EXPECT_EQ(compEx & WS_EX_LAYERED, 0);
+    EXPECT_NE(compEx & WS_EX_LAYERED, 0);
+    EXPECT_NE(compEx & WS_EX_TRANSPARENT, 0);
     EXPECT_EQ(compEx & WS_EX_APPWINDOW, 0);
     EXPECT_TRUE(gestureOverlayIsTaskbarSafe(compEx));
 
-    // 2. 实机验证：手势宿主零重定向表面 + 局部 640x640 SwapChain（显存由 ~60MB 降至 ~3.5MB）+ 闲置回收归零
+    // 2. 实机验证：手势宿主零重定向表面 + 局部 640x640 SwapChain（显存由 ~60MB 降至 ~3.5MB）+ 跨线程点击穿透 + 闲置回收归零
     auto& overlay = GestureTrailOverlay::instance();
     ASSERT_TRUE(overlay.initialize(GetModuleHandleW(nullptr)));
     EXPECT_TRUE(overlay.isCompositorReady());
@@ -5217,7 +5219,8 @@ TEST(GestureTrailOverlayTest, LocalHysteresisSwapChainLowVramAndZeroRedirection)
     ASSERT_NE(hwnd, nullptr);
     const LONG_PTR actualEx = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
     EXPECT_NE(actualEx & WS_EX_NOREDIRECTIONBITMAP, 0);
-    EXPECT_EQ(actualEx & WS_EX_LAYERED, 0);
+    EXPECT_NE(actualEx & WS_EX_LAYERED, 0);
+    EXPECT_NE(actualEx & WS_EX_TRANSPARENT, 0);
 
     const auto tStart = std::chrono::steady_clock::now();
     overlay.beginTrail();
@@ -5233,9 +5236,15 @@ TEST(GestureTrailOverlayTest, LocalHysteresisSwapChainLowVramAndZeroRedirection)
     EXPECT_LE(overlay.allocatedTrailSurfaceWidth(), 768);
     EXPECT_LE(overlay.allocatedTrailSurfaceHeight(), 768);
     EXPECT_GE(overlay.trailSurfaceTier(), 1);
+
+    // 跨线程真实点击穿透断言：手势浮层可见期间 WindowFromPoint 绝不得命中手势窗口本身
+    const HWND hitDuringTrail = WindowFromPoint(POINT{360, 330});
+    EXPECT_NE(hitDuringTrail, hwnd) << "Gesture overlay must remain click-through across threads/processes";
+
     std::cout << "[GestureTrailSwapChain] tier=" << overlay.trailSurfaceTier()
               << " surface=" << overlay.allocatedTrailSurfaceWidth() << "x" << overlay.allocatedTrailSurfaceHeight()
-              << " coldStartMs=" << allocMs << std::endl;
+              << " coldStartMs=" << allocMs
+              << " clickThrough=" << (hitDuringTrail != hwnd) << std::endl;
 
     overlay.hide();
     overlay.releaseIdleSurfacesNow();

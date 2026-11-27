@@ -443,10 +443,13 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
 
     m_helperOwnerHwnd = tools3000::core::WinUtils::createOverlayHelperOwner(wc.hInstance, m_helperOwnerName.c_str());
 
-    // 首选 WS_EX_NOREDIRECTIONBITMAP，省去 4K 窗口约 33MB GDI 重定向显存与双路径合成开销；老驱动/极端环境自动回退 WS_EX_LAYERED
+    // 首选 WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT：
+    // - WS_EX_NOREDIRECTIONBITMAP 免去 4K 窗口约 33MB GDI 重定向显存，像素完全由 DirectComposition Flip SwapChain 硬件直出；
+    // - WS_EX_LAYERED 必须与 WS_EX_TRANSPARENT 共存，否则 Windows 内核 (win32k) 不会跳过跨线程/跨进程鼠标与触控命中测试，导致拦截下方窗口点击！
+    // 若老驱动/精简环境不支持该组合，自动回退传统 WS_EX_LAYERED | WS_EX_TRANSPARENT。
     m_usingNoRedirectionBitmap = true;
     HWND createdHwnd = CreateWindowExW(
-        WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_NOREDIRECTIONBITMAP | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         m_windowClassName.c_str(), L"",
         WS_POPUP,
         0, 0, 1, 1,
