@@ -1091,7 +1091,7 @@ std::wstring tooltipForButton(
         case ToolbarCommand::SideToggleCornerRadius: return chinese ? L"调节选区圆角半径" : L"Selection Corner Radius";
         case ToolbarCommand::SideInvertSelection: return chinese ? L"全屏选区 / 还原原选区" : L"Full Screen / Restore Selection";
         case ToolbarCommand::SideResetSelection: return chinese ? L"重置选区直角与自由比例" : L"Reset Sharp Corners & Free Ratio";
-        case ToolbarCommand::ExtractText: return chinese ? L"提取文字 (OCR)" : L"Extract text (OCR)";
+        case ToolbarCommand::ExtractText: return chinese ? L"提取文字 (OCR · Ctrl+O)" : L"Extract text (OCR · Ctrl+O)";
         case ToolbarCommand::Translate: return chinese ? L"原位翻译 (Ctrl+Shift+T)" : L"Translate in-place (Ctrl+Shift+T)";
         case ToolbarCommand::PinWindow: return chinese ? L"贴图置顶到屏幕 (Ctrl+T)" : L"Pin to screen (Ctrl+T)";
         case ToolbarCommand::ScrollCapture: return chinese ? L"长截图" : L"Scrolling capture";

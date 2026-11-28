@@ -127,6 +127,7 @@ $availableByName = @{}
 foreach ($dir in $validSearchDirs) {
     foreach ($f in Get-ChildItem -LiteralPath $dir -Filter '*.dll' -File -ErrorAction SilentlyContinue) {
         $key = $f.Name.ToLowerInvariant()
+        if ($key -like '*gtest*.dll' -or $key -like '*gmock*.dll') { continue }
         if (-not $availableByName.ContainsKey($key)) {
             $availableByName[$key] = $f.FullName
         }

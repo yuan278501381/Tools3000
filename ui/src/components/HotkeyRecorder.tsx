@@ -20,6 +20,20 @@ import './HotkeyRecorder.css';
 /** 修饰键集合 */
 const MODIFIER_KEYS = new Set(['Control', 'Alt', 'Shift', 'Meta', 'AltGraph', 'OS']);
 
+/** 支持双击触发的单一修饰键白名单（严禁 Win 键双击以免触发系统开始菜单） */
+const DOUBLE_TAP_MODIFIERS = new Set(['Ctrl', 'Alt', 'Shift']);
+const DOUBLE_TAP_MAX_HOLD_MS = 280;
+const DOUBLE_TAP_MAX_GAP_MS = 400;
+
+const parseDoubleTapModifier = (raw: string): string | null => {
+  const m = /^Double\+(Ctrl|Alt|Shift)$/i.exec(raw.trim());
+  if (!m) return null;
+  const lower = m[1].toLowerCase();
+  if (lower === 'ctrl') return 'Ctrl';
+  if (lower === 'alt') return 'Alt';
+  return 'Shift';
+};
+
 /** 全键位标准化解析 */
 const normalizeKey = (e: KeyboardEvent): string => {
   // 1. 空格键
@@ -105,18 +119,43 @@ interface HotkeyRecorderProps {
    * 目标窗口动作场景；默认 false 保持全局热键防误触校验。
    */
   allowSingleKey?: boolean;
+  /**
+   * 允许录入双击同一修饰键（Double+Ctrl / Double+Alt / Double+Shift），
+   * 全局快捷键模式默认开启，手势发送单键模式默认关闭。
+   */
+  allowDoubleTapModifier?: boolean;
 }
 
-export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, placeholder, id, ariaLabel, disabled = false, allowSingleKey = false }) => {
+interface DoubleTapTrackState {
+  mod: string | null;
+  phase: 'idle' | 'first_down' | 'waiting_second';
+  firstDownAt: number;
+  firstUpAt: number;
+}
+
+export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({
+  value,
+  onChange,
+  placeholder,
+  id,
+  ariaLabel,
+  disabled = false,
+  allowSingleKey = false,
+  allowDoubleTapModifier,
+}) => {
+  const doubleTapAllowed = allowDoubleTapModifier ?? !allowSingleKey;
   const { t } = useTranslation();
   const a11y = useControlA11y();
   const [recording, setRecording] = useState(false);
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
+  const [waitingSecondTapMod, setWaitingSecondTapMod] = useState<string | null>(null);
   const [warningTip, setWarningTip] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const recordingRef = useRef(false);
   const holdsPauseLockRef = useRef(false);
   const pendingRef = useRef<string | null>(null);
+  const doubleTapRef = useRef<DoubleTapTrackState>({ mod: null, phase: 'idle', firstDownAt: 0, firstUpAt: 0 });
+  const doubleTapTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const warningTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const lockHotkeyPause = useCallback(() => {
@@ -141,6 +180,15 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
     setWarningTip(false);
   }, []);
 
+  const clearDoubleTapState = useCallback(() => {
+    if (doubleTapTimerRef.current) {
+      clearTimeout(doubleTapTimerRef.current);
+      doubleTapTimerRef.current = null;
+    }
+    doubleTapRef.current = { mod: null, phase: 'idle', firstDownAt: 0, firstUpAt: 0 };
+    setWaitingSecondTapMod(null);
+  }, []);
+
   // ── 进入录入模式 ──────────────────────────────────────────────────────────
   const startRecording = useCallback(() => {
     if (disabled) return;
@@ -148,9 +196,10 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
     setRecording(true);
     setActiveKeys([]);
     pendingRef.current = null;
+    clearDoubleTapState();
     clearWarning();
     lockHotkeyPause();
-  }, [clearWarning, disabled, lockHotkeyPause]);
+  }, [clearDoubleTapState, clearWarning, disabled, lockHotkeyPause]);
 
   // ── 退出录入模式 (不保存) ─────────────────────────────────────────────────
   const cancelRecording = useCallback(() => {
@@ -158,31 +207,34 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
     setRecording(false);
     setActiveKeys([]);
     pendingRef.current = null;
+    clearDoubleTapState();
     clearWarning();
     unlockHotkeyPause();
-  }, [clearWarning, unlockHotkeyPause]);
+  }, [clearDoubleTapState, clearWarning, unlockHotkeyPause]);
 
   // ── 确认录入结果 ──────────────────────────────────────────────────────────
   const confirmRecording = useCallback((hotkeyStr: string) => {
     recordingRef.current = false;
     setRecording(false);
     setActiveKeys([]);
+    clearDoubleTapState();
     clearWarning();
     if (hotkeyStr && hotkeyStr !== value) {
       onChange(hotkeyStr);
     }
     pendingRef.current = null;
     unlockHotkeyPause();
-  }, [clearWarning, onChange, unlockHotkeyPause, value]);
+  }, [clearDoubleTapState, clearWarning, onChange, unlockHotkeyPause, value]);
 
   // 组件卸载时若仍处于录入状态则确保恢复全局热键引用计数
   useEffect(() => {
     return () => {
+      clearDoubleTapState();
       clearWarning();
       recordingRef.current = false;
       unlockHotkeyPause();
     };
-  }, [clearWarning, unlockHotkeyPause]);
+  }, [clearDoubleTapState, clearWarning, unlockHotkeyPause]);
 
   // 父级级联禁用时自动退出录制态并归还全局热键暂停锁
   useEffect(() => {
@@ -229,12 +281,48 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       const isSpace = e.code === 'Space' || key === ' ' || key === 'Spacebar' || e.keyCode === 32;
 
       if (MODIFIER_KEYS.has(key) && !isSpace) {
-        // 仅按下了修饰键，实时展示
-        setActiveKeys([...mods]);
-        pendingRef.current = null;
+        // 仅按下了修饰键：若开启修饰键双击录制且为单一白名单修饰键，跟踪 Down -> Up -> Down 闭环
         clearWarning();
+        if (doubleTapAllowed && mods.length === 1 && DOUBLE_TAP_MODIFIERS.has(mods[0])) {
+          const mod = mods[0];
+          const now = Date.now();
+          if (e.repeat) {
+            if (
+              doubleTapRef.current.phase === 'first_down' &&
+              now - doubleTapRef.current.firstDownAt > DOUBLE_TAP_MAX_HOLD_MS
+            ) {
+              clearDoubleTapState();
+            }
+            setActiveKeys([...mods]);
+            return;
+          }
+          if (
+            doubleTapRef.current.phase === 'waiting_second' &&
+            doubleTapRef.current.mod === mod &&
+            now - doubleTapRef.current.firstUpAt <= DOUBLE_TAP_MAX_GAP_MS
+          ) {
+            const comboStr = `Double+${mod}`;
+            clearDoubleTapState();
+            setActiveKeys(['Double', mod]);
+            pendingRef.current = comboStr;
+            return;
+          }
+          if (doubleTapTimerRef.current) {
+            clearTimeout(doubleTapTimerRef.current);
+            doubleTapTimerRef.current = null;
+          }
+          setWaitingSecondTapMod(null);
+          doubleTapRef.current = { mod, phase: 'first_down', firstDownAt: now, firstUpAt: 0 };
+          setActiveKeys([...mods]);
+          pendingRef.current = null;
+        } else {
+          clearDoubleTapState();
+          setActiveKeys([...mods]);
+          pendingRef.current = null;
+        }
       } else {
-        // 修饰键 + 主键 → 完成组合
+        // 修饰键 + 主键 → 完成组合（立即中止修饰键双击候选）
+        clearDoubleTapState();
         const mainKey = normalizeKey(e);
         const filteredMods = mods.filter(m => m !== mainKey);
         const combo = [...filteredMods, mainKey];
@@ -256,10 +344,32 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
     };
 
     const handleKeyUp = (e: KeyboardEvent) => {
-      // 当有挂起的合法组合键时，在松开任意键后确认
+      // 当有挂起的合法组合键或双击修饰键时，在松开任意键后确认
       if (pendingRef.current) {
         confirmRecording(pendingRef.current);
         return;
+      }
+      // 检测首次修饰键轻触释放：若按住 <= 280ms 则进入等待第二次轻击窗口 (400ms)
+      if (
+        doubleTapAllowed &&
+        doubleTapRef.current.phase === 'first_down' &&
+        doubleTapRef.current.mod &&
+        !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey
+      ) {
+        const now = Date.now();
+        const mod = doubleTapRef.current.mod;
+        if (now - doubleTapRef.current.firstDownAt <= DOUBLE_TAP_MAX_HOLD_MS) {
+          doubleTapRef.current = { mod, phase: 'waiting_second', firstDownAt: doubleTapRef.current.firstDownAt, firstUpAt: now };
+          setWaitingSecondTapMod(mod);
+          setActiveKeys([]);
+          if (doubleTapTimerRef.current) clearTimeout(doubleTapTimerRef.current);
+          doubleTapTimerRef.current = setTimeout(() => {
+            doubleTapRef.current = { mod: null, phase: 'idle', firstDownAt: 0, firstUpAt: 0 };
+            setWaitingSecondTapMod(null);
+          }, DOUBLE_TAP_MAX_GAP_MS);
+          return;
+        }
+        clearDoubleTapState();
       }
       // 如果未构成合法组合且所有修饰键均已松开，重置活跃按键显示
       if (!e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey) {
@@ -274,7 +384,7 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
       window.removeEventListener('keydown', handleKeyDown, true);
       window.removeEventListener('keyup', handleKeyUp, true);
     };
-  }, [recording, allowSingleKey, cancelRecording, confirmRecording, onChange, clearWarning, unlockHotkeyPause]);
+  }, [recording, allowSingleKey, doubleTapAllowed, cancelRecording, clearDoubleTapState, confirmRecording, onChange, clearWarning, unlockHotkeyPause]);
 
   // ── 点击外部退出录入 ──────────────────────────────────────────────────────
   useEffect(() => {
@@ -297,11 +407,22 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
   }, [recording, cancelRecording]);
 
   // ── 解析已绑定的快捷键字符串为 token 列表 ─────────────────────────────────
-  const parsedKeys = value ? value.split('+') : [];
+  const parsedDoubleMod = parseDoubleTapModifier(value || '');
+  const parsedKeys = parsedDoubleMod ? ['Double', parsedDoubleMod] : (value ? value.split('+') : []);
 
   // ── 渲染物理键帽簇 ────────────────────────────────────────────────────────
   const renderKeys = (keys: string[]) => {
     if (keys.length === 0) return null;
+
+    if (keys.length === 2 && keys[0] === 'Double' && DOUBLE_TAP_MODIFIERS.has(keys[1])) {
+      return (
+        <span className="hotkey-recorder__keys">
+          <kbd className="hotkey-recorder__key">
+            {t('hotkey.doubleTapDisplay', 'Double {{key}}', { key: keys[1] })}
+          </kbd>
+        </span>
+      );
+    }
 
     return (
       <span className="hotkey-recorder__keys">
@@ -316,7 +437,12 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
   };
 
   const defaultPlaceholder = placeholder ?? t('capture.pressToBind', 'Press any key combination...');
-  const recordingPlaceholder = t('hotkey.pressKeys', 'Press a key or combination...');
+  const recordingPlaceholder = doubleTapAllowed
+    ? t('hotkey.pressKeysOrDoubleTap', 'Press combo or double-tap Ctrl/Alt/Shift...')
+    : t('hotkey.pressKeys', 'Press a key or combination...');
+  const formattedAccessibleValue = parsedDoubleMod
+    ? t('hotkey.doubleTapDisplay', 'Double {{key}}', { key: parsedDoubleMod })
+    : (value || defaultPlaceholder);
 
   return (
     <div ref={containerRef} className="hotkey-recorder-wrap">
@@ -338,15 +464,19 @@ export const HotkeyRecorder: FC<HotkeyRecorderProps> = ({ value, onChange, place
         aria-labelledby={!ariaLabel && a11y.labelledBy ? `${a11y.labelledBy} ${id}-value` : undefined}
         aria-describedby={a11y.describedBy}
         aria-label={ariaLabel
-          ? `${ariaLabel}: ${recording ? recordingPlaceholder : (value || defaultPlaceholder)}`
-          : a11y.labelledBy ? undefined : (value || defaultPlaceholder)}
+          ? `${ariaLabel}: ${recording ? recordingPlaceholder : formattedAccessibleValue}`
+          : a11y.labelledBy ? undefined : formattedAccessibleValue}
       >
         <span id={`${id}-value`} className="sr-only">
-          {recording ? recordingPlaceholder : (value || defaultPlaceholder)}
+          {recording ? recordingPlaceholder : formattedAccessibleValue}
         </span>
         <span aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center' }}>
           {recording ? (
-            activeKeys.length > 0 ? renderKeys(activeKeys) : (
+            activeKeys.length > 0 ? renderKeys(activeKeys) : waitingSecondTapMod ? (
+              <span className="hotkey-recorder__placeholder">
+                {t('hotkey.tapAgainToDouble', 'Tap {{key}} again...', { key: waitingSecondTapMod })}
+              </span>
+            ) : (
               <span className="hotkey-recorder__placeholder">{recordingPlaceholder}</span>
             )
           ) : (

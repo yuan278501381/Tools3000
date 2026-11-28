@@ -1795,7 +1795,11 @@
     "pressKeys": "키 또는 단축키 조합을 누르세요...",
     "bindFailed": "이 단축키를 적용할 수 없습니다",
     "clearBinding": "단축키 바인딩 지우기",
-    "needModifier": "문자 및 기호 키는 Ctrl, Alt 또는 Win 키와 함께 사용해야 합니다"
+    "needModifier": "문자 및 기호 키는 Ctrl, Alt 또는 Win 키와 함께 사용해야 합니다",
+    "doubleTapDisplay": "{{key}} 두 번 누르기",
+    "pressKeysOrDoubleTap": "조합 키 또는 Ctrl/Alt/Shift 두 번 누르기...",
+    "tapAgainToDouble": "{{key}} 키를 한 번 더 누르세요...",
+    "autoYieldedSpotlightDoubleCtrl": "새 Ctrl 두 번 누르기 단축키와 충돌하지 않도록 마우스 스포트라이트의 Ctrl 두 번 누르기 실행을 자동으로 껐습니다"
   },
   "search": {
     "title": "초고속 파일 검색",

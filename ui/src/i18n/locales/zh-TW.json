@@ -1795,7 +1795,11 @@
     "pressKeys": "請按下按鍵或組合鍵...",
     "bindFailed": "無法套用此快速鍵",
     "clearBinding": "清除快速鍵綁定",
-    "needModifier": "字母與符號鍵請搭配 Ctrl、Alt 或 Win 使用"
+    "needModifier": "字母與符號鍵請搭配 Ctrl、Alt 或 Win 使用",
+    "doubleTapDisplay": "連按兩下 {{key}}",
+    "pressKeysOrDoubleTap": "按下組合鍵，或連按兩下 Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "再按一次 {{key}} 設為連按兩下...",
+    "autoYieldedSpotlightDoubleCtrl": "已自動關閉滑鼠聚光燈的連按兩下 Ctrl 觸發，避免與新快捷鍵衝突"
   },
   "search": {
     "title": "快速檔案搜尋",

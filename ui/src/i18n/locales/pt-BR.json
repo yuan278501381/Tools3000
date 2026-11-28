@@ -1795,7 +1795,11 @@
     "pressKeys": "Pressione uma tecla ou combinação...",
     "bindFailed": "Não foi possível aplicar este atalho",
     "clearBinding": "Limpar atalho",
-    "needModifier": "Letras e símbolos precisam ser combinados com Ctrl, Alt ou Win"
+    "needModifier": "Letras e símbolos precisam ser combinados com Ctrl, Alt ou Win",
+    "doubleTapDisplay": "Duplo {{key}}",
+    "pressKeysOrDoubleTap": "Pressione atalho ou duplo Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "Pressione {{key}} novamente...",
+    "autoYieldedSpotlightDoubleCtrl": "O duplo Ctrl do Holofote do Mouse foi desativado automaticamente para evitar conflito com seu novo atalho"
   },
   "search": {
     "title": "Pesquisa rápida de arquivos",

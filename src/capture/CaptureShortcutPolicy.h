@@ -73,6 +73,7 @@ enum class CaptureShortcutAction {
     UndoMarkup,                  // Ctrl+Z：撤销
     RedoMarkup,                  // Ctrl+Y / Ctrl+Shift+Z：重做
     ClearAllMarkup,              // Ctrl+Shift+Delete / Ctrl+Shift+Back：清空全部标注
+    ExtractTextFromSelection,    // Ctrl+O / Ctrl+Shift+O：识别当前选区文字 (OCR)
     PinSelection,                // Ctrl+T：贴图置顶
     TranslateSelection,          // Ctrl+Shift+T：原地贴图并原位翻译
     SaveSelectionAs,             // Ctrl+S：另存为图片文件
@@ -298,6 +299,10 @@ public:
                 return out;
             }
             if (hasSelection && isScreenshotMode) {
+                if (vk == 'O') {
+                    out.action = CaptureShortcutAction::ExtractTextFromSelection;
+                    return out;
+                }
                 if (vk == 'T') {
                     out.action = shift
                         ? CaptureShortcutAction::TranslateSelection

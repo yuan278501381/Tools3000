@@ -1795,7 +1795,11 @@
     "pressKeys": "Press a key or combination...",
     "bindFailed": "Could not apply this hotkey",
     "clearBinding": "Clear hotkey binding",
-    "needModifier": "Letters and symbols must be used with Ctrl, Alt, or Win"
+    "needModifier": "Letters and symbols must be used with Ctrl, Alt, or Win",
+    "doubleTapDisplay": "Double {{key}}",
+    "pressKeysOrDoubleTap": "Press combo or double-tap Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "Tap {{key}} again...",
+    "autoYieldedSpotlightDoubleCtrl": "Disabled Mouse Spotlight Double-Ctrl trigger to avoid conflict with your new Double Ctrl hotkey"
   },
   "search": {
     "title": "Quick file search",

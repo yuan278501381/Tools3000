@@ -431,13 +431,27 @@ Type: files; Name: "{app}\*gtest*.dll"
 Type: files; Name: "{app}\*gmock*.dll"
 Type: files; Name: "{app}\Plugin_*.dll"
 Type: files; Name: "{app}\Tools3000Tests.*"
-; 覆盖升级时顺带清理历史版本遗留的 6 个 0 引用冗余 DLL
+; 覆盖升级时清理历史版本遗留的带旧哈希前端静态资源（避免反复升级累积数十 MB 过期 JS/CSS）
+Type: filesandordirs; Name: "{app}\ui\assets"
+; 覆盖升级时顺带清理历史版本遗留的 0 引用冗余 DLL（经 PE 导入/延迟导入表可达闭包裁除）
 Type: files; Name: "{app}\WebView2Loader.dll"
 Type: files; Name: "{app}\vccorlib140.dll"
 Type: files; Name: "{app}\msvcp140_1.dll"
 Type: files; Name: "{app}\msvcp140_2.dll"
 Type: files; Name: "{app}\msvcp140_codecvt_ids.dll"
 Type: files; Name: "{app}\vcruntime140_threads.dll"
+Type: files; Name: "{app}\libprotoc.dll"
+Type: files; Name: "{app}\libprotobuf-lite.dll"
+Type: files; Name: "{app}\avfilter-11.dll"
+Type: files; Name: "{app}\opencv_calib3d4.dll"
+Type: files; Name: "{app}\opencv_stitching4.dll"
+Type: files; Name: "{app}\opencv_features2d4.dll"
+Type: files; Name: "{app}\opencv_videoio4.dll"
+Type: files; Name: "{app}\opencv_video4.dll"
+Type: files; Name: "{app}\opencv_ml4.dll"
+Type: files; Name: "{app}\opencv_flann4.dll"
+Type: files; Name: "{app}\opencv_highgui4.dll"
+Type: files; Name: "{app}\turbojpeg.dll"
 
 [UninstallDelete]
 Type: files; Name: "{autodesktop}\Tools3000.lnk"

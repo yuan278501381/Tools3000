@@ -132,6 +132,7 @@ inline std::wstring toolbarButtonKeyboardShortcut(const ToolbarButton& button) {
         case ToolbarCommand::ToggleCornerRadius: return L"[ / ]";
         case ToolbarCommand::SideCycleAspectRatio: return L"Shift+1..5";
         case ToolbarCommand::ToggleBeautyShell: return L"B";
+        case ToolbarCommand::ExtractText: return L"Ctrl+O";
         case ToolbarCommand::Translate: return L"Ctrl+Shift+T";
         case ToolbarCommand::Undo: return L"Ctrl+Z";
         case ToolbarCommand::Redo: return L"Ctrl+Y";

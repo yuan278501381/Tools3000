@@ -7606,3 +7606,128 @@ TEST(ResilientModelDownloaderTest, UrlHostContentRangeWatchdogAndRegionOrder) {
     EXPECT_EQ(TranslationService::formatProviderShortName("edge_free", true), "Edge 翻译");
     EXPECT_EQ(TranslationService::formatProviderShortName("google_free", false), "Google Translate");
 }
+
+#include "core/hotkey/ModifierDoubleTapDetector.h"
+
+TEST(HotkeyDoubleTapTest, StateMachineGuardsAndHotkeyDefSerializationAndYield) {
+    using namespace tools3000::core;
+
+    // 1. HotkeyDef 序列化 / 反序列化 / 安全矩阵（仅放行 Ctrl / Alt / Shift 双击，拒绝 Win 与普通键双击）
+    {
+        auto dCtrl = HotkeyDef::fromString("Double+Ctrl");
+        ASSERT_TRUE(dCtrl.has_value());
+        EXPECT_TRUE(dCtrl->isDoubleTap());
+        EXPECT_FALSE(dCtrl->isEmpty());
+        EXPECT_TRUE(dCtrl->isSafe());
+        EXPECT_EQ(dCtrl->modifiers, ModKey::Ctrl);
+        EXPECT_EQ(dCtrl->virtualKey, 0u);
+        EXPECT_EQ(dCtrl->toString(), "Double+Ctrl");
+        EXPECT_TRUE(HotkeyManager::canFallbackToHook(*dCtrl));
+
+        auto aliasCtrl = HotkeyDef::fromString("ctrl + ctrl");
+        ASSERT_TRUE(aliasCtrl.has_value());
+        EXPECT_EQ(*aliasCtrl, *dCtrl);
+
+        auto dAlt = HotkeyDef::fromString("Double+Alt");
+        ASSERT_TRUE(dAlt.has_value());
+        EXPECT_EQ(dAlt->toString(), "Double+Alt");
+        EXPECT_TRUE(dAlt->isSafe());
+
+        auto dShift = HotkeyDef::fromString("Shift+Shift");
+        ASSERT_TRUE(dShift.has_value());
+        EXPECT_EQ(dShift->toString(), "Double+Shift");
+        EXPECT_TRUE(dShift->isSafe());
+
+        // 非法双击：Win / 普通字符 / 多修饰键必须拒绝
+        EXPECT_FALSE(HotkeyDef::fromString("Double+Win").has_value());
+        EXPECT_FALSE(HotkeyDef::fromString("Double+A").has_value());
+        EXPECT_FALSE(HotkeyDef::fromString("Double+Ctrl+Alt").has_value());
+        HotkeyDef forgedWin{ModKey::Win, 0, true};
+        EXPECT_FALSE(forgedWin.isDoubleTap());
+        EXPECT_FALSE(forgedWin.isSafe());
+    }
+
+    // 2. ModifierDoubleTapDetector 全边界防误触验证
+    ModifierDoubleTapDetector det;
+
+    // 2.1 正常双击 Ctrl (按下 60ms -> 松开 120ms -> 再按)
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 1000), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 1060), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 1180), DoubleTapModifier::Ctrl);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 1230), DoubleTapModifier::None);
+
+    // 2.2 硬件 Auto-Repeat 与长按 (>280ms) 绝不误触发
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, true, false, 2000), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, true, false, 2150), DoubleTapModifier::None); // auto-repeat
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, true, false, 2320), DoubleTapModifier::None); // >260ms abort
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, false, true, 2350), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, true, false, 2450), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LMENU, false, true, 2500), DoubleTapModifier::None);
+
+    // 2.3 杂键污染熔断 (Ctrl+C -> 松开 Ctrl -> 再按 Ctrl) 绝不误触
+    det.reset();
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 3000), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent('C', true, false, 3040), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent('C', false, true, 3070), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 3090), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 3180), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 3230), DoubleTapModifier::None);
+
+    // 2.4 鼠标点击/滚轮污染熔断 (Ctrl+点击 -> 松开 -> 再按 Ctrl) 绝不误触
+    det.reset();
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 4000), DoubleTapModifier::None);
+    det.onMouseActivity();
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 4050), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 4150), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 4200), DoubleTapModifier::None);
+
+    // 2.5 多修饰键组合 (Ctrl+Shift) 与 AltGr 伴生假 LCtrl 隔离
+    det.reset();
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 5000), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LSHIFT, true, false, 5030), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LSHIFT, false, true, 5060), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 5080), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 5180), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 5210), DoubleTapModifier::None);
+
+    // 忽略 AltGr 伴生假 LCtrl
+    det.reset();
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 6000, DoubleTapConstants::kAllMask, true),
+              DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, false, true, 6050, DoubleTapConstants::kAllMask, true),
+              DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LCONTROL, true, false, 6150, DoubleTapConstants::kAllMask, true),
+              DoubleTapModifier::None);
+
+    // 2.6 间隔超窗 (>380ms) 或未启用掩码时不触发，启用 Shift 掩码正常触发
+    det.reset();
+    EXPECT_EQ(det.onKeyEvent(VK_RSHIFT, true, false, 7000, DoubleTapConstants::kShiftMask), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_RSHIFT, false, true, 7050, DoubleTapConstants::kShiftMask), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_RSHIFT, true, false, 7500, DoubleTapConstants::kShiftMask), DoubleTapModifier::None); // 450ms > 380ms
+    EXPECT_EQ(det.onKeyEvent(VK_RSHIFT, false, true, 7560, DoubleTapConstants::kShiftMask), DoubleTapModifier::None);
+    EXPECT_EQ(det.onKeyEvent(VK_LSHIFT, true, false, 7680, DoubleTapConstants::kShiftMask), DoubleTapModifier::Shift);
+    EXPECT_EQ(det.onKeyEvent(VK_LSHIFT, false, true, 7730, DoubleTapConstants::kShiftMask), DoubleTapModifier::None);
+
+    // 3. 依赖倒置外部双击冲突检查与自动让位回调验证
+    auto& hm = HotkeyManager::instance();
+    bool spotlightDoubleCtrlEnabled = true;
+    hm.setExternalDoubleTapConflictChecker([&](ModKey mod) -> std::string {
+        return (mod == ModKey::Ctrl && spotlightDoubleCtrlEnabled) ? "Spotlight (Double+Ctrl)" : "";
+    });
+    hm.setExternalDoubleTapYieldHandler([&](ModKey mod) -> bool {
+        if (mod == ModKey::Ctrl && spotlightDoubleCtrlEnabled) {
+            spotlightDoubleCtrlEnabled = false;
+            return true;
+        }
+        return false;
+    });
+    auto conflictBefore = hm.checkConflict(HotkeyDef{ModKey::Ctrl, 0, true}, "Toggle Search");
+    EXPECT_TRUE(conflictBefore.hasConflict);
+    EXPECT_EQ(conflictBefore.conflictType, "internal");
+    EXPECT_TRUE(hm.yieldExternalDoubleTapIfNeeded(ModKey::Ctrl));
+    EXPECT_FALSE(spotlightDoubleCtrlEnabled);
+    auto conflictAfter = hm.checkConflict(HotkeyDef{ModKey::Ctrl, 0, true}, "Toggle Search");
+    EXPECT_FALSE(conflictAfter.hasConflict);
+    hm.setExternalDoubleTapConflictChecker(nullptr);
+    hm.setExternalDoubleTapYieldHandler(nullptr);
+}

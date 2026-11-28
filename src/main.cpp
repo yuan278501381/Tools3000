@@ -2096,8 +2096,37 @@ void initializeSubsystems(HWND hwnd, bool preloadSettings) {
     tools3000::core::KeyboardHook::instance().setKeyboardActivityCallback([](DWORD vk, WPARAM wp) {
         tools3000::ui::SpotlightOverlay::instance().onKeyboardEvent(vk, wp);
     });
+    // 依赖倒置：向核心 HotkeyManager 注入聚光灯双击 Ctrl 冲突检查与一键自动让位处理器
+    tools3000::core::HotkeyManager::instance().setExternalDoubleTapConflictChecker(
+        [](tools3000::core::ModKey mod) -> std::string {
+            if (mod != tools3000::core::ModKey::Ctrl) return {};
+            const auto s = tools3000::ui::SpotlightOverlay::instance().getSettings();
+            if (s.enabled && s.triggerDoubleCtrl) {
+                return "Spotlight (Double+Ctrl)";
+            }
+            return {};
+        });
+    tools3000::core::HotkeyManager::instance().setExternalDoubleTapYieldHandler(
+        [](tools3000::core::ModKey mod) -> bool {
+            if (mod != tools3000::core::ModKey::Ctrl) return false;
+            auto s = tools3000::ui::SpotlightOverlay::instance().getSettings();
+            if (!s.enabled || !s.triggerDoubleCtrl) return false;
+            s.triggerDoubleCtrl = false;
+            tools3000::ui::SpotlightOverlay::instance().updateSettings(s);
+            tools3000::core::ConfigManager::instance().set("/spotlight/triggerDoubleCtrl", false);
+            tools3000::core::MessageBridge::instance().pushEvent(
+                "spotlight:stateChanged", {{"enabled", s.enabled}, {"triggerDoubleCtrl", false}});
+            LOG_INFO("[HotkeyDoubleTap] Auto-disabled Spotlight double-Ctrl trigger to yield to global hotkey");
+            return true;
+        });
     tools3000::core::MouseHook::instance().setPreInterceptor(
         [](int /*nCode*/, WPARAM wParam, const MSLLHOOKSTRUCT& data) -> bool {
+            // 鼠标任意按键点击或滚轮立即通过 1ns 原子标记熔断修饰键双击状态机，防 Ctrl+点击/滚轮误触
+            if (wParam == WM_LBUTTONDOWN || wParam == WM_RBUTTONDOWN ||
+                wParam == WM_MBUTTONDOWN || wParam == WM_XBUTTONDOWN ||
+                wParam == WM_MOUSEWHEEL) {
+                tools3000::core::KeyboardHook::instance().notifyMouseActivity();
+            }
             if (wParam != WM_MOUSEWHEEL) {
                 return false;
             }

@@ -1795,7 +1795,11 @@
     "pressKeys": "请按下按键或组合键...",
     "bindFailed": "无法应用此快捷键",
     "clearBinding": "清除快捷键绑定",
-    "needModifier": "字母与符号键请搭配 Ctrl、Alt 或 Win 使用"
+    "needModifier": "字母与符号键请搭配 Ctrl、Alt 或 Win 使用",
+    "doubleTapDisplay": "双击 {{key}}",
+    "pressKeysOrDoubleTap": "按下组合键，或双击 Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "再按一次 {{key}} 设为双击...",
+    "autoYieldedSpotlightDoubleCtrl": "已自动关闭鼠标聚光灯的双击 Ctrl 触发，避免与新快捷键冲突"
   },
   "search": {
     "title": "快速文件搜索",

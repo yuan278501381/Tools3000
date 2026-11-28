@@ -385,6 +385,16 @@ function App() {
     void bridgeRequest<PluginStatus[]>('plugins.getAll').then(applyPluginsSnapshot).catch(console.error);
   });
 
+  useBridgeEvent('hotkey:spotlightDoubleCtrlYielded', () => {
+    toast.info(
+      t(
+        'hotkey.autoYieldedSpotlightDoubleCtrl',
+        'Disabled Mouse Spotlight Double-Ctrl trigger to avoid conflict with your new Double Ctrl hotkey',
+      ),
+      { id: 'hotkey-spotlight-double-ctrl-yield' },
+    );
+  });
+
   const activePlugins = useMemo(() => {
     if (plugins.length > 0) {
       return new Set(

@@ -2903,7 +2903,7 @@ void MessageBridge::registerBuiltinHandlers() {
                 return {{"success", false}, {"error", "could not disable hotkey"}};
             }
             if (!ConfigManager::instance().set("/hotkeys/" + name, "")) {
-                if (previous->def.virtualKey != 0) manager.rebindHotkey(name, previous->def);
+                if (!previous->def.isEmpty()) manager.rebindHotkey(name, previous->def);
                 return {{"success", false}, {"error", "failed to persist hotkey"},
                         {"name", name}, {"shortcut", previous->def.toString()}};
             }
@@ -2932,7 +2932,7 @@ void MessageBridge::registerBuiltinHandlers() {
                     {"name", name}, {"shortcut", previous->def.toString()}};
         }
         if (!ConfigManager::instance().set("/hotkeys/" + name, parsed->toString())) {
-            const bool rolledBack = previous->def.virtualKey == 0
+            const bool rolledBack = previous->def.isEmpty()
                 ? manager.clearHotkey(name)
                 : manager.rebindHotkey(name, previous->def);
             if (!rolledBack) {
@@ -2941,8 +2941,22 @@ void MessageBridge::registerBuiltinHandlers() {
             return {{"success", false}, {"error", "failed to persist hotkey"},
                     {"name", name}, {"shortcut", previous->def.toString()}};
         }
+        bool autoDisabledSpotlightDoubleCtrl = false;
+        if (parsed->isDoubleTap() && parsed->modifiers == ModKey::Ctrl) {
+            autoDisabledSpotlightDoubleCtrl = manager.yieldExternalDoubleTapIfNeeded(ModKey::Ctrl);
+            if (autoDisabledSpotlightDoubleCtrl) {
+                MessageBridge::instance().pushEvent(
+                    "hotkey:spotlightDoubleCtrlYielded",
+                    {{"hotkeyName", name}, {"shortcut", parsed->toString()}});
+            }
+        }
         syncDialogScopedHotkeyMirror(name, parsed->toString());
-        return {{"success", true}, {"name", name}, {"shortcut", parsed->toString()}};
+        return {
+            {"success", true},
+            {"name", name},
+            {"shortcut", parsed->toString()},
+            {"autoDisabledSpotlightDoubleCtrl", autoDisabledSpotlightDoubleCtrl}
+        };
     });
     registerHandler("hotkey.setPaused", [](const json& params) -> json {
         const bool paused = params.value("paused", false);

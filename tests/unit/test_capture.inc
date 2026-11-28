@@ -8979,13 +8979,38 @@ TEST(CaptureShortcutPolicyTest, ZeroConflictRoutingAndShiftTapStateMachine) {
         EXPECT_EQ(dInc.intDelta, 1);
     }
 
-    // 7. 区域录屏框选模式 (RecordRegion) 严格隔离截图标注单键
+    // 7. 区域录屏框选模式 (RecordRegion) 严格隔离截图标注单键与截图 OCR 快捷键
     {
         CaptureKeyContext recordCtx = selectedCtx;
         recordCtx.mode = OverlayMode::RecordRegion;
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'R', false, false, false).action, CaptureShortcutAction::None);
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'B', false, false, false).action, CaptureShortcutAction::None);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'O', true, false, false).action, CaptureShortcutAction::None);
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'W', false, false, false).action, CaptureShortcutAction::NudgeSelectionOrElement);
+    }
+
+    // 8. 截图界面内 Ctrl+O / Ctrl+Shift+O 一键触发当前选区 OCR 识别，零冲突共存于单键 O (椭圆)
+    {
+        // 已选区态：Ctrl+O 与 Ctrl+Shift+O 均触发 ExtractTextFromSelection
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::ExtractTextFromSelection);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', true, true, false).action,
+                  CaptureShortcutAction::ExtractTextFromSelection);
+        // 单键 O 仍保持切换椭圆标注工具，零回归
+        auto dOval = CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', false, false, false);
+        EXPECT_EQ(dOval.action, CaptureShortcutAction::ToggleMarkupTool);
+        EXPECT_EQ(dOval.tool, MarkupTool::Ellipse);
+        // 无选区态与文本编辑态严格不误触
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectingCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::None);
+        CaptureKeyContext textEditCtx = selectedCtx;
+        textEditCtx.editingText = true;
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(textEditCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::DelegateToTextEditor);
+        // 无障碍快捷键元数据同步为 Ctrl+O
+        ToolbarButton ocrBtn{};
+        ocrBtn.command = ToolbarCommand::ExtractText;
+        EXPECT_EQ(toolbarButtonKeyboardShortcut(ocrBtn), L"Ctrl+O");
     }
 }
 

@@ -43,19 +43,26 @@ inline ModKey operator|(ModKey a, ModKey b) {
 /// 快捷键定义
 struct TOOLS3000CORE_API HotkeyDef {
     ModKey modifiers = ModKey::None;
-    UINT virtualKey  = 0;            // VK_xxx 虚拟键码
+    UINT virtualKey  = 0;            // VK_xxx 虚拟键码（双击修饰键时为 0）
+    bool doubleTap   = false;        // true 表示双击单一修饰键 (Double+Ctrl / Double+Alt / Double+Shift)
 
-    /// 人类可读的字符串表示 (如 "Ctrl+Shift+A")
+    /// 是否为合法的修饰键双击热键
+    bool isDoubleTap() const noexcept;
+
+    /// 是否为空（未绑定）
+    bool isEmpty() const noexcept;
+
+    /// 人类可读的字符串表示 (如 "Ctrl+Shift+A" 或 "Double+Ctrl")
     std::string toString() const;
 
-    /// 从字符串解析 (如 "Ctrl+Shift+A")
+    /// 从字符串解析 (如 "Ctrl+Shift+A" / "Double+Ctrl" / "Ctrl+Ctrl")
     static std::optional<HotkeyDef> fromString(const std::string& str);
 
     /// 检查快捷键是否符合四级安全矩阵标准（杜绝打字劫持灾难）
     bool isSafe() const;
 
     bool operator==(const HotkeyDef& other) const {
-        return modifiers == other.modifiers && virtualKey == other.virtualKey;
+        return modifiers == other.modifiers && virtualKey == other.virtualKey && doubleTap == other.doubleTap;
     }
 };
 
@@ -167,6 +174,11 @@ public:
     /// 前台窗口切换通知（事件驱动，精准按单条热键增量卸下/重挂，不干扰无关热键）
     void updateForegroundProcess(const std::string& processName);
 
+    /// 依赖倒置扩展点：由宿主注册外部模块（如鼠标聚光灯双击 Ctrl）的双击冲突探测与自动让位回调
+    void setExternalDoubleTapConflictChecker(std::function<std::string(ModKey)> checker);
+    void setExternalDoubleTapYieldHandler(std::function<bool(ModKey)> handler);
+    bool yieldExternalDoubleTapIfNeeded(ModKey mod);
+
 private:
     HotkeyManager() = default;
     HotkeyManager(const HotkeyManager&) = delete;
@@ -175,6 +187,7 @@ private:
     int generateId();
     bool shouldSuspendForAppLocked(const std::string& name) const;
     void syncAppExclusionsLocked();
+    std::string checkExternalDoubleTapConflictLocked(const HotkeyDef& def) const;
 
     HWND m_hwnd = nullptr;
     std::atomic<DWORD> m_ownerThreadId{0};
@@ -183,6 +196,8 @@ private:
     std::vector<std::string> m_globalExcludedApps;
     std::unordered_map<std::string, std::vector<std::string>> m_perHotkeyExcludedApps;
     std::string m_activeForegroundProcessLower;
+    std::function<std::string(ModKey)> m_externalDoubleTapConflictChecker;
+    std::function<bool(ModKey)> m_externalDoubleTapYieldHandler;
     mutable std::mutex m_mutex;
     std::atomic<int> m_nextId{1};
     std::atomic<bool> m_paused{false};
