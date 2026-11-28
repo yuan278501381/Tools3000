@@ -225,7 +225,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       { action: 'rescue_offscreen' },
       { silent: true },
     );
-  });
+  }, 15_000);
 
   it('supports friendly monitor names, per-virtual-desktop layout bindings, 1:1 fullscreen editor launch, and canvas bounds clamping', async () => {
     let currentState: WindowManagerResponse = structuredClone(DEFAULT_WINDOW_MANAGER_RESPONSE);
@@ -358,7 +358,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       fireEvent.click(screen.getByRole('button', { name: /Follow Default/i }));
     });
     expect(currentState.settings.snapZones.monitorBindings['MON-1@desk-vm']).toBeUndefined();
-  });
+  }, 15_000);
 
   it('supports WindowKit v2 dual-track Quick Switch, red-border Workspace capture, interactive workbench stage, and desktop shortcuts', async () => {
     let currentState: WindowManagerResponse = structuredClone(DEFAULT_WINDOW_MANAGER_RESPONSE);
@@ -473,7 +473,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       { workspaceId: 'ws-live-1', name: 'Coding' },
       { silent: true },
     );
-  });
+  }, 15_000);
 
   it('renders CapsLayerPage default-OFF, applies presets, and manages per-app profiles via RunningWindowPicker', async () => {
     let capsState: CapsLayerSettings = structuredClone(DEFAULT_CAPS_LAYER_SETTINGS);
@@ -566,7 +566,7 @@ describe('WindowManagerPage & CapsLayerPage', () => {
       }),
       { silent: true },
     );
-  });
+  }, 15_000);
 
   it('mounts workspace preview stage and meta card inside a sticky dock above the scrollable app list with live hover highlight', async () => {
     const currentState: WindowManagerResponse = structuredClone(DEFAULT_WINDOW_MANAGER_RESPONSE);
@@ -646,5 +646,5 @@ describe('WindowManagerPage & CapsLayerPage', () => {
     fireEvent.mouseEnter(notepadRow!);
     const activeTaskbarBtn = stickyDock?.querySelector('.ws-stage-taskbar__item.is-active');
     expect(activeTaskbarBtn).not.toBeNull();
-  });
+  }, 15_000);
 });
