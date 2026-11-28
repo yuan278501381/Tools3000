@@ -91,10 +91,17 @@ public:
     /// 状态查询
     bool isCompositorReady() const noexcept;
     bool isVisible() const noexcept;
+    bool hasPresentSurface() const noexcept;
     HWND hwnd() const noexcept;
     OverlayPresentTier presentTier() const noexcept;
     int maxTextureDimension() const noexcept;
     bool isSoftwareWarp() const noexcept;
+
+    /// 默认滞后表面释放（3s）与 Compositor 释放（60s）常量，以及单测专用滞后释放覆盖接口
+    static constexpr uint32_t kDefaultLazySurfaceIdleReleaseMs = 3000u;
+    static constexpr uint32_t kDefaultLazyCompositorIdleReleaseMs = 60000u;
+    void setLazySurfaceIdleReleaseMsForTest(uint32_t releaseMs) noexcept;
+    uint32_t lazySurfaceIdleReleaseMs() const noexcept;
 
     /// 实证帧率与呈现遥测
     OverlayFrameMetrics getFrameMetrics() const;
@@ -191,9 +198,12 @@ protected:
     bool m_usingWarp = false;
     bool m_usingNoRedirectionBitmap = false;
     bool m_dcompNeedsCommit = false;
+    bool m_visualContentDetached = false;
     bool m_frameInProgress = false;
     bool m_lazyCompositor = false;
     std::chrono::steady_clock::time_point m_idleSince{};
+    std::atomic<int64_t> m_hiddenSinceMs{0};
+    std::atomic<uint32_t> m_lazySurfaceIdleReleaseMs{kDefaultLazySurfaceIdleReleaseMs};
     std::chrono::steady_clock::time_point m_oversizedSince{};
     std::chrono::steady_clock::time_point m_resetWindowStart{};
     int m_recentDeviceResets = 0;
@@ -202,6 +212,7 @@ protected:
     std::atomic<OverlayPresentTier> m_presentTier{OverlayPresentTier::None};
     std::atomic<bool> m_compositorReady{false};
     std::atomic<bool> m_hasDcompSurface{false};
+    std::atomic<bool> m_hasLiveSurface{false};
     MouseViewportRect m_currentViewport;
 
     mutable std::mutex m_baseMutex;

@@ -8979,13 +8979,38 @@ TEST(CaptureShortcutPolicyTest, ZeroConflictRoutingAndShiftTapStateMachine) {
         EXPECT_EQ(dInc.intDelta, 1);
     }
 
-    // 7. 区域录屏框选模式 (RecordRegion) 严格隔离截图标注单键
+    // 7. 区域录屏框选模式 (RecordRegion) 严格隔离截图标注单键与截图 OCR 快捷键
     {
         CaptureKeyContext recordCtx = selectedCtx;
         recordCtx.mode = OverlayMode::RecordRegion;
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'R', false, false, false).action, CaptureShortcutAction::None);
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'B', false, false, false).action, CaptureShortcutAction::None);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'O', true, false, false).action, CaptureShortcutAction::None);
         EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(recordCtx, 'W', false, false, false).action, CaptureShortcutAction::NudgeSelectionOrElement);
+    }
+
+    // 8. 截图界面内 Ctrl+O / Ctrl+Shift+O 一键触发当前选区 OCR 识别，零冲突共存于单键 O (椭圆)
+    {
+        // 已选区态：Ctrl+O 与 Ctrl+Shift+O 均触发 ExtractTextFromSelection
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::ExtractTextFromSelection);
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', true, true, false).action,
+                  CaptureShortcutAction::ExtractTextFromSelection);
+        // 单键 O 仍保持切换椭圆标注工具，零回归
+        auto dOval = CaptureShortcutPolicy::resolveKeyDown(selectedCtx, 'O', false, false, false);
+        EXPECT_EQ(dOval.action, CaptureShortcutAction::ToggleMarkupTool);
+        EXPECT_EQ(dOval.tool, MarkupTool::Ellipse);
+        // 无选区态与文本编辑态严格不误触
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(selectingCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::None);
+        CaptureKeyContext textEditCtx = selectedCtx;
+        textEditCtx.editingText = true;
+        EXPECT_EQ(CaptureShortcutPolicy::resolveKeyDown(textEditCtx, 'O', true, false, false).action,
+                  CaptureShortcutAction::DelegateToTextEditor);
+        // 无障碍快捷键元数据同步为 Ctrl+O
+        ToolbarButton ocrBtn{};
+        ocrBtn.command = ToolbarCommand::ExtractText;
+        EXPECT_EQ(toolbarButtonKeyboardShortcut(ocrBtn), L"Ctrl+O");
     }
 }
 
@@ -16919,8 +16944,8 @@ TEST(InPlaceTranslateEngineTest, AllOcrFixturesEndToEndTranslateAudit) {
 
             EXPECT_TRUE(renderRes.success) << "renderTranslatedCanvas failed on " << imgPathUtf8;
             EXPECT_EQ(renderRes.translatedCanvas.size(), src.size()) << "canvas size mismatch on " << imgPathUtf8;
-            EXPECT_GT(renderRes.renderedCount, 0) << "rendered 0 paragraphs on " << imgPathUtf8;
-            renderedCount = renderRes.renderedCount;
+            EXPECT_GT(renderRes.renderedCount, 0u) << "rendered 0 paragraphs on " << imgPathUtf8;
+            renderedCount = static_cast<int>(renderRes.renderedCount);
             st.totalRendered += renderedCount;
             if (renderRes.success && renderedCount > 0) {
                 st.translatedImages += 1;
@@ -17529,4 +17554,106 @@ TEST(DeepOcrStageFeedbackTest, AllFiveStagesFormattedAndCpuFallbackEmitsStageCal
     }
     EXPECT_TRUE(sawModelLoading);
     EXPECT_TRUE(sawCpuInference);
+}
+
+TEST(OcrWorkerMemoryGovernanceTest, AdaptiveIdleTimeoutAndSoftTrimSchedule) {
+    using namespace tools3000::worker;
+    constexpr uint64_t kGiB = 1024ULL * 1024ULL * 1024ULL;
+
+    // 1. 验证默认超时与软修剪常量已收紧至 180s / 45s / 低内存或 RDP 60s
+    EXPECT_EQ(Constants::kDefaultOcrWorkerIdleSeconds, 180);
+    EXPECT_EQ(Constants::kDefaultOcrWorkerSoftTrimSeconds, 45);
+    EXPECT_EQ(Constants::kLowRamOrRdpOcrWorkerIdleSeconds, 60);
+    EXPECT_EQ(Constants::kMaxDirectMlDetBuckets, 1u);
+    EXPECT_EQ(Constants::kMaxDirectMlRecBuckets, 2u);
+
+    // 2. 验证物理内存与 RDP 自适应策略，以及显式测试覆盖最高优先级
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(8ULL * kGiB, false, 0), 60);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(16ULL * kGiB - 256ULL * 1024ULL * 1024ULL, false, 0), 60);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(16ULL * kGiB, false, 0), 60);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(32ULL * kGiB, true, 0), 60);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(64ULL * kGiB, true, 0), 60);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(24ULL * kGiB, false, 0), 180);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(32ULL * kGiB, false, 0), 180);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(8ULL * kGiB, true, 12), 12);
+    EXPECT_EQ(resolveAdaptiveOcrWorkerIdleSeconds(32ULL * kGiB, false, 300), 300);
+
+    // 3. 验证两阶段保活与软修剪跳过规则（总退场时间绝不突破 idleSeconds）
+    const auto desktopSched = computeOcrWorkerIdleSchedule(180, 45);
+    EXPECT_TRUE(desktopSched.enableSoftTrim);
+    EXPECT_EQ(desktopSched.stage1Seconds, 45);
+    EXPECT_EQ(desktopSched.stage2Seconds, 135);
+    EXPECT_EQ(desktopSched.stage1Seconds + desktopSched.stage2Seconds, 180);
+
+    const auto lowRamSched = computeOcrWorkerIdleSchedule(60, 45);
+    EXPECT_TRUE(lowRamSched.enableSoftTrim);
+    EXPECT_EQ(lowRamSched.stage1Seconds, 45);
+    EXPECT_EQ(lowRamSched.stage2Seconds, 15);
+    EXPECT_EQ(lowRamSched.stage1Seconds + lowRamSched.stage2Seconds, 60);
+
+    const auto skipWhenSoftGe60 = computeOcrWorkerIdleSchedule(60, 60);
+    EXPECT_FALSE(skipWhenSoftGe60.enableSoftTrim);
+    EXPECT_EQ(skipWhenSoftGe60.stage1Seconds, 60);
+    EXPECT_EQ(skipWhenSoftGe60.stage2Seconds, 0);
+
+    const auto shortTestSched = computeOcrWorkerIdleSchedule(10, 45);
+    EXPECT_FALSE(shortTestSched.enableSoftTrim);
+    EXPECT_EQ(shortTestSched.stage1Seconds, 10);
+    EXPECT_EQ(shortTestSched.stage2Seconds, 0);
+}
+
+TEST(OcrWorkerMemoryGovernanceTest, DirectMlRecBucketLruEvictionPolicyAndCap) {
+    using namespace tools3000::worker;
+
+    std::array<bool, 4> active{false, false, false, false};
+    std::array<uint64_t, 4> lastUsed{0, 0, 0, 0};
+    uint64_t clock = 0;
+
+    auto touchBucket = [&](size_t slot) -> size_t {
+        size_t evicted = 4;
+        if (!active[slot]) {
+            const size_t victim = selectDirectMlLruEvictionSlot(
+                active, lastUsed, slot, Constants::kMaxDirectMlRecBuckets);
+            if (victim < 4) {
+                active[victim] = false;
+                lastUsed[victim] = 0;
+                evicted = victim;
+            }
+            active[slot] = true;
+        }
+        lastUsed[slot] = ++clock;
+        return evicted;
+    };
+
+    auto activeCount = [&]() -> size_t {
+        size_t cnt = 0;
+        for (bool b : active) {
+            if (b) ++cnt;
+        }
+        return cnt;
+    };
+
+    // 加载前两个桶 [1] 和 [2]：不发生淘汰
+    EXPECT_EQ(touchBucket(1), 4u);
+    EXPECT_EQ(activeCount(), 1u);
+    EXPECT_EQ(touchBucket(2), 4u);
+    EXPECT_EQ(activeCount(), 2u);
+
+    // 热复用 [1]：刷新时间戳为最新，不发生淘汰
+    EXPECT_EQ(touchBucket(1), 4u);
+    EXPECT_EQ(activeCount(), 2u);
+
+    // 新建 [3]：已满 2 个热桶，必须淘汰最久未用的 [2] 而保留刚刷新的 [1]
+    EXPECT_EQ(touchBucket(3), 2u);
+    EXPECT_EQ(activeCount(), 2u);
+    EXPECT_TRUE(active[1]);
+    EXPECT_FALSE(active[2]);
+    EXPECT_TRUE(active[3]);
+
+    // 再新建 [0]：[1] 比 [3] 更久未使用，淘汰 [1]，始终不超过 2 个活跃桶
+    EXPECT_EQ(touchBucket(0), 1u);
+    EXPECT_EQ(activeCount(), 2u);
+    EXPECT_TRUE(active[0]);
+    EXPECT_FALSE(active[1]);
+    EXPECT_TRUE(active[3]);
 }

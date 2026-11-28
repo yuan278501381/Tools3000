@@ -23,6 +23,18 @@ namespace tools3000::service::lifecycle {
 
 inline constexpr uint32_t kInvalidSessionId = 0xFFFFFFFFu;
 inline constexpr DWORD kGracefulStopWaitHintMs = 8000u;
+inline constexpr size_t kMinMainPipeWorkers = 2u;
+inline constexpr size_t kMaxMainPipeWorkers = 4u;
+inline constexpr size_t kCompatPipeWorkerCount = 2u;
+
+/// 计算常驻受限命名管道工作线程数：按硬件并发度 / 4 钳制在 [2, 4] 区间，
+/// 彻底收敛高核数机器上的 16~20 线程与内核栈常驻开销，同时保持搜索并发低延迟。
+[[nodiscard]] constexpr size_t computeMainPipeWorkerCount(unsigned int hardwareThreads) noexcept {
+    const size_t scaled = static_cast<size_t>(hardwareThreads / 4u);
+    return (scaled < kMinMainPipeWorkers)
+        ? kMinMainPipeWorkers
+        : ((scaled > kMaxMainPipeWorkers) ? kMaxMainPipeWorkers : scaled);
+}
 
 struct SessionDescriptor {
     uint32_t sessionId = 0;

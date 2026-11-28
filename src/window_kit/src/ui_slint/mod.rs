@@ -38,17 +38,19 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmQueryThumbnailSourceSize, DwmRegisterThumbnail, DwmUnregisterThumbnail,
     DwmUpdateThumbnailProperties, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
     DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowLongPtrW,
     GetWindowThreadProcessId, IsWindow, PostMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ASFW_ANY, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetWindowPos, ASFW_ANY, GWL_EXSTYLE, HWND_TOPMOST, MNC_CLOSE, SC_CONTEXTHELP, SC_KEYMENU,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_HELP, WM_MENUCHAR, WM_NCDESTROY, WM_SYSCOMMAND,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
@@ -93,7 +95,14 @@ pub struct QuickSwitchViewState {
     #[allow(dead_code)]
     pub dpi: u32,
     pub items: Vec<QuickSwitchRowData>,
+    /// 仅当列表内容真正发生变化（首次开窗/过滤词变化/关闭或增删项）时为 true；
+    /// 普通 Tab/上下键切项或悬停选行必须为 false，严禁重建 VecModel 触发行 TouchArea 重建抢焦点！
+    pub items_changed: bool,
     pub selected_index: i32,
+    pub selected_title: String,
+    pub selected_app_name: String,
+    pub selected_icon_rgba: Option<(u32, u32, Vec<u8>)>,
+    pub selected_is_pinned: bool,
     pub filter_text: String,
     pub search_visible: bool,
     pub search_locked: bool,
@@ -400,6 +409,10 @@ struct SlintWinPool {
     layout_hub: Option<LayoutHubWindow>,
     workspace_capture: Option<WorkspaceCaptureWindow>,
     workspace_progress: Option<WorkspaceProgressWindow>,
+    qs_visible: bool,
+    hub_visible: bool,
+    cap_visible: bool,
+    prog_visible: bool,
 }
 
 struct QsThumbState {
@@ -511,9 +524,151 @@ impl QsThumbState {
     }
 }
 
+/// QuickSwitch 冷开窗（首次创建 / 25s purge 后重建）延迟 Win32 HWND 初始化槽：
+/// Slint 1.19 + winit 0.30 在首次 show() 时延后至 about_to_wait 才真正创建 Win32 HWND，
+/// 必须在 HWND 物化的第一时刻补齐 WS_EX_TOOLWINDOW / HWND_TOPMOST / SC_KEYMENU 子类 / 聚焦 / DWM 缩略图。
+#[derive(Default)]
+struct QsPendingHwndInit {
+    needs_init: bool,
+    rect: RectI,
+    dark: bool,
+    subclassed_hwnd: isize,
+}
+
 thread_local! {
     static SLINT_WIN_POOL: RefCell<SlintWinPool> = RefCell::new(SlintWinPool::default());
     static QS_THUMB_STATE: RefCell<QsThumbState> = RefCell::new(QsThumbState::default());
+    static QS_PENDING_INIT: RefCell<QsPendingHwndInit> = RefCell::new(QsPendingHwndInit::default());
+}
+
+const QS_SYSKEY_SUBCLASS_ID: usize = 0x5433_5153;
+
+/// QuickSwitch 专用 Win32 子类钩子：彻底拦截 Alt 触发的系统菜单 (SC_KEYMENU) 与菜单字符蜂鸣 (WM_MENUCHAR)，
+/// 防止按住 Alt 连按 Tab 或松开 Alt 时 winit DefWindowProc 进入系统菜单模态循环抢焦！
+unsafe extern "system" fn qs_syskey_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    uid_subclass: usize,
+    _ref_data: usize,
+) -> LRESULT {
+    match msg {
+        WM_SYSCOMMAND => {
+            let cmd = (wparam.0 as u32) & 0xFFF0;
+            if cmd == SC_KEYMENU || cmd == SC_CONTEXTHELP {
+                return LRESULT(0);
+            }
+        }
+        WM_MENUCHAR => {
+            return LRESULT(((MNC_CLOSE as usize) << 16) as isize);
+        }
+        WM_HELP => {
+            return LRESULT(1);
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(qs_syskey_subclass_proc), uid_subclass);
+            QS_PENDING_INIT.with(|c| {
+                if let Ok(mut st) = c.try_borrow_mut() {
+                    if st.subclassed_hwnd == hwnd.0 as isize {
+                        st.subclassed_hwnd = 0;
+                    }
+                }
+            });
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+fn ensure_qs_syskey_subclass(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    if raw == 0 {
+        return;
+    }
+    let already = QS_PENDING_INIT.with(|c| c.borrow().subclassed_hwnd == raw);
+    if already {
+        return;
+    }
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(qs_syskey_subclass_proc),
+            QS_SYSKEY_SUBCLASS_ID,
+            0,
+        )
+        .as_bool()
+    };
+    if installed {
+        QS_PENDING_INIT.with(|c| {
+            c.borrow_mut().subclassed_hwnd = raw;
+        });
+    }
+}
+
+/// 当 QuickSwitchWindow 的真实 Win32 HWND 可用时，一次性补齐全部原生壳、置顶、SC_KEYMENU 拦截、前景焦点与 DWM 缩略图
+fn finalize_qs_hwnd_init_if_pending(w: &QuickSwitchWindow) -> bool {
+    let is_visible = SLINT_WIN_POOL.with(|c| c.borrow().qs_visible);
+    if !is_visible {
+        QS_PENDING_INIT.with(|c| {
+            if let Ok(mut st) = c.try_borrow_mut() {
+                st.needs_init = false;
+            }
+        });
+        return false;
+    }
+    let (needs_init, r, dark) = QS_PENDING_INIT.with(|c| {
+        let st = c.borrow();
+        (st.needs_init, st.rect, st.dark)
+    });
+    if !needs_init {
+        return false;
+    }
+    let Some(hwnd) = extract_win32_hwnd(w.window()) else {
+        return false;
+    };
+    QS_PENDING_INIT.with(|c| {
+        c.borrow_mut().needs_init = false;
+    });
+
+    let rw = r.width().max(580) as u32;
+    let rh = r.height().max(340) as u32;
+    w.window().set_size(slint::PhysicalSize::new(rw, rh));
+    w.window()
+        .set_position(slint::PhysicalPosition::new(r.left, r.top));
+    w.window().with_winit_window(|ww| {
+        let _ = ww.request_inner_size(PhysicalSize::new(rw, rh));
+        ww.set_outer_position(PhysicalPosition::new(r.left, r.top));
+    });
+    apply_slint_win32_chrome(w.window(), dark, true, false, true);
+    ensure_qs_syskey_subclass(hwnd);
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            r.left,
+            r.top,
+            rw as i32,
+            rh as i32,
+            windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0),
+        );
+    }
+    force_foreground_window(hwnd);
+    w.invoke_focus_input();
+    w.invoke_notify_preview_slot();
+    w.invoke_ensure_selected_visible();
+    refresh_qs_thumbnail_unlocked(w);
+    wk_info!(
+        "slint",
+        "ui_slint",
+        "QuickSwitchWindow shown hwnd=0x{:x} rect={}x{} @ ({},{})",
+        hwnd.0 as isize,
+        rw,
+        rh,
+        r.left,
+        r.top
+    );
+    true
 }
 
 fn cleanup_all_thread_local_windows() {
@@ -654,13 +809,18 @@ fn make_thumbs_model(thumbs: &[LayoutThumbData]) -> ModelRc<ZoneThumbRect> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// 强前台激活（通过短暂 AttachThreadInput 突破后台进程 SetForegroundWindow 限制，确保搜索框 100% 接住键盘输入）
+/// 安全前台激活：优先尝试无副作用原生 AllowSetForegroundWindow + SetForegroundWindow，
+/// 仅当 Windows 前台锁拒绝时才短暂 AttachThreadInput 兜底，彻底避免按住 Alt 时破坏跨线程修饰键状态！
 fn force_foreground_window(hwnd: HWND) {
     unsafe {
         if hwnd.0.is_null() || !IsWindow(hwnd).as_bool() {
             return;
         }
         let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let _ = BringWindowToTop(hwnd);
+        if SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd {
+            return;
+        }
         let fg = GetForegroundWindow();
         let cur_tid = GetCurrentThreadId();
         let fg_tid = if !fg.0.is_null() {
@@ -722,10 +882,12 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
     if let Err(e) = slint::invoke_from_event_loop(move || {
         // 1. 短临界区取出或创建 QuickSwitchWindow，绝不在持有 RefCell 借用期间调任何 Slint 方法！
         let existing = SLINT_WIN_POOL.with(|c| c.borrow().quick_switch.as_ref().map(|w| w.clone_strong()));
+        let mut newly_created = false;
         let w = match existing {
             Some(win) => win,
             None => match QuickSwitchWindow::new() {
                 Ok(w) => {
+                    newly_created = true;
                     let w_weak_move = w.as_weak();
                     w.on_drag_move_requested(move || {
                         if let Some(win) = w_weak_move.upgrade() {
@@ -792,12 +954,32 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
                     });
                     w.on_dismiss_requested(|| push_ui_event(SlintUiEvent::QsDismissed));
                     w.window().on_close_requested(|| {
+                        SLINT_WIN_POOL.with(|c| {
+                            if let Ok(mut pool) = c.try_borrow_mut() {
+                                pool.qs_visible = false;
+                            }
+                        });
                         push_ui_event(SlintUiEvent::QsDismissed);
                         slint::CloseRequestResponse::HideWindow
                     });
-                    w.window().on_winit_window_event(|_win, ev| {
-                        if let slint::winit_030::winit::event::WindowEvent::Focused(false) = ev {
-                            push_ui_event(SlintUiEvent::QsDismissed);
+                    let w_weak_ev = w.as_weak();
+                    w.window().on_winit_window_event(move |_win, ev| {
+                        match ev {
+                            slint::winit_030::winit::event::WindowEvent::Focused(false) => {
+                                let visible = SLINT_WIN_POOL
+                                    .with(|c| c.try_borrow().map(|p| p.qs_visible).unwrap_or(false));
+                                if visible {
+                                    push_ui_event(SlintUiEvent::QsDismissed);
+                                }
+                            }
+                            slint::winit_030::winit::event::WindowEvent::Resized(_)
+                            | slint::winit_030::winit::event::WindowEvent::Focused(true)
+                            | slint::winit_030::winit::event::WindowEvent::RedrawRequested => {
+                                if let Some(win) = w_weak_ev.upgrade() {
+                                    let _ = finalize_qs_hwnd_init_if_pending(&win);
+                                }
+                            }
+                            _ => {}
                         }
                         slint::winit_030::EventResult::Propagate
                     });
@@ -817,37 +999,40 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
         // 2. 脱离任何 RefCell 借用安全更新全部 Slint 属性与原生 Win32 壳
         apply_theme_to_component(&w, &state.theme);
 
-        let mut rows = Vec::with_capacity(state.items.len());
-        let mut sel_title = String::new();
-        let mut sel_app = String::new();
-        let mut sel_icon = Image::default();
-        let mut sel_has_icon = false;
-        let mut sel_pinned = false;
-
-        for item in &state.items {
-            let (img, has_icon) = rgba_to_slint_image(&item.icon_rgba);
-            if item.index == state.selected_index {
-                sel_title = item.title.clone();
-                sel_app = item.app_name.clone();
-                sel_icon = img.clone();
-                sel_has_icon = has_icon;
-                sel_pinned = item.is_pinned;
+        let rebuild_items = newly_created || state.items_changed;
+        let (sel_icon, sel_has_icon) = if rebuild_items {
+            let mut rows = Vec::with_capacity(state.items.len());
+            let mut found_icon = Image::default();
+            let mut found_has_icon = false;
+            for item in &state.items {
+                let (img, has_icon) = rgba_to_slint_image(&item.icon_rgba);
+                if item.index == state.selected_index {
+                    found_icon = img.clone();
+                    found_has_icon = has_icon;
+                }
+                rows.push(QuickSwitchRowItem {
+                    index: item.index,
+                    title: SharedString::from(item.title.as_str()),
+                    app_name: SharedString::from(item.app_name.as_str()),
+                    icon: img,
+                    has_icon,
+                    number_label: SharedString::from(item.number_label.as_str()),
+                    is_minimized: item.is_minimized,
+                    is_pinned: item.is_pinned,
+                    is_tray: item.is_tray,
+                    state_badge: SharedString::from(item.state_badge.as_str()),
+                });
             }
-            rows.push(QuickSwitchRowItem {
-                index: item.index,
-                title: SharedString::from(item.title.as_str()),
-                app_name: SharedString::from(item.app_name.as_str()),
-                icon: img,
-                has_icon,
-                number_label: SharedString::from(item.number_label.as_str()),
-                is_minimized: item.is_minimized,
-                is_pinned: item.is_pinned,
-                is_tray: item.is_tray,
-                state_badge: SharedString::from(item.state_badge.as_str()),
-            });
-        }
+            w.set_items(ModelRc::new(VecModel::from(rows)));
+            if found_has_icon {
+                (found_icon, true)
+            } else {
+                rgba_to_slint_image(&state.selected_icon_rgba)
+            }
+        } else {
+            rgba_to_slint_image(&state.selected_icon_rgba)
+        };
 
-        w.set_items(ModelRc::new(VecModel::from(rows)));
         w.set_selected_index(state.selected_index);
         if w.get_filter_text().as_str() != state.filter_text.as_str() {
             w.set_filter_text(SharedString::from(state.filter_text.as_str()));
@@ -860,71 +1045,62 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
         w.set_same_app_mode(state.same_app_mode);
         w.set_scope_title(SharedString::from(state.scope_title.as_str()));
         w.set_list_width_ratio(state.list_width_ratio);
-        w.set_selected_title(SharedString::from(sel_title.as_str()));
-        w.set_selected_app_name(SharedString::from(sel_app.as_str()));
+        w.set_selected_title(SharedString::from(state.selected_title.as_str()));
+        w.set_selected_app_name(SharedString::from(state.selected_app_name.as_str()));
         w.set_selected_icon(sel_icon);
         w.set_selected_has_icon(sel_has_icon);
-        w.set_selected_is_pinned(sel_pinned);
-        if state.zh_ui {
-            w.set_search_placeholder(SharedString::from("搜索窗口 / 拼音首字母 · 1-9 直达"));
-            w.set_empty_label(SharedString::from("没有匹配的窗口"));
-            w.set_preview_unavailable_hint(SharedString::from(
-                "窗口已最小化或收纳至托盘，按 Enter 或双击立即恢复",
-            ));
-        } else {
-            w.set_search_placeholder(SharedString::from("Search windows / Pinyin · 1-9 jump"));
-            w.set_empty_label(SharedString::from("No matching windows"));
-            w.set_preview_unavailable_hint(SharedString::from(
-                "Window is minimized or in tray. Press Enter or double-click to restore.",
-            ));
+        w.set_selected_is_pinned(state.selected_is_pinned);
+        if rebuild_items {
+            if state.zh_ui {
+                w.set_search_placeholder(SharedString::from("搜索窗口 / 拼音首字母 · 1-9 直达"));
+                w.set_empty_label(SharedString::from("没有匹配的窗口"));
+                w.set_preview_unavailable_hint(SharedString::from(
+                    "窗口已最小化或收纳至托盘，按 Enter 或双击立即恢复",
+                ));
+            } else {
+                w.set_search_placeholder(SharedString::from("Search windows / Pinyin · 1-9 jump"));
+                w.set_empty_label(SharedString::from("No matching windows"));
+                w.set_preview_unavailable_hint(SharedString::from(
+                    "Window is minimized or in tray. Press Enter or double-click to restore.",
+                ));
+            }
         }
 
         if state.reposition_window {
+            SLINT_WIN_POOL.with(|c| {
+                c.borrow_mut().qs_visible = true;
+            });
             let r = state.window_rect;
             let rw = r.width().max(580) as u32;
             let rh = r.height().max(340) as u32;
+            QS_PENDING_INIT.with(|c| {
+                let mut st = c.borrow_mut();
+                st.needs_init = true;
+                st.rect = r;
+                st.dark = state.theme.dark;
+            });
             w.window().set_size(slint::PhysicalSize::new(rw, rh));
             w.window()
                 .set_position(slint::PhysicalPosition::new(r.left, r.top));
             if let Err(e) = w.show() {
                 wk_warn!("slint", "ui_slint", "QuickSwitchWindow::show failed: {}", e);
             }
-            w.window().set_size(slint::PhysicalSize::new(rw, rh));
-            w.window()
-                .set_position(slint::PhysicalPosition::new(r.left, r.top));
-            w.window().with_winit_window(|ww| {
-                let _ = ww.request_inner_size(PhysicalSize::new(rw, rh));
-                ww.set_outer_position(PhysicalPosition::new(r.left, r.top));
-            });
-            apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
-            if let Some(hwnd) = extract_win32_hwnd(w.window()) {
-                unsafe {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        HWND_TOPMOST,
-                        r.left,
-                        r.top,
-                        rw as i32,
-                        rh as i32,
-                        windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0),
-                    );
-                }
-                force_foreground_window(hwnd);
-                wk_info!(
-                    "slint",
-                    "ui_slint",
-                    "QuickSwitchWindow shown hwnd=0x{:x} rect={}x{} @ ({},{})",
-                    hwnd.0 as isize,
-                    rw,
-                    rh,
-                    r.left,
-                    r.top
-                );
+            if !finalize_qs_hwnd_init_if_pending(&w) {
+                // 冷启动 / 25s purge 后首次 show()：winit 延后至 about_to_wait 创建 Win32 HWND，
+                // 排入下一轮事件循环保底补齐 WS_EX_TOOLWINDOW / HWND_TOPMOST / SC_KEYMENU 子类 / DWM 缩略图！
+                let w_weak_defer = w.as_weak();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = w_weak_defer.upgrade() {
+                        let _ = finalize_qs_hwnd_init_if_pending(&win);
+                    }
+                });
             }
-            w.invoke_focus_input();
-            w.invoke_notify_preview_slot();
         } else {
-            apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
+            let _ = finalize_qs_hwnd_init_if_pending(&w);
+            if rebuild_items {
+                apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
+                w.invoke_ensure_selected_visible();
+            }
         }
 
         // 3. 更新 DWM 缩略图状态并刷新
@@ -977,14 +1153,29 @@ pub fn hide_quick_switch() {
         return;
     }
     let _ = slint::invoke_from_event_loop(|| {
+        QS_PENDING_INIT.with(|c| {
+            if let Ok(mut st) = c.try_borrow_mut() {
+                st.needs_init = false;
+            }
+        });
         QS_THUMB_STATE.with(|c| {
             if let Ok(mut ts) = c.try_borrow_mut() {
                 ts.unregister_thumb();
             }
         });
-        let win = SLINT_WIN_POOL.with(|c| c.borrow().quick_switch.as_ref().map(|w| w.clone_strong()));
+        let win = SLINT_WIN_POOL.with(|c| {
+            let mut pool = c.borrow_mut();
+            pool.qs_visible = false;
+            pool.quick_switch.as_ref().map(|w| w.clone_strong())
+        });
         if let Some(w) = win {
             let _ = w.hide();
+            // 隐藏瞬间立即清空所有 RGBA8 图标 SharedPixelBuffer，零残留堆内存
+            w.set_items(ModelRc::default());
+            w.set_selected_icon(Image::default());
+            w.set_selected_has_icon(false);
+            w.set_selected_title(SharedString::default());
+            w.set_selected_app_name(SharedString::default());
         }
     });
 }
@@ -1087,12 +1278,22 @@ pub fn show_or_update_layout_hub(state: LayoutHubViewState) -> bool {
                     });
                     let w_cls = w.as_weak();
                     w.on_close_window(move || {
+                        SLINT_WIN_POOL.with(|c| {
+                            if let Ok(mut pool) = c.try_borrow_mut() {
+                                pool.hub_visible = false;
+                            }
+                        });
                         if let Some(win) = w_cls.upgrade() {
                             let _ = win.hide();
                         }
                         push_ui_event(SlintUiEvent::HubClosed);
                     });
                     w.window().on_close_requested(|| {
+                        SLINT_WIN_POOL.with(|c| {
+                            if let Ok(mut pool) = c.try_borrow_mut() {
+                                pool.hub_visible = false;
+                            }
+                        });
                         push_ui_event(SlintUiEvent::HubClosed);
                         slint::CloseRequestResponse::HideWindow
                     });
@@ -1240,6 +1441,9 @@ pub fn show_or_update_layout_hub(state: LayoutHubViewState) -> bool {
             w.set_draft_thumbs(make_thumbs_model(&state.draft_thumbs));
 
             if state.reposition_window {
+                SLINT_WIN_POOL.with(|c| {
+                    c.borrow_mut().hub_visible = true;
+                });
                 let r = state.window_rect;
                 let rw = r.width().max(760) as u32;
                 let rh = r.height().max(480) as u32;
@@ -1278,11 +1482,21 @@ pub fn hide_layout_hub() {
         return;
     }
     let _ = slint::invoke_from_event_loop(|| {
-        let win = SLINT_WIN_POOL.with(|c| c.borrow().layout_hub.as_ref().map(|w| w.clone_strong()));
+        let win = SLINT_WIN_POOL.with(|c| {
+            let mut pool = c.borrow_mut();
+            pool.hub_visible = false;
+            pool.layout_hub.as_ref().map(|w| w.clone_strong())
+        });
         if let Some(w) = win {
             w.set_context_menu_open(false);
             w.set_modal_mode(0);
             let _ = w.hide();
+            // 隐藏瞬间立即清空布局/显示器/虚拟桌面模型，避免内存残留
+            w.set_template_layouts(ModelRc::default());
+            w.set_custom_layouts(ModelRc::default());
+            w.set_monitors(ModelRc::default());
+            w.set_desktops(ModelRc::default());
+            w.set_draft_thumbs(ModelRc::default());
         }
     });
 }
@@ -1332,6 +1546,11 @@ pub fn show_or_update_workspace_capture(state: WorkspaceCaptureViewState) -> boo
                     w.on_capture_clicked(|| push_ui_event(SlintUiEvent::CaptureConfirm));
                     w.on_cancel_clicked(|| push_ui_event(SlintUiEvent::CaptureCancel));
                     w.window().on_close_requested(|| {
+                        SLINT_WIN_POOL.with(|c| {
+                            if let Ok(mut pool) = c.try_borrow_mut() {
+                                pool.cap_visible = false;
+                            }
+                        });
                         push_ui_event(SlintUiEvent::CaptureCancel);
                         slint::CloseRequestResponse::HideWindow
                     });
@@ -1363,6 +1582,9 @@ pub fn show_or_update_workspace_capture(state: WorkspaceCaptureViewState) -> boo
             w.set_txt_cancel(SharedString::from("Cancel"));
         }
 
+        SLINT_WIN_POOL.with(|c| {
+            c.borrow_mut().cap_visible = true;
+        });
         let _ = w.show();
         let r = state.window_rect;
         w.window().with_winit_window(|ww| {
@@ -1387,7 +1609,11 @@ pub fn hide_workspace_capture() {
         return;
     }
     let _ = slint::invoke_from_event_loop(|| {
-        let win = SLINT_WIN_POOL.with(|c| c.borrow().workspace_capture.as_ref().map(|w| w.clone_strong()));
+        let win = SLINT_WIN_POOL.with(|c| {
+            let mut pool = c.borrow_mut();
+            pool.cap_visible = false;
+            pool.workspace_capture.as_ref().map(|w| w.clone_strong())
+        });
         if let Some(w) = win {
             let _ = w.hide();
         }
@@ -1416,6 +1642,9 @@ pub fn show_or_update_workspace_progress(state: WorkspaceProgressViewState) {
         w.set_workspace_name(SharedString::from(state.workspace_name.as_str()));
         w.set_status_text(SharedString::from(state.status_text.as_str()));
         w.set_progress(state.progress.clamp(0.0, 1.0));
+        SLINT_WIN_POOL.with(|c| {
+            c.borrow_mut().prog_visible = true;
+        });
         let _ = w.show();
         let r = state.window_rect;
         w.window().with_winit_window(|ww| {
@@ -1434,9 +1663,99 @@ pub fn hide_workspace_progress() {
         return;
     }
     let _ = slint::invoke_from_event_loop(|| {
-        let win = SLINT_WIN_POOL.with(|c| c.borrow().workspace_progress.as_ref().map(|w| w.clone_strong()));
+        let win = SLINT_WIN_POOL.with(|c| {
+            let mut pool = c.borrow_mut();
+            pool.prog_visible = false;
+            pool.workspace_progress.as_ref().map(|w| w.clone_strong())
+        });
         if let Some(w) = win {
             let _ = w.hide();
+        }
+    });
+}
+
+/// 冷态深度内存回收：在 Slint UI 线程中彻底 Drop 所有当前不可见的窗口实例，
+/// 释放 16~32MB 软件渲染大帧缓冲并立即收缩进程物理工作集至 ~1~2MB。
+pub fn purge_idle_windows() {
+    if !SLINT_STARTED.load(Ordering::Acquire) || SLINT_SHUTTING_DOWN.load(Ordering::Acquire) {
+        return;
+    }
+    let _ = slint::invoke_from_event_loop(|| {
+        let can_purge_qs = SLINT_WIN_POOL.with(|c| {
+            let pool = c.borrow();
+            pool.quick_switch
+                .as_ref()
+                .map(|w| !pool.qs_visible && !w.window().is_visible())
+                .unwrap_or(false)
+        });
+        if can_purge_qs {
+            QS_THUMB_STATE.with(|c| {
+                if let Ok(mut ts) = c.try_borrow_mut() {
+                    ts.unregister_thumb();
+                }
+            });
+        }
+
+        let mut purged_count = 0usize;
+        let mut dropped_qs: Option<QuickSwitchWindow> = None;
+        let mut dropped_hub: Option<LayoutHubWindow> = None;
+        let mut dropped_cap: Option<WorkspaceCaptureWindow> = None;
+        let mut dropped_prog: Option<WorkspaceProgressWindow> = None;
+
+        SLINT_WIN_POOL.with(|c| {
+            let mut pool = c.borrow_mut();
+            if pool
+                .quick_switch
+                .as_ref()
+                .map(|w| !pool.qs_visible && !w.window().is_visible())
+                .unwrap_or(false)
+            {
+                dropped_qs = pool.quick_switch.take();
+                purged_count += 1;
+            }
+            if pool
+                .layout_hub
+                .as_ref()
+                .map(|w| !pool.hub_visible && !w.window().is_visible())
+                .unwrap_or(false)
+            {
+                dropped_hub = pool.layout_hub.take();
+                purged_count += 1;
+            }
+            if pool
+                .workspace_capture
+                .as_ref()
+                .map(|w| !pool.cap_visible && !w.window().is_visible())
+                .unwrap_or(false)
+            {
+                dropped_cap = pool.workspace_capture.take();
+                purged_count += 1;
+            }
+            if pool
+                .workspace_progress
+                .as_ref()
+                .map(|w| !pool.prog_visible && !w.window().is_visible())
+                .unwrap_or(false)
+            {
+                dropped_prog = pool.workspace_progress.take();
+                purged_count += 1;
+            }
+        });
+
+        // 脱离 RefCell 借用后再彻底 Drop 窗口实例，释放 winit/softbuffer 大帧缓冲
+        drop(dropped_qs);
+        drop(dropped_hub);
+        drop(dropped_cap);
+        drop(dropped_prog);
+
+        if purged_count > 0 {
+            wk_info!(
+                "slint",
+                "ui_slint",
+                "purged {} idle Slint window(s) and released software framebuffers",
+                purged_count
+            );
+            crate::core::win_utils::trim_working_set_cold_path();
         }
     });
 }

@@ -495,10 +495,318 @@ bool MftParser::queryFrnDiskMetadata(
     return false;
 }
 
-void MftParser::UsnListenerLoop() {
-    constexpr DWORD kDataModifyReasons =
-        USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION;
+namespace {
 
+constexpr DWORD kUsnDataModifyReasons =
+    USN_REASON_DATA_OVERWRITE | USN_REASON_DATA_EXTEND | USN_REASON_DATA_TRUNCATION;
+
+bool isIndexRelevantUsnReason(DWORD reason, bool hasFileName) noexcept {
+    if (reason & USN_REASON_FILE_DELETE) {
+        return true;
+    }
+    if ((reason & USN_REASON_FILE_CREATE) || (reason & USN_REASON_RENAME_NEW_NAME)) {
+        return hasFileName;
+    }
+    if ((reason & USN_REASON_BASIC_INFO_CHANGE) ||
+        ((reason & USN_REASON_CLOSE) && (reason & kUsnDataModifyReasons)) ||
+        (reason & kUsnDataModifyReasons)) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+void MftParser::clearPendingUsnQueue() {
+    std::lock_guard<std::mutex> applyLock(m_UsnApplyMutex);
+    std::lock_guard<std::mutex> qLock(m_PendingUsnMutex);
+    std::vector<tools3000::service::PendingUsnEvent>().swap(m_PendingUsnQueue);
+    m_PendingUsnFirstQueuedTick = 0;
+    m_PendingUsnCount.store(0, std::memory_order_release);
+}
+
+size_t MftParser::applyUsnEventBatchLocked(const std::vector<tools3000::service::PendingUsnEvent>& events) {
+    if (events.empty()) {
+        return 0;
+    }
+
+    std::vector<std::pair<uint64_t, std::wstring>> pendingStatRefresh;
+    std::unordered_set<uint64_t> queuedFrns;
+    std::unordered_set<uint64_t> deletedInBatch;
+    const bool needPathFallback = (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk);
+
+    {
+        std::unique_lock lock(m_MapMutex);
+        bool changed = false;
+
+        for (const auto& ev : events) {
+            const uint64_t frn = ev.fileReferenceNumber;
+            if (ev.reason & USN_REASON_FILE_DELETE) {
+                changed = m_Store.erase(frn) || changed;
+                deletedInBatch.insert(frn);
+            } else if ((ev.reason & USN_REASON_FILE_CREATE) ||
+                       (ev.reason & USN_REASON_RENAME_NEW_NAME)) {
+                deletedInBatch.erase(frn);
+                if (!ev.fileName.empty()) {
+                    const bool isDir = (ev.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                    FileRecordInit record;
+                    record.fileReferenceNumber = frn;
+                    record.parentFileReferenceNumber = ev.parentFileReferenceNumber;
+                    record.isDirectory = isDir;
+                    record.fileAttributes = ev.fileAttributes;
+                    record.lastWriteTime = ev.timeStamp;
+                    record.fileName = ev.fileName;
+
+                    // `MED-15`: Never blindly zero out `fileSize` / `creationTime` on rename
+                    // (`USN_REASON_RENAME_NEW_NAME`) or follow-up close events on an existing FRN.
+                    const auto* existing = m_Store.find(frn);
+                    if (existing != nullptr) {
+                        const FileRecord oldRec = m_Store.view(*existing);
+                        if (!isDir) {
+                            record.fileSize = oldRec.fileSize;
+                        }
+                        record.creationTime = oldRec.creationTime;
+                        if (record.lastWriteTime == 0) {
+                            record.lastWriteTime = oldRec.lastWriteTime;
+                        }
+                    }
+
+                    m_Store.upsert(record);
+                    changed = true;
+
+                    if (!isDir &&
+                        ((ev.reason & USN_REASON_RENAME_NEW_NAME) != 0 ||
+                         (ev.reason & USN_REASON_CLOSE) != 0 ||
+                         (ev.reason & kUsnDataModifyReasons) != 0 ||
+                         record.fileSize == 0) &&
+                        !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(ev.fileName) &&
+                        queuedFrns.insert(frn).second) {
+                        const std::wstring fullPath = buildFullPath(frn);
+                        if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
+                            pendingStatRefresh.emplace_back(
+                                frn,
+                                needPathFallback ? fullPath : std::wstring{});
+                        }
+                    }
+                }
+            } else if ((ev.reason & USN_REASON_BASIC_INFO_CHANGE) ||
+                       ((ev.reason & USN_REASON_CLOSE) && (ev.reason & kUsnDataModifyReasons)) ||
+                       (ev.reason & kUsnDataModifyReasons)) {
+                const auto* existing = m_Store.find(frn);
+                if (existing != nullptr) {
+                    const FileRecord oldRec = m_Store.view(*existing);
+                    FileRecordInit record;
+                    record.fileReferenceNumber = frn;
+                    record.parentFileReferenceNumber = oldRec.parentFileReferenceNumber;
+                    record.isDirectory = oldRec.isDirectory;
+                    record.fileAttributes = ev.fileAttributes ? ev.fileAttributes : oldRec.fileAttributes;
+                    record.fileSize = oldRec.fileSize;
+                    record.creationTime = oldRec.creationTime;
+                    record.lastWriteTime = ev.timeStamp ? ev.timeStamp : oldRec.lastWriteTime;
+                    record.fileName = std::wstring(oldRec.fileName);
+
+                    m_Store.upsert(record);
+                    changed = true;
+
+                    if (!oldRec.isDirectory &&
+                        ((ev.reason & USN_REASON_CLOSE) != 0 ||
+                         (ev.reason & kUsnDataModifyReasons) != 0) &&
+                        !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(oldRec.fileName) &&
+                        queuedFrns.insert(frn).second) {
+                        const std::wstring fullPath = buildFullPath(frn);
+                        if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
+                            pendingStatRefresh.emplace_back(
+                                frn,
+                                needPathFallback ? fullPath : std::wstring{});
+                        }
+                    }
+                }
+            }
+        }
+
+        if (changed) {
+            m_Store.compactIfSparse();
+            m_FileCount.store(m_Store.size(), std::memory_order_release);
+            m_IndexGeneration.fetch_add(1, std::memory_order_release);
+            std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+            m_CachedQuery.clear();
+            m_CachedCandidates.clear();
+            m_CachedExcludePatterns.clear();
+        }
+    }
+
+    // Refresh `fileSize`, `creationTime`, and `lastWriteTime` OUTSIDE `m_MapMutex` (`MED-15`)
+    // so `size:` and `dm:` queries immediately see updated metadata after writes/renames.
+    // 单次批量合并上限同步 stat 最近 64 条，超额条目仅标脏按需水合，确保冷态攒批合并 < 2ms 完成。
+    if (!pendingStatRefresh.empty()) {
+        constexpr size_t kMaxSyncStatRefreshPerFlush = 64u;
+        struct RefreshedMeta {
+            uint64_t frn = 0;
+            uint64_t fileSize = 0;
+            uint64_t creationTime = 0;
+            uint64_t lastWriteTime = 0;
+        };
+        const size_t totalPending = pendingStatRefresh.size();
+        const size_t syncStartIdx = (totalPending > kMaxSyncStatRefreshPerFlush)
+            ? (totalPending - kMaxSyncStatRefreshPerFlush)
+            : 0u;
+        std::vector<RefreshedMeta> refreshed;
+        refreshed.reserve(totalPending - syncStartIdx);
+        for (size_t idx = syncStartIdx; idx < totalPending; ++idx) {
+            const auto& [frn, fallbackPath] = pendingStatRefresh[idx];
+            if (deletedInBatch.find(frn) != deletedInBatch.end()) continue;
+            uint64_t fSize = 0;
+            uint64_t cTime = 0;
+            uint64_t mTime = 0;
+            if (queryFrnDiskMetadata(frn, fallbackPath, fSize, cTime, mTime)) {
+                refreshed.push_back(RefreshedMeta{frn, fSize, cTime, mTime});
+            }
+        }
+        if (!refreshed.empty() || syncStartIdx > 0) {
+            std::unique_lock statLock(m_MapMutex);
+            for (size_t idx = 0; idx < syncStartIdx; ++idx) {
+                const uint64_t deferredFrn = pendingStatRefresh[idx].first;
+                if (deletedInBatch.find(deferredFrn) == deletedInBatch.end()) {
+                    m_Store.markMetadataDirty(deferredFrn);
+                }
+            }
+            for (const auto& item : refreshed) {
+                m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
+            }
+            m_IndexGeneration.fetch_add(1, std::memory_order_release);
+            std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
+            m_CachedQuery.clear();
+            m_CachedCandidates.clear();
+            m_CachedExcludePatterns.clear();
+        }
+    }
+
+    return events.size();
+}
+
+size_t MftParser::flushPendingUsnChanges() {
+    if (m_PendingUsnCount.load(std::memory_order_acquire) == 0) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> applyLock(m_UsnApplyMutex);
+    std::vector<tools3000::service::PendingUsnEvent> batch;
+    {
+        std::lock_guard<std::mutex> qLock(m_PendingUsnMutex);
+        if (m_PendingUsnQueue.empty()) {
+            m_PendingUsnFirstQueuedTick = 0;
+            m_PendingUsnCount.store(0, std::memory_order_release);
+            return 0;
+        }
+        batch.swap(m_PendingUsnQueue);
+        m_PendingUsnFirstQueuedTick = 0;
+        m_PendingUsnCount.store(0, std::memory_order_release);
+    }
+
+    const size_t applied = applyUsnEventBatchLocked(batch);
+    m_PendingUsnFlushCount.fetch_add(1, std::memory_order_release);
+    return applied;
+}
+
+bool MftParser::flushPendingUsnChangesIfExpired(uint64_t nowTickMs) {
+    if (m_PendingUsnCount.load(std::memory_order_acquire) == 0) {
+        return false;
+    }
+    const uint64_t maxAgeMs = m_PendingUsnMaxAgeMs.load(std::memory_order_acquire);
+    if (maxAgeMs == 0) {
+        return false;
+    }
+    const uint64_t tick = (nowTickMs != 0) ? nowTickMs : GetTickCount64();
+    bool expired = false;
+    {
+        std::lock_guard<std::mutex> qLock(m_PendingUsnMutex);
+        if (!m_PendingUsnQueue.empty() &&
+            m_PendingUsnFirstQueuedTick != 0 &&
+            tick >= m_PendingUsnFirstQueuedTick &&
+            (tick - m_PendingUsnFirstQueuedTick) >= maxAgeMs) {
+            expired = true;
+        }
+    }
+    if (expired) {
+        flushPendingUsnChanges();
+        return true;
+    }
+    return false;
+}
+
+void MftParser::processUsnEventBatch(
+    std::vector<tools3000::service::PendingUsnEvent>&& events,
+    uint64_t nowTickMs) {
+    std::vector<tools3000::service::PendingUsnEvent> filtered;
+    filtered.reserve(events.size());
+    for (auto& ev : events) {
+        if (isIndexRelevantUsnReason(ev.reason, !ev.fileName.empty())) {
+            filtered.push_back(std::move(ev));
+        }
+    }
+
+    if (filtered.empty()) {
+        flushPendingUsnChangesIfExpired(nowTickMs);
+        return;
+    }
+
+    if (m_ColdUsnBatching.load(std::memory_order_acquire)) {
+        const uint64_t tick = (nowTickMs != 0) ? nowTickMs : GetTickCount64();
+        const size_t limit = m_PendingUsnFlushLimit.load(std::memory_order_acquire);
+        const uint64_t maxAgeMs = m_PendingUsnMaxAgeMs.load(std::memory_order_acquire);
+        bool needFlush = false;
+        {
+            std::lock_guard<std::mutex> qLock(m_PendingUsnMutex);
+            if (m_PendingUsnQueue.empty()) {
+                m_PendingUsnFirstQueuedTick = tick;
+            }
+            for (auto& ev : filtered) {
+                m_PendingUsnQueue.push_back(std::move(ev));
+            }
+            const size_t queuedSize = m_PendingUsnQueue.size();
+            m_PendingUsnCount.store(queuedSize, std::memory_order_release);
+            if (queuedSize >= limit) {
+                needFlush = true;
+            } else if (maxAgeMs > 0 &&
+                       m_PendingUsnFirstQueuedTick != 0 &&
+                       tick >= m_PendingUsnFirstQueuedTick &&
+                       (tick - m_PendingUsnFirstQueuedTick) >= maxAgeMs) {
+                needFlush = true;
+            }
+        }
+        if (needFlush) {
+            flushPendingUsnChanges();
+        }
+        return;
+    }
+
+    // 热态直通：严格在 m_UsnApplyMutex 内先接出可能残留的冷态待合并队列，再保序合并本批次，
+    // 彻底杜绝冷转热临界微秒内的事件乱序竞态。
+    std::lock_guard<std::mutex> applyLock(m_UsnApplyMutex);
+    std::vector<tools3000::service::PendingUsnEvent> merged;
+    bool hadQueued = false;
+    if (m_PendingUsnCount.load(std::memory_order_acquire) > 0) {
+        std::lock_guard<std::mutex> qLock(m_PendingUsnMutex);
+        if (!m_PendingUsnQueue.empty()) {
+            merged.swap(m_PendingUsnQueue);
+            m_PendingUsnFirstQueuedTick = 0;
+            m_PendingUsnCount.store(0, std::memory_order_release);
+            hadQueued = true;
+        }
+    }
+    if (hadQueued) {
+        merged.reserve(merged.size() + filtered.size());
+        for (auto& ev : filtered) {
+            merged.push_back(std::move(ev));
+        }
+        applyUsnEventBatchLocked(merged);
+        m_PendingUsnFlushCount.fetch_add(1, std::memory_order_release);
+    } else {
+        applyUsnEventBatchLocked(filtered);
+    }
+}
+
+void MftParser::UsnListenerLoop() {
     READ_USN_JOURNAL_DATA_V0 rujd = {0};
     {
         std::lock_guard<std::mutex> usnLock(m_UsnMutex);
@@ -528,6 +836,7 @@ void MftParser::UsnListenerLoop() {
                     EnumerateFiles();
                 }
             }
+            flushPendingUsnChangesIfExpired();
             Sleep(100);
             continue;
         }
@@ -540,6 +849,7 @@ void MftParser::UsnListenerLoop() {
         }
 
         if (bytesReturned <= sizeof(USN)) {
+            flushPendingUsnChangesIfExpired();
             Sleep(50);
             continue;
         }
@@ -548,152 +858,29 @@ void MftParser::UsnListenerLoop() {
         const BYTE* pRecordBytes = buffer.data() + sizeof(USN);
 
         if (dwRetBytes > 0) {
-            std::vector<std::pair<uint64_t, std::wstring>> pendingStatRefresh;
-            std::unordered_set<uint64_t> queuedFrns;
-            std::unordered_set<uint64_t> deletedInBatch;
-            const bool needPathFallback = (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk);
-
-            {
-                std::unique_lock lock(m_MapMutex);
-                bool changed = false;
-                tools3000::service::ParsedUsnRecord parsed{};
-
-                while (dwRetBytes > 0 && tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
-                    if (parsed.isValid) {
-                        const uint64_t frn = parsed.fileReferenceNumber;
-                        if (parsed.reason & USN_REASON_FILE_DELETE) {
-                            changed = m_Store.erase(frn) || changed;
-                            deletedInBatch.insert(frn);
-                        } else if ((parsed.reason & USN_REASON_FILE_CREATE) ||
-                                   (parsed.reason & USN_REASON_RENAME_NEW_NAME)) {
-                            deletedInBatch.erase(frn);
-                            if (!parsed.fileName.empty()) {
-                                const bool isDir = (parsed.fileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-                                FileRecordInit record;
-                                record.fileReferenceNumber = frn;
-                                record.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
-                                record.isDirectory = isDir;
-                                record.fileAttributes = parsed.fileAttributes;
-                                record.lastWriteTime = parsed.timeStamp;
-                                record.fileName = std::wstring(parsed.fileName);
-
-                                // `MED-15`: Never blindly zero out `fileSize` / `creationTime` on rename
-                                // (`USN_REASON_RENAME_NEW_NAME`) or follow-up close events on an existing FRN.
-                                const auto* existing = m_Store.find(frn);
-                                if (existing != nullptr) {
-                                    const FileRecord oldRec = m_Store.view(*existing);
-                                    if (!isDir) {
-                                        record.fileSize = oldRec.fileSize;
-                                    }
-                                    record.creationTime = oldRec.creationTime;
-                                    if (record.lastWriteTime == 0) {
-                                        record.lastWriteTime = oldRec.lastWriteTime;
-                                    }
-                                }
-
-                                m_Store.upsert(record);
-                                changed = true;
-
-                                if (!isDir &&
-                                    ((parsed.reason & USN_REASON_RENAME_NEW_NAME) != 0 ||
-                                     (parsed.reason & USN_REASON_CLOSE) != 0 ||
-                                     (parsed.reason & kDataModifyReasons) != 0 ||
-                                     record.fileSize == 0) &&
-                                    !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(parsed.fileName) &&
-                                    queuedFrns.insert(frn).second) {
-                                    const std::wstring fullPath = buildFullPath(frn);
-                                    if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
-                                        pendingStatRefresh.emplace_back(
-                                            frn,
-                                            needPathFallback ? fullPath : std::wstring{});
-                                    }
-                                }
-                            }
-                        } else if ((parsed.reason & USN_REASON_BASIC_INFO_CHANGE) ||
-                                   ((parsed.reason & USN_REASON_CLOSE) && (parsed.reason & kDataModifyReasons)) ||
-                                   (parsed.reason & kDataModifyReasons)) {
-                            const auto* existing = m_Store.find(frn);
-                            if (existing != nullptr) {
-                                const FileRecord oldRec = m_Store.view(*existing);
-                                FileRecordInit record;
-                                record.fileReferenceNumber = frn;
-                                record.parentFileReferenceNumber = oldRec.parentFileReferenceNumber;
-                                record.isDirectory = oldRec.isDirectory;
-                                record.fileAttributes = parsed.fileAttributes ? parsed.fileAttributes : oldRec.fileAttributes;
-                                record.fileSize = oldRec.fileSize;
-                                record.creationTime = oldRec.creationTime;
-                                record.lastWriteTime = parsed.timeStamp ? parsed.timeStamp : oldRec.lastWriteTime;
-                                record.fileName = std::wstring(oldRec.fileName);
-
-                                m_Store.upsert(record);
-                                changed = true;
-
-                                if (!oldRec.isDirectory &&
-                                    ((parsed.reason & USN_REASON_CLOSE) != 0 ||
-                                     (parsed.reason & kDataModifyReasons) != 0) &&
-                                    !tools3000::service::SensitivePathGuard::isSensitiveCredentialFileName(oldRec.fileName) &&
-                                    queuedFrns.insert(frn).second) {
-                                    const std::wstring fullPath = buildFullPath(frn);
-                                    if (!tools3000::service::SensitivePathGuard::isSensitiveCredentialDirectoryPath(fullPath)) {
-                                        pendingStatRefresh.emplace_back(
-                                            frn,
-                                            needPathFallback ? fullPath : std::wstring{});
-                                    }
-                                }
-                            }
-                        }
+            std::vector<tools3000::service::PendingUsnEvent> batch;
+            tools3000::service::ParsedUsnRecord parsed{};
+            while (dwRetBytes > 0 && tools3000::service::parseUsnRecord(pRecordBytes, dwRetBytes, parsed)) {
+                if (parsed.isValid && isIndexRelevantUsnReason(parsed.reason, !parsed.fileName.empty())) {
+                    tools3000::service::PendingUsnEvent ev;
+                    ev.fileReferenceNumber = parsed.fileReferenceNumber;
+                    ev.parentFileReferenceNumber = parsed.parentFileReferenceNumber;
+                    ev.reason = parsed.reason;
+                    ev.fileAttributes = parsed.fileAttributes;
+                    ev.timeStamp = parsed.timeStamp;
+                    if ((parsed.reason & USN_REASON_FILE_CREATE) ||
+                        (parsed.reason & USN_REASON_RENAME_NEW_NAME)) {
+                        ev.fileName.assign(parsed.fileName.data(), parsed.fileName.size());
                     }
-
-                    if (parsed.recordLength == 0 || parsed.recordLength > dwRetBytes) {
-                        break;
-                    }
-                    dwRetBytes -= parsed.recordLength;
-                    pRecordBytes += parsed.recordLength;
+                    batch.push_back(std::move(ev));
                 }
-
-                if (changed) {
-                    m_Store.compactIfSparse();
-                    m_FileCount.store(m_Store.size(), std::memory_order_release);
-                    m_IndexGeneration.fetch_add(1, std::memory_order_release);
-                    std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
-                    m_CachedQuery.clear();
-                    m_CachedCandidates.clear();
-                    m_CachedExcludePatterns.clear();
+                if (parsed.recordLength == 0 || parsed.recordLength > dwRetBytes) {
+                    break;
                 }
+                dwRetBytes -= parsed.recordLength;
+                pRecordBytes += parsed.recordLength;
             }
-
-            // Refresh `fileSize`, `creationTime`, and `lastWriteTime` OUTSIDE `m_MapMutex` (`MED-15`)
-            // so `size:` and `dm:` queries immediately see updated metadata after writes/renames.
-            if (!pendingStatRefresh.empty()) {
-                struct RefreshedMeta {
-                    uint64_t frn = 0;
-                    uint64_t fileSize = 0;
-                    uint64_t creationTime = 0;
-                    uint64_t lastWriteTime = 0;
-                };
-                std::vector<RefreshedMeta> refreshed;
-                refreshed.reserve(pendingStatRefresh.size());
-                for (const auto& [frn, fallbackPath] : pendingStatRefresh) {
-                    if (deletedInBatch.find(frn) != deletedInBatch.end()) continue;
-                    uint64_t fSize = 0;
-                    uint64_t cTime = 0;
-                    uint64_t mTime = 0;
-                    if (queryFrnDiskMetadata(frn, fallbackPath, fSize, cTime, mTime)) {
-                        refreshed.push_back(RefreshedMeta{frn, fSize, cTime, mTime});
-                    }
-                }
-                if (!refreshed.empty()) {
-                    std::unique_lock statLock(m_MapMutex);
-                    for (const auto& item : refreshed) {
-                        m_Store.updateMetadata(item.frn, item.fileSize, item.creationTime, item.lastWriteTime);
-                    }
-                    m_IndexGeneration.fetch_add(1, std::memory_order_release);
-                    std::lock_guard<std::mutex> cacheLock(m_SearchCacheMutex);
-                    m_CachedQuery.clear();
-                    m_CachedCandidates.clear();
-                    m_CachedExcludePatterns.clear();
-                }
-            }
+            processUsnEventBatch(std::move(batch));
         }
         Sleep(50); // Prevent 100% CPU on fast changes
     }
@@ -870,6 +1057,9 @@ void MftParser::StopListening() {
         m_ListenerThread->join();
     }
     m_ListenerThread.reset();
+    if (!m_StopRequested.load(std::memory_order_acquire)) {
+        flushPendingUsnChanges();
+    }
 }
 
 bool MftParser::Initialize(char driveLetter) {
@@ -1076,6 +1266,7 @@ void MftParser::EnumerateFilesViaDirectoryWalk(char driveLetter) {
 void MftParser::EnumerateFiles() {
     if (m_StopRequested.load(std::memory_order_acquire)) return;
     m_InitialScanDone.store(false, std::memory_order_release);
+    clearPendingUsnQueue();
     {
         std::unique_lock lock(m_MapMutex);
         m_Store.clear();
@@ -1306,6 +1497,7 @@ bool MftParser::importSnapshot(const SnapshotProducer& next, size_t expectedReco
     ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::LoadingSnapshot);
     m_ScannedRecords.store(0, std::memory_order_release);
     m_EstimatedRecords.store(static_cast<uint64_t>(expectedRecords), std::memory_order_release);
+    clearPendingUsnQueue();
 
     {
         std::unique_lock lock(m_MapMutex);
@@ -1365,6 +1557,7 @@ bool MftParser::catchUpUsnJournal(uint64_t fromUsn) {
     if (m_hVolume == INVALID_HANDLE_VALUE || m_IsFallbackDirectoryWalk) {
         return false;
     }
+    flushPendingUsnChanges();
     ScopedScanPhaseGuard phaseGuard(m_ScanPhase, ScanPhase::Syncing);
 
     if (!QueryUsnJournal()) {

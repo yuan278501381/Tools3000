@@ -240,7 +240,8 @@ endif()
 if(MSVC)
     target_compile_options(capture_objects PRIVATE /bigobj)
 endif()
-target_link_libraries(capture_objects PUBLIC Tools3000Core ${OpenCV_LIBS}
+target_link_libraries(capture_objects PUBLIC Tools3000Core
+    opencv_core opencv_imgproc opencv_imgcodecs opencv_photo opencv_dnn opencv_objdetect
     ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY} ${SWRESAMPLE_LIBRARY}
     ${WEBP_LIBRARY} ${WEBPMUX_LIBRARY}
     d2d1 dwrite d3d11 dxgi dxguid dwmapi mfplat mfreadwrite mfuuid

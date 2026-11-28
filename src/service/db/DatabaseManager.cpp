@@ -151,7 +151,7 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
     // `MED-14`: Never persist a partial/in-progress index snapshot before every active
     // volume parser has finished its initial full scan (or loaded a valid snapshot).
     bool hasValidParser = false;
-    for (const auto* parser : parsers) {
+    for (auto* parser : parsers) {
         if (!parser) continue;
         hasValidParser = true;
         if (!parser->isInitialScanDone()) {
@@ -159,6 +159,13 @@ bool DatabaseManager::saveSnapshot(const std::vector<MftParser*>& parsers) {
         }
     }
     if (!hasValidParser) return false;
+
+    // 落盘快照前强制合并各卷冷态待处理 USN 变更，确保快照内容与推进后的 lastUsn 严格一致
+    for (auto* parser : parsers) {
+        if (parser) {
+            parser->flushPendingUsnChanges();
+        }
+    }
 
     // Reparse-point defense (`CRIT-05`): verify parent chain and target file are non-reparse.
     const size_t lastSlash = dbPath.find_last_of(L"\\/");

@@ -9,8 +9,27 @@
 #include <string>
 #include <format>
 #include <mutex>
+#include <chrono>
 
 namespace tools3000::core {
+
+namespace {
+uint8_t doubleTapMaskFromModKey(ModKey mod) noexcept {
+    if (mod == ModKey::Ctrl)  return DoubleTapConstants::kCtrlMask;
+    if (mod == ModKey::Alt)   return DoubleTapConstants::kAltMask;
+    if (mod == ModKey::Shift) return DoubleTapConstants::kShiftMask;
+    return 0;
+}
+
+ModKey modKeyFromDoubleTap(DoubleTapModifier mod) noexcept {
+    switch (mod) {
+        case DoubleTapModifier::Ctrl:  return ModKey::Ctrl;
+        case DoubleTapModifier::Alt:   return ModKey::Alt;
+        case DoubleTapModifier::Shift: return ModKey::Shift;
+        default:                       return ModKey::None;
+    }
+}
+} // namespace
 
 KeyboardHook::KeyboardHook() = default;
 
@@ -144,6 +163,7 @@ void KeyboardHook::uninstall() {
     m_testModifierMask.store(0, std::memory_order_relaxed);
     m_pendingModifierVk.store(0, std::memory_order_relaxed);
     m_comboTriggered.store(false, std::memory_order_relaxed);
+    m_doubleTapResetPending.store(true, std::memory_order_release);
     {
         std::lock_guard hookLock(m_hookHotkeyMutex);
         m_pressedHookVks.clear();
@@ -163,6 +183,7 @@ void KeyboardHook::setPaused(bool paused) {
     if (paused) {
         m_pendingModifierVk.store(0, std::memory_order_relaxed);
         m_comboTriggered.store(false, std::memory_order_relaxed);
+        m_doubleTapResetPending.store(true, std::memory_order_release);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -179,6 +200,7 @@ void KeyboardHook::setFullscreenSuspended(bool suspended) {
     if (suspended) {
         m_pendingModifierVk.store(0, std::memory_order_relaxed);
         m_comboTriggered.store(false, std::memory_order_relaxed);
+        m_doubleTapResetPending.store(true, std::memory_order_release);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -195,6 +217,7 @@ void KeyboardHook::setRemoteSuspended(bool suspended) {
     if (suspended) {
         m_pendingModifierVk.store(0, std::memory_order_relaxed);
         m_comboTriggered.store(false, std::memory_order_relaxed);
+        m_doubleTapResetPending.store(true, std::memory_order_release);
         {
             std::lock_guard hookLock(m_hookHotkeyMutex);
             m_pressedHookVks.clear();
@@ -255,7 +278,12 @@ bool KeyboardHook::injectTestKeyEvent(DWORD vkCode, UINT scanCode, bool isKeyUp,
 bool KeyboardHook::registerHookHotkey(int id, const HotkeyDef& def, const std::string& name, HotkeyCallback cb) {
     std::lock_guard lock(m_hookHotkeyMutex);
     m_hookHotkeys[id] = HookHotkeyEntry{id, def, name, std::move(cb)};
-    m_registeredHookVks.insert(def.virtualKey);
+    if (def.isDoubleTap()) {
+        const uint8_t bit = doubleTapMaskFromModKey(def.modifiers);
+        m_doubleTapMask.fetch_or(bit, std::memory_order_release);
+    } else if (def.virtualKey != 0) {
+        m_registeredHookVks.insert(def.virtualKey);
+    }
     m_hasHookHotkeys.store(true, std::memory_order_release);
     return true;
 }
@@ -264,9 +292,15 @@ void KeyboardHook::unregisterHookHotkey(int id) {
     std::lock_guard lock(m_hookHotkeyMutex);
     m_hookHotkeys.erase(id);
     m_registeredHookVks.clear();
+    uint8_t nextDoubleMask = 0;
     for (const auto& [_, entry] : m_hookHotkeys) {
-        m_registeredHookVks.insert(entry.def.virtualKey);
+        if (entry.def.isDoubleTap()) {
+            nextDoubleMask |= doubleTapMaskFromModKey(entry.def.modifiers);
+        } else if (entry.def.virtualKey != 0) {
+            m_registeredHookVks.insert(entry.def.virtualKey);
+        }
     }
+    m_doubleTapMask.store(nextDoubleMask, std::memory_order_release);
     m_pressedHookVks.clear();
     m_hasHookHotkeys.store(!m_hookHotkeys.empty(), std::memory_order_release);
 }
@@ -276,6 +310,8 @@ void KeyboardHook::clearHookHotkeys() {
     m_hookHotkeys.clear();
     m_registeredHookVks.clear();
     m_pressedHookVks.clear();
+    m_doubleTapMask.store(0, std::memory_order_release);
+    m_doubleTapResetPending.store(true, std::memory_order_release);
     m_hasHookHotkeys.store(false, std::memory_order_release);
 }
 
@@ -313,6 +349,18 @@ void KeyboardHook::clearCallbacks() {
 
 bool KeyboardHook::hasHookHotkeys() const {
     return m_hasHookHotkeys.load(std::memory_order_relaxed);
+}
+
+bool KeyboardHook::hasActiveDoubleTapModifier(ModKey mod) const noexcept {
+    const uint8_t bit = doubleTapMaskFromModKey(mod);
+    if (bit == 0) return false;
+    return (m_doubleTapMask.load(std::memory_order_acquire) & bit) != 0;
+}
+
+void KeyboardHook::notifyMouseActivity() noexcept {
+    if (m_doubleTapMask.load(std::memory_order_relaxed) != 0) {
+        m_doubleTapMouseAbort.store(true, std::memory_order_release);
+    }
 }
 
 void KeyboardHook::setRecordingMode(bool enabled) {
@@ -501,6 +549,55 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                 }
 
                 if (!localHotkeysSuspended) {
+                    // --- 零锁纳秒级通用修饰键双击状态机 (Double+Ctrl / Double+Alt / Double+Shift) ---
+                    const uint8_t doubleTapMask = self.m_doubleTapMask.load(std::memory_order_acquire);
+                    if (doubleTapMask != 0) {
+                        if (self.m_doubleTapResetPending.exchange(false, std::memory_order_acq_rel)) {
+                            self.m_doubleTapDetector.reset();
+                        }
+                        if (self.m_doubleTapMouseAbort.exchange(false, std::memory_order_acq_rel)) {
+                            self.m_doubleTapDetector.onMouseActivity();
+                        }
+                        const bool isDownEv = (wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN);
+                        const bool isUpEv = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+                        const bool isSyntheticAltGrLCtrl =
+                            (data->vkCode == VK_LCONTROL) &&
+                            ((data->scanCode == 0x21Du) || ((data->scanCode & 0xFF00u) == 0x0200u));
+                        const int64_t nowMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now().time_since_epoch()).count();
+                        const DoubleTapModifier triggeredMod = self.m_doubleTapDetector.onKeyEvent(
+                            data->vkCode, isDownEv, isUpEv, nowMs, doubleTapMask, isSyntheticAltGrLCtrl);
+                        if (triggeredMod != DoubleTapModifier::None && !self.isAnyCaptureOverlayVisible()) {
+                            const ModKey matchedMod = modKeyFromDoubleTap(triggeredMod);
+                            HotkeyCallback cbToFire;
+                            std::string matchedName;
+                            {
+                                std::lock_guard lock(self.m_hookHotkeyMutex);
+                                for (const auto& [id, entry] : self.m_hookHotkeys) {
+                                    if (entry.def.isDoubleTap() && entry.def.modifiers == matchedMod) {
+                                        cbToFire = entry.callback;
+                                        matchedName = entry.name;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (cbToFire) {
+                                LOG_DEBUG("[HotkeyDoubleTap] Triggered hook double-tap hotkey: name={}", matchedName);
+                                MainThreadDispatcher::instance().postDeferred([cb = std::move(cbToFire), matchedName]() {
+                                    TraceId::Scope scope;
+                                    try {
+                                        cb();
+                                    } catch (const std::exception& e) {
+                                        LOG_ERROR("[HotkeyDoubleTap] Callback exception: name={}, error={}", matchedName, e.what());
+                                    } catch (...) {
+                                        LOG_ERROR("[HotkeyDoubleTap] Unknown callback exception: name={}", matchedName);
+                                    }
+                                });
+                                // 严禁吞噬修饰键本身，照常放行至 CallNextHookEx 杜绝系统修饰键卡死
+                            }
+                        }
+                    }
+
                     // --- 工业级双引擎底层键盘钩子兜底按键状态机 ---
                     if (self.m_hasHookHotkeys.load(std::memory_order_relaxed)) {
                         const DWORD vk = data->vkCode;
@@ -544,7 +641,7 @@ LRESULT CALLBACK KeyboardHook::lowLevelKeyboardProc(int nCode, WPARAM wParam, LP
                                 {
                                     std::lock_guard lock(self.m_hookHotkeyMutex);
                                     for (const auto& [id, entry] : self.m_hookHotkeys) {
-                                        if (entry.def.virtualKey == vk && entry.def.modifiers == currentMods) {
+                                        if (!entry.def.isDoubleTap() && entry.def.virtualKey == vk && entry.def.modifiers == currentMods) {
                                             self.m_pressedHookVks.insert(vk);
                                             cbToFire = entry.callback;
                                             matchedName = entry.name;

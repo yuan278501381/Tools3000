@@ -206,6 +206,12 @@ void SpotlightOverlay::onKeyboardEvent(DWORD vkCode, WPARAM wParam) {
 
         if (isCtrl) {
             if (!m_settings.enabled || !m_settings.triggerDoubleCtrl) return;
+            // 若已有全局热键活跃占用 Double+Ctrl，则自动让位杜绝双触发
+            if (tools3000::core::KeyboardHook::instance().hasActiveDoubleTapModifier(
+                    tools3000::core::ModKey::Ctrl)) {
+                m_ctrlState = CtrlDoubleTapState::Idle;
+                return;
+            }
 
             auto now = std::chrono::steady_clock::now();
 

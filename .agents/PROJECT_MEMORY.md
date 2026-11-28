@@ -6,6 +6,39 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-28] 全链路零损内存深度瘦身、SnapZones 原版统一 Fluent 分割/切割线与画布单一焦点、Alt+Tab 全链路根治与抗 403 限流更新检查 (`feat/windowkit-polish-and-memory`)
+- **1. SnapZones 网格/自由画布编辑器 100% 原版 PowerToys FancyZones 统一 Fluent 风格与单一焦点 (`src/window_kit/src/features/layout_editor.rs`)**：
+  - 彻底清除 `ZoneLayoutType::Grid` 模式下普通悬停/点击后的整块分区涂蓝与加粗边框，分区保持通透静息玻璃态（`5*s` 原版精致圆角 + `1*s` 柔和主题色边；仅左键拖拽框选合并 `in_marquee` 时高亮待合并区块并呈现居中合并胶囊）；
+  - 核查微软官方 `GridZone.xaml` / `GridZone.xaml.cs` / `GridResizer.xaml` 一手源码后，将「已有分割线」与「新建切割线」彻底统一收口为同一绘制原语 `draw_fluent_splitter_bar`（宽度严格等于 `(zone_gap * scale).max(4*scale)`，与切完后的真实分区缝隙 1:1 等宽，取消多余霓虹光晕/T 形卡尺/两端圆球；已有分割线静息态柔和实心可见、悬停/拖动实心高亮；`GridResizer` 圆形手柄去除白边圈，保留柔和投影 + 悬停提亮 + 白色双杠 `(||)`/`(=)`）；
+  - 抽象 `compute_grid_slicer_preview()` 统一预览与落刀求解（支持当前分区 `25% / 33.3% / 50% / 66.7% / 75%` 经典等分与底层真实窗口边缘微磁吸，`Alt` 临时禁吸，光标旁精简磨砂比例/像素/Shift 胶囊）；
+  - **自由画布 (Canvas) 单一激活焦点与 Z-Order 置顶**：新增纯函数 `resolve_active_canvas_zone`（优先级 `drag_canvas_zone > hovered_zone > selected_zone`）与 `canvas_render_order`（唯一激活区置顶渲染），全画面任意时刻严格仅高亮当前鼠标所在的唯一分区并仅显示该分区 8 向缩放手柄，彻底消除双蓝框与双份手柄叠压；重写 `hit_test_canvas_handle` 为两阶段（先激活区 8 向手柄，再按面积从小到大命中内部区域保证嵌套小分区 100% 可达）。
+- **2. QuickSwitch (`Alt+Tab`) 全链路根治卡首项/漏回原生切屏/冷开窗缺失 HWND 与全拖动面手型光标反馈 (`main.rs`, `quick_switch.rs`, `ui_slint/mod.rs`, `win_utils.rs`, `quick_switch.slint`)**：
+  - *卡首项根治*：拆分 `items_changed: bool`（切项零重建 `VecModel`）、新增 `should_accept_mouse_hover_select`（`>= 4px` 真实物理位移 + 键盘导航后 `250ms` 防抖守卫）、`Flickable` 经 `content-y` 自动跟随滚动；
+  - *按住 `Alt` 连按 `Tab` 漏回原生切屏 + 冷开窗 5 重根因全链路根治*：
+    1. 独立钩子线程 `Tools3000-InputHooks` 提升至 `THREAD_PRIORITY_HIGHEST` 防高分屏软件渲染抢占触发 `LowLevelHooksTimeout`；新增无锁物理修饰键位图 `HOOK_PHYS_MODS`（屏蔽 `LLKHF_INJECTED` 抵御 `winit::force_window_active` 等注入假 `Alt UP`、识别 AltGr 伴生假 `LCtrl`、融合 `WM_SYSKEYDOWN`/`LLKHF_ALTDOWN`）与 `heal_stale_phys_mods`（60ms 陈旧 `Ctrl`/`Win`/`Shift` 自愈防远控/UAC 丢 `KEYUP` 后放行原生 `Alt+Tab`）；接入 `WTSRegisterSessionNotification` / `WM_POWERBROADCAST` / `> 5s` 时钟跳变自愈重挂钩子；
+    2. 新增钩子侧即刻会话标志 `HOOK_QS_ALT_SESSION_ACTIVE` 与纯函数裁决 `decide_quick_switch_hook_action`：首记 `Alt+Tab` 命中 0.005ms 即激活会话，消除主线程开窗（提取图标 ~20ms）窗口期内连按 `Tab` 漏切或极速松 `Alt` 漏发 `ALT_RELEASED` 卡窗；激活或打开期间所有非 `Win`/非 `Ctrl` 的 `Tab DOWN/UP` 100% 吞噬并在内部切项；
+    3. 根治 Slint 1.19.1 + winit 0.30 冷启动 / 25s `purge_idle_windows()` 后首次 `w.show()` 惰性延迟创建 `HWND` 导致样式/置顶/缩略图全部落空：新增 `QsPendingHwndInit` + `finalize_qs_hwnd_init_if_pending` 在 `Resized`/`Focused(true)`/`RedrawRequested` 与下一轮事件循环双保险补齐；
+    4. 挂载轻量 Win32 子类 `qs_syskey_subclass_proc` 拦截 `SC_KEYMENU`/`SC_CONTEXTHELP`/`WM_MENUCHAR`/`WM_HELP`，杜绝按住/松开 `Alt` 时 `DefWindowProcW` 进入系统菜单模态循环抢焦；`should_dismiss_on_focus_loss` 保护按住 `Alt` 期间瞬态失焦不误关；`force_foreground_window` 优先无副作用原生激活、`activate_window` 失败时以 `SwitchToThisWindow` 兜底；
+  - *可拖动区域手型光标反馈*：实证 `winit-0.30.13` Windows 映射（`CursorIcon::Pointer => IDC_HAND`，而 `Grab/Grabbing/Move => IDC_SIZEALL`），全量可拖动移窗区域（外框空白、列表下方留白区与右侧预览区）统一挂载 `mouse-cursor: pointer` 呈现标准手型光标，同时将中间分割线热区拓宽至 `9px` 悬停加宽提亮。
+- **2.5 全局快捷键支持修饰键双击 (`Double+Ctrl/Alt/Shift`) 与截图内 `Ctrl+O` 一键 OCR（感谢 Linux.do `@眠骨三生`）**：
+  - *修饰键双击架构 (`ModifierDoubleTapDetector.h`, `HotkeyManager.{h,cpp}`, `KeyboardHook.{h,cpp}`, `MessageBridge.cpp`, `src/main.cpp`, `HotkeyRecorder.tsx`, `HotkeysPage.tsx`, `App.tsx`)*：抽离零 Win32 依赖、`<128B` 无锁热路径状态机 `ModifierDoubleTapDetector`（5 重防误触：硬件连发/首按 `<=280ms`/间隔 `25~380ms`/杂键与多修饰键熔断/1ns 鼠标点击滚轮原子熔断/AltGr 假 `LCtrl` 隔离）；仅放行 `Double+Ctrl`/`Double+Alt`/`Double+Shift`（绝不放行 `Win` 与普通键），不吞噬修饰键本身杜绝卡键；通过依赖倒置在 `main.cpp` 注入与「鼠标聚光灯双击 Ctrl」的冲突探测与绑定自动让位闭环（绑定 `Double+Ctrl` 时自动关闭聚光灯双击 `Ctrl` 并全站 Toast 温和提醒）；
+  - *截图内 `Ctrl+O` 一键 OCR (`CaptureShortcutPolicy.h`, `CaptureInputKeyboard.cpp`, `CaptureToolbarLayout.cpp`, `CaptureToolbarAccessibility.h`, `ShortcutHintOverlay.cpp`)*：在 `hasSelection && Screenshot` 态新增 `ExtractTextFromSelection` 绑定 `Ctrl+O`（兼 `Ctrl+Shift+O`），不与单键 `O`（椭圆工具）冲突，零内存/进程增量直接复用 `ToolbarCommand::ExtractText`。
+- **2.6 P0 零损安装包与覆盖升级瘦身 (`CMakeLists.txt`, `deploy.ps1`, `packaging/installer/installer.iss`)**：
+  - 将 `capture_objects` 从全量 `${OpenCV_LIBS}` 收敛为实际 6 模块；`deploy.ps1` 放弃盲拷 `build\bin\Release\*.dll`，改为从全部自有 EXE/Core/Plugin 出发走 `sync-delayed-dlls.ps1` PE 导入表 + `/DELAYLOAD` 可达闭包精准拉取，自动裁除 `libprotoc.dll` (9.94 MB)、`avfilter-11.dll` (3.98 MB)、`libprotobuf-lite.dll` (1.38 MB)、6 个未用 `opencv_*` DLL (~5.5 MB) 与 `turbojpeg.dll` 等 ~22 MB 0 引用死库；保持 Inno Setup `LZMANumBlockThreads=8 + LZMABlockSize=16MB` 多线程高速解压不变，同时在 `installer.iss` `[InstallDelete]` 中清理历史 `{app}\ui\assets` 与淘汰死 DLL，实现安装包更小且安装/解压更快。
+- **3. 全链路零功能损失安全内存治理与三段式生命周期精调（不提前清、也不过晚清）**：
+  - **WindowKit Slint 真冷回收 (`ui_slint/mod.rs`, `main.rs`, `constants.rs`)**：隐藏即清空图标 `VecModel` 释放 `SharedPixelBuffer`；新增 25 秒 `TIMER_SLINT_IDLE_PURGE` 真正 `Drop` 销毁不可见大尺寸软件渲染 Slint 窗口池并缩减工作集；新增 `sync_border_reconcile_timer()` 在无置顶窗且未开 `focusBorder` 时彻底 `KillTimer(TIMER_BORDER_RECONCILE)` 杜绝 120ms 空跑重建 `SharedGraphics`。**实机隔离对比**：闲置态从 `18.19 MB PrivWS / 99.60 MB Commit` 降至 **`1.68 MB PrivWS / 7.18 MB Commit`（Commit `-92.8%`，PrivWS `-90.8%`）**，释放后再次打开 1ms 内无缝重建；
+  - **OCR Worker (`CaptureWorkerCommon.h`, `OcrWorkerClient.cpp`, `OcrWorkerHost.cpp`, `DeepOcrEngine.cpp`)**：DirectML GPU 模式下检测桶单活互斥（`<= 1`）、识别桶接入单调 LRU 上限（`<= 2`，淘汰时 `Close()` + `IDXGIDevice3::Trim()`），默认退场由 `900s` 收紧为自适应（`<= 16 GiB` 内存或 RDP `60s`，32GB+ 桌面 `180s`），解决 7 会话 `1.84 GB Commit` 滞留 15 分钟问题；全量 5 语种连切实测 Commit 封顶 `~1.62 GB` 不再爬坡，释放后直降 `> 1.06 GB`；
+  - **SearchService (`ServiceLifecyclePolicy.h`, `MftParser*.{h,cpp}`, `DatabaseManager.cpp`, `service/main.cpp`)**：命名管道常驻工作线程由固定 20 个缩容至 `[2, 4]`；冷态 `idle_trim` 后开启 `PendingUsnQueue` 轻量攒批缓冲（搜索查询/快照/4096 条上限/15 分钟前 `<2ms` 原子批量刷入主索引，严格单向锁序杜绝死锁），终结 trim 到 0 MB 后 5 秒内被 USN 写入拽回 102 MB；
+  - **TrayWindow / QuickLookWindow / SettingsWindow / SpotlightOverlay**：
+    - `TrayWindow` 补齐 3 分钟 `IDT_IDLE_DESTROY`（保留 `WebViewEnvironmentManager.cpp` 的 `--disable-backgrounding-occluded-windows` 100% 守住 `#29` 零黑屏）；
+    - `QuickLookWindow` 改为完整三段式（关闭瞬间清大图/媒体绑定，延迟 `15s` `IDT_DEFERRED_SUSPEND` 再冻结渲染器与静默修剪，保护连续空格快速翻阅 0 软缺页卡顿；`90s` `IDT_IDLE_DESTROY` 彻底销毁释放 WebView2）；
+    - `SettingsWindow` SSD 闲置冷毁由 `5 分钟` 收敛至 `3 分钟`（与 `TrayWindow` 对齐，机械盘保持 15 分钟）；
+    - `SpotlightOverlay` 保持 0ms 隐藏窗口与解绑 DCompVisual，将 SwapChain 销毁滞后至连续隐藏 3 秒后执行（+ 60 秒释放 Compositor）并降噪日志，真显卡 60FPS 压测 `dropRate=0%`。
+- **4. 检查更新抗 GitHub API 403 限流 3 级降级与前端提示去重 (`UpdateChecker.{h,cpp}`, `AboutPage.tsx`, 8 语种 JSON, `AboutPage.update.test.tsx`, `test_core.inc`)**：
+  - 主通道 `api.github.com` 遇共享代理 403/429 限流或 5xx/网络失败时，无感自动降级至零限流的 `github.com/.../releases/latest` 302 `Location` -> `raw.githubusercontent.com/.../bucket/tools3000.json`，并用 `SHA256SUMS.txt` 强验对应架构资产存在性与哈希；前端 8 语种新增 `about.updateRateLimited` 精准区分限流/断网，所有更新 Toast 固定 `{ id: 'about-update-check' }` 彻底去重。
+- **5. 免费翻译稳定性复盘教训**：
+  - 经 149 张真实 OCR 测试图实网压测验证：免费公共翻译接口（Google / Bing Edge）对同 IP 高频多源并发极其敏感且易触发 HTTP 429，且全局持久化 WinHTTP 连接池经本地 HTTP 代理易累积半开僵尸连接；按项目负责人决策，翻译服务保持 `v1.5.6` 稳健版本逻辑不动。
+
 ### [2026-11-28] 重要新功能全触点同步交付铁律 & 出厂默认关闭策略（项目负责人明确确立）
 - **重要新功能全渠道同步清单（小修小补/微调免做，重要新功能/一级模块强制同步）**：
   1. **新手向导 (`OnboardingModal.tsx`)**：在对应步骤卡片或可选能力导览中体现新功能价值与开启路径；

@@ -1598,6 +1598,7 @@
     "upToDate": "Установлена последняя версия Tools3000",
     "updateAvailable": "Доступна версия Tools3000 {{version}}",
     "updateFailed": "Не удалось проверить обновления",
+    "updateRateLimited": "Превышен лимит запросов GitHub API (часто на общих прокси). Смените прокси или повторите позже.",
     "updateCheckBusy": "Проверка обновлений уже выполняется",
     "noPublishedRelease": "Опубликованных релизов пока нет",
     "openRelease": "Открыть страницу релиза",
@@ -1794,7 +1795,11 @@
     "pressKeys": "Нажмите клавишу или сочетание...",
     "bindFailed": "Не удалось применить это сочетание клавиш",
     "clearBinding": "Очистить привязку клавиши",
-    "needModifier": "Буквы и символы нужно сочетать с Ctrl, Alt или Win"
+    "needModifier": "Буквы и символы нужно сочетать с Ctrl, Alt или Win",
+    "doubleTapDisplay": "Двойной {{key}}",
+    "pressKeysOrDoubleTap": "Нажмите сочетание или дважды Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "Нажмите {{key}} еще раз...",
+    "autoYieldedSpotlightDoubleCtrl": "Двойное нажатие Ctrl для подсветки курсора отключено, чтобы избежать конфликта с новым сочетанием"
   },
   "search": {
     "title": "Быстрый поиск файлов",

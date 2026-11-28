@@ -125,6 +125,8 @@ function formatUpdateMB(bytes?: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const UPDATE_CHECK_TOAST_ID = 'about-update-check';
+
 export const AboutPage: FC<AboutPageProps> = ({ onNavigate, onOpenChangelog }) => {
   const { t } = useTranslation();
   const [version, setVersion] = useState(__TOOLS3000_VERSION__);
@@ -141,13 +143,16 @@ export const AboutPage: FC<AboutPageProps> = ({ onNavigate, onOpenChangelog }) =
     setCheckingUpdate(false);
     setUpdateResult((prev) => ({ ...prev, ...result }));
     if (result.status === 'available' || result.status === 'readyToInstall') {
-      toast.success(t('about.updateAvailable', { version: result.latestVersion ?? '' }));
+      toast.success(t('about.updateAvailable', { version: result.latestVersion ?? '' }), { id: UPDATE_CHECK_TOAST_ID });
     } else if (result.status === 'upToDate') {
-      toast.success(t('about.upToDate'));
+      toast.success(t('about.upToDate'), { id: UPDATE_CHECK_TOAST_ID });
     } else if (result.status === 'unavailable') {
-      toast.info(t('about.noPublishedRelease'));
+      toast.info(t('about.noPublishedRelease'), { id: UPDATE_CHECK_TOAST_ID });
     } else if (result.status === 'error') {
-      toast.error(t('about.updateFailed'));
+      toast.error(
+        result.error === 'rateLimited' ? t('about.updateRateLimited') : t('about.updateFailed'),
+        { id: UPDATE_CHECK_TOAST_ID },
+      );
     }
   });
 
@@ -185,11 +190,11 @@ export const AboutPage: FC<AboutPageProps> = ({ onNavigate, onOpenChangelog }) =
       if (!response.success) throw new Error('check failed');
       if (response.started === false) {
         setCheckingUpdate(false);
-        toast.info(t('about.updateCheckBusy'));
+        toast.info(t('about.updateCheckBusy'), { id: UPDATE_CHECK_TOAST_ID });
       }
     } catch {
       setCheckingUpdate(false);
-      toast.error(t('about.updateFailed'));
+      toast.error(t('about.updateFailed'), { id: UPDATE_CHECK_TOAST_ID });
     }
   };
 
@@ -200,7 +205,7 @@ export const AboutPage: FC<AboutPageProps> = ({ onNavigate, onOpenChangelog }) =
         setUpdateResult((prev) => ({ ...prev, ...res }));
       }
     } catch {
-      toast.error(t('about.updateFailed'));
+      toast.error(t('about.updateFailed'), { id: UPDATE_CHECK_TOAST_ID });
     }
   };
 

@@ -88,7 +88,19 @@ void dispatchToHotkeyThread(DWORD ownerThreadId,
 
 // ── HotkeyDef 安全矩阵与序列化 ──────────────────────────────────────────────
 
+bool HotkeyDef::isDoubleTap() const noexcept {
+    return doubleTap && virtualKey == 0 &&
+           (modifiers == ModKey::Ctrl || modifiers == ModKey::Alt || modifiers == ModKey::Shift);
+}
+
+bool HotkeyDef::isEmpty() const noexcept {
+    return virtualKey == 0 && !isDoubleTap();
+}
+
 bool HotkeyDef::isSafe() const {
+    if (doubleTap) {
+        return isDoubleTap();
+    }
     if (virtualKey == 0) return true;
 
     const auto mods = static_cast<UINT>(modifiers);
@@ -121,6 +133,12 @@ bool HotkeyDef::isSafe() const {
 }
 
 std::string HotkeyDef::toString() const {
+    if (isDoubleTap()) {
+        if (modifiers == ModKey::Ctrl)  return "Double+Ctrl";
+        if (modifiers == ModKey::Alt)   return "Double+Alt";
+        if (modifiers == ModKey::Shift) return "Double+Shift";
+        return {};
+    }
     if (virtualKey == 0) return {};
     std::string result;
     auto mods = static_cast<UINT>(modifiers);
@@ -207,6 +225,31 @@ std::optional<HotkeyDef> HotkeyDef::fromString(const std::string& str) {
     std::string s = str;
     trim(s);
     if (s.empty()) return std::nullopt;
+
+    // 优先识别修饰键双击语法："Double+Ctrl" / "Double+Alt" / "Double+Shift"
+    // 以及友好别名 "Ctrl+Ctrl" / "Alt+Alt" / "Shift+Shift"（忽略大小写与空白）
+    {
+        std::string compactLower;
+        compactLower.reserve(s.size());
+        for (unsigned char c : s) {
+            if (!std::isspace(c)) {
+                compactLower.push_back(static_cast<char>(std::tolower(c)));
+            }
+        }
+        if (compactLower == "double+ctrl" || compactLower == "double+control" ||
+            compactLower == "ctrl+ctrl" || compactLower == "control+control") {
+            return HotkeyDef{ModKey::Ctrl, 0, true};
+        }
+        if (compactLower == "double+alt" || compactLower == "alt+alt") {
+            return HotkeyDef{ModKey::Alt, 0, true};
+        }
+        if (compactLower == "double+shift" || compactLower == "shift+shift") {
+            return HotkeyDef{ModKey::Shift, 0, true};
+        }
+        if (compactLower.starts_with("double+")) {
+            return std::nullopt;
+        }
+    }
 
     // 解析前缀修饰键 (例如 "Ctrl+", "Alt+", "Shift+", "Win+")，彻底解决 Num+ 与 + 分词碎裂并兼容空白字符
     auto consumeModifier = [&](const std::string& name, ModKey mod) -> bool {
@@ -347,6 +390,8 @@ HotkeyManager& HotkeyManager::instance() {
 
 bool HotkeyManager::canFallbackToHook(const HotkeyDef& def) {
     if (!def.isSafe()) return false;
+    // 0. 修饰键双击 (Double+Ctrl / Double+Alt / Double+Shift) 必须由底层键盘钩子状态机驱动
+    if (def.isDoubleTap()) return true;
     // 1. 单功能键 (F1~F24、PrintScreen、多媒体控制键等) 经常被 Explorer / 系统保留
     if (isSingleFunctionKey(def)) return true;
     // 2. Windows 窗口系统菜单保留键 Alt+Space (如 QuickLook / 搜索呼出)
@@ -406,7 +451,7 @@ void HotkeyManager::setPaused(bool paused) {
         const bool fullscreenSuspended = m_fullscreenSuspended.load(std::memory_order_relaxed);
         const bool remoteSuspended = m_remoteSuspended.load(std::memory_order_relaxed);
         for (auto& [name, entry] : m_hotkeys) {
-            if (!entry.armed || entry.def.virtualKey == 0) {
+            if (!entry.armed || entry.def.isEmpty()) {
                 entry.suspendedByPause = false;
                 continue;
             }
@@ -431,7 +476,7 @@ void HotkeyManager::setPaused(bool paused) {
             }
             bool ok = false;
             bool useHook = false;
-            if (m_hwnd && IsWindow(m_hwnd)) {
+            if (!entry.def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
                 UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
                 ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
             }
@@ -492,7 +537,7 @@ void HotkeyManager::setFullscreenSuspended(bool suspended) {
         const bool isPausedNow = m_paused.load(std::memory_order_relaxed);
         const bool remoteSuspendedNow = m_remoteSuspended.load(std::memory_order_relaxed);
         for (auto& [name, entry] : m_hotkeys) {
-            if (!entry.armed || entry.def.virtualKey == 0) {
+            if (!entry.armed || entry.def.isEmpty()) {
                 entry.suspendedByFullscreen = false;
                 continue;
             }
@@ -523,7 +568,7 @@ void HotkeyManager::setFullscreenSuspended(bool suspended) {
             }
             bool ok = false;
             bool useHook = false;
-            if (m_hwnd && IsWindow(m_hwnd)) {
+            if (!entry.def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
                 UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
                 ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
             }
@@ -584,7 +629,7 @@ void HotkeyManager::setRemoteSuspended(bool suspended) {
         const bool isPausedNow = m_paused.load(std::memory_order_relaxed);
         const bool fullscreenNow = m_fullscreenSuspended.load(std::memory_order_relaxed);
         for (auto& [name, entry] : m_hotkeys) {
-            if (!entry.armed || entry.def.virtualKey == 0) {
+            if (!entry.armed || entry.def.isEmpty()) {
                 entry.suspendedByRemote = false;
                 continue;
             }
@@ -615,7 +660,7 @@ void HotkeyManager::setRemoteSuspended(bool suspended) {
             }
             bool ok = false;
             bool useHook = false;
-            if (m_hwnd && IsWindow(m_hwnd)) {
+            if (!entry.def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
                 UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
                 ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
             }
@@ -708,7 +753,7 @@ void HotkeyManager::syncAppExclusionsLocked() {
     const bool remoteNow = m_remoteSuspended.load(std::memory_order_relaxed);
 
     for (auto& [name, entry] : m_hotkeys) {
-        if (!entry.armed || entry.def.virtualKey == 0) {
+        if (!entry.armed || entry.def.isEmpty()) {
             entry.suspendedByApp = false;
             continue;
         }
@@ -737,7 +782,7 @@ void HotkeyManager::syncAppExclusionsLocked() {
             }
             bool ok = false;
             bool useHook = false;
-            if (m_hwnd && IsWindow(m_hwnd)) {
+            if (!entry.def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
                 UINT mods = static_cast<UINT>(entry.def.modifiers) | MOD_NOREPEAT;
                 ok = (RegisterHotKey(m_hwnd, entry.id, mods, entry.def.virtualKey) != FALSE);
             }
@@ -822,6 +867,32 @@ void HotkeyManager::updateForegroundProcess(const std::string& processName) {
     syncAppExclusionsLocked();
 }
 
+void HotkeyManager::setExternalDoubleTapConflictChecker(std::function<std::string(ModKey)> checker) {
+    std::lock_guard lock(m_mutex);
+    m_externalDoubleTapConflictChecker = std::move(checker);
+}
+
+void HotkeyManager::setExternalDoubleTapYieldHandler(std::function<bool(ModKey)> handler) {
+    std::lock_guard lock(m_mutex);
+    m_externalDoubleTapYieldHandler = std::move(handler);
+}
+
+bool HotkeyManager::yieldExternalDoubleTapIfNeeded(ModKey mod) {
+    std::function<bool(ModKey)> handler;
+    {
+        std::lock_guard lock(m_mutex);
+        handler = m_externalDoubleTapYieldHandler;
+    }
+    return handler ? handler(mod) : false;
+}
+
+std::string HotkeyManager::checkExternalDoubleTapConflictLocked(const HotkeyDef& def) const {
+    if (!def.isDoubleTap() || !m_externalDoubleTapConflictChecker) {
+        return {};
+    }
+    return m_externalDoubleTapConflictChecker(def.modifiers);
+}
+
 void HotkeyManager::initialize(HWND messageWindow) {
     m_hwnd = messageWindow;
     DWORD ownerThreadId = 0;
@@ -895,7 +966,7 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
     }
 
     int id = generateId();
-    if (def.virtualKey == 0) {
+    if (def.isEmpty()) {
         m_hotkeys.emplace(name, HotkeyEntry{id, def, name, std::move(callback), false, true, false, "none", "", false, false, false, false});
         LOG_INFO("快捷键已禁用: name={}", name);
         return true;
@@ -920,7 +991,7 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
 
     if (m_paused.load(std::memory_order_relaxed)) {
         bool canReg = false;
-        if (m_hwnd && IsWindow(m_hwnd)) {
+        if (!def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
             UINT mods = static_cast<UINT>(def.modifiers) | MOD_NOREPEAT;
             if (RegisterHotKey(m_hwnd, id, mods, def.virtualKey) != FALSE) {
                 UnregisterHotKey(m_hwnd, id);
@@ -937,8 +1008,8 @@ bool HotkeyManager::registerHotkey(const std::string& name, const HotkeyDef& def
     bool registered = false;
     bool useHook = false;
 
-    // 1. 优先调用 Win32 原生 RegisterHotKey（修饰键组合优先）
-    if (m_hwnd && IsWindow(m_hwnd)) {
+    // 1. 优先调用 Win32 原生 RegisterHotKey（修饰键组合优先；修饰键双击直接交由底层键盘钩子）
+    if (!def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
         UINT mods = static_cast<UINT>(def.modifiers) | MOD_NOREPEAT;
         registered = (RegisterHotKey(m_hwnd, id, mods, def.virtualKey) != FALSE);
     }
@@ -1019,7 +1090,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
             ownerThreadId, "rebindHotkey", false,
             [this, name, newDef]() { return rebindHotkey(name, newDef); });
     }
-    if (newDef.virtualKey == 0) return clearHotkey(name);
+    if (newDef.isEmpty()) return clearHotkey(name);
     if (!newDef.isSafe()) {
         LOG_WARN("重绑定拒绝不安全的快捷键: name={}, def={}", name, newDef.toString());
         return false;
@@ -1076,7 +1147,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
 
     if (m_paused.load(std::memory_order_relaxed)) {
         bool canReg = false;
-        if (m_hwnd && IsWindow(m_hwnd)) {
+        if (!newDef.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
             UINT mods = static_cast<UINT>(newDef.modifiers) | MOD_NOREPEAT;
             if (RegisterHotKey(m_hwnd, it->second.id, mods, newDef.virtualKey) != FALSE) {
                 UnregisterHotKey(m_hwnd, it->second.id);
@@ -1088,7 +1159,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
         }
         if (!canReg) {
             LOG_ERROR("重绑定快捷键失败: name={}, newDef={}", name, newDef.toString());
-            it->second.suspendedByPause = (oldSuspendedByPause || oldRegistered) && (oldDef.virtualKey != 0);
+            it->second.suspendedByPause = (oldSuspendedByPause || oldRegistered) && !oldDef.isEmpty();
             return false;
         }
         LOG_INFO("快捷键重绑定成功: name={}, {} → {}", name, oldDef.toString(), newDef.toString());
@@ -1103,7 +1174,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
     // 注册新的
     bool registered = false;
     bool useHook = false;
-    if (m_hwnd && IsWindow(m_hwnd)) {
+    if (!newDef.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
         UINT mods = static_cast<UINT>(newDef.modifiers) | MOD_NOREPEAT;
         registered = (RegisterHotKey(m_hwnd, it->second.id, mods, newDef.virtualKey) != FALSE);
     }
@@ -1121,7 +1192,7 @@ bool HotkeyManager::rebindHotkey(const std::string& name, const HotkeyDef& newDe
         it->second.registered = false;
         it->second.useHook = false;
         // 回滚旧绑定
-        if (oldRegistered && oldDef.virtualKey != 0) {
+        if (oldRegistered && !oldDef.isEmpty()) {
             if (oldUseHook) {
                 KeyboardHook::instance().registerHookHotkey(it->second.id, oldDef, name, it->second.callback);
                 KeyboardHook::instance().install();
@@ -1195,7 +1266,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
     }
 
     it->second.armed = armed;
-    if (it->second.def.virtualKey == 0) {
+    if (it->second.def.isEmpty()) {
         it->second.registered = false;
         it->second.useHook = false;
         it->second.suspendedByFullscreen = false;
@@ -1242,7 +1313,7 @@ bool HotkeyManager::setHotkeyArmed(const std::string& name, bool armed) {
 
     bool ok = false;
     bool useHook = false;
-    if (m_hwnd && IsWindow(m_hwnd)) {
+    if (!it->second.def.isDoubleTap() && m_hwnd && IsWindow(m_hwnd)) {
         UINT mods = static_cast<UINT>(it->second.def.modifiers) | MOD_NOREPEAT;
         ok = (RegisterHotKey(m_hwnd, it->second.id, mods, it->second.def.virtualKey) != FALSE);
     }
@@ -1289,7 +1360,7 @@ bool HotkeyManager::isConflict(const HotkeyDef& def) const {
     for (const auto& [name, entry] : m_hotkeys) {
         if ((entry.registered || entry.suspendedByFullscreen || entry.suspendedByRemote ||
              entry.suspendedByPause || entry.suspendedByApp) &&
-            def.virtualKey != 0 && entry.def == def) {
+            !def.isEmpty() && entry.def == def) {
             return true;
         }
     }
@@ -1304,7 +1375,7 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
             HotkeyConflictInfo{true, "unavailable", "无法在窗口线程检查快捷键冲突"},
             [this, def, currentName]() { return checkConflict(def, currentName); });
     }
-    if (def.virtualKey == 0) {
+    if (def.isEmpty()) {
         return {false, "none", ""};
     }
 
@@ -1320,9 +1391,12 @@ HotkeyConflictInfo HotkeyManager::checkConflict(const HotkeyDef& def, const std:
         currentIsScopedUnarmed = !selfIt->second.armed;
     }
     for (const auto& [name, entry] : m_hotkeys) {
-        if (name != currentName && entry.def.virtualKey != 0 && entry.def == def) {
+        if (name != currentName && !entry.def.isEmpty() && entry.def == def) {
             return {true, "internal", "与 [" + name + "] 冲突"};
         }
+    }
+    if (const std::string extOwner = checkExternalDoubleTapConflictLocked(def); !extOwner.empty()) {
+        return {true, "internal", "与 [" + extOwner + "] 冲突"};
     }
 
     // 场景按需热键（如文件对话框前台热键、录屏期间热键）平时不占用全局系统热键，无需用全局探针误报外部冲突
@@ -1396,7 +1470,7 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
     // 统计各快捷键出现的次数以判断内部冲突
     std::unordered_map<std::string, std::vector<std::string>> keyUsage;
     for (const auto& [name, entry] : m_hotkeys) {
-        if (entry.def.virtualKey != 0) {
+        if (!entry.def.isEmpty()) {
             keyUsage[entry.def.toString()].push_back(name);
         }
     }
@@ -1409,14 +1483,15 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
         if (item.suspendedByFullscreen || item.suspendedByRemote || item.suspendedByPause || item.suspendedByApp) {
             item.registered = true;
         }
-        if (item.def.virtualKey == 0) {
+        if (item.def.isEmpty()) {
             item.conflict = false;
             item.conflictType = "none";
             item.conflictWith = "";
         } else {
             const auto& users = keyUsage[item.def.toString()];
-            if (users.size() > 1) {
-                // 内部冲突 (多个插件绑定了同一热键)
+            const std::string extDoubleTapOwner = checkExternalDoubleTapConflictLocked(item.def);
+            if (users.size() > 1 || !extDoubleTapOwner.empty()) {
+                // 内部冲突 (多个插件或内置双击触发绑定了同一热键)
                 item.conflict = true;
                 item.conflictType = "internal";
                 std::string others;
@@ -1426,11 +1501,15 @@ std::vector<HotkeyEntry> HotkeyManager::getAllHotkeys() const {
                         others += u;
                     }
                 }
+                if (!extDoubleTapOwner.empty()) {
+                    if (!others.empty()) others += ", ";
+                    others += extDoubleTapOwner;
+                }
                 item.conflictWith = "与插件/功能 [" + others + "] 冲突";
             } else if (!item.suspendedByFullscreen && !item.suspendedByRemote &&
                        !item.suspendedByPause && !item.suspendedByApp &&
                        hotkeyLooksExternallyConflicted(
-                           item.def.virtualKey != 0, item.armed, item.registered)) {
+                           !item.def.isEmpty(), item.armed, item.registered)) {
                 // 外部冲突 (被其它第三方软件占用)
                 item.conflict = true;
                 item.conflictType = "external";

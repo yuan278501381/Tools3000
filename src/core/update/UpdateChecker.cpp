@@ -31,6 +31,12 @@ namespace {
 constexpr wchar_t ApiHost[] = L"api.github.com";
 constexpr wchar_t LatestReleasePath[] =
     L"/repos/yuan278501381/Tools3000/releases/latest";
+constexpr wchar_t ReleaseWebHost[] = L"github.com";
+constexpr wchar_t ReleaseWebLatestPath[] =
+    L"/yuan278501381/Tools3000/releases/latest";
+constexpr wchar_t RawGitHubHost[] = L"raw.githubusercontent.com";
+constexpr wchar_t ScoopManifestPath[] =
+    L"/yuan278501381/Tools3000/main/bucket/tools3000.json";
 constexpr wchar_t RequestHeaders[] =
     L"Accept: application/vnd.github+json\r\n"
     L"X-GitHub-Api-Version: 2022-11-28\r\n";
@@ -38,6 +44,7 @@ constexpr int RequestTimeoutMs = 8000;
 constexpr int DownloadConnectTimeoutMs = 12000;
 constexpr int DownloadReceiveTimeoutMs = 30000;
 constexpr size_t MaxResponseBytes = 1024 * 1024;
+constexpr size_t MaxScoopManifestBytes = 256 * 1024;
 constexpr uint64_t MaxInstallerBytes = 512ULL * 1024ULL * 1024ULL;
 constexpr int64_t AutomaticRetrySeconds = 6 * 60 * 60;
 constexpr const char* DismissedVersionConfigKey = "/update/dismissedVersion";
@@ -124,6 +131,35 @@ std::string normalizeVersionTag(std::string_view raw) {
         return "v" + extracted;
     }
     return trimAscii(raw);
+}
+
+std::string parseStrictSemVerString(std::string_view raw) {
+    std::string trimmed = trimAscii(raw);
+    if (trimmed.empty()) return {};
+    if (trimmed.front() == 'v' || trimmed.front() == 'V') {
+        trimmed.erase(trimmed.begin());
+    }
+    if (trimmed.empty() || trimmed.size() > 64) return {};
+    if (!std::isdigit(static_cast<unsigned char>(trimmed.front())) ||
+        !std::isdigit(static_cast<unsigned char>(trimmed.back()))) {
+        return {};
+    }
+    bool hasDot = false;
+    bool prevDot = false;
+    for (unsigned char ch : trimmed) {
+        if (ch == '.') {
+            if (prevDot) return {};
+            hasDot = true;
+            prevDot = true;
+        } else if (std::isdigit(ch)) {
+            prevDot = false;
+        } else {
+            return {};
+        }
+    }
+    if (!hasDot) return {};
+    if (parseVersion(trimmed).size() < 2) return {};
+    return trimmed;
 }
 
 bool isSameVersionTag(std::string_view left, std::string_view right) {
@@ -399,6 +435,173 @@ bool fetchSmallHttpsText(
     return ok;
 }
 
+std::string resolveLatestVersionFromWebRedirect(
+    std::stop_token stopToken,
+    std::mutex& reqMutex,
+    void*& activeReqSlot) {
+    if (stopToken.stop_requested()) return {};
+
+    HINTERNET session = WinHttpOpen(
+        L"Tools3000/1.0 (Update Checker)", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return {};
+    WinHttpSetTimeouts(session, RequestTimeoutMs, RequestTimeoutMs, RequestTimeoutMs, RequestTimeoutMs);
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_NEVER;
+    WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+
+    HINTERNET connection = WinHttpConnect(session, ReleaseWebHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET request = nullptr;
+    bool registered = false;
+    std::string resolvedVersion;
+
+    if (connection && !stopToken.stop_requested()) {
+        request = WinHttpOpenRequest(
+            connection, L"GET", ReleaseWebLatestPath, nullptr, WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    }
+    if (request) {
+        WinHttpSetOption(request, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+        {
+            std::lock_guard lock(reqMutex);
+            if (!stopToken.stop_requested()) {
+                activeReqSlot = request;
+                registered = true;
+            }
+        }
+        if (!stopToken.stop_requested() &&
+            WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr)) {
+            DWORD statusCode = 0;
+            DWORD statusSize = sizeof(statusCode);
+            WinHttpQueryHeaders(
+                request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                WINHTTP_NO_HEADER_INDEX);
+            if (statusCode == 301 || statusCode == 302 || statusCode == 307 || statusCode == 308) {
+                DWORD locBytes = 0;
+                WinHttpQueryHeaders(
+                    request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
+                    WINHTTP_NO_OUTPUT_BUFFER, &locBytes, WINHTTP_NO_HEADER_INDEX);
+                if (GetLastError() == ERROR_INSUFFICIENT_BUFFER &&
+                    locBytes >= sizeof(wchar_t) && locBytes <= 8192) {
+                    std::wstring locW((locBytes + sizeof(wchar_t) - 1) / sizeof(wchar_t), L'\0');
+                    if (WinHttpQueryHeaders(
+                            request, WINHTTP_QUERY_LOCATION, WINHTTP_HEADER_NAME_BY_INDEX,
+                            locW.data(), &locBytes, WINHTTP_NO_HEADER_INDEX)) {
+                        locW.resize(locBytes / sizeof(wchar_t));
+                        while (!locW.empty() && locW.back() == L'\0') {
+                            locW.pop_back();
+                        }
+                        resolvedVersion = UpdateChecker::parseReleaseTagFromRedirectLocation(
+                            WinUtils::wstringToUtf8(locW));
+                    }
+                }
+            }
+        }
+    }
+
+    bool closedExternally = false;
+    {
+        std::lock_guard lock(reqMutex);
+        if (registered) {
+            if (activeReqSlot == request) activeReqSlot = nullptr;
+            else closedExternally = true;
+        }
+    }
+    if (request && !closedExternally) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    if (session) WinHttpCloseHandle(session);
+    return resolvedVersion;
+}
+
+std::string resolveLatestVersionFromScoopManifest(
+    std::stop_token stopToken,
+    std::mutex& reqMutex,
+    void*& activeReqSlot) {
+    if (stopToken.stop_requested()) return {};
+
+    HINTERNET session = WinHttpOpen(
+        L"Tools3000/1.0 (Update Checker)", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+        WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!session) return {};
+    WinHttpSetTimeouts(session, RequestTimeoutMs, RequestTimeoutMs, RequestTimeoutMs, RequestTimeoutMs);
+    DWORD redirectPolicy = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    WinHttpSetOption(session, WINHTTP_OPTION_REDIRECT_POLICY, &redirectPolicy, sizeof(redirectPolicy));
+
+    HINTERNET connection = WinHttpConnect(session, RawGitHubHost, INTERNET_DEFAULT_HTTPS_PORT, 0);
+    HINTERNET request = nullptr;
+    bool registered = false;
+    std::string resolvedVersion;
+
+    if (connection && !stopToken.stop_requested()) {
+        request = WinHttpOpenRequest(
+            connection, L"GET", ScoopManifestPath, nullptr, WINHTTP_NO_REFERER,
+            WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+    }
+    if (request) {
+        {
+            std::lock_guard lock(reqMutex);
+            if (!stopToken.stop_requested()) {
+                activeReqSlot = request;
+                registered = true;
+            }
+        }
+        if (!stopToken.stop_requested() &&
+            WinHttpSendRequest(request, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(request, nullptr)) {
+            DWORD statusCode = 0;
+            DWORD statusSize = sizeof(statusCode);
+            WinHttpQueryHeaders(
+                request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
+                WINHTTP_NO_HEADER_INDEX);
+            if (statusCode == 200) {
+                std::string body;
+                bool readOk = true;
+                while (!stopToken.stop_requested()) {
+                    DWORD avail = 0;
+                    if (!WinHttpQueryDataAvailable(request, &avail)) {
+                        readOk = false;
+                        break;
+                    }
+                    if (avail == 0) break;
+                    if (body.size() + avail > MaxScoopManifestBytes) {
+                        readOk = false;
+                        break;
+                    }
+                    const size_t off = body.size();
+                    body.resize(off + avail);
+                    DWORD got = 0;
+                    if (!WinHttpReadData(request, body.data() + off, avail, &got)) {
+                        readOk = false;
+                        break;
+                    }
+                    body.resize(off + got);
+                    if (got == 0) break;
+                }
+                if (readOk && !stopToken.stop_requested()) {
+                    resolvedVersion = UpdateChecker::parseLatestVersionFromScoopManifest(body);
+                }
+            }
+        }
+    }
+
+    bool closedExternally = false;
+    {
+        std::lock_guard lock(reqMutex);
+        if (registered) {
+            if (activeReqSlot == request) activeReqSlot = nullptr;
+            else closedExternally = true;
+        }
+    }
+    if (request && !closedExternally) WinHttpCloseHandle(request);
+    if (connection) WinHttpCloseHandle(connection);
+    if (session) WinHttpCloseHandle(session);
+    return resolvedVersion;
+}
+
 void cleanupOldUpdateFiles(const std::filesystem::path& updatesDir, const std::wstring& keepFileName) {
     std::error_code ec;
     for (const auto& entry : std::filesystem::directory_iterator(updatesDir, ec)) {
@@ -495,6 +698,84 @@ bool UpdateChecker::isTrustedReleaseDownloadUrl(std::string_view url) noexcept {
     return host == "objects.githubusercontent.com" ||
            host == "release-assets.githubusercontent.com" ||
            host == "github-releases.githubusercontent.com";
+}
+
+std::string UpdateChecker::parseReleaseTagFromRedirectLocation(std::string_view location) {
+    std::string cleaned = trimAscii(location);
+    if (cleaned.empty()) return {};
+
+    const size_t cutPos = cleaned.find_first_of("?#");
+    if (cutPos != std::string::npos) {
+        cleaned.erase(cutPos);
+    }
+    while (!cleaned.empty() && cleaned.back() == '/') {
+        cleaned.pop_back();
+    }
+    if (cleaned.empty()) return {};
+
+    const std::string low = toLowerAscii(cleaned);
+    constexpr std::string_view kFullPrefix =
+        "https://github.com/yuan278501381/tools3000/releases/tag/";
+    constexpr std::string_view kRelPrefix =
+        "/yuan278501381/tools3000/releases/tag/";
+
+    size_t tagStart = std::string::npos;
+    if (low.rfind(kFullPrefix, 0) == 0) {
+        tagStart = kFullPrefix.size();
+    } else if (low.rfind(kRelPrefix, 0) == 0) {
+        tagStart = kRelPrefix.size();
+    } else {
+        return {};
+    }
+
+    const std::string_view tagSegment = std::string_view(cleaned).substr(tagStart);
+    if (tagSegment.empty() ||
+        tagSegment.find('/') != std::string_view::npos ||
+        tagSegment.find('\\') != std::string_view::npos) {
+        return {};
+    }
+    return parseStrictSemVerString(tagSegment);
+}
+
+std::string UpdateChecker::parseLatestVersionFromScoopManifest(std::string_view manifestJson) {
+    if (manifestJson.empty() || manifestJson.size() > MaxScoopManifestBytes) {
+        return {};
+    }
+    if (manifestJson.size() >= 3 &&
+        static_cast<unsigned char>(manifestJson[0]) == 0xEF &&
+        static_cast<unsigned char>(manifestJson[1]) == 0xBB &&
+        static_cast<unsigned char>(manifestJson[2]) == 0xBF) {
+        manifestJson.remove_prefix(3);
+    }
+    const json parsed = json::parse(manifestJson.begin(), manifestJson.end(), nullptr, false);
+    if (parsed.is_discarded() || !parsed.is_object()) {
+        return {};
+    }
+    const auto it = parsed.find("version");
+    if (it == parsed.end() || !it->is_string()) {
+        return {};
+    }
+    return parseStrictSemVerString(it->get<std::string>());
+}
+
+std::string UpdateChecker::buildStandardReleaseAssetName(
+    std::string_view version,
+    bool portableMode,
+    bool arm64) {
+    const std::string cleanVer = parseStrictSemVerString(version);
+    if (cleanVer.empty()) return {};
+
+    std::string name;
+    if (portableMode) {
+        name = arm64
+            ? ("Tools3000-v" + cleanVer + "-win-arm64-portable.zip")
+            : ("Tools3000-v" + cleanVer + "-win-x64-portable.zip");
+    } else {
+        name = arm64
+            ? ("Tools3000-v" + cleanVer + "-Setup-arm64.exe")
+            : ("Tools3000-v" + cleanVer + "-Setup.exe");
+    }
+    return isSafeAssetFileName(name) ? name : std::string{};
 }
 
 std::string UpdateChecker::extractExpectedSha256ForAsset(
@@ -1171,6 +1452,8 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
     HINTERNET connection = nullptr;
     HINTERNET request = nullptr;
     bool requestRegistered = false;
+    bool primaryResolved = false;
+    DWORD primaryStatusCode = 0;
 
     if (session) {
         WinHttpSetTimeouts(session, RequestTimeoutMs, RequestTimeoutMs,
@@ -1201,6 +1484,7 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
                                 WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                                 WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize,
                                 WINHTTP_NO_HEADER_INDEX);
+            primaryStatusCode = statusCode;
 
             if (statusCode == 200) {
                 std::string body;
@@ -1289,6 +1573,7 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
                             }
                         }
                         ConfigManager::instance().set("/update/lastSuccessUnix", unixNow());
+                        primaryResolved = true;
                     } catch (const std::exception& e) {
                         LOG_WARN("更新响应解析失败: {}", e.what());
                         next.status = "error";
@@ -1319,6 +1604,94 @@ void UpdateChecker::workerMain(std::stop_token stopToken, bool autoDownloadIfAva
     if (request && !requestClosedExternally) WinHttpCloseHandle(request);
     if (connection) WinHttpCloseHandle(connection);
     if (session) WinHttpCloseHandle(session);
+
+    const bool shouldTryFallback =
+        !primaryResolved &&
+        !stopToken.stop_requested() &&
+        (next.error == "rateLimited" ||
+         next.error == "network" ||
+         (primaryStatusCode >= 500 && primaryStatusCode < 600));
+
+    if (shouldTryFallback) {
+        LOG_WARN("UpdateChecker: primary API channel failed ({}), trying zero-rate-limit fallback channels", next.error);
+        std::string fallbackVersion = resolveLatestVersionFromWebRedirect(
+            stopToken, m_requestMutex, m_activeRequest);
+        if (fallbackVersion.empty() && !stopToken.stop_requested()) {
+            fallbackVersion = resolveLatestVersionFromScoopManifest(
+                stopToken, m_requestMutex, m_activeRequest);
+        }
+        if (!fallbackVersion.empty() && !stopToken.stop_requested()) {
+            const bool available = UpdateChecker::isNewerVersion(fallbackVersion, CurrentVersion);
+            next.status = available ? "available" : "upToDate";
+            next.hasUpdate = available;
+            next.latestVersion = "v" + fallbackVersion;
+            next.releaseUrl =
+                "https://github.com/yuan278501381/Tools3000/releases/tag/v" + fallbackVersion;
+            next.releaseNotes.clear();
+            next.assetName.clear();
+            next.downloadUrl.clear();
+            next.checksumUrl.clear();
+            next.assetSize = 0;
+            next.downloadedBytes = 0;
+            next.progress = 0;
+            next.downloadedFilePath.clear();
+            next.error.clear();
+
+            if (available) {
+#if defined(_M_ARM64) || defined(__aarch64__)
+                constexpr bool kWantArm64 = true;
+#else
+                constexpr bool kWantArm64 = false;
+#endif
+                const std::string candidateAsset =
+                    buildStandardReleaseAssetName(fallbackVersion, next.isPortable, kWantArm64);
+                const std::string checksumUrl =
+                    "https://github.com/yuan278501381/Tools3000/releases/download/v" +
+                    fallbackVersion + "/SHA256SUMS.txt";
+                if (!candidateAsset.empty() && isSafeAssetFileName(candidateAsset)) {
+                    std::string sumsBody;
+                    if (fetchSmallHttpsText(checksumUrl, stopToken, m_requestMutex,
+                                            m_activeRequest, sumsBody)) {
+                        const std::string expectedHash =
+                            extractExpectedSha256ForAsset(sumsBody, candidateAsset);
+                        const std::string candidateDownloadUrl =
+                            "https://github.com/yuan278501381/Tools3000/releases/download/v" +
+                            fallbackVersion + "/" + candidateAsset;
+                        if (!expectedHash.empty() &&
+                            isTrustedReleaseDownloadUrl(candidateDownloadUrl)) {
+                            next.assetName = candidateAsset;
+                            next.downloadUrl = candidateDownloadUrl;
+                            next.checksumUrl = checksumUrl;
+
+                            // 若本地 updates/ 缓存已存在同版安装包并通过官方 SHA-256 校验，直接标记就绪
+                            const auto cachedPath =
+                                getUpdatesDirectory() / WinUtils::utf8ToWstring(next.assetName);
+                            std::error_code ec;
+                            if (std::filesystem::exists(cachedPath, ec)) {
+                                const uint64_t cachedSize = std::filesystem::file_size(cachedPath, ec);
+                                std::string actualHash;
+                                if (!ec && cachedSize > 0 &&
+                                    computeFileSha256Hex(cachedPath, actualHash) &&
+                                    actualHash == expectedHash) {
+                                    next.status = "readyToInstall";
+                                    next.assetSize = cachedSize;
+                                    next.downloadedBytes = cachedSize;
+                                    next.progress = 100;
+                                    next.downloadedFilePath =
+                                        WinUtils::wstringToUtf8(cachedPath.wstring());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!stopToken.stop_requested()) {
+                ConfigManager::instance().set("/update/lastSuccessUnix", unixNow());
+                LOG_INFO("UpdateChecker: fallback channel resolved latest version v{}", fallbackVersion);
+            }
+        }
+    }
 
     bool shouldAutoDownload = false;
     if (!stopToken.stop_requested()) {

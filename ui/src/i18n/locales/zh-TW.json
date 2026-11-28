@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 已是最新版本",
     "updateAvailable": "Tools3000 {{version}} 已發布",
     "updateFailed": "暫時無法檢查更新",
+    "updateRateLimited": "GitHub 介面限流（共用代理常見），請切換節點或稍後再試",
     "updateCheckBusy": "更新檢查正在進行中",
     "noPublishedRelease": "目前還沒有已發布的版本",
     "openRelease": "開啟發布頁面",
@@ -1794,7 +1795,11 @@
     "pressKeys": "請按下按鍵或組合鍵...",
     "bindFailed": "無法套用此快速鍵",
     "clearBinding": "清除快速鍵綁定",
-    "needModifier": "字母與符號鍵請搭配 Ctrl、Alt 或 Win 使用"
+    "needModifier": "字母與符號鍵請搭配 Ctrl、Alt 或 Win 使用",
+    "doubleTapDisplay": "連按兩下 {{key}}",
+    "pressKeysOrDoubleTap": "按下組合鍵，或連按兩下 Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "再按一次 {{key}} 設為連按兩下...",
+    "autoYieldedSpotlightDoubleCtrl": "已自動關閉滑鼠聚光燈的連按兩下 Ctrl 觸發，避免與新快捷鍵衝突"
   },
   "search": {
     "title": "快速檔案搜尋",

@@ -48,6 +48,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicIsize, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
+use std::time::{Instant, SystemTime};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{
     CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, HINSTANCE, HWND, LPARAM, LRESULT,
@@ -55,18 +56,21 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::RemoteDesktop::{
+    WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
+};
 use windows::Win32::System::Threading::{
-    CreateMutexW, GetCurrentThreadId, OpenProcess, WaitForSingleObject, INFINITE,
-    PROCESS_SYNCHRONIZE,
+    CreateMutexW, GetCurrentThread, GetCurrentThreadId, OpenProcess, SetThreadPriority,
+    WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LMENU, VK_LWIN, VK_MENU,
-    VK_NUMPAD1, VK_NUMPAD9, VK_OEM_2, VK_OEM_3, VK_RETURN, VK_RMENU, VK_RWIN, VK_SHIFT, VK_SPACE,
-    VK_TAB, VK_UP,
+    GetAsyncKeyState, VK_BACK, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LCONTROL, VK_LMENU, VK_LSHIFT,
+    VK_LWIN, VK_MENU, VK_NUMPAD1, VK_NUMPAD9, VK_OEM_2, VK_OEM_3, VK_RCONTROL, VK_RETURN,
+    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, FindWindowW,
@@ -76,12 +80,15 @@ use windows::Win32::UI::WindowsAndMessaging::{
     EVENT_OBJECT_CLOAKED, EVENT_OBJECT_DESTROY, EVENT_OBJECT_HIDE, EVENT_OBJECT_LOCATIONCHANGE,
     EVENT_OBJECT_SHOW, EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_MINIMIZEEND,
     EVENT_SYSTEM_MINIMIZESTART, EVENT_SYSTEM_MOVESIZEEND, EVENT_SYSTEM_MOVESIZESTART, HHOOK,
-    IDC_ARROW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, MSG, MSLLHOOKSTRUCT, MWMO_INPUTAVAILABLE,
-    OBJID_WINDOW, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL,
+    IDC_ARROW, KBDLLHOOKSTRUCT, LLKHF_ALTDOWN, LLKHF_EXTENDED, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT,
+    MWMO_INPUTAVAILABLE, OBJID_WINDOW, PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMECRITICAL,
+    PBT_APMRESUMESUSPEND, PM_NOREMOVE, PM_REMOVE, QS_ALLINPUT, WH_KEYBOARD_LL, WH_MOUSE_LL,
     WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP, WM_CLOSE, WM_DISPLAYCHANGE,
     WM_ENDSESSION, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_QUERYENDSESSION, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SETTINGCHANGE,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WNDCLASSEXW, WS_EX_TOOLWINDOW, WS_POPUP,
+    WM_MOUSEWHEEL, WM_POWERBROADCAST, WM_QUERYENDSESSION, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    WM_SETTINGCHANGE, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_WTSSESSION_CHANGE, WNDCLASSEXW,
+    WS_EX_TOOLWINDOW, WS_POPUP, WTS_CONSOLE_CONNECT, WTS_REMOTE_CONNECT, WTS_SESSION_LOCK,
+    WTS_SESSION_LOGON, WTS_SESSION_UNLOCK,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,8 +116,325 @@ static HOOK_SWALLOW_QS_UP_VK: AtomicU32 = AtomicU32::new(0);
 /// 独立输入钩子线程按需装卸目标开关
 static HOOK_WANT_KBD: AtomicBool = AtomicBool::new(false);
 static HOOK_WANT_MOUSE: AtomicBool = AtomicBool::new(false);
+/// 低级键盘钩子内部无锁原子追踪物理修饰键位图（位 0=LAlt..7=RWin, 位 8=AltGr 伴生假 LCtrl）
+static HOOK_PHYS_MODS: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_LCTRL_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_LCTRL_SCAN: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_RCTRL_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_WIN_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_SHIFT_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+/// 钩子侧即刻感知的 Alt+Tab / Alt+` 会话激活态：
+/// 在首记 Alt+Tab 命中的 0.005ms 即置 true，彻底消除主线程开窗(提取图标 ~20ms)期间极速松开 Alt 漏发 ALT_RELEASED 导致面板卡开！
+static HOOK_QS_ALT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+const PHYS_MOD_LALT: u32 = 1 << 0;
+const PHYS_MOD_RALT: u32 = 1 << 1;
+const PHYS_MOD_LCTRL: u32 = 1 << 2;
+const PHYS_MOD_RCTRL: u32 = 1 << 3;
+const PHYS_MOD_LSHIFT: u32 = 1 << 4;
+const PHYS_MOD_RSHIFT: u32 = 1 << 5;
+const PHYS_MOD_LWIN: u32 = 1 << 6;
+const PHYS_MOD_RWIN: u32 = 1 << 7;
+/// 国际键盘布局按右 Alt (AltGr) 时系统合成伴生假 LCtrl 标记位
+const PHYS_MOD_ALTGR_LCTRL: u32 = 1 << 8;
+/// Windows 驱动为 AltGr 合成假 LCtrl 的特征扫描码
+const ALTGR_FAKE_LCTRL_SCAN: u32 = 0x21D;
+/// AltGr 伴生 LCtrl 与随后扩展 RMENU 之间的最大时间窗（毫秒）
+const ALTGR_PAIR_WINDOW_MS: u32 = 2;
+/// 物理修饰键位图陈旧位自愈宽限窗（毫秒）：
+/// 若某 Ctrl/Win/Shift 位在超过 60ms 后 GetAsyncKeyState 仍回报抬起，说明此前 KEYUP 在远控/UAC/安全桌面丢失，立即自愈清除！
+const PHYS_MOD_STALE_HEAL_MS: u32 = 60;
+
 const WM_HOOK_THREAD_RECONCILE: u32 = WM_APP + 201;
+const WM_HOOK_THREAD_REINSTALL: u32 = WM_APP + 202;
 static WM_TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EffectiveMods {
+    alt: bool,
+    ctrl: bool,
+    shift: bool,
+    win: bool,
+}
+
+/// 纯函数：根据低级键盘事件无锁维护物理修饰键位图（忽略注入键，并识别 AltGr 伴生假 LCtrl）
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn update_phys_mods_state(
+    mut mods: u32,
+    mut last_lctrl_time: u32,
+    mut last_lctrl_scan: u32,
+    vk: u16,
+    scan_code: u32,
+    flags: u32,
+    time: u32,
+    is_down: bool,
+    is_up: bool,
+) -> (u32, u32, u32) {
+    // 忽略 LLKHF_INJECTED 注入键，防止宏工具/自动化输入污染真实物理按键位图
+    if (flags & LLKHF_INJECTED.0) != 0 {
+        return (mods, last_lctrl_time, last_lctrl_scan);
+    }
+    let extended = (flags & LLKHF_EXTENDED.0) != 0;
+
+    if is_down {
+        match vk {
+            x if x == VK_LMENU.0 => mods |= PHYS_MOD_LALT,
+            x if x == VK_RMENU.0 => {
+                mods |= PHYS_MOD_RALT;
+                if (mods & PHYS_MOD_LCTRL) != 0
+                    && (last_lctrl_scan == ALTGR_FAKE_LCTRL_SCAN
+                        || time.wrapping_sub(last_lctrl_time) <= ALTGR_PAIR_WINDOW_MS)
+                {
+                    mods |= PHYS_MOD_ALTGR_LCTRL;
+                }
+            }
+            x if x == VK_MENU.0 => {
+                if extended {
+                    mods |= PHYS_MOD_RALT;
+                } else {
+                    mods |= PHYS_MOD_LALT;
+                }
+            }
+            x if x == VK_LCONTROL.0 => {
+                mods |= PHYS_MOD_LCTRL;
+                last_lctrl_time = time;
+                last_lctrl_scan = scan_code;
+                if scan_code == ALTGR_FAKE_LCTRL_SCAN {
+                    mods |= PHYS_MOD_ALTGR_LCTRL;
+                } else {
+                    mods &= !PHYS_MOD_ALTGR_LCTRL;
+                }
+            }
+            x if x == VK_RCONTROL.0 => mods |= PHYS_MOD_RCTRL,
+            x if x == VK_CONTROL.0 => {
+                if extended {
+                    mods |= PHYS_MOD_RCTRL;
+                } else {
+                    mods |= PHYS_MOD_LCTRL;
+                }
+            }
+            x if x == VK_LSHIFT.0 => mods |= PHYS_MOD_LSHIFT,
+            x if x == VK_RSHIFT.0 => mods |= PHYS_MOD_RSHIFT,
+            x if x == VK_SHIFT.0 => mods |= PHYS_MOD_LSHIFT,
+            x if x == VK_LWIN.0 => mods |= PHYS_MOD_LWIN,
+            x if x == VK_RWIN.0 => mods |= PHYS_MOD_RWIN,
+            _ => {}
+        }
+    } else if is_up {
+        match vk {
+            x if x == VK_LMENU.0 => mods &= !PHYS_MOD_LALT,
+            x if x == VK_RMENU.0 => {
+                mods &= !PHYS_MOD_RALT;
+                if (mods & PHYS_MOD_ALTGR_LCTRL) != 0 {
+                    mods &= !(PHYS_MOD_ALTGR_LCTRL | PHYS_MOD_LCTRL);
+                }
+            }
+            x if x == VK_MENU.0 => mods &= !(PHYS_MOD_LALT | PHYS_MOD_RALT),
+            x if x == VK_LCONTROL.0 => mods &= !(PHYS_MOD_LCTRL | PHYS_MOD_ALTGR_LCTRL),
+            x if x == VK_RCONTROL.0 => mods &= !PHYS_MOD_RCTRL,
+            x if x == VK_CONTROL.0 => {
+                mods &= !(PHYS_MOD_LCTRL | PHYS_MOD_RCTRL | PHYS_MOD_ALTGR_LCTRL)
+            }
+            x if x == VK_LSHIFT.0 => mods &= !PHYS_MOD_LSHIFT,
+            x if x == VK_RSHIFT.0 => mods &= !PHYS_MOD_RSHIFT,
+            x if x == VK_SHIFT.0 => mods &= !(PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT),
+            x if x == VK_LWIN.0 => mods &= !PHYS_MOD_LWIN,
+            x if x == VK_RWIN.0 => mods &= !PHYS_MOD_RWIN,
+            _ => {}
+        }
+    }
+
+    (mods, last_lctrl_time, last_lctrl_scan)
+}
+
+/// 陈旧物理修饰键位自动自愈：若 Ctrl / Win / Shift 位图仍置位但 GetAsyncKeyState 回报抬起且已超过宽限窗，
+/// 立即清零对应残留位，彻底根治远控/UAC/安全桌面丢失单次 KEYUP 后 ctrl_down/win_down 永久误判并放行原生 Alt+Tab！
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn heal_stale_phys_mods(
+    mut mods: u32,
+    now_ms: u32,
+    last_lctrl_ms: u32,
+    last_rctrl_ms: u32,
+    last_win_ms: u32,
+    last_shift_ms: u32,
+    async_lctrl: bool,
+    async_rctrl: bool,
+    async_shift: bool,
+    async_win: bool,
+) -> u32 {
+    if (mods & PHYS_MOD_LCTRL) != 0
+        && !async_lctrl
+        && now_ms.wrapping_sub(last_lctrl_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LCTRL | PHYS_MOD_ALTGR_LCTRL);
+    }
+    if (mods & PHYS_MOD_RCTRL) != 0
+        && !async_rctrl
+        && now_ms.wrapping_sub(last_rctrl_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !PHYS_MOD_RCTRL;
+    }
+    if (mods & (PHYS_MOD_LWIN | PHYS_MOD_RWIN)) != 0
+        && !async_win
+        && now_ms.wrapping_sub(last_win_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LWIN | PHYS_MOD_RWIN);
+    }
+    if (mods & (PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT)) != 0
+        && !async_shift
+        && now_ms.wrapping_sub(last_shift_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT);
+    }
+    mods
+}
+
+/// 融合 WM_SYSKEYDOWN、LLKHF_ALTDOWN、原子物理修饰键位图与 GetAsyncKeyState 求解有效修饰键状态
+/// 1) 彻底消除快按 Alt+Tab 时 GetAsyncKeyState 微秒级滞后竞态；
+/// 2) 抵御外部注入 Alt UP（phys_mods 忽略 LLKHF_INJECTED，持续锁住物理 Alt 按住态）；
+/// 3) 当右 Alt(AltGr) 伴生假 LCtrl 生效时绝不误判为 Ctrl+Alt，避免漏出原生 Alt+Tab。
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn resolve_effective_mods(
+    phys_mods: u32,
+    kb_flags: u32,
+    msg: u32,
+    async_alt: bool,
+    async_lctrl: bool,
+    async_rctrl: bool,
+    async_shift: bool,
+    async_win: bool,
+) -> EffectiveMods {
+    let altgr_fake_lctrl =
+        (phys_mods & PHYS_MOD_RALT) != 0 && (phys_mods & PHYS_MOD_ALTGR_LCTRL) != 0;
+    let alt = (kb_flags & LLKHF_ALTDOWN.0) != 0
+        || msg == WM_SYSKEYDOWN
+        || msg == WM_SYSKEYUP
+        || (phys_mods & (PHYS_MOD_LALT | PHYS_MOD_RALT)) != 0
+        || async_alt;
+    let real_lctrl = (phys_mods & PHYS_MOD_LCTRL) != 0 && !altgr_fake_lctrl;
+    let real_rctrl = (phys_mods & PHYS_MOD_RCTRL) != 0;
+    let async_real_ctrl = if altgr_fake_lctrl {
+        async_rctrl
+    } else {
+        async_lctrl || async_rctrl
+    };
+    let ctrl = real_lctrl || real_rctrl || async_real_ctrl;
+    let shift = (phys_mods & (PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT)) != 0 || async_shift;
+    let win = (phys_mods & (PHYS_MOD_LWIN | PHYS_MOD_RWIN)) != 0 || async_win;
+    EffectiveMods {
+        alt,
+        ctrl,
+        shift,
+        win,
+    }
+}
+
+/// 钩子层 QuickSwitch 按键裁决纯函数（便于离线 100% 单元测试全序列，杜绝连按 Tab 漏出系统原生切屏）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookQsDecision {
+    PassThrough,
+    SwallowOnly,
+    AltTabStep { reverse: bool, same_app: bool },
+    QuickSwitchKey { vk: u16, mod_mask: isize },
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn decide_quick_switch_hook_action(
+    vk: u16,
+    is_down: bool,
+    is_up: bool,
+    mods: EffectiveMods,
+    qs_enabled: bool,
+    same_app_enabled: bool,
+    qs_open: bool,
+    qs_alt_session_active: bool,
+    has_query: bool,
+) -> HookQsDecision {
+    let active_qs = qs_open || qs_alt_session_active;
+
+    // 1. QuickSwitch 面板已打开或 Alt+Tab 会话已激活期间：
+    //    所有 Tab DOWN/UP（只要不是 Win+Tab）100% 优先吞噬并在我方窗口内部切换，绝不漏给 Windows 原生 Alt+Tab！
+    if active_qs && vk == VK_TAB.0 && !mods.win && !mods.ctrl {
+        if is_up {
+            return HookQsDecision::SwallowOnly;
+        }
+        if is_down {
+            if mods.alt {
+                return HookQsDecision::AltTabStep {
+                    reverse: mods.shift,
+                    same_app: false,
+                };
+            }
+            let mod_mask: isize = if mods.shift { 4 } else { 0 };
+            return HookQsDecision::QuickSwitchKey { vk, mod_mask };
+        }
+    }
+
+    if !is_down {
+        return HookQsDecision::PassThrough;
+    }
+
+    // 2. 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（绝不干扰原生 Ctrl+Alt+Tab 与 Win+Tab）
+    if qs_enabled && vk == VK_TAB.0 && mods.alt && !mods.ctrl && !mods.win {
+        return HookQsDecision::AltTabStep {
+            reverse: mods.shift,
+            same_app: false,
+        };
+    }
+
+    // 3. 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`
+    if same_app_enabled && vk == VK_OEM_3.0 && mods.alt && !mods.ctrl && !mods.win {
+        return HookQsDecision::AltTabStep {
+            reverse: mods.shift,
+            same_app: true,
+        };
+    }
+
+    // 4. QuickSwitch 已打开态直通键盘流（1-9 秒切、Alt+方向/回车/Esc/退格/空格/斜杠/A-Z 无缝入搜）
+    if qs_open && !mods.win {
+        let mod_mask: isize = (if mods.alt { 1 } else { 0 })
+            | (if mods.ctrl { 2 } else { 0 })
+            | (if mods.shift { 4 } else { 0 });
+
+        let is_digit = (0x31..=0x39).contains(&vk)
+            || (vk >= VK_NUMPAD1.0 && vk <= VK_NUMPAD9.0);
+        let intercept_digit = is_digit && (mods.alt || mods.ctrl || !has_query);
+        let intercept_alt_nav_or_search = mods.alt
+            && !mods.ctrl
+            && (vk == VK_UP.0
+                || vk == VK_DOWN.0
+                || vk == VK_RETURN.0
+                || vk == VK_ESCAPE.0
+                || vk == VK_BACK.0
+                || vk == VK_SPACE.0
+                || vk == VK_OEM_2.0
+                || (0x41..=0x5A).contains(&vk));
+
+        if intercept_digit || intercept_alt_nav_or_search {
+            return HookQsDecision::QuickSwitchKey { vk, mod_mask };
+        }
+    }
+
+    HookQsDecision::PassThrough
+}
+
+#[inline]
+fn clear_hook_phys_mods() {
+    HOOK_PHYS_MODS.store(0, Ordering::Release);
+    HOOK_LAST_LCTRL_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_LAST_LCTRL_SCAN.store(0, Ordering::Release);
+    HOOK_LAST_RCTRL_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_LAST_WIN_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_LAST_SHIFT_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
+    HOOK_SWALLOW_TAB_UP.store(false, Ordering::Release);
+    HOOK_SWALLOW_GRAVE_UP.store(false, Ordering::Release);
+    HOOK_SWALLOW_QS_UP_VK.store(0, Ordering::Release);
+}
 
 const ALT_DRAG_EVT_BEGIN_MOVE: usize = 1;
 const ALT_DRAG_EVT_BEGIN_RESIZE: usize = 2;
@@ -146,6 +470,52 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
             let is_down = msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN;
             let is_up = msg == WM_SYSKEYUP || msg == WM_KEYUP;
+            let is_injected = (kb.flags.0 & LLKHF_INJECTED.0) != 0;
+
+            // 入口第一时间无锁维护物理修饰键位图（忽略注入键，杜绝外部 SendInput 污染真实物理按键状态）
+            let (mut phys_mods, next_lctrl_time, next_lctrl_scan) = update_phys_mods_state(
+                HOOK_PHYS_MODS.load(Ordering::Acquire),
+                HOOK_LAST_LCTRL_DOWN_TIME.load(Ordering::Acquire),
+                HOOK_LAST_LCTRL_SCAN.load(Ordering::Acquire),
+                vk,
+                kb.scanCode,
+                kb.flags.0,
+                kb.time,
+                is_down,
+                is_up,
+            );
+            if !is_injected && is_down {
+                if vk == VK_RCONTROL.0 {
+                    HOOK_LAST_RCTRL_DOWN_TIME.store(kb.time, Ordering::Release);
+                } else if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
+                    HOOK_LAST_WIN_DOWN_TIME.store(kb.time, Ordering::Release);
+                } else if vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 || vk == VK_SHIFT.0 {
+                    HOOK_LAST_SHIFT_DOWN_TIME.store(kb.time, Ordering::Release);
+                }
+            }
+
+            let async_alt = async_key_down(VK_MENU.0);
+            let async_lctrl = async_key_down(VK_LCONTROL.0);
+            let async_rctrl = async_key_down(VK_RCONTROL.0);
+            let async_shift = async_key_down(VK_SHIFT.0);
+            let async_win = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
+
+            // 陈旧 Ctrl/Win/Shift 位图 60ms 自动自愈，杜绝远控/UAC 丢单次 KEYUP 后永远放行原生 Alt+Tab
+            phys_mods = heal_stale_phys_mods(
+                phys_mods,
+                kb.time,
+                next_lctrl_time,
+                HOOK_LAST_RCTRL_DOWN_TIME.load(Ordering::Acquire),
+                HOOK_LAST_WIN_DOWN_TIME.load(Ordering::Acquire),
+                HOOK_LAST_SHIFT_DOWN_TIME.load(Ordering::Acquire),
+                async_lctrl,
+                async_rctrl,
+                async_shift,
+                async_win,
+            );
+            HOOK_PHYS_MODS.store(phys_mods, Ordering::Release);
+            HOOK_LAST_LCTRL_DOWN_TIME.store(next_lctrl_time, Ordering::Release);
+            HOOK_LAST_LCTRL_SCAN.store(next_lctrl_scan, Ordering::Release);
 
             // 配对按键抬起吞噬（防止系统或后台软件收到孤立 Tab / ` / 1-9 / 字母抬起事件）
             if is_up {
@@ -163,90 +533,80 @@ unsafe extern "system" fn low_level_keyboard_proc(
             }
 
             if !HOOK_MUTED.load(Ordering::Acquire) {
-                let alt_down = (kb.flags.0 & LLKHF_ALTDOWN.0) != 0 || async_key_down(VK_MENU.0);
-                let ctrl_down = async_key_down(VK_CONTROL.0);
-                let shift_down = async_key_down(VK_SHIFT.0);
-                let win_down = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
+                let mods = resolve_effective_mods(
+                    phys_mods,
+                    kb.flags.0,
+                    msg,
+                    async_alt,
+                    async_lctrl,
+                    async_rctrl,
+                    async_shift,
+                    async_win,
+                );
+                let qs_open = QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire);
+                let qs_alt_session = HOOK_QS_ALT_SESSION_ACTIVE.load(Ordering::Acquire);
+                let decision = decide_quick_switch_hook_action(
+                    vk,
+                    is_down,
+                    is_up,
+                    mods,
+                    HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire),
+                    HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire),
+                    qs_open,
+                    qs_alt_session,
+                    QUICK_SWITCH_HAS_QUERY.load(Ordering::Acquire),
+                );
 
-                // 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（仅在 replace_alt_tab 开启时拦截，绝不干扰原生 Ctrl+Alt+Tab）
-                if HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && is_down
-                    && vk == VK_TAB.0
-                    && alt_down
-                    && !ctrl_down
-                    && !win_down
-                {
-                    HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
-                    let reverse = if shift_down { 1usize } else { 0usize };
-                    let _ = PostMessageW(
-                        ctrl_hwnd,
-                        WM_WK_INTERNAL_ALT_TAB,
-                        WPARAM(reverse),
-                        LPARAM(0), // 0 = 全局 Alt+Tab
-                    );
-                    return LRESULT(1);
-                }
-
-                // 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`（可不接管原生 Alt+Tab 独立启用！）
-                if HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && is_down
-                    && vk == VK_OEM_3.0
-                    && alt_down
-                    && !ctrl_down
-                    && !win_down
-                {
-                    HOOK_SWALLOW_GRAVE_UP.store(true, Ordering::Release);
-                    let reverse = if shift_down { 1usize } else { 0usize };
-                    let _ = PostMessageW(
-                        ctrl_hwnd,
-                        WM_WK_INTERNAL_ALT_TAB,
-                        WPARAM(reverse),
-                        LPARAM(1), // 1 = 同应用 Alt+`
-                    );
-                    return LRESULT(1);
-                }
-
-                // QuickSwitch 已打开态直通键盘流（彻底消灭焦点竞争、按住 Alt 搜索失灵与 1-9 系统蜂鸣）
-                if is_down && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire) && !win_down {
-                    let mod_mask: isize = (if alt_down { 1 } else { 0 })
-                        | (if ctrl_down { 2 } else { 0 })
-                        | (if shift_down { 4 } else { 0 });
-                    let is_digit = (0x31..=0x39).contains(&vk)
-                        || (vk >= VK_NUMPAD1.0 && vk <= VK_NUMPAD9.0);
-                    let has_query = QUICK_SWITCH_HAS_QUERY.load(Ordering::Acquire);
-
-                    // 1. 数字 1-9 秒切（空查询直按 1-9，或任何时候 Alt+1-9 / Ctrl+1-9 毫秒直达）
-                    let intercept_digit = is_digit && (alt_down || ctrl_down || !has_query);
-                    // 2. 按住 Alt 期间的方向/回车/Esc/退格/空格/斜杠/字母 A-Z（无缝锁定进入搜索并强聚焦输入框）
-                    let intercept_alt_nav_or_search = alt_down
-                        && !ctrl_down
-                        && (vk == VK_UP.0
-                            || vk == VK_DOWN.0
-                            || vk == VK_RETURN.0
-                            || vk == VK_ESCAPE.0
-                            || vk == VK_BACK.0
-                            || vk == VK_SPACE.0
-                            || vk == VK_OEM_2.0
-                            || (0x41..=0x5A).contains(&vk));
-
-                    if intercept_digit || intercept_alt_nav_or_search {
-                        HOOK_SWALLOW_QS_UP_VK.store(vk as u32, Ordering::Release);
+                match decision {
+                    HookQsDecision::SwallowOnly => {
+                        return LRESULT(1);
+                    }
+                    HookQsDecision::AltTabStep { reverse, same_app } => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(true, Ordering::Release);
+                        if same_app {
+                            HOOK_SWALLOW_GRAVE_UP.store(true, Ordering::Release);
+                        } else {
+                            HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                        }
+                        let _ = PostMessageW(
+                            ctrl_hwnd,
+                            WM_WK_INTERNAL_ALT_TAB,
+                            WPARAM(if reverse { 1usize } else { 0usize }),
+                            LPARAM(if same_app { 1 } else { 0 }),
+                        );
+                        return LRESULT(1);
+                    }
+                    HookQsDecision::QuickSwitchKey {
+                        vk: target_vk,
+                        mod_mask,
+                    } => {
+                        if target_vk == VK_TAB.0 {
+                            HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                        } else {
+                            HOOK_SWALLOW_QS_UP_VK.store(target_vk as u32, Ordering::Release);
+                        }
                         let _ = PostMessageW(
                             ctrl_hwnd,
                             WM_WK_INTERNAL_QS_KEY,
-                            WPARAM(vk as usize),
+                            WPARAM(target_vk as usize),
                             LPARAM(mod_mask),
                         );
                         return LRESULT(1);
                     }
+                    HookQsDecision::PassThrough => {}
                 }
             }
 
-            // Alt 键释放时通知 QuickSwitch 提交切换，同时绝不吞掉 Alt 抬起避免卡键
+            // 真实物理 Alt 键全部抬起时通知 QuickSwitch 提交切换（严格过滤 LLKHF_INJECTED 注入脉冲，
+            // 并借助 HOOK_QS_ALT_SESSION_ACTIVE 消除开窗未完期间极速松开 Alt 漏发提交事件的竞态）
             if is_up
+                && !is_injected
                 && (vk == VK_LMENU.0 || vk == VK_RMENU.0 || vk == VK_MENU.0)
-                && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire)
+                && (phys_mods & (PHYS_MOD_LALT | PHYS_MOD_RALT)) == 0
+                && (QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire)
+                    || HOOK_QS_ALT_SESSION_ACTIVE.swap(false, Ordering::AcqRel))
             {
+                HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                 let _ = PostMessageW(
                     ctrl_hwnd,
                     WM_WK_INTERNAL_ALT_RELEASED,
@@ -396,6 +756,8 @@ impl InputHookWorker {
             .name("Tools3000-InputHooks".to_string())
             .stack_size(128 * 1024)
             .spawn(move || unsafe {
+                // 提升输入钩子线程优先级至 HIGHEST，避免 400 万像素高分屏 Slint 帧渲染抢占 CPU 触发 300ms LowLevelHooksTimeout
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                 // 强制初始化线程消息队列后再通告线程 ID，确保 PostThreadMessageW 首次即成功
                 let mut msg = MSG::default();
                 let _ = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_NOREMOVE);
@@ -438,6 +800,16 @@ impl InputHookWorker {
                 while GetMessageW(&mut msg, HWND::default(), 0, 0).as_bool() {
                     if msg.message == WM_HOOK_THREAD_RECONCILE {
                         sync_hooks(&mut kbd_hook, &mut mouse_hook);
+                    } else if msg.message == WM_HOOK_THREAD_REINSTALL {
+                        // 锁屏解锁 / 睡眠唤醒 / 时钟跳变健康自愈：安全卸载旧钩子、清空物理修饰键残留并重新挂钩
+                        clear_hook_phys_mods();
+                        if let Some(h) = kbd_hook.take() {
+                            let _ = UnhookWindowsHookEx(h);
+                        }
+                        if let Some(h) = mouse_hook.take() {
+                            let _ = UnhookWindowsHookEx(h);
+                        }
+                        sync_hooks(&mut kbd_hook, &mut mouse_hook);
                     } else {
                         let _ = TranslateMessage(&msg);
                         let _ = DispatchMessageW(&msg);
@@ -470,6 +842,17 @@ impl InputHookWorker {
             let _ = PostThreadMessageW(
                 self.thread_id,
                 WM_HOOK_THREAD_RECONCILE,
+                WPARAM(0),
+                LPARAM(0),
+            );
+        }
+    }
+
+    fn signal_reinstall(&self) {
+        unsafe {
+            let _ = PostThreadMessageW(
+                self.thread_id,
+                WM_HOOK_THREAD_REINSTALL,
                 WPARAM(0),
                 LPARAM(0),
             );
@@ -524,6 +907,10 @@ struct ManagedRuntime {
     multi_monitor: MultiMonitorManager,
     last_hook_summary: String,
     anim_timer_active: bool,
+    border_reconcile_timer_active: bool,
+    wts_session_registered: bool,
+    last_watch_instant: Instant,
+    last_watch_wall: SystemTime,
     shutting_down: bool,
 }
 
@@ -578,6 +965,10 @@ impl ManagedRuntime {
             multi_monitor: MultiMonitorManager::new(control_hwnd),
             last_hook_summary: String::new(),
             anim_timer_active: false,
+            border_reconcile_timer_active: false,
+            wts_session_registered: false,
+            last_watch_instant: Instant::now(),
+            last_watch_wall: SystemTime::now(),
             shutting_down: false,
         }
     }
@@ -587,6 +978,60 @@ impl ManagedRuntime {
         if self.gfx.is_none() {
             self.gfx = SharedGraphics::new().ok();
         }
+    }
+
+    /// 按需同步 120ms 边框巡检定时器：仅在启用焦点边框或存在置顶窗口时运行，
+    /// 两者皆无时立即 KillTimer 确保平时 0 唤醒、绝不反向重建已释放的 SharedGraphics！
+    fn sync_border_reconcile_timer(&mut self) {
+        if self.control_hwnd.0.is_null() {
+            return;
+        }
+        let need_timer =
+            self.config.features.focus_border || self.always_on_top.pinned_count() > 0;
+        unsafe {
+            if need_timer {
+                if !self.border_reconcile_timer_active {
+                    let _ = SetTimer(
+                        self.control_hwnd,
+                        TIMER_BORDER_RECONCILE,
+                        BORDER_RECONCILE_INTERVAL_MS,
+                        None,
+                    );
+                    self.border_reconcile_timer_active = true;
+                }
+            } else {
+                let _ = KillTimer(self.control_hwnd, TIMER_BORDER_RECONCILE);
+                self.border_reconcile_timer_active = false;
+            }
+        }
+    }
+
+    /// 锁屏解锁 / 睡眠唤醒 / 静音恢复 / 时钟跳变后的低级键盘与鼠标钩子健康自愈重挂
+    fn reinstall_input_hooks(&mut self, reason: &str, trace_id: &str) {
+        if self.shutting_down {
+            return;
+        }
+        clear_hook_phys_mods();
+        let want_k = HOOK_WANT_KBD.load(Ordering::Acquire);
+        let want_m = HOOK_WANT_MOUSE.load(Ordering::Acquire);
+        if !want_k && !want_m {
+            return;
+        }
+        if let Some(worker) = self.hook_worker.as_ref() {
+            worker.signal_reinstall();
+        } else {
+            self.hook_worker = InputHookWorker::spawn();
+        }
+        self.kbd_hook_active = want_k && self.hook_worker.is_some();
+        self.mouse_hook_active = want_m && self.hook_worker.is_some();
+        wk_info!(
+            trace_id,
+            "runtime",
+            "self-healed low-level input hooks (reason={}, kbd={}, mouse={})",
+            reason,
+            self.kbd_hook_active,
+            self.mouse_hook_active
+        );
     }
 
     /// 统一按需驱动 60~120Hz 动效定时器：有活跃动画时开启，收敛瞬间立即 KillTimer 保持 0% CPU！
@@ -626,6 +1071,21 @@ impl ManagedRuntime {
                     COLD_PATH_TRIM_DELAY_MS,
                     None,
                 );
+                let _ = SetTimer(
+                    self.control_hwnd,
+                    TIMER_SLINT_IDLE_PURGE,
+                    SLINT_IDLE_PURGE_DELAY_MS,
+                    None,
+                );
+            }
+        }
+    }
+
+    /// 即将打开任意 Slint 窗口前立即取消冷态回收定时器，防止刚打开就被回收
+    fn cancel_slint_idle_purge(&self) {
+        if !self.control_hwnd.0.is_null() {
+            unsafe {
+                let _ = KillTimer(self.control_hwnd, TIMER_SLINT_IDLE_PURGE);
             }
         }
     }
@@ -805,12 +1265,6 @@ impl ManagedRuntime {
                         self.winevent_movesize = Some(h);
                     }
                 }
-                let _ = SetTimer(
-                    self.control_hwnd,
-                    TIMER_BORDER_RECONCILE,
-                    BORDER_RECONCILE_INTERVAL_MS,
-                    None,
-                );
             } else {
                 for slot in [
                     &mut self.winevent_focus,
@@ -824,7 +1278,6 @@ impl ManagedRuntime {
                         let _ = UnhookWinEvent(h);
                     }
                 }
-                let _ = KillTimer(self.control_hwnd, TIMER_BORDER_RECONCILE);
             }
 
             // 5. 新窗口自动吸附 (rememberLastZone) / 新窗口自动居中 (centerNewWindows) 按需挂接 EVENT_OBJECT_SHOW
@@ -879,7 +1332,7 @@ impl ManagedRuntime {
 
         if !f.always_on_top {
             self.always_on_top.cleanup_overlays();
-        } else {
+        } else if self.always_on_top.pinned_count() > 0 {
             self.ensure_gfx();
             self.always_on_top
                 .sync_borders(&self.config, self.gfx.as_ref(), self.is_muted());
@@ -904,6 +1357,7 @@ impl ManagedRuntime {
         } else {
             wk_debug!(trace_id, "runtime", "hooks unchanged: {}", summary);
         }
+        self.sync_border_reconcile_timer();
         self.ensure_animation_timer();
     }
 
@@ -943,9 +1397,11 @@ impl ManagedRuntime {
     }
 
     fn set_muted_flags(&mut self, flags: usize, trace_id: &str) {
+        let was_muted = self.is_muted();
         self.muted_flags = flags;
         let muted = self.is_muted();
         HOOK_MUTED.store(muted, Ordering::Release);
+        clear_hook_phys_mods();
         if muted {
             HOOK_ALT_DRAG_ACTIVE.store(0, Ordering::Release);
             self.alt_drag.end();
@@ -956,14 +1412,21 @@ impl ManagedRuntime {
                 self.quick_switch.close_and_release(trace_id);
             }
         } else {
-            self.focus_border.refresh(
-                &self.config,
-                self.gfx.as_ref(),
-                false,
-                self.quick_switch.is_open(),
-            );
-            self.always_on_top
-                .sync_borders(&self.config, self.gfx.as_ref(), false);
+            if was_muted {
+                self.reinstall_input_hooks("unmuted", trace_id);
+            }
+            if self.config.features.focus_border || self.always_on_top.pinned_count() > 0 {
+                self.ensure_gfx();
+                self.focus_border.refresh(
+                    &self.config,
+                    self.gfx.as_ref(),
+                    false,
+                    self.quick_switch.is_open(),
+                );
+                self.always_on_top
+                    .sync_borders(&self.config, self.gfx.as_ref(), false);
+            }
+            self.sync_border_reconcile_timer();
         }
         let fs_muted = (flags & MUTED_FLAG_FULLSCREEN) != 0;
         let rd_muted = (flags & MUTED_FLAG_REMOTE) != 0;
@@ -1055,6 +1518,9 @@ impl ManagedRuntime {
                     return;
                 }
                 12 => {
+                    if !self.quick_switch.is_open() {
+                        self.cancel_slint_idle_purge();
+                    }
                     let tray_list = self.multi_monitor.list_tray_windows();
                     let closed = self.quick_switch.toggle_programmatic(
                         &tray_list,
@@ -1115,6 +1581,7 @@ impl ManagedRuntime {
                 self.ensure_gfx();
                 self.always_on_top
                     .toggle_foreground(&self.config, self.gfx.as_ref(), trace_id);
+                self.sync_border_reconcile_timer();
                 self.ensure_animation_timer();
                 self.schedule_cold_path_trim();
             }
@@ -1168,6 +1635,7 @@ impl ManagedRuntime {
             }
             ACTION_OPEN_QUICK_SWITCH => {
                 if !self.quick_switch.is_open() {
+                    self.cancel_slint_idle_purge();
                     self.ensure_gfx();
                 }
                 let tray_list = self.multi_monitor.list_tray_windows();
@@ -1318,6 +1786,7 @@ impl ManagedRuntime {
                         .layout_editor
                         .open(req, &self.config, self.gfx.as_ref(), trace_id);
                 } else {
+                    self.cancel_slint_idle_purge();
                     let req = OpenHubRequest {
                         monitor_id,
                         desktop_id,
@@ -1368,6 +1837,7 @@ impl ManagedRuntime {
                         }
                     }
                 }
+                self.cancel_slint_idle_purge();
                 self.ensure_gfx();
                 let _ = self
                     .workspace_capture
@@ -1467,6 +1937,7 @@ impl ManagedRuntime {
                     self.dispatch_zones_preview(1200, trace_id);
                 } else {
                     // 未指定或目标布局已被删除时回退打开布局管理器，避免手势静默无反馈
+                    self.cancel_slint_idle_purge();
                     let req = OpenHubRequest {
                         monitor_id: None,
                         desktop_id: None,
@@ -1569,6 +2040,7 @@ impl ManagedRuntime {
                         || self.layout_editor.is_open()
                         || self.layout_hub.is_visible(),
                 );
+                self.sync_border_reconcile_timer();
                 self.ensure_animation_timer();
             }
             EVENT_OBJECT_SHOW => {
@@ -1633,6 +2105,7 @@ impl ManagedRuntime {
                         || self.layout_editor.is_open()
                         || self.layout_hub.is_visible(),
                 );
+                self.sync_border_reconcile_timer();
                 self.ensure_animation_timer();
             }
             _ => {}
@@ -1690,6 +2163,7 @@ impl ManagedRuntime {
             for timer_id in [
                 TIMER_PARENT_WATCH,
                 TIMER_COLD_PATH_TRIM,
+                TIMER_SLINT_IDLE_PURGE,
                 TIMER_SNAP_DRAG_POLL,
                 TIMER_ZONES_PREVIEW_HIDE,
                 TIMER_BORDER_RECONCILE,
@@ -1701,6 +2175,11 @@ impl ManagedRuntime {
                 let _ = KillTimer(self.control_hwnd, timer_id);
             }
             self.anim_timer_active = false;
+            self.border_reconcile_timer_active = false;
+            if self.wts_session_registered && !self.control_hwnd.0.is_null() {
+                let _ = WTSUnRegisterSessionNotification(self.control_hwnd);
+                self.wts_session_registered = false;
+            }
             if let Some(mut worker) = self.hook_worker.take() {
                 worker.shutdown();
             }
@@ -1813,6 +2292,7 @@ unsafe extern "system" fn control_wnd_proc(
                 let trace = next_trace_id("qs");
                 let reverse = wparam.0 != 0;
                 let same_app = lparam.0 != 0;
+                rt.cancel_slint_idle_purge();
                 rt.ensure_gfx();
                 if same_app {
                     rt.quick_switch
@@ -1834,9 +2314,11 @@ unsafe extern "system" fn control_wnd_proc(
                 let trace = next_trace_id("qs");
                 match rt.quick_switch.on_alt_released(&trace) {
                     QuickSwitchDelegatedAction::Closed => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         rt.schedule_cold_path_trim();
                     }
                     QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         let _ = rt
                             .multi_monitor
                             .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -1856,9 +2338,11 @@ unsafe extern "system" fn control_wnd_proc(
                     .handle_hook_key(vk, mod_mask, &rt.config, &trace)
                 {
                     QuickSwitchDelegatedAction::Closed => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         rt.schedule_cold_path_trim();
                     }
                     QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         let _ = rt
                             .multi_monitor
                             .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -1892,6 +2376,7 @@ unsafe extern "system" fn control_wnd_proc(
                             match action {
                                 QuickSwitchDelegatedAction::None => {}
                                 QuickSwitchDelegatedAction::Closed => {
+                                    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                                     rt.schedule_cold_path_trim();
                                 }
                                 QuickSwitchDelegatedAction::TogglePinWindow(raw) => {
@@ -1904,6 +2389,7 @@ unsafe extern "system" fn control_wnd_proc(
                                         rt.gfx.as_ref(),
                                         &trace,
                                     );
+                                    rt.sync_border_reconcile_timer();
                                     rt.quick_switch.refresh_theme_if_open(&rt.config);
                                 }
                                 QuickSwitchDelegatedAction::MoveWindowToNextZone(raw) => {
@@ -1924,6 +2410,7 @@ unsafe extern "system" fn control_wnd_proc(
                                     );
                                 }
                                 QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                                    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                                     let _ = rt
                                         .multi_monitor
                                         .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -2123,6 +2610,7 @@ unsafe extern "system" fn control_wnd_proc(
                                     rt.gfx.as_ref(),
                                     &trace,
                                 );
+                                rt.sync_border_reconcile_timer();
                                 rt.ensure_animation_timer();
                             }
                             if opacity_percent < 100 {
@@ -2141,6 +2629,7 @@ unsafe extern "system" fn control_wnd_proc(
                             collapsed_screens,
                             finished,
                         } => {
+                            rt.cancel_slint_idle_purge();
                             rt.ensure_gfx();
                             rt.workspace_progress.show_progress(
                                 &workspace_name,
@@ -2196,6 +2685,31 @@ unsafe extern "system" fn control_wnd_proc(
                 }
                 true
             }
+            WM_POWERBROADCAST => {
+                let pbt = wparam.0 as u32;
+                if pbt == PBT_APMRESUMEAUTOMATIC
+                    || pbt == PBT_APMRESUMESUSPEND
+                    || pbt == PBT_APMRESUMECRITICAL
+                {
+                    let trace = next_trace_id("pwr");
+                    rt.reinstall_input_hooks("power_resume", &trace);
+                }
+                false
+            }
+            WM_WTSSESSION_CHANGE => {
+                let event = wparam.0 as u32;
+                if event == WTS_SESSION_LOCK {
+                    clear_hook_phys_mods();
+                } else if event == WTS_SESSION_UNLOCK
+                    || event == WTS_SESSION_LOGON
+                    || event == WTS_CONSOLE_CONNECT
+                    || event == WTS_REMOTE_CONNECT
+                {
+                    let trace = next_trace_id("wts");
+                    rt.reinstall_input_hooks("wts_session_resume", &trace);
+                }
+                true
+            }
             WM_DISPLAYCHANGE | WM_SETTINGCHANGE => {
                 let _ = SetTimer(
                     hwnd,
@@ -2208,6 +2722,22 @@ unsafe extern "system" fn control_wnd_proc(
             WM_TIMER => {
                 match wparam.0 {
                     TIMER_PARENT_WATCH => {
+                        let now_inst = Instant::now();
+                        let now_wall = SystemTime::now();
+                        let inst_jump = now_inst
+                            .saturating_duration_since(rt.last_watch_instant)
+                            .as_secs()
+                            > HOOK_WATCH_CLOCK_JUMP_SECS;
+                        let wall_jump = now_wall
+                            .duration_since(rt.last_watch_wall)
+                            .map(|d| d.as_secs() > HOOK_WATCH_CLOCK_JUMP_SECS)
+                            .unwrap_or(false);
+                        rt.last_watch_instant = now_inst;
+                        rt.last_watch_wall = now_wall;
+                        if inst_jump || wall_jump {
+                            let trace = next_trace_id("watch");
+                            rt.reinstall_input_hooks("clock_jump", &trace);
+                        }
                         rt.check_parent_alive();
                         rt.multi_monitor.prune_closed_tray_windows();
                     }
@@ -2229,6 +2759,25 @@ unsafe extern "system" fn control_wnd_proc(
                         {
                             rt.gfx = None;
                             trim_working_set_cold_path();
+                        }
+                    }
+                    TIMER_SLINT_IDLE_PURGE => {
+                        let _ = KillTimer(hwnd, TIMER_SLINT_IDLE_PURGE);
+                        // 闲置 25s 且全部 Slint 窗口均已关闭 -> 彻底 Drop 窗口池释放 16~32MB 软件渲染大帧缓冲
+                        if !rt.quick_switch.is_open()
+                            && !rt.layout_editor.is_open()
+                            && !rt.layout_hub.is_open()
+                            && !rt.workspace_capture.is_open()
+                            && !rt.workspace_progress.is_visible()
+                        {
+                            crate::ui_slint::purge_idle_windows();
+                            if !rt.snap_zones.is_dragging()
+                                && !rt.alt_drag.is_active()
+                                && !rt.anim_timer_active
+                            {
+                                rt.gfx = None;
+                                trim_working_set_cold_path();
+                            }
                         }
                     }
                     TIMER_BORDER_PREVIEW_HIDE => {
@@ -2260,21 +2809,24 @@ unsafe extern "system" fn control_wnd_proc(
                         rt.schedule_cold_path_trim();
                     }
                     TIMER_BORDER_RECONCILE => {
-                        if rt.always_on_top.pinned_count() > 0 || rt.config.features.focus_border {
+                        if !rt.config.features.focus_border && rt.always_on_top.pinned_count() == 0 {
+                            rt.sync_border_reconcile_timer();
+                        } else {
                             rt.ensure_gfx();
+                            let overlay_active = rt.quick_switch.is_open()
+                                || rt.layout_editor.is_open()
+                                || rt.layout_hub.is_visible();
+                            rt.always_on_top
+                                .sync_borders(&rt.config, rt.gfx.as_ref(), rt.is_muted());
+                            rt.focus_border.refresh(
+                                &rt.config,
+                                rt.gfx.as_ref(),
+                                rt.is_muted(),
+                                overlay_active,
+                            );
+                            rt.sync_border_reconcile_timer();
+                            rt.ensure_animation_timer();
                         }
-                        let overlay_active = rt.quick_switch.is_open()
-                            || rt.layout_editor.is_open()
-                            || rt.layout_hub.is_visible();
-                        rt.always_on_top
-                            .sync_borders(&rt.config, rt.gfx.as_ref(), rt.is_muted());
-                        rt.focus_border.refresh(
-                            &rt.config,
-                            rt.gfx.as_ref(),
-                            rt.is_muted(),
-                            overlay_active,
-                        );
-                        rt.ensure_animation_timer();
                     }
                     TIMER_ANIMATION_FRAME => {
                         if rt.always_on_top.has_active_animation()
@@ -2588,6 +3140,8 @@ fn run_managed(config_path: PathBuf, parent_pid: Option<u32>, isolated: bool) ->
     runtime.layout_editor.set_control_hwnd(control_hwnd);
     runtime.workspace_capture.set_control_hwnd(control_hwnd);
     runtime.multi_monitor.set_control_hwnd(control_hwnd);
+    runtime.wts_session_registered =
+        unsafe { WTSRegisterSessionNotification(control_hwnd, NOTIFY_FOR_THIS_SESSION).is_ok() };
     runtime.reconcile_hooks(&trace_id);
 
     RUNTIME.with(|cell| {
@@ -2750,4 +3304,311 @@ fn main() {
         }
     }
     std::process::exit(exit_code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phys_mods_tracks_keys_ignores_injected_and_bridges_async_race() {
+        let mut mods = 0u32;
+        let mut t_lctrl = 0u32;
+        let mut s_lctrl = 0u32;
+
+        // 1. 物理 LAlt 按下：即使 GetAsyncKeyState 竞态滞后返回 false，alt_down 仍为 true
+        (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LMENU.0,
+            0x38,
+            0,
+            1000,
+            true,
+            false,
+        );
+        assert_ne!(mods & PHYS_MOD_LALT, 0);
+        let eff = resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
+        assert!(eff.alt);
+        assert!(!eff.ctrl);
+
+        // 2. 注入的 LCtrl 按下 (LLKHF_INJECTED) 必须被忽略，不能污染物理位图
+        let (mods_inj, _, _) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LCONTROL.0,
+            0x1D,
+            LLKHF_INJECTED.0,
+            1005,
+            true,
+            false,
+        );
+        assert_eq!(mods_inj, mods);
+
+        // 3. 物理 LShift + LWin 按下与抬起精准对称
+        (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LSHIFT.0,
+            0x2A,
+            0,
+            1010,
+            true,
+            false,
+        );
+        (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LWIN.0,
+            0x5B,
+            LLKHF_EXTENDED.0,
+            1012,
+            true,
+            false,
+        );
+        let eff2 = resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
+        assert!(eff2.alt && eff2.shift && eff2.win && !eff2.ctrl);
+
+        (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LMENU.0,
+            0x38,
+            0,
+            1050,
+            false,
+            true,
+        );
+        (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LSHIFT.0,
+            0x2A,
+            0,
+            1051,
+            false,
+            true,
+        );
+        (mods, _, _) = update_phys_mods_state(
+            mods,
+            t_lctrl,
+            s_lctrl,
+            VK_LWIN.0,
+            0x5B,
+            LLKHF_EXTENDED.0,
+            1052,
+            false,
+            true,
+        );
+        assert_eq!(mods, 0);
+    }
+
+    #[test]
+    fn altgr_companion_lctrl_does_not_falsely_set_ctrl_while_real_ctrl_alt_does() {
+        // 场景 A：国际布局按 AltGr -> 系统先发同时间戳假 LCtrl (0x21D 或 delta <= 2ms)，再发扩展 RMENU
+        let (mods, t_lc, s_lc) = update_phys_mods_state(
+            0,
+            0,
+            0,
+            VK_LCONTROL.0,
+            ALTGR_FAKE_LCTRL_SCAN,
+            0,
+            5000,
+            true,
+            false,
+        );
+        let (mods, t_lc, s_lc) = update_phys_mods_state(
+            mods,
+            t_lc,
+            s_lc,
+            VK_RMENU.0,
+            0x38,
+            LLKHF_EXTENDED.0,
+            5000,
+            true,
+            false,
+        );
+        // 即使 GetAsyncKeyState(VK_LCONTROL) 返回 true，AltGr 伴生假 LCtrl 也不应被判为 ctrl_down
+        let eff_altgr = resolve_effective_mods(
+            mods,
+            LLKHF_ALTDOWN.0,
+            WM_SYSKEYDOWN,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(eff_altgr.alt);
+        assert!(!eff_altgr.ctrl);
+
+        // 松开 RMENU 后自动清理 AltGr 伴生位与假 LCtrl
+        let (mods_after, _, _) = update_phys_mods_state(
+            mods,
+            t_lc,
+            s_lc,
+            VK_RMENU.0,
+            0x38,
+            LLKHF_EXTENDED.0,
+            5100,
+            false,
+            true,
+        );
+        assert_eq!(mods_after, 0);
+
+        // 场景 B：真实按住 LCtrl (普通扫描码 0x1D) 500ms 后再按 RMENU -> 合法 Ctrl+Alt，不误拦原生 Ctrl+Alt+Tab
+        let (mods_real, t_lc2, s_lc2) =
+            update_phys_mods_state(0, 0, 0, VK_LCONTROL.0, 0x1D, 0, 6000, true, false);
+        let (mods_real, _, _) = update_phys_mods_state(
+            mods_real,
+            t_lc2,
+            s_lc2,
+            VK_RMENU.0,
+            0x38,
+            LLKHF_EXTENDED.0,
+            6500,
+            true,
+            false,
+        );
+        let eff_real = resolve_effective_mods(
+            mods_real,
+            LLKHF_ALTDOWN.0,
+            WM_SYSKEYDOWN,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
+        assert!(eff_real.alt);
+        assert!(eff_real.ctrl);
+    }
+
+    #[test]
+    fn held_alt_repeated_tab_and_stale_ctrl_heal_never_leak_to_windows_alt_tab() {
+        // 1. 按住物理 LAlt -> 首记 Tab（即使主线程尚未置 QUICK_SWITCH_IS_OPEN）必须命中 AltTabStep
+        let (mut mods, mut t_lc, mut s_lc) =
+            update_phys_mods_state(0, 0, 0, VK_LMENU.0, 0x38, 0, 1000, true, false);
+        let eff1 =
+            resolve_effective_mods(mods, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, false, false);
+        let d1 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff1, true, true, false, false, false,
+        );
+        assert_eq!(
+            d1,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+
+        // 2. 注入假 Alt UP（如 winit::force_window_active 的 SendInput）不得污染物理位图；
+        //    即使主线程仍在开窗 (qs_open=false, session_active=true) 且系统不再带 LLKHF_ALTDOWN，
+        //    继续按住 Alt 连按第 2 次 Tab / Shift+Tab 也必须 100% 吞噬并切项，绝不漏回 Windows 原生切屏！
+        (mods, t_lc, s_lc) = update_phys_mods_state(
+            mods,
+            t_lc,
+            s_lc,
+            VK_LMENU.0,
+            0x38,
+            LLKHF_INJECTED.0,
+            1010,
+            false,
+            true,
+        );
+        assert_ne!(mods & PHYS_MOD_LALT, 0);
+
+        let eff2 =
+            resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
+        assert!(eff2.alt);
+        let d2 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff2, true, true, false, true, false,
+        );
+        assert_eq!(
+            d2,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+        let d2_up = decide_quick_switch_hook_action(
+            VK_TAB.0, false, true, eff2, true, true, false, true, false,
+        );
+        assert_eq!(d2_up, HookQsDecision::SwallowOnly);
+
+        // Shift+Tab 反向切项
+        let eff2_rev =
+            resolve_effective_mods(mods, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, true, false);
+        let d2_rev = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff2_rev, true, true, true, true, false,
+        );
+        assert_eq!(
+            d2_rev,
+            HookQsDecision::AltTabStep {
+                reverse: true,
+                same_app: false,
+            }
+        );
+
+        // 3. 远控/UAC 丢失 LCtrl KEYUP 导致 PHYS_MOD_LCTRL 陈旧卡死 > 60ms 时，自愈清零避免放行原生 Alt+Tab；
+        //    而刚按下 <= 60ms 的真实 Ctrl 不得被误清（防止 GetAsyncKeyState 瞬态滞后误判）。
+        let (stale_mods, t_lc_stale, _) =
+            update_phys_mods_state(mods, t_lc, s_lc, VK_LCONTROL.0, 0x1D, 0, 2000, true, false);
+        let fresh_kept = heal_stale_phys_mods(
+            stale_mods, 2030, t_lc_stale, 0, 0, 0, false, false, false, false,
+        );
+        assert_ne!(fresh_kept & PHYS_MOD_LCTRL, 0);
+
+        let healed = heal_stale_phys_mods(
+            stale_mods, 2100, t_lc_stale, 0, 0, 0, false, false, false, false,
+        );
+        assert_eq!(healed & PHYS_MOD_LCTRL, 0);
+        assert_ne!(healed & PHYS_MOD_LALT, 0);
+
+        let eff_healed =
+            resolve_effective_mods(healed, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, false, false);
+        assert!(eff_healed.alt && !eff_healed.ctrl);
+        let d3 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff_healed, true, true, false, false, false,
+        );
+        assert_eq!(
+            d3,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+
+        // 4. 真实 Ctrl+Alt+Tab 与 Win+Tab 仍原样放行给系统
+        let eff_ctrl_alt = EffectiveMods {
+            alt: true,
+            ctrl: true,
+            shift: false,
+            win: false,
+        };
+        assert_eq!(
+            decide_quick_switch_hook_action(
+                VK_TAB.0, true, false, eff_ctrl_alt, true, true, true, true, false
+            ),
+            HookQsDecision::PassThrough
+        );
+        let eff_win_tab = EffectiveMods {
+            alt: false,
+            ctrl: false,
+            shift: false,
+            win: true,
+        };
+        assert_eq!(
+            decide_quick_switch_hook_action(
+                VK_TAB.0, true, false, eff_win_tab, true, true, true, true, false
+            ),
+            HookQsDecision::PassThrough
+        );
+    }
 }

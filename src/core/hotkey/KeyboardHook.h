@@ -4,6 +4,7 @@
 #include "core/utils/Export.h"
 #include "core/hotkey/KeyTranslator.h"
 #include "core/hotkey/HotkeyManager.h"
+#include "core/hotkey/ModifierDoubleTapDetector.h"
 
 #include <windows.h>
 #include <atomic>
@@ -60,6 +61,12 @@ public:
 
     /// 查询是否存在已注册的钩子快捷键
     bool hasHookHotkeys() const;
+
+    /// 查询指定修饰键是否已被活跃全局热键注册为双击触发（供聚光灯等协同避让，零锁原子读）
+    bool hasActiveDoubleTapModifier(ModKey mod) const noexcept;
+
+    /// 鼠标点击或滚轮活动通知（仅 1 条无锁原子写，即时熔断修饰键双击候选态防 Ctrl+点击/滚轮误触）
+    void notifyMouseActivity() noexcept;
 
     /// 录屏按键回显专属模式：开启后全量放行打字、单键与功能键，确保录屏教学与演示场景下 100% 可见
     void setRecordingMode(bool enabled);
@@ -145,6 +152,10 @@ private:
     std::atomic<bool> m_comboTriggered{false};
 
     std::atomic<bool> m_hasHookHotkeys{false};
+    std::atomic<uint8_t> m_doubleTapMask{0};
+    std::atomic<bool> m_doubleTapMouseAbort{false};
+    std::atomic<bool> m_doubleTapResetPending{false};
+    ModifierDoubleTapDetector m_doubleTapDetector;
     std::unordered_map<int, HookHotkeyEntry> m_hookHotkeys;
     std::unordered_set<DWORD> m_registeredHookVks;
     std::unordered_set<DWORD> m_pressedHookVks;

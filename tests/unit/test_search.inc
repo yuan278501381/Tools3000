@@ -5639,3 +5639,146 @@ TEST(ServiceLifecyclePolicyTest, StopsOnLastUserLogoffAndShutdownWhilePreserving
     EXPECT_EQ(remainingMultiUser, 1u);
     EXPECT_FALSE(shouldStopOnSessionChange(WTS_SESSION_LOGOFF, remainingMultiUser));
 }
+
+TEST(SearchServiceMemoryGovernanceTest, MainPipeWorkerCountClampedBetweenTwoAndFour) {
+    using namespace tools3000::service::lifecycle;
+
+    EXPECT_EQ(computeMainPipeWorkerCount(0u), 2u);
+    EXPECT_EQ(computeMainPipeWorkerCount(1u), 2u);
+    EXPECT_EQ(computeMainPipeWorkerCount(4u), 2u);
+    EXPECT_EQ(computeMainPipeWorkerCount(8u), 2u);
+    EXPECT_EQ(computeMainPipeWorkerCount(12u), 3u);
+    EXPECT_EQ(computeMainPipeWorkerCount(16u), 4u);
+    EXPECT_EQ(computeMainPipeWorkerCount(20u), 4u);
+    EXPECT_EQ(computeMainPipeWorkerCount(32u), 4u);
+    EXPECT_EQ(computeMainPipeWorkerCount(64u), 4u);
+    EXPECT_LE(kCompatPipeWorkerCount, 2u);
+}
+
+TEST(SearchServiceMemoryGovernanceTest, ColdUsnBatchingFlushesBeforeSearchAndOnOverflowAndTimeout) {
+    using namespace tools3000::service;
+
+    MftParser parser;
+    // 导入初始基础快照：根目录 (100) + 两个文件 (101, 102)
+    auto makeSeed = [](uint64_t frn, uint64_t parentFrn, const wchar_t* name,
+                       bool isDir, uint32_t attrs, uint64_t size) {
+        FileRecordInit rec{};
+        rec.fileReferenceNumber = frn;
+        rec.parentFileReferenceNumber = parentFrn;
+        rec.fileName = name;
+        rec.isDirectory = isDir;
+        rec.fileAttributes = attrs;
+        rec.fileSize = size;
+        rec.creationTime = 1000;
+        rec.lastWriteTime = 1000;
+        return rec;
+    };
+    std::vector<FileRecordInit> seed;
+    seed.push_back(makeSeed(100, 0, L"ColdUsnLab", true, FILE_ATTRIBUTE_DIRECTORY, 0));
+    seed.push_back(makeSeed(101, 100, L"alpha_old_name.txt", false, FILE_ATTRIBUTE_ARCHIVE, 1024));
+    seed.push_back(makeSeed(102, 100, L"beta_keep.txt", false, FILE_ATTRIBUTE_ARCHIVE, 2048));
+    ASSERT_TRUE(parser.importSnapshot(std::move(seed), /*lastUsn=*/5000ULL, /*volumeSerial=*/0u));
+    ASSERT_EQ(parser.getFileCount(), 3u);
+
+    // 1. 开启冷态 USN 攒批队列：验证新建/改名事件暂存队列而不触碰主索引，无关 reason 自动过滤
+    parser.setColdUsnBatchingEnabled(true);
+    parser.setPendingUsnFlushPolicy(/*maxEntries=*/4u, /*maxAgeMs=*/15ULL * 60ULL * 1000ULL);
+    EXPECT_TRUE(parser.isColdUsnBatchingEnabled());
+
+    std::vector<PendingUsnEvent> coldBatch;
+    coldBatch.push_back(PendingUsnEvent{
+        103, 100, USN_REASON_FILE_CREATE | USN_REASON_CLOSE, FILE_ATTRIBUTE_ARCHIVE, 2000, L"cold_created_report.txt"
+    });
+    coldBatch.push_back(PendingUsnEvent{
+        101, 100, USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE, FILE_ATTRIBUTE_ARCHIVE, 2001, L"alpha_renamed_budget.xlsx"
+    });
+    coldBatch.push_back(PendingUsnEvent{
+        102, 100, USN_REASON_OBJECT_ID_CHANGE, FILE_ATTRIBUTE_ARCHIVE, 2002, L""
+    });
+    parser.processUsnEventBatch(std::move(coldBatch), /*nowTickMs=*/10000ULL);
+
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 2u);
+    EXPECT_EQ(parser.totalPendingUsnFlushes(), 0u);
+    EXPECT_EQ(parser.getFileCount(), 3u) << "Cold USN batching must defer touching main index until flush trigger";
+
+    // 2. 用户查询到达前自动 flush：立即可搜到新建与重命名文件，旧名消失且零漏文件
+    const auto foundCreated = parser.Search(L"cold_created_report", 10);
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 0u);
+    EXPECT_EQ(parser.totalPendingUsnFlushes(), 1u);
+    EXPECT_EQ(parser.getFileCount(), 4u);
+    ASSERT_EQ(foundCreated.size(), 1u);
+    EXPECT_EQ(foundCreated[0].fileName, L"cold_created_report.txt");
+
+    const auto foundRenamed = parser.Search(L"alpha_renamed_budget", 10);
+    ASSERT_EQ(foundRenamed.size(), 1u);
+    EXPECT_EQ(foundRenamed[0].fileName, L"alpha_renamed_budget.xlsx");
+    EXPECT_TRUE(parser.Search(L"alpha_old_name", 10).empty());
+
+    // 3. 队列达到积压上限 (4 条) 时自动溢出合并
+    for (uint64_t i = 0; i < 3; ++i) {
+        std::vector<PendingUsnEvent> one;
+        one.push_back(PendingUsnEvent{
+            200 + i, 100, USN_REASON_FILE_CREATE, FILE_ATTRIBUTE_ARCHIVE, 3000 + i,
+            L"overflow_batch_" + std::to_wstring(i) + L".log"
+        });
+        parser.processUsnEventBatch(std::move(one), /*nowTickMs=*/20000ULL + i * 100ULL);
+    }
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 3u);
+    EXPECT_EQ(parser.totalPendingUsnFlushes(), 1u);
+    EXPECT_EQ(parser.getFileCount(), 4u);
+
+    {
+        std::vector<PendingUsnEvent> fourth;
+        fourth.push_back(PendingUsnEvent{
+            203, 100, USN_REASON_FILE_CREATE, FILE_ATTRIBUTE_ARCHIVE, 3003, L"overflow_batch_3.log"
+        });
+        parser.processUsnEventBatch(std::move(fourth), /*nowTickMs=*/20500ULL);
+    }
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 0u);
+    EXPECT_EQ(parser.totalPendingUsnFlushes(), 2u);
+    EXPECT_EQ(parser.getFileCount(), 8u);
+    EXPECT_EQ(parser.Search(L"overflow_batch_3", 10).size(), 1u);
+
+    // 4. 超龄安全兜底 (15 分钟)：未到期不合并，满 15 分钟自动合并
+    {
+        std::vector<PendingUsnEvent> aged;
+        aged.push_back(PendingUsnEvent{
+            300, 100, USN_REASON_FILE_CREATE, FILE_ATTRIBUTE_ARCHIVE, 4000, L"aged_fallback_doc.md"
+        });
+        parser.processUsnEventBatch(std::move(aged), /*nowTickMs=*/100000ULL);
+    }
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 1u);
+    EXPECT_FALSE(parser.flushPendingUsnChangesIfExpired(/*nowTickMs=*/100000ULL + 10ULL * 60ULL * 1000ULL));
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 1u);
+    EXPECT_TRUE(parser.flushPendingUsnChangesIfExpired(/*nowTickMs=*/100000ULL + 15ULL * 60ULL * 1000ULL));
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 0u);
+    EXPECT_EQ(parser.totalPendingUsnFlushes(), 3u);
+    EXPECT_EQ(parser.getFileCount(), 9u);
+
+    // 5. 删除事件冷态入队 + 落盘快照前自动 flush 保障一致性
+    {
+        std::vector<PendingUsnEvent> del;
+        del.push_back(PendingUsnEvent{
+            300, 100, USN_REASON_FILE_DELETE | USN_REASON_CLOSE, FILE_ATTRIBUTE_ARCHIVE, 4005, L""
+        });
+        parser.processUsnEventBatch(std::move(del), /*nowTickMs=*/200000ULL);
+    }
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 1u);
+    EXPECT_EQ(parser.getFileCount(), 9u);
+
+    const auto tmpSnapPath = std::filesystem::temp_directory_path() /
+        (L"tools3000_cold_usn_snap_" + std::to_wstring(GetCurrentProcessId()) + L"_" + std::to_wstring(GetTickCount64()) + L".db");
+    auto& dbMgr = tools3000::service::db::DatabaseManager::instance();
+    const std::wstring prevDbPath = dbMgr.getDbPath();
+    dbMgr.init(tmpSnapPath.wstring());
+    std::vector<MftParser*> saveList = {&parser};
+    const bool saved = dbMgr.saveSnapshot(saveList);
+    dbMgr.init(prevDbPath);
+    std::error_code ec;
+    std::filesystem::remove(tmpSnapPath, ec);
+
+    EXPECT_TRUE(saved);
+    EXPECT_EQ(parser.pendingUsnChangeCount(), 0u);
+    EXPECT_EQ(parser.getFileCount(), 8u);
+    EXPECT_TRUE(parser.Search(L"aged_fallback_doc", 10).empty());
+}

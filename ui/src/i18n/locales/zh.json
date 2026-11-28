@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 已是最新版本",
     "updateAvailable": "Tools3000 {{version}} 已发布",
     "updateFailed": "暂时无法检查更新",
+    "updateRateLimited": "GitHub 接口限流（共享代理常见），请切换节点或稍后重试",
     "updateCheckBusy": "更新检查正在进行中",
     "noPublishedRelease": "目前还没有已发布的版本",
     "openRelease": "打开发布页面",
@@ -1794,7 +1795,11 @@
     "pressKeys": "请按下按键或组合键...",
     "bindFailed": "无法应用此快捷键",
     "clearBinding": "清除快捷键绑定",
-    "needModifier": "字母与符号键请搭配 Ctrl、Alt 或 Win 使用"
+    "needModifier": "字母与符号键请搭配 Ctrl、Alt 或 Win 使用",
+    "doubleTapDisplay": "双击 {{key}}",
+    "pressKeysOrDoubleTap": "按下组合键，或双击 Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "再按一次 {{key}} 设为双击...",
+    "autoYieldedSpotlightDoubleCtrl": "已自动关闭鼠标聚光灯的双击 Ctrl 触发，避免与新快捷键冲突"
   },
   "search": {
     "title": "快速文件搜索",

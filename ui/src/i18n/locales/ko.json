@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000이 최신 버전입니다",
     "updateAvailable": "Tools3000 {{version}} 새 버전이 출시되었습니다",
     "updateFailed": "업데이트를 확인할 수 없습니다",
+    "updateRateLimited": "GitHub API 요청 한도에 도달했습니다(공유 프록시에서 자주 발생). 프록시를 변경하거나 잠시 후 다시 시도하세요.",
     "updateCheckBusy": "이미 업데이트 확인이 진행 중입니다",
     "noPublishedRelease": "아직 게시된 릴리스가 없습니다",
     "openRelease": "릴리스 페이지 열기",
@@ -1794,7 +1795,11 @@
     "pressKeys": "키 또는 단축키 조합을 누르세요...",
     "bindFailed": "이 단축키를 적용할 수 없습니다",
     "clearBinding": "단축키 바인딩 지우기",
-    "needModifier": "문자 및 기호 키는 Ctrl, Alt 또는 Win 키와 함께 사용해야 합니다"
+    "needModifier": "문자 및 기호 키는 Ctrl, Alt 또는 Win 키와 함께 사용해야 합니다",
+    "doubleTapDisplay": "{{key}} 두 번 누르기",
+    "pressKeysOrDoubleTap": "조합 키 또는 Ctrl/Alt/Shift 두 번 누르기...",
+    "tapAgainToDouble": "{{key}} 키를 한 번 더 누르세요...",
+    "autoYieldedSpotlightDoubleCtrl": "새 Ctrl 두 번 누르기 단축키와 충돌하지 않도록 마우스 스포트라이트의 Ctrl 두 번 누르기 실행을 자동으로 껐습니다"
   },
   "search": {
     "title": "초고속 파일 검색",

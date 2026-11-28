@@ -1443,6 +1443,13 @@ LRESULT CaptureInput::handleKeyAndWheelMessage(HWND hwnd, UINT msg, WPARAM wPara
                     m_renderer->invalidate();
                     return 0;
 
+                case CaptureShortcutAction::ExtractTextFromSelection: {
+                    ToolbarButton ocrBtn;
+                    ocrBtn.command = ToolbarCommand::ExtractText;
+                    executeToolbarCommand(ocrBtn);
+                    return 0;
+                }
+
                 case CaptureShortcutAction::PinSelection: {
                     ToolbarButton pinBtn;
                     pinBtn.command = ToolbarCommand::PinWindow;

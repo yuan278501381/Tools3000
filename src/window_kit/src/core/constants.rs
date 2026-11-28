@@ -88,10 +88,15 @@ pub const TIMER_DISPLAY_CHANGE_DEBOUNCE: usize = 1007;
 pub const TIMER_BORDER_PREVIEW_HIDE: usize = 1008;
 /// Workspaces 启动进度浮窗自动收起定时器
 pub const TIMER_WORKSPACE_PROGRESS_HIDE: usize = 1009;
+/// Slint 隐藏窗口池冷态深度回收定时器（闲置 25s 后彻底 Drop 释放软件渲染大帧缓冲）
+pub const TIMER_SLINT_IDLE_PURGE: usize = 1010;
 
 /// 定时器周期与安全超时门限（严禁魔术字面量）
 pub const PARENT_WATCH_INTERVAL_MS: u32 = 1000;
 pub const COLD_PATH_TRIM_DELAY_MS: u32 = 2000;
+pub const SLINT_IDLE_PURGE_DELAY_MS: u32 = 25_000;
+/// 守护定时器检测到单调/系统时钟跳变超过该秒数时自动自愈重挂低级输入钩子
+pub const HOOK_WATCH_CLOCK_JUMP_SECS: u64 = 5;
 pub const SNAP_DRAG_POLL_INTERVAL_MS: u32 = 12;
 pub const ANIMATION_FRAME_INTERVAL_MS: u32 = 12;
 pub const BORDER_RECONCILE_INTERVAL_MS: u32 = 120;

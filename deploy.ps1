@@ -793,27 +793,16 @@ if (Test-Path $ExePath) {
     Write-Log "已复制文件索引服务: $TargetServiceName"
     Copy-Item $ServicePath -Destination (Join-Path $StagingDir "Tools3000_Service.exe") -Force
     
-    # 全仓 0 引用冗余 DLL 黑名单（经全量 PE 导入/延迟导入表审计确认 0 依赖；WebView2 已静态链接 WebView2LoaderStatic.lib）
-    $ObsoleteUnusedDlls = @(
-        "WebView2Loader.dll",
-        "vccorlib140.dll",
-        "msvcp140_1.dll",
-        "msvcp140_2.dll",
-        "msvcp140_codecvt_ids.dll",
-        "vcruntime140_threads.dll"
-    )
-
-    # 复制所有同一目录下的运行库 DLL 文件 (显式排除 *gtest*.dll, *gmock*.dll, Plugin_*.dll 及 0 引用冗余 DLL)
-    $DllFiles = Get-ChildItem -Path $ExeDir -Filter "*.dll" -File | Where-Object {
-        $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and $_.Name -notlike "Plugin_*.dll" -and
-        ($ObsoleteUnusedDlls -notcontains $_.Name)
+    # 严格仅复制自有核心运行库 (Tools3000Core.dll)，全部第三方 DLL 改由下游 PE 导入表/延迟导入表可达闭包精准拉取，
+    # 彻底根除测试工程与全量 vcpkg 拖带的 0 引用死库（如 libprotoc.dll / avfilter-11.dll / 未使用 OpenCV 模块等）。
+    $CoreDllPath = Join-Path $ExeDir "Tools3000Core.dll"
+    if (-not (Test-Path -LiteralPath $CoreDllPath)) {
+        throw "找不到编译后的 Tools3000Core.dll: $CoreDllPath"
     }
-    foreach ($dll in $DllFiles) {
-        Copy-Item $dll.FullName -Destination $StagingDir
-    }
-    Write-Log "已复制生产运行库 DLL 文件 (已排除测试库 *gtest*/*gmock*、插件本体及 0 引用冗余 DLL)"
+    Copy-Item -LiteralPath $CoreDllPath -Destination (Join-Path $StagingDir "Tools3000Core.dll") -Force
+    Write-Log "已复制核心动态库: Tools3000Core.dll"
     
-    # 复制插件目录 (严格仅复制 Plugin_*.dll 与 *.plugin.json，严禁复制 pdb 及重复三方库)
+    # 复制插件目录 (严格仅复制 Plugin_*.dll 与 *.plugin.json，严禁复制 pdb 及未引用三方库)
     $PluginsDir = Join-Path $BuildDir "bin\plugins\$Configuration"
     if (Test-Path $PluginsDir) {
         $TargetPluginsDir = Join-Path $StagingDir "plugins"
@@ -825,35 +814,10 @@ if (Test-Path $ExePath) {
             Copy-Item $pf.FullName -Destination $TargetPluginsDir
         }
         Write-Log "已复制纯净插件集合 (plugins/)，仅含 Plugin_*.dll 与 *.plugin.json"
-
-        # 补充收集插件所需但主程序未直接引用的第三方运行库 (如 opencv_photo4.dll 等) 到根运行目录 (唯一保留一份)
-        $PluginDependencyDlls = Get-ChildItem -Path $PluginsDir -Filter "*.dll" -File | Where-Object {
-            $_.Name -notlike "Plugin_*.dll" -and $_.Name -notlike "*gtest*.dll" -and $_.Name -notlike "*gmock*.dll" -and
-            ($ObsoleteUnusedDlls -notcontains $_.Name)
-        }
-        foreach ($pDll in $PluginDependencyDlls) {
-            $destFile = Join-Path $StagingDir $pDll.Name
-            if (-not (Test-Path $destFile)) {
-                Copy-Item $pDll.FullName -Destination $StagingDir
-                Write-Log "补充复制插件依赖运行库到根目录: $($pDll.Name)"
-            }
-        }
     } else {
         Write-Log "未找到插件构建目录: $PluginsDir" "WARN"
     }
 
-    # 递归补齐 /DELAYLOAD 延迟加载 DLL 及其传递依赖 (防止 vcpkg applocal 漏拷贝)
-    $DelaySyncScript = Join-Path $ScriptDir "scripts\sync-delayed-dlls.ps1"
-    if (Test-Path -LiteralPath $DelaySyncScript) {
-        $VcpkgSubBin = if ($Configuration -eq "Debug") { "debug\bin" } else { "bin" }
-        $SearchPool = @(
-            (Join-Path $ScriptDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
-            (Join-Path $BuildDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
-            $ExeDir,
-            $PluginsDir
-        )
-        & $DelaySyncScript -TargetDir $StagingDir -SearchDirs ($SearchPool -join ';')
-    }
     $StagedViewerExe = Join-Path $StagingDir $ViewerExeName
     Copy-Item -LiteralPath $BuiltViewerExe -Destination $StagedViewerExe -Force
     Assert-PeMachineArchitecture -FilePath $StagedViewerExe -ExpectedArch $Arch
@@ -868,6 +832,24 @@ if (Test-Path $ExePath) {
     Copy-Item -LiteralPath $BuiltWindowKitExe -Destination $StagedWindowKitExe -Force
     Assert-PeMachineArchitecture -FilePath $StagedWindowKitExe -ExpectedArch $Arch
     Write-Log "已复制并校验 Rust 窗口管理引擎: $WindowKitExeName"
+
+    # 基于全量自有 EXE + Core + Plugin_*.dll 的 PE 常规导入表与 /DELAYLOAD 延迟导入表递归可达闭包，
+    # 100% 精准拉取生产真实依赖的第三方运行库（零漏缺、零死库冗余、同步加速签名/解压/安装）。
+    $DelaySyncScript = Join-Path $ScriptDir "scripts\sync-delayed-dlls.ps1"
+    if (-not (Test-Path -LiteralPath $DelaySyncScript)) {
+        throw "缺少 PE 依赖闭包同步脚本: $DelaySyncScript"
+    }
+    $VcpkgSubBin = if ($Configuration -eq "Debug") { "debug\bin" } else { "bin" }
+    $SearchPool = @(
+        $ExeDir,
+        $PluginsDir,
+        (Join-Path $ScriptDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin"),
+        (Join-Path $BuildDir "vcpkg_installed\$VcpkgTargetTriplet\$VcpkgSubBin")
+    )
+    & $DelaySyncScript -TargetDir $StagingDir -SearchDirs ($SearchPool -join ';')
+    if ($LASTEXITCODE -ne 0) {
+        throw "PE 导入表可达闭包同步第三方运行库失败！"
+    }
 } else {
     throw "找不到编译后的 Tools3000.exe"
 }

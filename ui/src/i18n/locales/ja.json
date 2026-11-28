@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 は最新バージョンです",
     "updateAvailable": "Tools3000 {{version}} が利用可能です",
     "updateFailed": "アップデートを確認できませんでした",
+    "updateRateLimited": "GitHub API のレート制限に達しました（共有プロキシでよく発生します）。プロキシを切り替えるか、しばらくしてから再試行してください",
     "updateCheckBusy": "現在アップデートを確認中です",
     "noPublishedRelease": "公開済みのリリースはまだありません",
     "openRelease": "リリースページを開く",
@@ -1794,7 +1795,11 @@
     "pressKeys": "キーまたは組み合わせを押してください...",
     "bindFailed": "このホットキーを適用できませんでした",
     "clearBinding": "ショートカット割り当てを解除",
-    "needModifier": "文字・記号キーは Ctrl、Alt、または Win キーと組み合わせてください"
+    "needModifier": "文字・記号キーは Ctrl、Alt、または Win キーと組み合わせてください",
+    "doubleTapDisplay": "{{key}} 2回押し",
+    "pressKeysOrDoubleTap": "キーの組み合わせ、または Ctrl/Alt/Shift を2回押し...",
+    "tapAgainToDouble": "もう一度 {{key}} を押して2回押しに設定...",
+    "autoYieldedSpotlightDoubleCtrl": "新しい Ctrl 2回押しショートカットとの競合を防ぐため、マウススポットライトの Ctrl 2回押し起動を自動的にオフにしました"
   },
   "search": {
     "title": "高速ファイル検索",

@@ -23,11 +23,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -53,10 +55,81 @@ namespace Constants {
     inline constexpr DWORD kPipeBufferBytes             = 256 * 1024;
     inline constexpr DWORD kPipeConnectTimeoutMs        = 15000;
     inline constexpr DWORD kWorkerGracefulExitWaitMs    = 4000;
-    inline constexpr int   kDefaultOcrWorkerSoftTrimSeconds = 60;   // 阶段 1: 闲置 60s 执行软修剪 (DXGI Trim + 工作集收缩)，保留已编译 DirectML Session
-    inline constexpr int   kDefaultOcrWorkerIdleSeconds     = 900;  // 阶段 2: 闲置 15 分钟仍无请求则优雅退出，物理+虚拟内存 100% 归零
+    inline constexpr int   kDefaultOcrWorkerSoftTrimSeconds = 45;   // 阶段 1: 闲置 45s 执行软修剪 (DXGI Trim + 工作集收缩)，保留已编译 DirectML Session
+    inline constexpr int   kDefaultOcrWorkerIdleSeconds     = 180;  // 阶段 2: 32GB+ 桌面机默认闲置 3 分钟优雅退出，物理+虚拟内存 100% 归零
+    inline constexpr int   kLowRamOrRdpOcrWorkerIdleSeconds = 60;   // <=16GB 物理内存或远程桌面会话缩减至 60s，1 分钟内彻底释放 DirectML 内存
+    inline constexpr uint64_t kLowRamOcrIdleThresholdBytes  = 16ULL * 1024ULL * 1024ULL * 1024ULL;
+    inline constexpr size_t kMaxDirectMlDetBuckets          = 1;    // DirectML GPU 检测画布桶严格单活互斥
+    inline constexpr size_t kMaxDirectMlRecBuckets          = 2;    // DirectML GPU 识别微批桶最多保留 2 个 LRU 热桶
     inline constexpr uint32_t kMaxIpcStringBytes        = 16u * 1024u * 1024u;
 } // namespace Constants
+
+/// 根据硬件物理内存总量与远程桌面会话环境自适应解析 OCR Worker 闲置退场超时（显式测试覆盖优先）
+[[nodiscard]] inline constexpr int resolveAdaptiveOcrWorkerIdleSeconds(
+    uint64_t totalPhysMemoryBytes,
+    bool isRemoteSession,
+    int explicitOverrideSeconds = 0) noexcept {
+    if (explicitOverrideSeconds > 0) {
+        return explicitOverrideSeconds;
+    }
+    if (isRemoteSession ||
+        (totalPhysMemoryBytes > 0 && totalPhysMemoryBytes <= Constants::kLowRamOcrIdleThresholdBytes)) {
+        return Constants::kLowRamOrRdpOcrWorkerIdleSeconds;
+    }
+    return Constants::kDefaultOcrWorkerIdleSeconds;
+}
+
+struct OcrWorkerIdleSchedule {
+    bool enableSoftTrim = false;
+    int stage1Seconds = 0;
+    int stage2Seconds = 0;
+};
+
+/// 计算 OCR Worker 两阶段保活/退场时间表：
+/// - 若总闲置超时 <= 软修剪阈值（或软修剪 >= 60s 且总超时为 60s），直接跳过软修剪并在 idleSeconds 到期时优雅退场
+/// - 否则在 softTrimSeconds 执行阶段 1 软修剪，并在累计达到 idleSeconds 时执行阶段 2 彻底退场
+[[nodiscard]] inline constexpr OcrWorkerIdleSchedule computeOcrWorkerIdleSchedule(
+    int idleSeconds,
+    int softTrimSeconds = Constants::kDefaultOcrWorkerSoftTrimSeconds) noexcept {
+    const int safeIdle = (idleSeconds < 1) ? 1 : idleSeconds;
+    const bool enableSoft = (softTrimSeconds > 0) &&
+                            (safeIdle > softTrimSeconds) &&
+                            !(safeIdle <= Constants::kLowRamOrRdpOcrWorkerIdleSeconds &&
+                              softTrimSeconds >= Constants::kLowRamOrRdpOcrWorkerIdleSeconds);
+    if (enableSoft) {
+        return OcrWorkerIdleSchedule{true, softTrimSeconds, safeIdle - softTrimSeconds};
+    }
+    return OcrWorkerIdleSchedule{false, safeIdle, 0};
+}
+
+/// 从 DirectML 识别桶 LRU 访问时间戳表中挑选需要淘汰的最久未使用活跃槽位；
+/// 若当前活跃桶数未达到上限 maxActiveBuckets，返回 N（表示无需淘汰）。
+template <size_t N>
+[[nodiscard]] inline size_t selectDirectMlLruEvictionSlot(
+    const std::array<bool, N>& activeMask,
+    const std::array<uint64_t, N>& lastUsedTicks,
+    size_t targetSlot,
+    size_t maxActiveBuckets = Constants::kMaxDirectMlRecBuckets) noexcept {
+    if (targetSlot >= N || activeMask[targetSlot] || maxActiveBuckets == 0) {
+        return N;
+    }
+    size_t activeCount = 0;
+    size_t victimSlot = N;
+    uint64_t oldestTick = (std::numeric_limits<uint64_t>::max)();
+    for (size_t i = 0; i < N; ++i) {
+        if (!activeMask[i]) continue;
+        ++activeCount;
+        if (i == targetSlot) continue;
+        if (victimSlot == N || lastUsedTicks[i] < oldestTick) {
+            oldestTick = lastUsedTicks[i];
+            victimSlot = i;
+        }
+    }
+    if (activeCount < maxActiveBuckets) {
+        return N;
+    }
+    return victimSlot;
+}
 
 class ScopedHandle {
 public:

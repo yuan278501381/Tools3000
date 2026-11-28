@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 está actualizado",
     "updateAvailable": "Tools3000 {{version}} está disponible",
     "updateFailed": "No se pudieron comprobar actualizaciones",
+    "updateRateLimited": "Se alcanzó el límite de solicitudes de la API de GitHub (frecuente en proxies compartidos). Cambia de proxy o inténtalo más tarde.",
     "updateCheckBusy": "Ya hay una comprobación de actualizaciones en curso",
     "noPublishedRelease": "Todavía no hay ninguna versión publicada disponible",
     "openRelease": "Abrir página de lanzamiento",
@@ -1794,7 +1795,11 @@
     "pressKeys": "Pulsa una tecla o combinación...",
     "bindFailed": "No se pudo aplicar este atajo",
     "clearBinding": "Borrar asignación de atajo",
-    "needModifier": "Las letras y símbolos deben combinarse con Ctrl, Alt o Win"
+    "needModifier": "Las letras y símbolos deben combinarse con Ctrl, Alt o Win",
+    "doubleTapDisplay": "Doble {{key}}",
+    "pressKeysOrDoubleTap": "Pulsa combinación o doble Ctrl/Alt/Shift...",
+    "tapAgainToDouble": "Pulsa {{key}} de nuevo...",
+    "autoYieldedSpotlightDoubleCtrl": "Se desactivó el doble Ctrl del foco del ratón para evitar conflictos con tu nuevo atajo"
   },
   "search": {
     "title": "Búsqueda rápida de archivos",

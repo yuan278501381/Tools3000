@@ -223,6 +223,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
             std::vector<ShortcutHintItem> items = zh
                 ? std::vector<ShortcutHintItem>{
                       {L"Enter", enterActionLabel},
+                      {L"Ctrl+O", L"提取文字 (OCR)"},
                       {L"Ctrl+T", L"贴图置顶"},
                       {L"Ctrl+S", L"另存 (+Shift 快存)"},
                       {L"Ctrl+C", L"复制选区"},
@@ -234,6 +235,7 @@ ShortcutHintOverlay::itemsFor(ShortcutHintContext context) const {
                       {L"Esc", L"分级返回"}}
                 : std::vector<ShortcutHintItem>{
                       {L"Enter", enterActionLabel},
+                      {L"Ctrl+O", L"Extract text (OCR)"},
                       {L"Ctrl+T", L"Pin to screen"},
                       {L"Ctrl+S", L"Save (+Shift quick)"},
                       {L"Ctrl+C", L"Copy region"},

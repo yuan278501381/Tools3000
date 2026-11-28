@@ -85,8 +85,6 @@ std::string g_CompatTokenPipeName;
 std::wstring g_CompatTokenClientSid;
 bool g_UseKernelServicePipeSddl = false;
 std::string g_IsolatedPortableToken;
-constexpr int NumPipeWorkers = 16;
-constexpr int NumCompatPipeWorkers = 4;
 
 namespace {
 
@@ -195,9 +193,46 @@ struct ScopedInFlightUserQuery {
     ScopedInFlightUserQuery& operator=(const ScopedInFlightUserQuery&) = delete;
 };
 
+void setAllParsersColdUsnBatching(bool enabled) {
+    std::vector<std::shared_ptr<MftParser>> parsers;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_ParsersMutex);
+        parsers = g_MftParsers;
+    }
+    for (const auto& parser : parsers) {
+        if (parser) {
+            parser->setColdUsnBatchingEnabled(enabled);
+        }
+    }
+}
+
+size_t flushAllPendingUsnChanges() {
+    std::vector<std::shared_ptr<MftParser>> parsers;
+    {
+        std::shared_lock<std::shared_mutex> lock(g_ParsersMutex);
+        parsers = g_MftParsers;
+    }
+    size_t totalFlushed = 0;
+    for (const auto& parser : parsers) {
+        if (parser) {
+            totalFlushed += parser->flushPendingUsnChanges();
+        }
+    }
+    if (totalFlushed > 0) {
+        invalidateContentPlanCache();
+    }
+    return totalFlushed;
+}
+
 void markUserActivity() noexcept {
     g_LastUserActivityTick.store(GetTickCount64(), std::memory_order_release);
-    g_TrimmedDuringIdle.store(false, std::memory_order_release);
+    const bool wasTrimmed = g_TrimmedDuringIdle.exchange(false, std::memory_order_acq_rel);
+    if (wasTrimmed) {
+        try {
+            setAllParsersColdUsnBatching(false);
+        } catch (...) {
+        }
+    }
 }
 
 uint64_t currentEpochMillis() noexcept {
@@ -910,6 +945,9 @@ void scheduleSnapshot(std::vector<std::shared_ptr<MftParser>> parsers, std::stri
             try {
                 if (!stop.stop_requested()) {
                     const auto rawParsers = toRawParserPointers(parsers);
+                    for (auto* p : rawParsers) {
+                        if (p) p->flushPendingUsnChanges();
+                    }
                     const bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(rawParsers);
                     if (ok) {
                         recordPersistedUsns(rawParsers);
@@ -1036,9 +1074,11 @@ void PerformServiceMemoryTrim(uint64_t* outBeforeWs = nullptr, uint64_t* outAfte
     tools3000::service::launcher::AppsFolderCatalog::instance().invalidate();
 
     // 保持所有卷的 USN 实时监听线程 100% 存活，绝不遗漏任何文件变更。
+    // 修剪前先合并残余队列并紧缩索引，再归还工作集，随后启用冷态 USN 攒批队列以阻止后台写盘瞬间将 180MB 索引页 Fault 回工作集。
     const auto parsers = snapshotParsers();
     for (const auto& parser : parsers) {
         if (!parser) continue;
+        parser->flushPendingUsnChanges();
         parser->releaseQueryCaches();
         parser->shrinkIndexCapacity();
     }
@@ -1053,7 +1093,14 @@ void PerformServiceMemoryTrim(uint64_t* outBeforeWs = nullptr, uint64_t* outAfte
 
     g_LastTrimmedAtMs.store(currentEpochMillis(), std::memory_order_release);
     g_LastTrimMonotonicTick.store(GetTickCount64(), std::memory_order_release);
-    g_TrimmedDuringIdle.store(true, std::memory_order_release);
+    if (g_InFlightUserQueries.load(std::memory_order_acquire) == 0) {
+        g_TrimmedDuringIdle.store(true, std::memory_order_release);
+        for (const auto& parser : parsers) {
+            if (parser) {
+                parser->setColdUsnBatchingEnabled(true);
+            }
+        }
+    }
     spdlog::info(
         "Service cold memory trim completed: workingSet {} MB -> {} MB, private {} MB",
         beforeWs / (1024ULL * 1024ULL),
@@ -1077,6 +1124,13 @@ void flushHistoryAndSaveSnapshotIfNeeded(bool forceSave) {
     const auto owners = snapshotParsers();
     const auto rawParsers = toRawParserPointers(owners);
     if (rawParsers.empty()) return;
+
+    for (auto* p : rawParsers) {
+        if (p) {
+            p->setColdUsnBatchingEnabled(false);
+            p->flushPendingUsnChanges();
+        }
+    }
 
     if (forceSave || hasAnyUsnAdvancedSincePersist(rawParsers)) {
         try {
@@ -1391,13 +1445,14 @@ nlohmann::json ProcessSearchQuery(
                     return {{"success", true}, {"cancelled", true}};
                 }
                 if (act == "getIndexGeneration") {
-                    // 极轻量只读代次探测：不调用 markUserActivity()，绝不干扰空闲内存休眠策略。
+                    // 极轻量只读代次探测：不调用 markUserActivity()、不触碰主索引页，绝不干扰空闲内存休眠策略；
+                    // 叠加冷态待合并 USN 队列计数，使调用方能实时感知后台变更而 0 工作集反弹。
                     const auto parsers = snapshotParsers();
                     uint64_t combinedGeneration = 0;
                     uint64_t totalMemRecords = 0;
                     for (const auto& p : parsers) {
                         if (!p) continue;
-                        combinedGeneration += p->getIndexGeneration();
+                        combinedGeneration += p->getIndexGeneration() + p->pendingUsnChangeCount();
                         totalMemRecords += p->getFileCount();
                     }
                     return {
@@ -1435,6 +1490,8 @@ nlohmann::json ProcessSearchQuery(
                         const auto nextMode = parseServiceMemoryMode(reqJson["memoryMode"].get_ref<const std::string&>());
                         g_MemoryMode.store(static_cast<int>(nextMode), std::memory_order_release);
                         g_TrimmedDuringIdle.store(false, std::memory_order_release);
+                        setAllParsersColdUsnBatching(false);
+                        flushAllPendingUsnChanges();
                     }
                     if (reqJson.contains("idleTrimMinutes") &&
                         (reqJson["idleTrimMinutes"].is_number_integer() || reqJson["idleTrimMinutes"].is_number_unsigned())) {
@@ -1443,6 +1500,8 @@ nlohmann::json ProcessSearchQuery(
                             static_cast<uint32_t>(std::clamp<int64_t>(v, 1, 120)),
                             std::memory_order_release);
                         g_TrimmedDuringIdle.store(false, std::memory_order_release);
+                        setAllParsersColdUsnBatching(false);
+                        flushAllPendingUsnChanges();
                     }
                     if (reqJson.contains("idleStopMinutes") &&
                         (reqJson["idleStopMinutes"].is_number_integer() || reqJson["idleStopMinutes"].is_number_unsigned())) {
@@ -1489,8 +1548,9 @@ nlohmann::json ProcessSearchQuery(
                 }
                 if (act == "catchup" || act == "sync") {
                     markUserActivity();
+                    const bool flushedPending = (flushAllPendingUsnChanges() > 0);
                     pruneRemovedVolumes();
-                    bool anyUpdated = false;
+                    bool anyUpdated = flushedPending;
                     for (const auto& parser : snapshotParsers()) {
                         if (!parser) continue;
                         uint64_t lastUsn = parser->getCurrentUsn();
@@ -1723,6 +1783,7 @@ nlohmann::json ProcessSearchQuery(
                 }
                 if (act == "saveSnapshot") {
                     markUserActivity();
+                    flushAllPendingUsnChanges();
                     const auto owners = snapshotParsers();
                     const auto allParsers = toRawParserPointers(owners);
                     bool ok = tools3000::service::db::DatabaseManager::instance().saveSnapshot(allParsers);
@@ -1923,6 +1984,9 @@ nlohmann::json ProcessSearchQuery(
     const auto overallStartTime = std::chrono::steady_clock::now();
     markUserActivity();
     ScopedInFlightUserQuery activeQueryGuard;
+    // 查询执行前强制退出冷态并毫秒级批量合并待处理 USN 变更，保证 100% 实时零漏文件
+    setAllParsersColdUsnBatching(false);
+    flushAllPendingUsnChanges();
 
     // Monotonic server-side epoch (`MED-17`): immune to client clock rollback or huge `queryId`.
     auto& epochTracker = tools3000::service::query::sharedEpochTracker();
@@ -2902,9 +2966,14 @@ void IPCServerThread() {
         }
     }
 
+    const size_t mainPipeWorkerCount = tools3000::service::lifecycle::computeMainPipeWorkerCount(
+        std::thread::hardware_concurrency());
+    const size_t compatPipeWorkerCount = (compatPipeDescriptor != nullptr)
+        ? tools3000::service::lifecycle::kCompatPipeWorkerCount
+        : 0u;
     std::vector<std::thread> pipeWorkers;
-    pipeWorkers.reserve(NumPipeWorkers + NumCompatPipeWorkers);
-    for (int i = 0; i < NumPipeWorkers; ++i) {
+    pipeWorkers.reserve(mainPipeWorkerCount + compatPipeWorkerCount);
+    for (size_t i = 0; i < mainPipeWorkerCount; ++i) {
         pipeWorkers.emplace_back(
             PipeWorkerThread,
             g_SearchPipeName,
@@ -2914,7 +2983,7 @@ void IPCServerThread() {
         );
     }
     if (compatPipeDescriptor != nullptr) {
-        for (int i = 0; i < NumCompatPipeWorkers; ++i) {
+        for (size_t i = 0; i < compatPipeWorkerCount; ++i) {
             pipeWorkers.emplace_back(
                 PipeWorkerThread,
                 g_CompatTokenPipeName,

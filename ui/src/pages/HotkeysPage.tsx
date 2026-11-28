@@ -125,7 +125,11 @@ export const HotkeysPage: FC = () => {
       const applied = result.shortcut ?? shortcut;
       const refreshed = await bridgeRequest<HotkeyEntry[]>('hotkey.getAll');
       setHotkeys(Array.isArray(refreshed) ? sortHotkeysByPriority(refreshed) : []);
-      toast.success(`${resolveHotkeyLabel(t, entry.name)}: ${applied || t('general.shortcutDisabled')}`);
+      const appliedDouble = /^Double\+(Ctrl|Alt|Shift)$/i.exec(applied);
+      const displayApplied = appliedDouble
+        ? t('hotkey.doubleTapDisplay', 'Double {{key}}', { key: appliedDouble[1] })
+        : applied;
+      toast.success(`${resolveHotkeyLabel(t, entry.name)}: ${displayApplied || t('general.shortcutDisabled')}`);
     } catch (error) {
       setHotkeys((items) =>
         items.map((item) =>
@@ -210,9 +214,14 @@ export const HotkeysPage: FC = () => {
     if (!q) return hotkeys;
     return hotkeys.filter((hk) => {
       const label = resolveHotkeyLabel(t, hk.name).toLowerCase();
-      const shortcut = (hk.shortcut || '').toLowerCase();
+      const rawShortcut = hk.shortcut || '';
+      const shortcut = rawShortcut.toLowerCase();
+      const doubleMatch = /^Double\+(Ctrl|Alt|Shift)$/i.exec(rawShortcut);
+      const displayShortcut = doubleMatch
+        ? t('hotkey.doubleTapDisplay', 'Double {{key}}', { key: doubleMatch[1] }).toLowerCase()
+        : shortcut;
       const rawName = hk.name.toLowerCase();
-      return label.includes(q) || shortcut.includes(q) || rawName.includes(q);
+      return label.includes(q) || shortcut.includes(q) || displayShortcut.includes(q) || rawName.includes(q);
     });
   }, [filterText, hotkeys, t]);
 

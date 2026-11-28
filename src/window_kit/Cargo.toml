@@ -1,6 +1,6 @@
 [package]
 name = "tools3000_window_kit"
-version = "1.5.6"
+version = "1.5.7"
 edition = "2021"
 description = "Tools3000 native standalone Windows window management engine (Quick Switch, SnapZones, Workspaces, Always-on-Top, Opacity, Alt+Drag, Focus Border, Multi-Monitor & Tray)"
 license = "GPL-3.0-only"
@@ -47,8 +47,10 @@ features = [
     "Win32_System_Kernel",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
+    "Win32_System_Power",
     "Win32_System_ProcessStatus",
     "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_System_Variant",
