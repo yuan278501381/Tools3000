@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HWND, LPARAM, POINT, WPARAM};
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_MENU, VK_RBUTTON};
 use windows::Win32::UI::WindowsAndMessaging::{
     FindWindowW, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowThreadProcessId,
     IsWindow, PostMessageW, RegisterWindowMessageW, ShowWindowAsync, GWL_EXSTYLE, SW_MAXIMIZE,
@@ -77,6 +78,26 @@ pub(crate) fn should_accept_mouse_hover_select(
         if dx.max(dy) < QS_HOVER_MIN_MOVE_PX {
             return false;
         }
+    }
+    true
+}
+
+/// 失焦自动关闭守卫：
+/// 1. 开窗后 280ms 保护期内忽略瞬态焦点抖动；
+/// 2. 当通过 Alt+Tab 打开、尚未进入搜索锁定态、且物理 Alt 仍处于按住状态且未点击外部窗口（鼠标未按下）时，
+///    严禁因壳层焦点微抖动误关闭面板（否则用户紧接按下的下一记 Tab 会漏给 Windows 原生切屏！）。
+pub(crate) fn should_dismiss_on_focus_loss(
+    elapsed_since_open_ms: u128,
+    opened_via_alt_tab: bool,
+    search_mode: bool,
+    alt_physically_held: bool,
+    mouse_button_down: bool,
+) -> bool {
+    if elapsed_since_open_ms < 280 {
+        return false;
+    }
+    if opened_via_alt_tab && !search_mode && alt_physically_held && !mouse_button_down {
+        return false;
     }
     true
 }
@@ -333,6 +354,14 @@ impl QuickSwitchManager {
     /// 响应 Alt 键抬起：若未进入搜索/浏览锁定态且由 Alt+Tab 或 Alt+` 打开，立即切换目标窗口
     pub fn on_alt_released(&mut self, trace_id: &str) -> QuickSwitchDelegatedAction {
         if !self.open || !self.opened_via_alt_tab || self.search_mode {
+            wk_debug!(
+                trace_id,
+                "quickSwitch",
+                "alt released ignored (open={} via_alt_tab={} search_mode={})",
+                self.open,
+                self.opened_via_alt_tab,
+                self.search_mode
+            );
             return QuickSwitchDelegatedAction::None;
         }
         self.commit_selected_and_close(trace_id)
@@ -644,11 +673,31 @@ impl QuickSwitchManager {
                 _ => QuickSwitchDelegatedAction::None,
             },
             SlintUiEvent::QsDismissed => {
-                if self
+                let elapsed = self
                     .opened_at
-                    .map(|t| t.elapsed().as_millis() < 280)
-                    .unwrap_or(false)
-                {
+                    .map(|t| t.elapsed().as_millis())
+                    .unwrap_or(u128::MAX);
+                let alt_held = unsafe { (GetAsyncKeyState(VK_MENU.0 as i32) as u16 & 0x8000) != 0 };
+                let mouse_down = unsafe {
+                    ((GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000) != 0)
+                        || ((GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000) != 0)
+                };
+                if !should_dismiss_on_focus_loss(
+                    elapsed,
+                    self.opened_via_alt_tab,
+                    self.search_mode,
+                    alt_held,
+                    mouse_down,
+                ) {
+                    wk_debug!(
+                        trace_id,
+                        "quickSwitch",
+                        "ignored transient focus loss while Alt held (elapsed={}ms)",
+                        elapsed
+                    );
+                    if alt_held && !mouse_down {
+                        focus_quick_switch_search();
+                    }
                     return QuickSwitchDelegatedAction::None;
                 }
                 self.close_and_release(trace_id);
@@ -1345,5 +1394,23 @@ mod tests {
             started_at: 12345,
         };
         assert!(!id.verify_live(HWND::default()));
+    }
+
+    #[test]
+    fn quick_switch_focus_loss_guard_protects_active_alt_tab_session() {
+        // 1. 开窗 280ms 保护期内绝不误关
+        assert!(!should_dismiss_on_focus_loss(120, true, false, false, false));
+
+        // 2. 通过 Alt+Tab 打开、未锁定搜索、用户仍物理按住 Alt 且未点鼠标 -> 拒绝瞬态失焦自毁
+        assert!(!should_dismiss_on_focus_loss(600, true, false, true, false));
+
+        // 3. 若用户用鼠标点击了外部窗口 -> 立即允许失焦关闭
+        assert!(should_dismiss_on_focus_loss(600, true, false, true, true));
+
+        // 4. 若已进入搜索锁定态且未按住 Alt，点击外部失焦 -> 正常关闭
+        assert!(should_dismiss_on_focus_loss(600, true, true, false, false));
+
+        // 5. 若 Alt 已松开超过保护期失焦 -> 正常关闭
+        assert!(should_dismiss_on_focus_loss(600, true, false, false, false));
     }
 }

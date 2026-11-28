@@ -38,17 +38,19 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{mpsc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
-use windows::Win32::Foundation::{HWND, LPARAM, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmQueryThumbnailSourceSize, DwmRegisterThumbnail, DwmUnregisterThumbnail,
     DwmUpdateThumbnailProperties, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
     DWM_TNP_RECTDESTINATION, DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE,
 };
 use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetWindowLongPtrW,
     GetWindowThreadProcessId, IsWindow, PostMessageW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ASFW_ANY, GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetWindowPos, ASFW_ANY, GWL_EXSTYLE, HWND_TOPMOST, MNC_CLOSE, SC_CONTEXTHELP, SC_KEYMENU,
+    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WM_HELP, WM_MENUCHAR, WM_NCDESTROY, WM_SYSCOMMAND,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
@@ -522,9 +524,151 @@ impl QsThumbState {
     }
 }
 
+/// QuickSwitch 冷开窗（首次创建 / 25s purge 后重建）延迟 Win32 HWND 初始化槽：
+/// Slint 1.19 + winit 0.30 在首次 show() 时延后至 about_to_wait 才真正创建 Win32 HWND，
+/// 必须在 HWND 物化的第一时刻补齐 WS_EX_TOOLWINDOW / HWND_TOPMOST / SC_KEYMENU 子类 / 聚焦 / DWM 缩略图。
+#[derive(Default)]
+struct QsPendingHwndInit {
+    needs_init: bool,
+    rect: RectI,
+    dark: bool,
+    subclassed_hwnd: isize,
+}
+
 thread_local! {
     static SLINT_WIN_POOL: RefCell<SlintWinPool> = RefCell::new(SlintWinPool::default());
     static QS_THUMB_STATE: RefCell<QsThumbState> = RefCell::new(QsThumbState::default());
+    static QS_PENDING_INIT: RefCell<QsPendingHwndInit> = RefCell::new(QsPendingHwndInit::default());
+}
+
+const QS_SYSKEY_SUBCLASS_ID: usize = 0x5433_5153;
+
+/// QuickSwitch 专用 Win32 子类钩子：彻底拦截 Alt 触发的系统菜单 (SC_KEYMENU) 与菜单字符蜂鸣 (WM_MENUCHAR)，
+/// 防止按住 Alt 连按 Tab 或松开 Alt 时 winit DefWindowProc 进入系统菜单模态循环抢焦！
+unsafe extern "system" fn qs_syskey_subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    uid_subclass: usize,
+    _ref_data: usize,
+) -> LRESULT {
+    match msg {
+        WM_SYSCOMMAND => {
+            let cmd = (wparam.0 as u32) & 0xFFF0;
+            if cmd == SC_KEYMENU || cmd == SC_CONTEXTHELP {
+                return LRESULT(0);
+            }
+        }
+        WM_MENUCHAR => {
+            return LRESULT(((MNC_CLOSE as usize) << 16) as isize);
+        }
+        WM_HELP => {
+            return LRESULT(1);
+        }
+        WM_NCDESTROY => {
+            let _ = RemoveWindowSubclass(hwnd, Some(qs_syskey_subclass_proc), uid_subclass);
+            QS_PENDING_INIT.with(|c| {
+                if let Ok(mut st) = c.try_borrow_mut() {
+                    if st.subclassed_hwnd == hwnd.0 as isize {
+                        st.subclassed_hwnd = 0;
+                    }
+                }
+            });
+        }
+        _ => {}
+    }
+    DefSubclassProc(hwnd, msg, wparam, lparam)
+}
+
+fn ensure_qs_syskey_subclass(hwnd: HWND) {
+    let raw = hwnd.0 as isize;
+    if raw == 0 {
+        return;
+    }
+    let already = QS_PENDING_INIT.with(|c| c.borrow().subclassed_hwnd == raw);
+    if already {
+        return;
+    }
+    let installed = unsafe {
+        SetWindowSubclass(
+            hwnd,
+            Some(qs_syskey_subclass_proc),
+            QS_SYSKEY_SUBCLASS_ID,
+            0,
+        )
+        .as_bool()
+    };
+    if installed {
+        QS_PENDING_INIT.with(|c| {
+            c.borrow_mut().subclassed_hwnd = raw;
+        });
+    }
+}
+
+/// 当 QuickSwitchWindow 的真实 Win32 HWND 可用时，一次性补齐全部原生壳、置顶、SC_KEYMENU 拦截、前景焦点与 DWM 缩略图
+fn finalize_qs_hwnd_init_if_pending(w: &QuickSwitchWindow) -> bool {
+    let is_visible = SLINT_WIN_POOL.with(|c| c.borrow().qs_visible);
+    if !is_visible {
+        QS_PENDING_INIT.with(|c| {
+            if let Ok(mut st) = c.try_borrow_mut() {
+                st.needs_init = false;
+            }
+        });
+        return false;
+    }
+    let (needs_init, r, dark) = QS_PENDING_INIT.with(|c| {
+        let st = c.borrow();
+        (st.needs_init, st.rect, st.dark)
+    });
+    if !needs_init {
+        return false;
+    }
+    let Some(hwnd) = extract_win32_hwnd(w.window()) else {
+        return false;
+    };
+    QS_PENDING_INIT.with(|c| {
+        c.borrow_mut().needs_init = false;
+    });
+
+    let rw = r.width().max(580) as u32;
+    let rh = r.height().max(340) as u32;
+    w.window().set_size(slint::PhysicalSize::new(rw, rh));
+    w.window()
+        .set_position(slint::PhysicalPosition::new(r.left, r.top));
+    w.window().with_winit_window(|ww| {
+        let _ = ww.request_inner_size(PhysicalSize::new(rw, rh));
+        ww.set_outer_position(PhysicalPosition::new(r.left, r.top));
+    });
+    apply_slint_win32_chrome(w.window(), dark, true, false, true);
+    ensure_qs_syskey_subclass(hwnd);
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            r.left,
+            r.top,
+            rw as i32,
+            rh as i32,
+            windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0),
+        );
+    }
+    force_foreground_window(hwnd);
+    w.invoke_focus_input();
+    w.invoke_notify_preview_slot();
+    w.invoke_ensure_selected_visible();
+    refresh_qs_thumbnail_unlocked(w);
+    wk_info!(
+        "slint",
+        "ui_slint",
+        "QuickSwitchWindow shown hwnd=0x{:x} rect={}x{} @ ({},{})",
+        hwnd.0 as isize,
+        rw,
+        rh,
+        r.left,
+        r.top
+    );
+    true
 }
 
 fn cleanup_all_thread_local_windows() {
@@ -665,13 +809,18 @@ fn make_thumbs_model(thumbs: &[LayoutThumbData]) -> ModelRc<ZoneThumbRect> {
     ModelRc::new(VecModel::from(items))
 }
 
-/// 强前台激活（通过短暂 AttachThreadInput 突破后台进程 SetForegroundWindow 限制，确保搜索框 100% 接住键盘输入）
+/// 安全前台激活：优先尝试无副作用原生 AllowSetForegroundWindow + SetForegroundWindow，
+/// 仅当 Windows 前台锁拒绝时才短暂 AttachThreadInput 兜底，彻底避免按住 Alt 时破坏跨线程修饰键状态！
 fn force_foreground_window(hwnd: HWND) {
     unsafe {
         if hwnd.0.is_null() || !IsWindow(hwnd).as_bool() {
             return;
         }
         let _ = AllowSetForegroundWindow(ASFW_ANY);
+        let _ = BringWindowToTop(hwnd);
+        if SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd {
+            return;
+        }
         let fg = GetForegroundWindow();
         let cur_tid = GetCurrentThreadId();
         let fg_tid = if !fg.0.is_null() {
@@ -813,9 +962,24 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
                         push_ui_event(SlintUiEvent::QsDismissed);
                         slint::CloseRequestResponse::HideWindow
                     });
-                    w.window().on_winit_window_event(|_win, ev| {
-                        if let slint::winit_030::winit::event::WindowEvent::Focused(false) = ev {
-                            push_ui_event(SlintUiEvent::QsDismissed);
+                    let w_weak_ev = w.as_weak();
+                    w.window().on_winit_window_event(move |_win, ev| {
+                        match ev {
+                            slint::winit_030::winit::event::WindowEvent::Focused(false) => {
+                                let visible = SLINT_WIN_POOL
+                                    .with(|c| c.try_borrow().map(|p| p.qs_visible).unwrap_or(false));
+                                if visible {
+                                    push_ui_event(SlintUiEvent::QsDismissed);
+                                }
+                            }
+                            slint::winit_030::winit::event::WindowEvent::Resized(_)
+                            | slint::winit_030::winit::event::WindowEvent::Focused(true)
+                            | slint::winit_030::winit::event::WindowEvent::RedrawRequested => {
+                                if let Some(win) = w_weak_ev.upgrade() {
+                                    let _ = finalize_qs_hwnd_init_if_pending(&win);
+                                }
+                            }
+                            _ => {}
                         }
                         slint::winit_030::EventResult::Propagate
                     });
@@ -909,50 +1073,34 @@ pub fn show_or_update_quick_switch(state: QuickSwitchViewState) -> bool {
             let r = state.window_rect;
             let rw = r.width().max(580) as u32;
             let rh = r.height().max(340) as u32;
+            QS_PENDING_INIT.with(|c| {
+                let mut st = c.borrow_mut();
+                st.needs_init = true;
+                st.rect = r;
+                st.dark = state.theme.dark;
+            });
             w.window().set_size(slint::PhysicalSize::new(rw, rh));
             w.window()
                 .set_position(slint::PhysicalPosition::new(r.left, r.top));
             if let Err(e) = w.show() {
                 wk_warn!("slint", "ui_slint", "QuickSwitchWindow::show failed: {}", e);
             }
-            w.window().set_size(slint::PhysicalSize::new(rw, rh));
-            w.window()
-                .set_position(slint::PhysicalPosition::new(r.left, r.top));
-            w.window().with_winit_window(|ww| {
-                let _ = ww.request_inner_size(PhysicalSize::new(rw, rh));
-                ww.set_outer_position(PhysicalPosition::new(r.left, r.top));
-            });
-            apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
-            if let Some(hwnd) = extract_win32_hwnd(w.window()) {
-                unsafe {
-                    let _ = SetWindowPos(
-                        hwnd,
-                        HWND_TOPMOST,
-                        r.left,
-                        r.top,
-                        rw as i32,
-                        rh as i32,
-                        windows::Win32::UI::WindowsAndMessaging::SET_WINDOW_POS_FLAGS(0),
-                    );
-                }
-                force_foreground_window(hwnd);
-                wk_info!(
-                    "slint",
-                    "ui_slint",
-                    "QuickSwitchWindow shown hwnd=0x{:x} rect={}x{} @ ({},{})",
-                    hwnd.0 as isize,
-                    rw,
-                    rh,
-                    r.left,
-                    r.top
-                );
+            if !finalize_qs_hwnd_init_if_pending(&w) {
+                // 冷启动 / 25s purge 后首次 show()：winit 延后至 about_to_wait 创建 Win32 HWND，
+                // 排入下一轮事件循环保底补齐 WS_EX_TOOLWINDOW / HWND_TOPMOST / SC_KEYMENU 子类 / DWM 缩略图！
+                let w_weak_defer = w.as_weak();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(win) = w_weak_defer.upgrade() {
+                        let _ = finalize_qs_hwnd_init_if_pending(&win);
+                    }
+                });
             }
-            w.invoke_focus_input();
-            w.invoke_notify_preview_slot();
-            w.invoke_ensure_selected_visible();
-        } else if rebuild_items {
-            apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
-            w.invoke_ensure_selected_visible();
+        } else {
+            let _ = finalize_qs_hwnd_init_if_pending(&w);
+            if rebuild_items {
+                apply_slint_win32_chrome(w.window(), state.theme.dark, true, false, true);
+                w.invoke_ensure_selected_visible();
+            }
         }
 
         // 3. 更新 DWM 缩略图状态并刷新
@@ -1005,6 +1153,11 @@ pub fn hide_quick_switch() {
         return;
     }
     let _ = slint::invoke_from_event_loop(|| {
+        QS_PENDING_INIT.with(|c| {
+            if let Ok(mut st) = c.try_borrow_mut() {
+                st.needs_init = false;
+            }
+        });
         QS_THUMB_STATE.with(|c| {
             if let Ok(mut ts) = c.try_borrow_mut() {
                 ts.unregister_thumb();

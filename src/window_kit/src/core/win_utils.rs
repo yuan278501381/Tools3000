@@ -1752,6 +1752,10 @@ pub fn activate_window(hwnd: HWND) -> bool {
             let _ = SetWindowPos(hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
             ok = SetForegroundWindow(hwnd).as_bool() || GetForegroundWindow() == hwnd;
         }
+        if !ok {
+            windows::Win32::UI::WindowsAndMessaging::SwitchToThisWindow(hwnd, true);
+            ok = GetForegroundWindow() == hwnd;
+        }
 
         if attached_tgt {
             let _ = AttachThreadInput(cur_tid, target_tid, false);

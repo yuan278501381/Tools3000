@@ -6,14 +6,20 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
-### [2026-11-28] 全链路零损内存深度瘦身、SnapZones 原版统一 Fluent 分割/切割线、Alt+Tab 死卡/漏原生根治与抗 403 限流更新检查 (`feat/windowkit-polish-and-memory`)
-- **1. SnapZones 网格编辑器 100% 原版 PowerToys FancyZones 统一 Fluent 风格 (`src/window_kit/src/features/layout_editor.rs`)**：
+### [2026-11-28] 全链路零损内存深度瘦身、SnapZones 原版统一 Fluent 分割/切割线与画布单一焦点、Alt+Tab 全链路根治与抗 403 限流更新检查 (`feat/windowkit-polish-and-memory`)
+- **1. SnapZones 网格/自由画布编辑器 100% 原版 PowerToys FancyZones 统一 Fluent 风格与单一焦点 (`src/window_kit/src/features/layout_editor.rs`)**：
   - 彻底清除 `ZoneLayoutType::Grid` 模式下普通悬停/点击后的整块分区涂蓝与加粗边框，分区保持通透静息玻璃态（`5*s` 原版精致圆角 + `1*s` 柔和主题色边；仅左键拖拽框选合并 `in_marquee` 时高亮待合并区块并呈现居中合并胶囊）；
   - 核查微软官方 `GridZone.xaml` / `GridZone.xaml.cs` / `GridResizer.xaml` 一手源码后，将「已有分割线」与「新建切割线」彻底统一收口为同一绘制原语 `draw_fluent_splitter_bar`（宽度严格等于 `(zone_gap * scale).max(4*scale)`，与切完后的真实分区缝隙 1:1 等宽，取消多余霓虹光晕/T 形卡尺/两端圆球；已有分割线静息态柔和实心可见、悬停/拖动实心高亮；`GridResizer` 圆形手柄去除白边圈，保留柔和投影 + 悬停提亮 + 白色双杠 `(||)`/`(=)`）；
-  - 抽象 `compute_grid_slicer_preview()` 统一预览与落刀求解（支持当前分区 `25% / 33.3% / 50% / 66.7% / 75%` 经典等分与底层真实窗口边缘微磁吸，`Alt` 临时禁吸，光标旁精简磨砂比例/像素/Shift 胶囊）。
-- **2. QuickSwitch (`Alt+Tab`) 根治「按 Tab 卡第一项」与「偶尔漏出原生 Alt+Tab」 (`main.rs`, `quick_switch.rs`, `ui_slint/mod.rs`, `quick_switch.slint`)**：
-  - *卡首项根因与根治*：原切项每次都重建 `VecModel` 触发 `w.set_items(...)`，导致鼠标停在第 1 行时新建 `TouchArea::moved` 立即回调 `select-row(0)` 把选中项打回首项；现拆分 `items_changed: bool`（切项零重建 `VecModel`）、新增 `should_accept_mouse_hover_select`（`>= 4px` 真实物理位移 + 键盘导航后 `250ms` 防抖守卫）、`Flickable` 经 `content-y` 自动跟随滚动、且 `QUICK_SWITCH_IS_OPEN` 期间低级钩子统一接管单按 `Tab`/`Shift+Tab` 直通转发；
-  - *漏原生根因与根治*：独立钩子线程内新增无锁原子物理修饰键位图 `HOOK_PHYS_MODS`（屏蔽 `LLKHF_INJECTED`、精准识别 AltGr 伴生假 `LCtrl` 防止右 Alt 误放行、融合 `LLKHF_ALTDOWN` 消除 `GetAsyncKeyState` 微秒竞态）；接入 `WTSRegisterSessionNotification`（`WM_WTSSESSION_CHANGE`）、`WM_POWERBROADCAST` 睡眠唤醒与 `> 5s` 时钟跳变自愈重挂 `WH_KEYBOARD_LL` 防止系统静默摘钩。
+  - 抽象 `compute_grid_slicer_preview()` 统一预览与落刀求解（支持当前分区 `25% / 33.3% / 50% / 66.7% / 75%` 经典等分与底层真实窗口边缘微磁吸，`Alt` 临时禁吸，光标旁精简磨砂比例/像素/Shift 胶囊）；
+  - **自由画布 (Canvas) 单一激活焦点与 Z-Order 置顶**：新增纯函数 `resolve_active_canvas_zone`（优先级 `drag_canvas_zone > hovered_zone > selected_zone`）与 `canvas_render_order`（唯一激活区置顶渲染），全画面任意时刻严格仅高亮当前鼠标所在的唯一分区并仅显示该分区 8 向缩放手柄，彻底消除双蓝框与双份手柄叠压；重写 `hit_test_canvas_handle` 为两阶段（先激活区 8 向手柄，再按面积从小到大命中内部区域保证嵌套小分区 100% 可达）。
+- **2. QuickSwitch (`Alt+Tab`) 全链路根治卡首项/漏回原生切屏/冷开窗缺失 HWND 与全拖动面手型光标反馈 (`main.rs`, `quick_switch.rs`, `ui_slint/mod.rs`, `win_utils.rs`, `quick_switch.slint`)**：
+  - *卡首项根治*：拆分 `items_changed: bool`（切项零重建 `VecModel`）、新增 `should_accept_mouse_hover_select`（`>= 4px` 真实物理位移 + 键盘导航后 `250ms` 防抖守卫）、`Flickable` 经 `content-y` 自动跟随滚动；
+  - *按住 `Alt` 连按 `Tab` 漏回原生切屏 + 冷开窗 5 重根因全链路根治*：
+    1. 独立钩子线程 `Tools3000-InputHooks` 提升至 `THREAD_PRIORITY_HIGHEST` 防高分屏软件渲染抢占触发 `LowLevelHooksTimeout`；新增无锁物理修饰键位图 `HOOK_PHYS_MODS`（屏蔽 `LLKHF_INJECTED` 抵御 `winit::force_window_active` 等注入假 `Alt UP`、识别 AltGr 伴生假 `LCtrl`、融合 `WM_SYSKEYDOWN`/`LLKHF_ALTDOWN`）与 `heal_stale_phys_mods`（60ms 陈旧 `Ctrl`/`Win`/`Shift` 自愈防远控/UAC 丢 `KEYUP` 后放行原生 `Alt+Tab`）；接入 `WTSRegisterSessionNotification` / `WM_POWERBROADCAST` / `> 5s` 时钟跳变自愈重挂钩子；
+    2. 新增钩子侧即刻会话标志 `HOOK_QS_ALT_SESSION_ACTIVE` 与纯函数裁决 `decide_quick_switch_hook_action`：首记 `Alt+Tab` 命中 0.005ms 即激活会话，消除主线程开窗（提取图标 ~20ms）窗口期内连按 `Tab` 漏切或极速松 `Alt` 漏发 `ALT_RELEASED` 卡窗；激活或打开期间所有非 `Win`/非 `Ctrl` 的 `Tab DOWN/UP` 100% 吞噬并在内部切项；
+    3. 根治 Slint 1.19.1 + winit 0.30 冷启动 / 25s `purge_idle_windows()` 后首次 `w.show()` 惰性延迟创建 `HWND` 导致样式/置顶/缩略图全部落空：新增 `QsPendingHwndInit` + `finalize_qs_hwnd_init_if_pending` 在 `Resized`/`Focused(true)`/`RedrawRequested` 与下一轮事件循环双保险补齐；
+    4. 挂载轻量 Win32 子类 `qs_syskey_subclass_proc` 拦截 `SC_KEYMENU`/`SC_CONTEXTHELP`/`WM_MENUCHAR`/`WM_HELP`，杜绝按住/松开 `Alt` 时 `DefWindowProcW` 进入系统菜单模态循环抢焦；`should_dismiss_on_focus_loss` 保护按住 `Alt` 期间瞬态失焦不误关；`force_foreground_window` 优先无副作用原生激活、`activate_window` 失败时以 `SwitchToThisWindow` 兜底；
+  - *可拖动区域手型光标反馈*：实证 `winit-0.30.13` Windows 映射（`CursorIcon::Pointer => IDC_HAND`，而 `Grab/Grabbing/Move => IDC_SIZEALL`），全量可拖动移窗区域（外框空白、列表下方留白区与右侧预览区）统一挂载 `mouse-cursor: pointer` 呈现标准手型光标，同时将中间分割线热区拓宽至 `9px` 悬停加宽提亮。
 - **3. 全链路零功能损失安全内存治理与三段式生命周期精调（不提前清、也不过晚清）**：
   - **WindowKit Slint 真冷回收 (`ui_slint/mod.rs`, `main.rs`, `constants.rs`)**：隐藏即清空图标 `VecModel` 释放 `SharedPixelBuffer`；新增 25 秒 `TIMER_SLINT_IDLE_PURGE` 真正 `Drop` 销毁不可见大尺寸软件渲染 Slint 窗口池并缩减工作集；新增 `sync_border_reconcile_timer()` 在无置顶窗且未开 `focusBorder` 时彻底 `KillTimer(TIMER_BORDER_RECONCILE)` 杜绝 120ms 空跑重建 `SharedGraphics`。**实机隔离对比**：闲置态从 `18.19 MB PrivWS / 99.60 MB Commit` 降至 **`1.68 MB PrivWS / 7.18 MB Commit`（Commit `-92.8%`，PrivWS `-90.8%`）**，释放后再次打开 1ms 内无缝重建；
   - **OCR Worker (`CaptureWorkerCommon.h`, `OcrWorkerClient.cpp`, `OcrWorkerHost.cpp`, `DeepOcrEngine.cpp`)**：DirectML GPU 模式下检测桶单活互斥（`<= 1`）、识别桶接入单调 LRU 上限（`<= 2`，淘汰时 `Close()` + `IDXGIDevice3::Trim()`），默认退场由 `900s` 收紧为自适应（`<= 16 GiB` 内存或 RDP `60s`，32GB+ 桌面 `180s`），解决 7 会话 `1.84 GB Commit` 滞留 15 分钟问题；全量 5 语种连切实测 Commit 封顶 `~1.62 GB` 不再爬坡，释放后直降 `> 1.06 GB`；

@@ -2303,63 +2303,117 @@ impl EditorSession {
         None
     }
 
+    fn active_canvas_zone(&self) -> Option<usize> {
+        let drag_zone = match self.drag {
+            Some(ActiveDrag::CanvasTransform { zone_idx, .. }) => Some(zone_idx),
+            _ => None,
+        };
+        resolve_active_canvas_zone(
+            self.state.mode,
+            drag_zone,
+            self.hovered_zone,
+            self.selected_zone,
+            self.state.canvas_zones.len(),
+        )
+    }
+
+    fn hit_test_canvas_edge_or_corner(
+        lr: RectI,
+        lx: i32,
+        ly: i32,
+        edge_r: i32,
+        corner_r: i32,
+    ) -> Option<CanvasHandle> {
+        if lx < lr.left - edge_r
+            || lx > lr.right + edge_r
+            || ly < lr.top - edge_r
+            || ly > lr.bottom + edge_r
+        {
+            return None;
+        }
+        let near_l = (lx - lr.left).abs() <= corner_r;
+        let near_r = (lx - lr.right).abs() <= corner_r;
+        let near_t = (ly - lr.top).abs() <= corner_r;
+        let near_b = (ly - lr.bottom).abs() <= corner_r;
+
+        if near_l && near_t {
+            return Some(CanvasHandle::NW);
+        }
+        if near_r && near_t {
+            return Some(CanvasHandle::NE);
+        }
+        if near_l && near_b {
+            return Some(CanvasHandle::SW);
+        }
+        if near_r && near_b {
+            return Some(CanvasHandle::SE);
+        }
+        if (lx - lr.left).abs() <= edge_r && ly >= lr.top && ly <= lr.bottom {
+            return Some(CanvasHandle::W);
+        }
+        if (lx - lr.right).abs() <= edge_r && ly >= lr.top && ly <= lr.bottom {
+            return Some(CanvasHandle::E);
+        }
+        if (ly - lr.top).abs() <= edge_r && lx >= lr.left && lx <= lr.right {
+            return Some(CanvasHandle::N);
+        }
+        if (ly - lr.bottom).abs() <= edge_r && lx >= lr.left && lx <= lr.right {
+            return Some(CanvasHandle::S);
+        }
+        None
+    }
+
     fn hit_test_canvas_handle(&self, lx: i32, ly: i32) -> Option<(usize, CanvasHandle)> {
         if self.state.mode != ZoneLayoutType::Canvas {
             return None;
         }
         let zones = self.resolved_zones();
+        if zones.is_empty() {
+            return None;
+        }
         let edge_r = (11.0 * self.scale()).round() as i32;
         let corner_r = (16.0 * self.scale()).round() as i32;
 
-        // 优先检测当前选中区，其次按从上到下逆序（最上层优先）检测
-        let mut order: Vec<usize> = (0..zones.len()).rev().collect();
-        if let Some(sel) = self.selected_zone {
-            if let Some(pos) = order.iter().position(|&i| i == sel) {
-                order.remove(pos);
-                order.insert(0, sel);
+        // 阶段 1：优先命中当前唯一激活区域的 8 向边角缩放手柄（避免重叠邻区抢走正在抓的手柄）
+        if let Some(active) = self.active_canvas_zone() {
+            if let Some(z) = zones.get(active) {
+                let lr = self.local_rect(z.rect);
+                if let Some(handle) =
+                    Self::hit_test_canvas_edge_or_corner(lr, lx, ly, edge_r, corner_r)
+                {
+                    return Some((active, handle));
+                }
             }
         }
 
-        for idx in order {
-            let lr = self.local_rect(zones[idx].rect);
-            if lx < lr.left - edge_r
-                || lx > lr.right + edge_r
-                || ly < lr.top - edge_r
-                || ly > lr.bottom + edge_r
-            {
-                continue;
-            }
-            let near_l = (lx - lr.left).abs() <= corner_r;
-            let near_r = (lx - lr.right).abs() <= corner_r;
-            let near_t = (ly - lr.top).abs() <= corner_r;
-            let near_b = (ly - lr.bottom).abs() <= corner_r;
+        // 阶段 2：按“面积从小到大优先（嵌套内区可达），同面积后建置顶”排序命中内部或边缘
+        let mut candidates: Vec<(usize, RectI, i64)> = zones
+            .iter()
+            .enumerate()
+            .map(|(i, z)| {
+                let lr = self.local_rect(z.rect);
+                (i, lr, lr.area())
+            })
+            .collect();
+        candidates.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| b.0.cmp(&a.0)));
 
-            if near_l && near_t {
-                return Some((idx, CanvasHandle::NW));
-            }
-            if near_r && near_t {
-                return Some((idx, CanvasHandle::NE));
-            }
-            if near_l && near_b {
-                return Some((idx, CanvasHandle::SW));
-            }
-            if near_r && near_b {
-                return Some((idx, CanvasHandle::SE));
-            }
-            if (lx - lr.left).abs() <= edge_r && ly >= lr.top && ly <= lr.bottom {
-                return Some((idx, CanvasHandle::W));
-            }
-            if (lx - lr.right).abs() <= edge_r && ly >= lr.top && ly <= lr.bottom {
-                return Some((idx, CanvasHandle::E));
-            }
-            if (ly - lr.top).abs() <= edge_r && lx >= lr.left && lx <= lr.right {
-                return Some((idx, CanvasHandle::N));
-            }
-            if (ly - lr.bottom).abs() <= edge_r && lx >= lr.left && lx <= lr.right {
-                return Some((idx, CanvasHandle::S));
-            }
+        // 先匹配鼠标指针明确落在内部的区域（确保光标所在区域 100% 成为唯一激活区）
+        for &(idx, lr, _) in &candidates {
             if lr.contains_point(lx, ly) {
+                if let Some(handle) =
+                    Self::hit_test_canvas_edge_or_corner(lr, lx, ly, edge_r, corner_r)
+                {
+                    return Some((idx, handle));
+                }
                 return Some((idx, CanvasHandle::Move));
+            }
+        }
+
+        // 再兜底匹配落在区域外缘 edge_r 容差带上的缩放手柄
+        for &(idx, lr, _) in &candidates {
+            if let Some(handle) = Self::hit_test_canvas_edge_or_corner(lr, lx, ly, edge_r, corner_r)
+            {
+                return Some((idx, handle));
             }
         }
         None
@@ -2736,18 +2790,22 @@ impl EditorSession {
             return ClickOutcome::Redraw;
         }
 
-        // 3. Canvas 模式：先检查右上角圆形 x 快捷删除按钮，再检测 8 向缩放边/角或区内部移动
+        // 3. Canvas 模式：先检查右上角圆形 x 快捷删除按钮（与视觉 Z-Order 一致：当前激活置顶区最优先），再检测 8 向缩放边/角或区内部移动
         if self.state.canvas_zones.len() > 1 {
             let zones = self.resolved_zones();
             let s = self.scale();
             let btn_sz = (24.0 * s).round() as i32;
             let pad = (8.0 * s).round() as i32;
-            for z in zones.iter().rev() {
+            let active_z = self.active_canvas_zone();
+            let render_ord = canvas_render_order(zones.len(), active_z);
+            for &zi in render_ord.iter().rev() {
+                let z = &zones[zi];
                 let lr = self.local_rect(z.rect);
                 if lr.width() >= btn_sz * 2 + pad && lr.height() >= btn_sz * 2 + pad {
                     let close_rc = RectI::from_xywh(lr.right - pad - btn_sz, lr.top + pad, btn_sz, btn_sz);
                     if close_rc.contains_point(lx, ly) {
                         self.selected_zone = Some(z.index);
+                        self.hovered_zone = None;
                         let _ = self.delete_selected_zone();
                         return ClickOutcome::Redraw;
                     }
@@ -2756,6 +2814,7 @@ impl EditorSession {
         }
         if let Some((idx, handle)) = self.hit_test_canvas_handle(lx, ly) {
             self.selected_zone = Some(idx);
+            self.hovered_zone = Some(idx);
             let orig_zone = self.state.canvas_zones[idx].clone();
             self.drag = Some(ActiveDrag::CanvasTransform {
                 zone_idx: idx,
@@ -2891,7 +2950,7 @@ impl EditorSession {
             return ClickOutcome::Redraw;
         }
         if ctrl && vk == b'D' as u16 && self.state.mode == ZoneLayoutType::Canvas {
-            if let Some(sel) = self.selected_zone {
+            if let Some(sel) = self.active_canvas_zone() {
                 if let Some(src) = self.state.canvas_zones.get(sel).cloned() {
                     self.push_undo();
                     let next_idx = self.state.canvas_zones.len();
@@ -2904,6 +2963,7 @@ impl EditorSession {
                     });
                     self.state.canvas_zones.push(dup);
                     self.selected_zone = Some(next_idx);
+                    self.hovered_zone = None;
                     self.rebuild_dock_geometry(false);
                     return ClickOutcome::Redraw;
                 }
@@ -2919,7 +2979,8 @@ impl EditorSession {
         if self.state.mode == ZoneLayoutType::Canvas && ctrl && vk == VK_TAB.0 {
             let total = self.state.canvas_zones.len();
             if total > 0 {
-                let next = match self.selected_zone {
+                let base = self.active_canvas_zone();
+                let next = match base {
                     Some(cur) => {
                         if self.shift_down {
                             (cur + total - 1) % total
@@ -2930,6 +2991,7 @@ impl EditorSession {
                     None => 0,
                 };
                 self.selected_zone = Some(next);
+                self.hovered_zone = None;
                 return ClickOutcome::Redraw;
             }
         }
@@ -2939,8 +3001,9 @@ impl EditorSession {
         if self.state.mode == ZoneLayoutType::Canvas
             && matches!(vk, x if x == VK_LEFT.0 || x == VK_RIGHT.0 || x == VK_UP.0 || x == VK_DOWN.0)
         {
-            if let Some(sel) = self.selected_zone {
+            if let Some(sel) = self.active_canvas_zone() {
                 if sel < self.state.canvas_zones.len() {
+                    self.selected_zone = Some(sel);
                     let px_step = if self.shift_down {
                         if ctrl { 2.0 } else { 10.0 }
                     } else if ctrl {
@@ -3086,6 +3149,7 @@ impl EditorSession {
         });
         self.state.canvas_zones.push(z);
         self.selected_zone = Some(idx);
+        self.hovered_zone = None;
         self.rebuild_dock_geometry(false);
     }
 
@@ -3151,6 +3215,7 @@ impl EditorSession {
         self.state.mode = ZoneLayoutType::Canvas;
         self.state.canvas_zones = captured;
         self.selected_zone = Some(0);
+        self.hovered_zone = None;
         self.rebuild_dock_geometry(false);
         self.show_toast(if self.zh_ui {
             format!("已从 {count} 个桌面真实窗口一键生成布局 · Ctrl+Z 可撤销")
@@ -3163,7 +3228,7 @@ impl EditorSession {
         let target = if self.state.mode == ZoneLayoutType::Grid {
             self.selected_zone.or(self.hovered_zone)
         } else {
-            self.selected_zone
+            self.active_canvas_zone()
         };
         let Some(sel) = target else {
             return false;
@@ -3183,6 +3248,7 @@ impl EditorSession {
                 z.index = i;
             }
             self.selected_zone = Some(sel.min(self.state.canvas_zones.len() - 1));
+            self.hovered_zone = None;
             self.rebuild_dock_geometry(false);
             return true;
         }
@@ -3283,8 +3349,6 @@ impl EditorSession {
             } else {
                 rgba(0.98, 0.985, 0.995, 0.58)
             };
-            // Canvas 悬停采用克制薄雾高亮（Grid 模式绝不整块涂蓝）
-            let zone_hover_fill = rgb_a(accent, 0.10);
             let zone_sel_fill = rgb_a(accent, 0.22);
             // Grid 模式静息 1px 主题色细腻边框（对齐原版 GridZone.xaml BorderThickness=1 + AccentBrush）
             let zone_grid_idle_stroke = rgb_a(accent, if dark { 0.44 } else { 0.38 });
@@ -3321,7 +3385,6 @@ impl EditorSession {
                 Ok(b_real_outline),
                 Ok(b_real_tag_bg),
                 Ok(b_idle_fill),
-                Ok(b_hover_fill),
                 Ok(b_sel_fill),
                 Ok(b_grid_idle_stroke),
                 Ok(b_idle_stroke),
@@ -3340,7 +3403,6 @@ impl EditorSession {
                 rt.CreateSolidColorBrush(&real_win_outline, None),
                 rt.CreateSolidColorBrush(&real_win_tag_bg, None),
                 rt.CreateSolidColorBrush(&zone_idle_fill, None),
-                rt.CreateSolidColorBrush(&zone_hover_fill, None),
                 rt.CreateSolidColorBrush(&zone_sel_fill, None),
                 rt.CreateSolidColorBrush(&zone_grid_idle_stroke, None),
                 rt.CreateSolidColorBrush(&zone_idle_stroke, None),
@@ -3416,8 +3478,17 @@ impl EditorSession {
             };
 
             let mut marquee_hit_count = 0usize;
+            // Canvas 模式全画面严格单一激活焦点：拖拽锁定拖拽区，否则以当前鼠标所在区为准，
+            // 仅鼠标离开全部区域时回退至键盘选中区；且将唯一激活区置顶（最后绘制），杜绝双区高亮与边框叠压！
+            let active_canvas_zone = self.active_canvas_zone();
+            let draw_order: Vec<usize> = if is_grid_mode {
+                (0..zones.len()).collect()
+            } else {
+                canvas_render_order(zones.len(), active_canvas_zone)
+            };
 
-            for z in &zones {
+            for &zi in &draw_order {
+                let z = &zones[zi];
                 let lr = self.local_rect(z.rect);
                 let rf = rect_f(
                     lr.left as f32 + 1.0,
@@ -3433,23 +3504,16 @@ impl EditorSession {
                 if in_marquee {
                     marquee_hit_count += 1;
                 }
-                // Grid 模式下彻底禁止普通悬停/点击后给整块分区涂蓝高亮或加粗描边；
-                // 仅按住左键拖拽框选合并 (in_marquee) 时才高亮待合并分区！
+                // Grid 模式：仅按住左键框选合并 (in_marquee) 时高亮待合并分区；
+                // Canvas 模式：全屏任意时刻至多仅 active_canvas_zone 这 1 个区域激活高亮并显示 8 向缩放手柄！
                 let is_sel = if is_grid_mode {
                     in_marquee
                 } else {
-                    self.selected_zone == Some(z.index)
-                };
-                let is_hov = if is_grid_mode {
-                    false
-                } else {
-                    self.hovered_zone == Some(z.index)
+                    active_canvas_zone == Some(z.index)
                 };
 
                 let fill_brush = if is_sel {
                     &b_sel_fill
-                } else if is_hov {
-                    &b_hover_fill
                 } else {
                     &b_idle_fill
                 };
@@ -3457,8 +3521,6 @@ impl EditorSession {
                 if is_sel {
                     rt.DrawRoundedRectangle(&rr, &b_accent_glow, 5.5 * s, None);
                     rt.DrawRoundedRectangle(&rr, &b_accent, 2.2 * s, None);
-                } else if is_hov {
-                    rt.DrawRoundedRectangle(&rr, &b_accent, 1.5 * s, None);
                 } else if is_grid_mode {
                     rt.DrawRoundedRectangle(&rr, &b_grid_idle_stroke, 1.0 * s, None);
                 } else {
@@ -3473,7 +3535,7 @@ impl EditorSession {
                 let pr = rect_f(cx - pill_r, badge_cy - pill_r, cx + pill_r, badge_cy + pill_r);
                 let prr = rounded_rect(pr, pill_r);
                 rt.FillRoundedRectangle(&prr, if is_sel { &b_accent } else { &b_card_bg });
-                rt.DrawRoundedRectangle(&prr, if is_sel || is_hov { &b_accent } else { &b_card_border }, 1.5 * s, None);
+                rt.DrawRoundedRectangle(&prr, if is_sel { &b_accent } else { &b_card_border }, 1.5 * s, None);
 
                 if let Some(fmt) = &num_fmt {
                     let num_w = to_wide(&(z.index + 1).to_string());
@@ -3515,7 +3577,7 @@ impl EditorSession {
                     }
                 }
 
-                // Canvas 模式下：右上角快捷关闭圆钮（图 6/7）+ 选中区 8 向缩放控制手柄
+                // Canvas 模式下：右上角快捷关闭圆钮（图 6/7）+ 仅当前唯一激活区绘制 8 向缩放控制手柄
                 if self.state.mode == ZoneLayoutType::Canvas {
                     if self.state.canvas_zones.len() > 1 {
                         let btn_sz = 24.0 * s;
@@ -3531,7 +3593,7 @@ impl EditorSession {
                             rt.DrawLine(D2D_POINT_2F { x: xcx + xs, y: xcy - xs }, D2D_POINT_2F { x: xcx - xs, y: xcy + xs }, &b_text, 1.4 * s, None);
                         }
                     }
-                    if is_sel || is_hov {
+                    if is_sel {
                         let hs = 5.5 * s;
                         let handles = [
                             (rf.left, rf.top),
@@ -4211,6 +4273,36 @@ unsafe extern "system" fn layout_editor_wnd_proc(
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
+/// 纯函数：解析 Canvas 模式全画面唯一激活焦点（严格保证任意时刻至多高亮 1 个区域）
+/// 优先级：拖拽中目标 > 当前鼠标悬停区 > 键盘选中区（仅在有效下标范围内生效）
+pub(crate) fn resolve_active_canvas_zone(
+    mode: ZoneLayoutType,
+    drag_canvas_zone: Option<usize>,
+    hovered_zone: Option<usize>,
+    selected_zone: Option<usize>,
+    zone_count: usize,
+) -> Option<usize> {
+    if mode != ZoneLayoutType::Canvas || zone_count == 0 {
+        return None;
+    }
+    let valid = |idx: Option<usize>| idx.filter(|&i| i < zone_count);
+    valid(drag_canvas_zone)
+        .or_else(|| valid(hovered_zone))
+        .or_else(|| valid(selected_zone))
+}
+
+/// 纯函数：计算 Canvas 区域渲染次序，将唯一激活区置顶至末尾，消除重叠区边框与 8 向手柄遮挡
+pub(crate) fn canvas_render_order(zone_count: usize, active_zone: Option<usize>) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..zone_count).collect();
+    if let Some(active) = active_zone {
+        if let Some(pos) = order.iter().position(|&i| i == active) {
+            order.remove(pos);
+            order.push(active);
+        }
+    }
+    order
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 7. 纯数学与交互状态机单元测试（MECE 覆盖全核心路径）
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4423,5 +4515,50 @@ mod tests {
         assert!((grid.col_weights[0] - 25.0).abs() < 0.2);
         assert!((grid.col_weights[1] - 25.0).abs() < 0.2);
         assert!((grid.col_weights[2] - 50.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn canvas_single_active_focus_follows_cursor_and_promotes_z_order() {
+        // 1. 先前选中区域 0，鼠标移到区域 2 -> 唯一激活焦点切换为区域 2（绝不双区高亮）
+        let active = resolve_active_canvas_zone(
+            ZoneLayoutType::Canvas,
+            None,
+            Some(2),
+            Some(0),
+            5,
+        );
+        assert_eq!(active, Some(2));
+        assert_eq!(canvas_render_order(5, active), vec![0, 1, 3, 4, 2]);
+
+        // 2. 正在拖拽区域 0 期间，即使鼠标短暂掠过区域 2，激活焦点严格锁定为拖拽区 0
+        let active_drag = resolve_active_canvas_zone(
+            ZoneLayoutType::Canvas,
+            Some(0),
+            Some(2),
+            Some(0),
+            5,
+        );
+        assert_eq!(active_drag, Some(0));
+        assert_eq!(canvas_render_order(5, active_drag), vec![1, 2, 3, 4, 0]);
+
+        // 3. 鼠标移到画布空白处（hovered=None）-> 平滑回落至键盘选中区 0，支持方向键微调
+        let active_fallback = resolve_active_canvas_zone(
+            ZoneLayoutType::Canvas,
+            None,
+            None,
+            Some(0),
+            5,
+        );
+        assert_eq!(active_fallback, Some(0));
+
+        // 4. 越界下标与 Grid 模式均安全返回 None
+        assert_eq!(
+            resolve_active_canvas_zone(ZoneLayoutType::Canvas, None, Some(99), Some(0), 5),
+            Some(0)
+        );
+        assert_eq!(
+            resolve_active_canvas_zone(ZoneLayoutType::Grid, None, Some(2), Some(0), 5),
+            None
+        );
     }
 }

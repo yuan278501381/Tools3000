@@ -122,10 +122,11 @@ export component QuickSwitchWindow inherits Window {
         border-radius: 8px;
         clip: true;
 
-        // 空白处拖动移动整个窗口（类似标准桌面窗自由定位）
+        // 空白处拖动移动整个窗口（Windows winit 中 pointer 映射为标准 IDC_HAND 手型光标，明确反馈可拖动）
         TouchArea {
             width: 100%;
             height: 100%;
+            mouse-cursor: pointer;
             pointer-event(ev) => {
                 if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
                     root.drag-move-requested();
@@ -187,6 +188,18 @@ export component QuickSwitchWindow inherits Window {
                 list-flick := Flickable {
                     vertical-stretch: 1;
                     content-height: max(self.height, root.items.length * root.row-stride);
+
+                    // 列表下方留白区域同样呈现手型光标并支持拖拽移动窗口
+                    TouchArea {
+                        width: parent.width;
+                        height: parent.content-height;
+                        mouse-cursor: pointer;
+                        pointer-event(ev) => {
+                            if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
+                                root.drag-move-requested();
+                            }
+                        }
+                    }
 
                     if root.items.length == 0 : Rectangle {
                         width: parent.width;
@@ -550,19 +563,20 @@ export component QuickSwitchWindow inherits Window {
             }
         }
 
-        // ── 可拖拽 1px 极细竖向分割线（1:1 AltTabio 发丝分隔） ───────────────
+        // ── 可拖拽极细竖向分割线（1:1 AltTabio 发丝分隔，悬停提亮加宽便于抓取） ──
         Rectangle {
-            x: root.computed-list-w;
+            x: (split-ta.has-hover || split-ta.pressed) ? root.computed-list-w - 0.5px : root.computed-list-w;
             y: 16px;
-            width: 1px;
+            width: (split-ta.has-hover || split-ta.pressed) ? 2px : 1px;
             height: max(1px, parent.height - 32px);
+            border-radius: 1px;
             background: split-ta.has-hover || split-ta.pressed ? ThemeTokens.accent : ThemeTokens.qs-divider;
         }
 
         split-ta := TouchArea {
-            x: root.computed-list-w - 3px;
+            x: root.computed-list-w - 4px;
             y: 0px;
-            width: 7px;
+            width: 9px;
             height: parent.height;
             mouse-cursor: col-resize;
             moved => {
@@ -573,7 +587,7 @@ export component QuickSwitchWindow inherits Window {
             }
         }
 
-        // ── 右栏：纯净留白 DWM 零拷贝实时窗口预览区（悬停才轻现快捷控制胶囊） ─
+        // ── 右栏：纯净留白 DWM 零拷贝实时窗口预览区（悬停呈现手型光标指示可拖动定位） ─
         preview-pane := Rectangle {
             x: root.preview-x;
             y: 0px;
@@ -584,6 +598,7 @@ export component QuickSwitchWindow inherits Window {
             preview-ta := TouchArea {
                 width: 100%;
                 height: 100%;
+                mouse-cursor: pointer;
                 pointer-event(ev) => {
                     if (ev.kind == PointerEventKind.down && ev.button == PointerEventButton.left) {
                         root.drag-move-requested();
@@ -662,6 +677,7 @@ export component QuickSwitchWindow inherits Window {
                 dock-ta := TouchArea {
                     width: 100%;
                     height: 100%;
+                    mouse-cursor: default;
                 }
 
                 HorizontalLayout {

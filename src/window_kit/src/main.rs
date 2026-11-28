@@ -60,8 +60,8 @@ use windows::Win32::System::RemoteDesktop::{
     WTSRegisterSessionNotification, WTSUnRegisterSessionNotification, NOTIFY_FOR_THIS_SESSION,
 };
 use windows::Win32::System::Threading::{
-    CreateMutexW, GetCurrentThreadId, OpenProcess, WaitForSingleObject, INFINITE,
-    PROCESS_SYNCHRONIZE,
+    CreateMutexW, GetCurrentThread, GetCurrentThreadId, OpenProcess, SetThreadPriority,
+    WaitForSingleObject, INFINITE, PROCESS_SYNCHRONIZE, THREAD_PRIORITY_HIGHEST,
 };
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
@@ -120,6 +120,12 @@ static HOOK_WANT_MOUSE: AtomicBool = AtomicBool::new(false);
 static HOOK_PHYS_MODS: AtomicU32 = AtomicU32::new(0);
 static HOOK_LAST_LCTRL_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
 static HOOK_LAST_LCTRL_SCAN: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_RCTRL_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_WIN_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+static HOOK_LAST_SHIFT_DOWN_TIME: AtomicU32 = AtomicU32::new(0);
+/// 钩子侧即刻感知的 Alt+Tab / Alt+` 会话激活态：
+/// 在首记 Alt+Tab 命中的 0.005ms 即置 true，彻底消除主线程开窗(提取图标 ~20ms)期间极速松开 Alt 漏发 ALT_RELEASED 导致面板卡开！
+static HOOK_QS_ALT_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 const PHYS_MOD_LALT: u32 = 1 << 0;
 const PHYS_MOD_RALT: u32 = 1 << 1;
@@ -135,6 +141,9 @@ const PHYS_MOD_ALTGR_LCTRL: u32 = 1 << 8;
 const ALTGR_FAKE_LCTRL_SCAN: u32 = 0x21D;
 /// AltGr 伴生 LCtrl 与随后扩展 RMENU 之间的最大时间窗（毫秒）
 const ALTGR_PAIR_WINDOW_MS: u32 = 2;
+/// 物理修饰键位图陈旧位自愈宽限窗（毫秒）：
+/// 若某 Ctrl/Win/Shift 位在超过 60ms 后 GetAsyncKeyState 仍回报抬起，说明此前 KEYUP 在远控/UAC/安全桌面丢失，立即自愈清除！
+const PHYS_MOD_STALE_HEAL_MS: u32 = 60;
 
 const WM_HOOK_THREAD_RECONCILE: u32 = WM_APP + 201;
 const WM_HOOK_THREAD_REINSTALL: u32 = WM_APP + 202;
@@ -239,14 +248,59 @@ fn update_phys_mods_state(
     (mods, last_lctrl_time, last_lctrl_scan)
 }
 
-/// 融合 LLKHF_ALTDOWN、原子物理修饰键位图与 GetAsyncKeyState 求解有效修饰键状态
+/// 陈旧物理修饰键位自动自愈：若 Ctrl / Win / Shift 位图仍置位但 GetAsyncKeyState 回报抬起且已超过宽限窗，
+/// 立即清零对应残留位，彻底根治远控/UAC/安全桌面丢失单次 KEYUP 后 ctrl_down/win_down 永久误判并放行原生 Alt+Tab！
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn heal_stale_phys_mods(
+    mut mods: u32,
+    now_ms: u32,
+    last_lctrl_ms: u32,
+    last_rctrl_ms: u32,
+    last_win_ms: u32,
+    last_shift_ms: u32,
+    async_lctrl: bool,
+    async_rctrl: bool,
+    async_shift: bool,
+    async_win: bool,
+) -> u32 {
+    if (mods & PHYS_MOD_LCTRL) != 0
+        && !async_lctrl
+        && now_ms.wrapping_sub(last_lctrl_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LCTRL | PHYS_MOD_ALTGR_LCTRL);
+    }
+    if (mods & PHYS_MOD_RCTRL) != 0
+        && !async_rctrl
+        && now_ms.wrapping_sub(last_rctrl_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !PHYS_MOD_RCTRL;
+    }
+    if (mods & (PHYS_MOD_LWIN | PHYS_MOD_RWIN)) != 0
+        && !async_win
+        && now_ms.wrapping_sub(last_win_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LWIN | PHYS_MOD_RWIN);
+    }
+    if (mods & (PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT)) != 0
+        && !async_shift
+        && now_ms.wrapping_sub(last_shift_ms) > PHYS_MOD_STALE_HEAL_MS
+    {
+        mods &= !(PHYS_MOD_LSHIFT | PHYS_MOD_RSHIFT);
+    }
+    mods
+}
+
+/// 融合 WM_SYSKEYDOWN、LLKHF_ALTDOWN、原子物理修饰键位图与 GetAsyncKeyState 求解有效修饰键状态
 /// 1) 彻底消除快按 Alt+Tab 时 GetAsyncKeyState 微秒级滞后竞态；
-/// 2) 当右 Alt(AltGr) 伴生假 LCtrl 生效时绝不误判为 Ctrl+Alt，避免漏出原生 Alt+Tab。
+/// 2) 抵御外部注入 Alt UP（phys_mods 忽略 LLKHF_INJECTED，持续锁住物理 Alt 按住态）；
+/// 3) 当右 Alt(AltGr) 伴生假 LCtrl 生效时绝不误判为 Ctrl+Alt，避免漏出原生 Alt+Tab。
 #[inline]
 #[allow(clippy::too_many_arguments)]
 fn resolve_effective_mods(
     phys_mods: u32,
     kb_flags: u32,
+    msg: u32,
     async_alt: bool,
     async_lctrl: bool,
     async_rctrl: bool,
@@ -256,6 +310,8 @@ fn resolve_effective_mods(
     let altgr_fake_lctrl =
         (phys_mods & PHYS_MOD_RALT) != 0 && (phys_mods & PHYS_MOD_ALTGR_LCTRL) != 0;
     let alt = (kb_flags & LLKHF_ALTDOWN.0) != 0
+        || msg == WM_SYSKEYDOWN
+        || msg == WM_SYSKEYUP
         || (phys_mods & (PHYS_MOD_LALT | PHYS_MOD_RALT)) != 0
         || async_alt;
     let real_lctrl = (phys_mods & PHYS_MOD_LCTRL) != 0 && !altgr_fake_lctrl;
@@ -276,11 +332,105 @@ fn resolve_effective_mods(
     }
 }
 
+/// 钩子层 QuickSwitch 按键裁决纯函数（便于离线 100% 单元测试全序列，杜绝连按 Tab 漏出系统原生切屏）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HookQsDecision {
+    PassThrough,
+    SwallowOnly,
+    AltTabStep { reverse: bool, same_app: bool },
+    QuickSwitchKey { vk: u16, mod_mask: isize },
+}
+
+#[inline]
+#[allow(clippy::too_many_arguments)]
+fn decide_quick_switch_hook_action(
+    vk: u16,
+    is_down: bool,
+    is_up: bool,
+    mods: EffectiveMods,
+    qs_enabled: bool,
+    same_app_enabled: bool,
+    qs_open: bool,
+    qs_alt_session_active: bool,
+    has_query: bool,
+) -> HookQsDecision {
+    let active_qs = qs_open || qs_alt_session_active;
+
+    // 1. QuickSwitch 面板已打开或 Alt+Tab 会话已激活期间：
+    //    所有 Tab DOWN/UP（只要不是 Win+Tab）100% 优先吞噬并在我方窗口内部切换，绝不漏给 Windows 原生 Alt+Tab！
+    if active_qs && vk == VK_TAB.0 && !mods.win && !mods.ctrl {
+        if is_up {
+            return HookQsDecision::SwallowOnly;
+        }
+        if is_down {
+            if mods.alt {
+                return HookQsDecision::AltTabStep {
+                    reverse: mods.shift,
+                    same_app: false,
+                };
+            }
+            let mod_mask: isize = if mods.shift { 4 } else { 0 };
+            return HookQsDecision::QuickSwitchKey { vk, mod_mask };
+        }
+    }
+
+    if !is_down {
+        return HookQsDecision::PassThrough;
+    }
+
+    // 2. 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（绝不干扰原生 Ctrl+Alt+Tab 与 Win+Tab）
+    if qs_enabled && vk == VK_TAB.0 && mods.alt && !mods.ctrl && !mods.win {
+        return HookQsDecision::AltTabStep {
+            reverse: mods.shift,
+            same_app: false,
+        };
+    }
+
+    // 3. 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`
+    if same_app_enabled && vk == VK_OEM_3.0 && mods.alt && !mods.ctrl && !mods.win {
+        return HookQsDecision::AltTabStep {
+            reverse: mods.shift,
+            same_app: true,
+        };
+    }
+
+    // 4. QuickSwitch 已打开态直通键盘流（1-9 秒切、Alt+方向/回车/Esc/退格/空格/斜杠/A-Z 无缝入搜）
+    if qs_open && !mods.win {
+        let mod_mask: isize = (if mods.alt { 1 } else { 0 })
+            | (if mods.ctrl { 2 } else { 0 })
+            | (if mods.shift { 4 } else { 0 });
+
+        let is_digit = (0x31..=0x39).contains(&vk)
+            || (vk >= VK_NUMPAD1.0 && vk <= VK_NUMPAD9.0);
+        let intercept_digit = is_digit && (mods.alt || mods.ctrl || !has_query);
+        let intercept_alt_nav_or_search = mods.alt
+            && !mods.ctrl
+            && (vk == VK_UP.0
+                || vk == VK_DOWN.0
+                || vk == VK_RETURN.0
+                || vk == VK_ESCAPE.0
+                || vk == VK_BACK.0
+                || vk == VK_SPACE.0
+                || vk == VK_OEM_2.0
+                || (0x41..=0x5A).contains(&vk));
+
+        if intercept_digit || intercept_alt_nav_or_search {
+            return HookQsDecision::QuickSwitchKey { vk, mod_mask };
+        }
+    }
+
+    HookQsDecision::PassThrough
+}
+
 #[inline]
 fn clear_hook_phys_mods() {
     HOOK_PHYS_MODS.store(0, Ordering::Release);
     HOOK_LAST_LCTRL_DOWN_TIME.store(0, Ordering::Release);
     HOOK_LAST_LCTRL_SCAN.store(0, Ordering::Release);
+    HOOK_LAST_RCTRL_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_LAST_WIN_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_LAST_SHIFT_DOWN_TIME.store(0, Ordering::Release);
+    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
     HOOK_SWALLOW_TAB_UP.store(false, Ordering::Release);
     HOOK_SWALLOW_GRAVE_UP.store(false, Ordering::Release);
     HOOK_SWALLOW_QS_UP_VK.store(0, Ordering::Release);
@@ -320,9 +470,10 @@ unsafe extern "system" fn low_level_keyboard_proc(
 
             let is_down = msg == WM_SYSKEYDOWN || msg == WM_KEYDOWN;
             let is_up = msg == WM_SYSKEYUP || msg == WM_KEYUP;
+            let is_injected = (kb.flags.0 & LLKHF_INJECTED.0) != 0;
 
-            // 入口第一时间无锁维护物理修饰键位图（无论静音与否都保持同步，杜绝抬起漏清与竞态漏拦）
-            let (phys_mods, next_lctrl_time, next_lctrl_scan) = update_phys_mods_state(
+            // 入口第一时间无锁维护物理修饰键位图（忽略注入键，杜绝外部 SendInput 污染真实物理按键状态）
+            let (mut phys_mods, next_lctrl_time, next_lctrl_scan) = update_phys_mods_state(
                 HOOK_PHYS_MODS.load(Ordering::Acquire),
                 HOOK_LAST_LCTRL_DOWN_TIME.load(Ordering::Acquire),
                 HOOK_LAST_LCTRL_SCAN.load(Ordering::Acquire),
@@ -332,6 +483,35 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 kb.time,
                 is_down,
                 is_up,
+            );
+            if !is_injected && is_down {
+                if vk == VK_RCONTROL.0 {
+                    HOOK_LAST_RCTRL_DOWN_TIME.store(kb.time, Ordering::Release);
+                } else if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
+                    HOOK_LAST_WIN_DOWN_TIME.store(kb.time, Ordering::Release);
+                } else if vk == VK_LSHIFT.0 || vk == VK_RSHIFT.0 || vk == VK_SHIFT.0 {
+                    HOOK_LAST_SHIFT_DOWN_TIME.store(kb.time, Ordering::Release);
+                }
+            }
+
+            let async_alt = async_key_down(VK_MENU.0);
+            let async_lctrl = async_key_down(VK_LCONTROL.0);
+            let async_rctrl = async_key_down(VK_RCONTROL.0);
+            let async_shift = async_key_down(VK_SHIFT.0);
+            let async_win = async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0);
+
+            // 陈旧 Ctrl/Win/Shift 位图 60ms 自动自愈，杜绝远控/UAC 丢单次 KEYUP 后永远放行原生 Alt+Tab
+            phys_mods = heal_stale_phys_mods(
+                phys_mods,
+                kb.time,
+                next_lctrl_time,
+                HOOK_LAST_RCTRL_DOWN_TIME.load(Ordering::Acquire),
+                HOOK_LAST_WIN_DOWN_TIME.load(Ordering::Acquire),
+                HOOK_LAST_SHIFT_DOWN_TIME.load(Ordering::Acquire),
+                async_lctrl,
+                async_rctrl,
+                async_shift,
+                async_win,
             );
             HOOK_PHYS_MODS.store(phys_mods, Ordering::Release);
             HOOK_LAST_LCTRL_DOWN_TIME.store(next_lctrl_time, Ordering::Release);
@@ -356,110 +536,77 @@ unsafe extern "system" fn low_level_keyboard_proc(
                 let mods = resolve_effective_mods(
                     phys_mods,
                     kb.flags.0,
-                    async_key_down(VK_MENU.0),
-                    async_key_down(VK_LCONTROL.0),
-                    async_key_down(VK_RCONTROL.0),
-                    async_key_down(VK_SHIFT.0),
-                    async_key_down(VK_LWIN.0) || async_key_down(VK_RWIN.0),
+                    msg,
+                    async_alt,
+                    async_lctrl,
+                    async_rctrl,
+                    async_shift,
+                    async_win,
                 );
-                let alt_down = mods.alt;
-                let ctrl_down = mods.ctrl;
-                let shift_down = mods.shift;
-                let win_down = mods.win;
+                let qs_open = QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire);
+                let qs_alt_session = HOOK_QS_ALT_SESSION_ACTIVE.load(Ordering::Acquire);
+                let decision = decide_quick_switch_hook_action(
+                    vk,
+                    is_down,
+                    is_up,
+                    mods,
+                    HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire),
+                    HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire),
+                    qs_open,
+                    qs_alt_session,
+                    QUICK_SWITCH_HAS_QUERY.load(Ordering::Acquire),
+                );
 
-                // 轨道 A：全局增强 Alt+Tab / Alt+Shift+Tab（仅在 replace_alt_tab 开启时拦截，绝不干扰原生 Ctrl+Alt+Tab）
-                if HOOK_QUICK_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && is_down
-                    && vk == VK_TAB.0
-                    && alt_down
-                    && !ctrl_down
-                    && !win_down
-                {
-                    HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
-                    let reverse = if shift_down { 1usize } else { 0usize };
-                    let _ = PostMessageW(
-                        ctrl_hwnd,
-                        WM_WK_INTERNAL_ALT_TAB,
-                        WPARAM(reverse),
-                        LPARAM(0), // 0 = 全局 Alt+Tab
-                    );
-                    return LRESULT(1);
-                }
-
-                // 轨道 B：独立同应用切窗 Alt+` / Alt+Shift+`（可不接管原生 Alt+Tab 独立启用！）
-                if HOOK_SAME_APP_SWITCH_ENABLED.load(Ordering::Acquire)
-                    && is_down
-                    && vk == VK_OEM_3.0
-                    && alt_down
-                    && !ctrl_down
-                    && !win_down
-                {
-                    HOOK_SWALLOW_GRAVE_UP.store(true, Ordering::Release);
-                    let reverse = if shift_down { 1usize } else { 0usize };
-                    let _ = PostMessageW(
-                        ctrl_hwnd,
-                        WM_WK_INTERNAL_ALT_TAB,
-                        WPARAM(reverse),
-                        LPARAM(1), // 1 = 同应用 Alt+`
-                    );
-                    return LRESULT(1);
-                }
-
-                // QuickSwitch 已打开态直通键盘流（彻底消灭焦点竞争、单按 Tab 失效与 1-9 系统蜂鸣）
-                if is_down && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire) && !win_down {
-                    let mod_mask: isize = (if alt_down { 1 } else { 0 })
-                        | (if ctrl_down { 2 } else { 0 })
-                        | (if shift_down { 4 } else { 0 });
-
-                    // 0. 单按 Tab / Shift+Tab（无论此时 Alt 是否仍按住）全部钩子直通切项并吞噬配对 KEYUP，
-                    //    杜绝松开 Alt 后按 Tab 被 Slint 焦点系统吞掉！
-                    if !ctrl_down && vk == VK_TAB.0 {
-                        HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                match decision {
+                    HookQsDecision::SwallowOnly => {
+                        return LRESULT(1);
+                    }
+                    HookQsDecision::AltTabStep { reverse, same_app } => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(true, Ordering::Release);
+                        if same_app {
+                            HOOK_SWALLOW_GRAVE_UP.store(true, Ordering::Release);
+                        } else {
+                            HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                        }
+                        let _ = PostMessageW(
+                            ctrl_hwnd,
+                            WM_WK_INTERNAL_ALT_TAB,
+                            WPARAM(if reverse { 1usize } else { 0usize }),
+                            LPARAM(if same_app { 1 } else { 0 }),
+                        );
+                        return LRESULT(1);
+                    }
+                    HookQsDecision::QuickSwitchKey {
+                        vk: target_vk,
+                        mod_mask,
+                    } => {
+                        if target_vk == VK_TAB.0 {
+                            HOOK_SWALLOW_TAB_UP.store(true, Ordering::Release);
+                        } else {
+                            HOOK_SWALLOW_QS_UP_VK.store(target_vk as u32, Ordering::Release);
+                        }
                         let _ = PostMessageW(
                             ctrl_hwnd,
                             WM_WK_INTERNAL_QS_KEY,
-                            WPARAM(vk as usize),
+                            WPARAM(target_vk as usize),
                             LPARAM(mod_mask),
                         );
                         return LRESULT(1);
                     }
-
-                    let is_digit = (0x31..=0x39).contains(&vk)
-                        || (vk >= VK_NUMPAD1.0 && vk <= VK_NUMPAD9.0);
-                    let has_query = QUICK_SWITCH_HAS_QUERY.load(Ordering::Acquire);
-
-                    // 1. 数字 1-9 秒切（空查询直按 1-9，或任何时候 Alt+1-9 / Ctrl+1-9 毫秒直达）
-                    let intercept_digit = is_digit && (alt_down || ctrl_down || !has_query);
-                    // 2. 按住 Alt 期间的方向/回车/Esc/退格/空格/斜杠/字母 A-Z（无缝锁定进入搜索并强聚焦输入框）
-                    let intercept_alt_nav_or_search = alt_down
-                        && !ctrl_down
-                        && (vk == VK_UP.0
-                            || vk == VK_DOWN.0
-                            || vk == VK_RETURN.0
-                            || vk == VK_ESCAPE.0
-                            || vk == VK_BACK.0
-                            || vk == VK_SPACE.0
-                            || vk == VK_OEM_2.0
-                            || (0x41..=0x5A).contains(&vk));
-
-                    if intercept_digit || intercept_alt_nav_or_search {
-                        HOOK_SWALLOW_QS_UP_VK.store(vk as u32, Ordering::Release);
-                        let _ = PostMessageW(
-                            ctrl_hwnd,
-                            WM_WK_INTERNAL_QS_KEY,
-                            WPARAM(vk as usize),
-                            LPARAM(mod_mask),
-                        );
-                        return LRESULT(1);
-                    }
+                    HookQsDecision::PassThrough => {}
                 }
             }
 
-            // Alt 键释放时通知 QuickSwitch 提交切换，同时绝不吞掉 Alt 抬起避免卡键
+            // 真实物理 Alt 键全部抬起时通知 QuickSwitch 提交切换（严格过滤 LLKHF_INJECTED 注入脉冲，
+            // 并借助 HOOK_QS_ALT_SESSION_ACTIVE 消除开窗未完期间极速松开 Alt 漏发提交事件的竞态）
             if is_up
+                && !is_injected
                 && (vk == VK_LMENU.0 || vk == VK_RMENU.0 || vk == VK_MENU.0)
-                && QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire)
+                && (phys_mods & (PHYS_MOD_LALT | PHYS_MOD_RALT)) == 0
+                && (QUICK_SWITCH_IS_OPEN.load(Ordering::Acquire)
+                    || HOOK_QS_ALT_SESSION_ACTIVE.swap(false, Ordering::AcqRel))
             {
+                HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                 let _ = PostMessageW(
                     ctrl_hwnd,
                     WM_WK_INTERNAL_ALT_RELEASED,
@@ -609,6 +756,8 @@ impl InputHookWorker {
             .name("Tools3000-InputHooks".to_string())
             .stack_size(128 * 1024)
             .spawn(move || unsafe {
+                // 提升输入钩子线程优先级至 HIGHEST，避免 400 万像素高分屏 Slint 帧渲染抢占 CPU 触发 300ms LowLevelHooksTimeout
+                let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
                 // 强制初始化线程消息队列后再通告线程 ID，确保 PostThreadMessageW 首次即成功
                 let mut msg = MSG::default();
                 let _ = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_NOREMOVE);
@@ -2165,9 +2314,11 @@ unsafe extern "system" fn control_wnd_proc(
                 let trace = next_trace_id("qs");
                 match rt.quick_switch.on_alt_released(&trace) {
                     QuickSwitchDelegatedAction::Closed => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         rt.schedule_cold_path_trim();
                     }
                     QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         let _ = rt
                             .multi_monitor
                             .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -2187,9 +2338,11 @@ unsafe extern "system" fn control_wnd_proc(
                     .handle_hook_key(vk, mod_mask, &rt.config, &trace)
                 {
                     QuickSwitchDelegatedAction::Closed => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         rt.schedule_cold_path_trim();
                     }
                     QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                        HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                         let _ = rt
                             .multi_monitor
                             .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -2223,6 +2376,7 @@ unsafe extern "system" fn control_wnd_proc(
                             match action {
                                 QuickSwitchDelegatedAction::None => {}
                                 QuickSwitchDelegatedAction::Closed => {
+                                    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                                     rt.schedule_cold_path_trim();
                                 }
                                 QuickSwitchDelegatedAction::TogglePinWindow(raw) => {
@@ -2256,6 +2410,7 @@ unsafe extern "system" fn control_wnd_proc(
                                     );
                                 }
                                 QuickSwitchDelegatedAction::RestoreTrayWindowAndClose(raw) => {
+                                    HOOK_QS_ALT_SESSION_ACTIVE.store(false, Ordering::Release);
                                     let _ = rt
                                         .multi_monitor
                                         .restore_by_hwnd(HWND(raw as *mut c_void), &trace);
@@ -3174,7 +3329,7 @@ mod tests {
             false,
         );
         assert_ne!(mods & PHYS_MOD_LALT, 0);
-        let eff = resolve_effective_mods(mods, 0, false, false, false, false, false);
+        let eff = resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
         assert!(eff.alt);
         assert!(!eff.ctrl);
 
@@ -3215,7 +3370,7 @@ mod tests {
             true,
             false,
         );
-        let eff2 = resolve_effective_mods(mods, 0, false, false, false, false, false);
+        let eff2 = resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
         assert!(eff2.alt && eff2.shift && eff2.win && !eff2.ctrl);
 
         (mods, t_lctrl, s_lctrl) = update_phys_mods_state(
@@ -3280,7 +3435,16 @@ mod tests {
             false,
         );
         // 即使 GetAsyncKeyState(VK_LCONTROL) 返回 true，AltGr 伴生假 LCtrl 也不应被判为 ctrl_down
-        let eff_altgr = resolve_effective_mods(mods, LLKHF_ALTDOWN.0, true, true, false, false, false);
+        let eff_altgr = resolve_effective_mods(
+            mods,
+            LLKHF_ALTDOWN.0,
+            WM_SYSKEYDOWN,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
         assert!(eff_altgr.alt);
         assert!(!eff_altgr.ctrl);
 
@@ -3312,9 +3476,139 @@ mod tests {
             true,
             false,
         );
-        let eff_real =
-            resolve_effective_mods(mods_real, LLKHF_ALTDOWN.0, true, true, false, false, false);
+        let eff_real = resolve_effective_mods(
+            mods_real,
+            LLKHF_ALTDOWN.0,
+            WM_SYSKEYDOWN,
+            true,
+            true,
+            false,
+            false,
+            false,
+        );
         assert!(eff_real.alt);
         assert!(eff_real.ctrl);
+    }
+
+    #[test]
+    fn held_alt_repeated_tab_and_stale_ctrl_heal_never_leak_to_windows_alt_tab() {
+        // 1. 按住物理 LAlt -> 首记 Tab（即使主线程尚未置 QUICK_SWITCH_IS_OPEN）必须命中 AltTabStep
+        let (mut mods, mut t_lc, mut s_lc) =
+            update_phys_mods_state(0, 0, 0, VK_LMENU.0, 0x38, 0, 1000, true, false);
+        let eff1 =
+            resolve_effective_mods(mods, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, false, false);
+        let d1 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff1, true, true, false, false, false,
+        );
+        assert_eq!(
+            d1,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+
+        // 2. 注入假 Alt UP（如 winit::force_window_active 的 SendInput）不得污染物理位图；
+        //    即使主线程仍在开窗 (qs_open=false, session_active=true) 且系统不再带 LLKHF_ALTDOWN，
+        //    继续按住 Alt 连按第 2 次 Tab / Shift+Tab 也必须 100% 吞噬并切项，绝不漏回 Windows 原生切屏！
+        (mods, t_lc, s_lc) = update_phys_mods_state(
+            mods,
+            t_lc,
+            s_lc,
+            VK_LMENU.0,
+            0x38,
+            LLKHF_INJECTED.0,
+            1010,
+            false,
+            true,
+        );
+        assert_ne!(mods & PHYS_MOD_LALT, 0);
+
+        let eff2 =
+            resolve_effective_mods(mods, 0, WM_KEYDOWN, false, false, false, false, false);
+        assert!(eff2.alt);
+        let d2 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff2, true, true, false, true, false,
+        );
+        assert_eq!(
+            d2,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+        let d2_up = decide_quick_switch_hook_action(
+            VK_TAB.0, false, true, eff2, true, true, false, true, false,
+        );
+        assert_eq!(d2_up, HookQsDecision::SwallowOnly);
+
+        // Shift+Tab 反向切项
+        let eff2_rev =
+            resolve_effective_mods(mods, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, true, false);
+        let d2_rev = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff2_rev, true, true, true, true, false,
+        );
+        assert_eq!(
+            d2_rev,
+            HookQsDecision::AltTabStep {
+                reverse: true,
+                same_app: false,
+            }
+        );
+
+        // 3. 远控/UAC 丢失 LCtrl KEYUP 导致 PHYS_MOD_LCTRL 陈旧卡死 > 60ms 时，自愈清零避免放行原生 Alt+Tab；
+        //    而刚按下 <= 60ms 的真实 Ctrl 不得被误清（防止 GetAsyncKeyState 瞬态滞后误判）。
+        let (stale_mods, t_lc_stale, _) =
+            update_phys_mods_state(mods, t_lc, s_lc, VK_LCONTROL.0, 0x1D, 0, 2000, true, false);
+        let fresh_kept = heal_stale_phys_mods(
+            stale_mods, 2030, t_lc_stale, 0, 0, 0, false, false, false, false,
+        );
+        assert_ne!(fresh_kept & PHYS_MOD_LCTRL, 0);
+
+        let healed = heal_stale_phys_mods(
+            stale_mods, 2100, t_lc_stale, 0, 0, 0, false, false, false, false,
+        );
+        assert_eq!(healed & PHYS_MOD_LCTRL, 0);
+        assert_ne!(healed & PHYS_MOD_LALT, 0);
+
+        let eff_healed =
+            resolve_effective_mods(healed, LLKHF_ALTDOWN.0, WM_SYSKEYDOWN, true, false, false, false, false);
+        assert!(eff_healed.alt && !eff_healed.ctrl);
+        let d3 = decide_quick_switch_hook_action(
+            VK_TAB.0, true, false, eff_healed, true, true, false, false, false,
+        );
+        assert_eq!(
+            d3,
+            HookQsDecision::AltTabStep {
+                reverse: false,
+                same_app: false,
+            }
+        );
+
+        // 4. 真实 Ctrl+Alt+Tab 与 Win+Tab 仍原样放行给系统
+        let eff_ctrl_alt = EffectiveMods {
+            alt: true,
+            ctrl: true,
+            shift: false,
+            win: false,
+        };
+        assert_eq!(
+            decide_quick_switch_hook_action(
+                VK_TAB.0, true, false, eff_ctrl_alt, true, true, true, true, false
+            ),
+            HookQsDecision::PassThrough
+        );
+        let eff_win_tab = EffectiveMods {
+            alt: false,
+            ctrl: false,
+            shift: false,
+            win: true,
+        };
+        assert_eq!(
+            decide_quick_switch_hook_action(
+                VK_TAB.0, true, false, eff_win_tab, true, true, true, true, false
+            ),
+            HookQsDecision::PassThrough
+        );
     }
 }
