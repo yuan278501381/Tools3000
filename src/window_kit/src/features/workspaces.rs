@@ -774,6 +774,10 @@ impl WorkspaceProgressOverlay {
         Self { visible: false }
     }
 
+    pub fn is_visible(&self) -> bool {
+        self.visible
+    }
+
     pub fn show_progress(
         &mut self,
         workspace_name: &str,

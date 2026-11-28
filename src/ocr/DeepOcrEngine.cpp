@@ -89,6 +89,8 @@ struct DeepOcrEngine::WinMlContext {
     std::array<waml::LearningModelSession, 3> detBucketSessions{nullptr, nullptr, nullptr};
     std::array<waml::LearningModelSession, 4> recBucketSessions{
         nullptr, nullptr, nullptr, nullptr};
+    std::array<uint64_t, 4> recBucketLastUsed{0, 0, 0, 0};
+    uint64_t recBucketAccessCounter = 0;
     waml::LearningModelSession cpuFallbackRecSession{nullptr};
 
     // 二阶高精度 Server 复核按需单一甜点会话（仅 Win11+ 且 >=2GB 独立显存走 GPU 2x640 桶；Win10 及核显/低显存自动走 CPU 防 TDR 卡死）
@@ -140,6 +142,8 @@ struct DeepOcrEngine::WinMlContext {
         closeSession(serverRecSession);
         closeSession(cpuFallbackRecSession);
         for (auto& s : recBucketSessions) closeSession(s);
+        recBucketLastUsed.fill(0);
+        recBucketAccessCounter = 0;
         for (auto& s : detBucketSessions) closeSession(s);
         closeSession(clsSession);
 
@@ -288,16 +292,18 @@ struct DeepOcrEngine::WinMlContext {
         if (idx >= kDetSpecs.size() || !detModel || !device) return nullptr;
         if (!detBucketSessions[idx]) {
             try {
-                // DirectML 大尺寸检测桶（[1]=1280x1024 横屏大图 与 [2]=960x1280 竖屏长图）实施互斥单活：
-                // 桌面连拍 99% 同方向 0 重编开销，跨横/竖切换时释放旧大桶并触发 DXGI Trim，削减 ~400-500MB 峰值提交内存
-                if (usingDirectMLGpu && (idx == 1 || idx == 2)) {
-                    const size_t otherLargeIdx = (idx == 1) ? 2 : 1;
-                    if (detBucketSessions[otherLargeIdx]) {
-                        try { detBucketSessions[otherLargeIdx].Close(); } catch (...) {}
-                        detBucketSessions[otherLargeIdx] = nullptr;
-                        if (ownedDxgiDevice) {
-                            ownedDxgiDevice->Trim();
-                        }
+                // DirectML GPU 模式下 3 个检测画布桶（[0]=960x640 / [1]=1280x1024 / [2]=960x1280）实施严格单活互斥：
+                // 任意时刻最多常驻 1 个 DirectML 检测会话，切换检测桶前释放旧桶并触发轻量 DXGI Trim，削减数百 MB 提交内存。
+                if (usingDirectMLGpu) {
+                    bool evictedAny = false;
+                    for (size_t other = 0; other < detBucketSessions.size(); ++other) {
+                        if (other == idx || !detBucketSessions[other]) continue;
+                        try { detBucketSessions[other].Close(); } catch (...) {}
+                        detBucketSessions[other] = nullptr;
+                        evictedAny = true;
+                    }
+                    if (evictedAny && ownedDxgiDevice) {
+                        ownedDxgiDevice->Trim();
                     }
                 }
                 waml::LearningModelSessionOptions opts;
@@ -345,6 +351,32 @@ struct DeepOcrEngine::WinMlContext {
         if (idx >= kRecSpecs.size() || !device) return nullptr;
         if (!recBucketSessions[idx]) {
             try {
+                // DirectML GPU 模式下最多常驻 2 个识别热桶（LRU 淘汰最久未使用的旧桶），
+                // 彻底避免单次多尺寸截图把 4 个 rec 桶全部常驻吃掉 1.8GB+ Private Commit；
+                // 仅当确实发生旧桶淘汰时触发轻量 IDXGIDevice3::Trim()，不影响单次热识别速度。
+                bool evictedAny = false;
+                while (true) {
+                    std::array<bool, 4> activeMask{};
+                    for (size_t i = 0; i < recBucketSessions.size(); ++i) {
+                        activeMask[i] = static_cast<bool>(recBucketSessions[i]);
+                    }
+                    const size_t victimIdx = worker::selectDirectMlLruEvictionSlot(
+                        activeMask,
+                        recBucketLastUsed,
+                        idx,
+                        worker::Constants::kMaxDirectMlRecBuckets);
+                    if (victimIdx >= recBucketSessions.size()) {
+                        break;
+                    }
+                    try { recBucketSessions[victimIdx].Close(); } catch (...) {}
+                    recBucketSessions[victimIdx] = nullptr;
+                    recBucketLastUsed[victimIdx] = 0;
+                    evictedAny = true;
+                }
+                if (evictedAny && ownedDxgiDevice) {
+                    ownedDxgiDevice->Trim();
+                }
+
                 waml::LearningModelSessionOptions opts;
                 opts.CloseModelOnSessionCreation(false);
                 recBucketSessions[idx] = waml::LearningModelSession(recModel, device, opts);
@@ -352,12 +384,15 @@ struct DeepOcrEngine::WinMlContext {
                 LOG_WARN("DeepOcrEngine: ensureRecSession({}) WinRT error hr=0x{:08X}",
                          idx, static_cast<uint32_t>(e.code().value));
                 recBucketSessions[idx] = nullptr;
+                recBucketLastUsed[idx] = 0;
                 return nullptr;
             } catch (...) {
                 recBucketSessions[idx] = nullptr;
+                recBucketLastUsed[idx] = 0;
                 return nullptr;
             }
         }
+        recBucketLastUsed[idx] = ++recBucketAccessCounter;
         return &recBucketSessions[idx];
     }
 
@@ -749,6 +784,7 @@ bool DeepOcrEngine::ensureModelsLoadedLocked(const std::filesystem::path& modelD
                         auto out16 = s16.Evaluate(b16, L"").Outputs().Lookup(ctx->recOutName).as<waml::TensorFloat>();
                         if (out16 && out16.Shape().Size() >= 3 && out16.Shape().GetAt(0) == sp1.n) {
                             ctx->recBucketSessions[1] = std::move(s16);
+                            ctx->recBucketLastUsed[1] = ++ctx->recBucketAccessCounter;
                             batchOk = true;
                         }
                     } catch (...) {

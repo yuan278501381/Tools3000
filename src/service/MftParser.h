@@ -69,6 +69,16 @@ struct ParsedUsnRecord {
     bool isValid = false;
 };
 
+/// 紧凑冷态待合并 USN 增量事件（仅保存真正改变索引的创建/删除/重命名/修改字段，几十 KB 即可缓存数千条变更）
+struct PendingUsnEvent {
+    uint64_t fileReferenceNumber = 0;
+    uint64_t parentFileReferenceNumber = 0;
+    DWORD reason = 0;
+    DWORD fileAttributes = 0;
+    uint64_t timeStamp = 0;
+    std::wstring fileName;
+};
+
 bool parseUsnRecord(const BYTE* pBytes, DWORD remainingBytes, ParsedUsnRecord& out) noexcept;
 
 }  // namespace tools3000::service
@@ -92,6 +102,33 @@ public:
     // USN Journal Monitoring
     void StartListening();
     void StopListening();
+
+    // 冷态 USN 增量延迟合并缓冲（避免服务闲置修剪后，后台高频写盘瞬间将 180MB 主索引页全部 Fault 回工作集）
+    static constexpr size_t kDefaultPendingUsnFlushLimit = 4096u;
+    static constexpr uint64_t kDefaultPendingUsnMaxAgeMs = 15ULL * 60ULL * 1000ULL;
+
+    void setColdUsnBatchingEnabled(bool enabled) noexcept {
+        m_ColdUsnBatching.store(enabled, std::memory_order_release);
+    }
+    bool isColdUsnBatchingEnabled() const noexcept {
+        return m_ColdUsnBatching.load(std::memory_order_acquire);
+    }
+    void setPendingUsnFlushPolicy(size_t maxEntries, uint64_t maxAgeMs) noexcept {
+        m_PendingUsnFlushLimit.store(maxEntries > 0 ? maxEntries : 1u, std::memory_order_release);
+        m_PendingUsnMaxAgeMs.store(maxAgeMs, std::memory_order_release);
+    }
+    size_t pendingUsnChangeCount() const noexcept {
+        return m_PendingUsnCount.load(std::memory_order_acquire);
+    }
+    uint64_t totalPendingUsnFlushes() const noexcept {
+        return m_PendingUsnFlushCount.load(std::memory_order_acquire);
+    }
+    /// 毫秒级批量合并待处理 USN 队列至主索引（热路径 0 锁原子预检；保证严格事件因果顺序与锁层次无死锁）
+    size_t flushPendingUsnChanges();
+    /// 安全兜底：若待合并队列最老条目已达到 maxAgeMs，自动触发批量合并
+    bool flushPendingUsnChangesIfExpired(uint64_t nowTickMs = 0);
+    /// 统一 USN 事件批处理入口：冷态入队攒批（达上限或超龄自动合并），热态即时合并
+    void processUsnEventBatch(std::vector<tools3000::service::PendingUsnEvent>&& events, uint64_t nowTickMs = 0);
 
     // Quick search
     using CancellationCheck = std::function<bool()>;
@@ -216,7 +253,20 @@ private:
 
     bool QueryUsnJournal();
     void EnumerateFilesViaDirectoryWalk(char driveLetter);
+    void clearPendingUsnQueue();
+    size_t applyUsnEventBatchLocked(const std::vector<tools3000::service::PendingUsnEvent>& events);
     std::wstring buildFullPath(DWORDLONG fileReferenceNumber) const;
+
+    // 冷态 USN 攒批队列（锁顺序铁律：m_UsnApplyMutex -> m_PendingUsnMutex(短持 swap 即放) -> m_MapMutex -> m_SearchCacheMutex）
+    std::atomic<bool> m_ColdUsnBatching{false};
+    std::atomic<size_t> m_PendingUsnFlushLimit{kDefaultPendingUsnFlushLimit};
+    std::atomic<uint64_t> m_PendingUsnMaxAgeMs{kDefaultPendingUsnMaxAgeMs};
+    std::atomic<size_t> m_PendingUsnCount{0};
+    std::atomic<uint64_t> m_PendingUsnFlushCount{0};
+    mutable std::mutex m_UsnApplyMutex;
+    mutable std::mutex m_PendingUsnMutex;
+    std::vector<tools3000::service::PendingUsnEvent> m_PendingUsnQueue;
+    uint64_t m_PendingUsnFirstQueuedTick{0};
     bool queryFrnDiskMetadata(
         uint64_t frn,
         const std::wstring& fallbackPath,

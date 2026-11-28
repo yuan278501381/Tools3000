@@ -65,6 +65,9 @@ export component QuickSwitchWindow inherits Window {
     callback preview-slot-changed(float, float, float, float);
 
     property <length> row-h: root.compact-list ? 40px : 48px;
+    property <length> row-stride: root.row-h + 5px;
+    property <length> selected-row-top: max(0, root.selected-index) * root.row-stride;
+    property <length> selected-row-bottom: root.selected-row-top + root.row-h;
     property <length> computed-list-w: clamp(root.width * root.list-width-ratio, 230px, max(230px, root.width - 280px));
     property <length> preview-x: root.computed-list-w + 1px;
     property <length> preview-w: max(120px, root.width - root.preview-x);
@@ -75,13 +78,35 @@ export component QuickSwitchWindow inherits Window {
     }
     changed height => {
         root.preview-slot-changed(root.preview-x / 1px, 0, root.preview-w / 1px, root.height / 1px);
+        root.ensure-selected-visible();
     }
     changed list-width-ratio => {
         root.preview-slot-changed(root.preview-x / 1px, 0, root.preview-w / 1px, root.height / 1px);
     }
+    changed selected-index => {
+        root.ensure-selected-visible();
+    }
 
     public function focus-input() {
         search-input.focus();
+    }
+
+    public function ensure-selected-visible() {
+        if (root.items.length <= 0 || list-flick.height <= 0px) {
+            list-flick.content-y = 0px;
+            return;
+        }
+        if (root.selected-row-top < -list-flick.content-y) {
+            list-flick.content-y = -root.selected-row-top;
+        } else if (root.selected-row-bottom > (-list-flick.content-y + list-flick.height)) {
+            list-flick.content-y = list-flick.height - root.selected-row-bottom;
+        }
+        if (list-flick.content-y > 0px) {
+            list-flick.content-y = 0px;
+        }
+        if (list-flick.content-y < min(0px, list-flick.height - list-flick.content-height)) {
+            list-flick.content-y = min(0px, list-flick.height - list-flick.content-height);
+        }
     }
 
     public function notify-preview-slot() {
@@ -159,9 +184,9 @@ export component QuickSwitchWindow inherits Window {
                 }
 
                 // 主滚动窗口列表
-                Flickable {
+                list-flick := Flickable {
                     vertical-stretch: 1;
-                    content-height: max(self.height, root.items.length * (root.row-h + 5px));
+                    content-height: max(self.height, root.items.length * root.row-stride);
 
                     if root.items.length == 0 : Rectangle {
                         width: parent.width;

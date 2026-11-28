@@ -843,6 +843,80 @@ TEST(UpdateCheckerTest, SemVerComparison) {
     EXPECT_FALSE(UpdateChecker::isNewerVersion("发行", "1.0.0"));
 }
 
+TEST(UpdateCheckerTest, FallbackRedirectScoopAndAssetNamingContracts) {
+    using tools3000::core::UpdateChecker;
+
+    // 1. GitHub /releases/latest 302 Location 解析（绝对路径、相对路径、尾部斜杠、查询参数与锚点）
+    EXPECT_EQ(
+        UpdateChecker::parseReleaseTagFromRedirectLocation(
+            "https://github.com/yuan278501381/Tools3000/releases/tag/v1.5.6"),
+        "1.5.6");
+    EXPECT_EQ(
+        UpdateChecker::parseReleaseTagFromRedirectLocation(
+            "/yuan278501381/Tools3000/releases/tag/v1.5.6"),
+        "1.5.6");
+    EXPECT_EQ(
+        UpdateChecker::parseReleaseTagFromRedirectLocation(
+            "  HTTPS://GITHUB.COM/yuan278501381/tools3000/releases/tag/V2.0.1/?ref=latest#notes  "),
+        "2.0.1");
+    EXPECT_EQ(
+        UpdateChecker::parseReleaseTagFromRedirectLocation(
+            "/yuan278501381/Tools3000/releases/tag/1.6.0/"),
+        "1.6.0");
+
+    // 1b. 非法跳转、跨域名/降级协议/他仓路径/非版本号 tag 均必须拒绝
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation("").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "http://github.com/yuan278501381/Tools3000/releases/tag/v1.5.6").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://evil.example.com/yuan278501381/Tools3000/releases/tag/v9.9.9").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/other/Tools3000/releases/tag/v1.5.6").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/yuan278501381/Tools3000/releases").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/yuan278501381/Tools3000/releases/tag/").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/yuan278501381/Tools3000/releases/tag/nightly").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/yuan278501381/Tools3000/releases/tag/v1.5.6/extra").empty());
+    EXPECT_TRUE(UpdateChecker::parseReleaseTagFromRedirectLocation(
+        "https://github.com/yuan278501381/Tools3000/releases/tag/v1.5.6-beta.1").empty());
+
+    // 2. Scoop bucket/tools3000.json 顶层 version 解析（正常 JSON、带 UTF-8 BOM、带 v 前缀、损坏/异常输入）
+    EXPECT_EQ(
+        UpdateChecker::parseLatestVersionFromScoopManifest(
+            R"({"version":"1.5.6","homepage":"https://github.com/yuan278501381/Tools3000"})"),
+        "1.5.6");
+    EXPECT_EQ(
+        UpdateChecker::parseLatestVersionFromScoopManifest(
+            "\xEF\xBB\xBF{\"version\": \"v1.6.2\"}"),
+        "1.6.2");
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest("").empty());
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest("{ broken json").empty());
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest("[]").empty());
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest(R"({"version": 156})").empty());
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest(R"({"version": "latest"})").empty());
+    EXPECT_TRUE(UpdateChecker::parseLatestVersionFromScoopManifest(R"({"homepage": "https://example.com"})").empty());
+
+    // 3. 标准官方发布资产命名规范（x64 / ARM64 x 安装包 / 便携包，与 deploy.ps1 与 pickBestAsset 对齐）
+    EXPECT_EQ(
+        UpdateChecker::buildStandardReleaseAssetName("1.5.6", /*portableMode=*/false, /*arm64=*/false),
+        "Tools3000-v1.5.6-Setup.exe");
+    EXPECT_EQ(
+        UpdateChecker::buildStandardReleaseAssetName("v1.5.6", /*portableMode=*/true, /*arm64=*/false),
+        "Tools3000-v1.5.6-win-x64-portable.zip");
+    EXPECT_EQ(
+        UpdateChecker::buildStandardReleaseAssetName("1.5.6", /*portableMode=*/false, /*arm64=*/true),
+        "Tools3000-v1.5.6-Setup-arm64.exe");
+    EXPECT_EQ(
+        UpdateChecker::buildStandardReleaseAssetName("v1.5.6", /*portableMode=*/true, /*arm64=*/true),
+        "Tools3000-v1.5.6-win-arm64-portable.zip");
+    EXPECT_TRUE(UpdateChecker::buildStandardReleaseAssetName("", false, false).empty());
+    EXPECT_TRUE(UpdateChecker::buildStandardReleaseAssetName("../1.5.6", false, false).empty());
+    EXPECT_TRUE(UpdateChecker::buildStandardReleaseAssetName("nightly", true, false).empty());
+}
+
 TEST(UpdateCheckerTest, EvaluateChangelogOnStartupContracts) {
     using tools3000::core::UpdateChecker;
 

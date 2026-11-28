@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 is up to date",
     "updateAvailable": "Tools3000 {{version}} is available",
     "updateFailed": "Unable to check for updates",
+    "updateRateLimited": "GitHub API rate limit reached (common on shared proxies). Switch proxy or try again later.",
     "updateCheckBusy": "An update check is already running",
     "noPublishedRelease": "No published release is available yet",
     "openRelease": "Open release page",

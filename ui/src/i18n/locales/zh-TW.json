@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 已是最新版本",
     "updateAvailable": "Tools3000 {{version}} 已發布",
     "updateFailed": "暫時無法檢查更新",
+    "updateRateLimited": "GitHub 介面限流（共用代理常見），請切換節點或稍後再試",
     "updateCheckBusy": "更新檢查正在進行中",
     "noPublishedRelease": "目前還沒有已發布的版本",
     "openRelease": "開啟發布頁面",

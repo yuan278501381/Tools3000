@@ -72,6 +72,9 @@ public:
     static constexpr const char* CurrentVersion = tools3000::version::String;
     static bool isNewerVersion(std::string_view candidate, std::string_view current);
     static bool isTrustedReleaseDownloadUrl(std::string_view url) noexcept;
+    static std::string parseReleaseTagFromRedirectLocation(std::string_view location);
+    static std::string parseLatestVersionFromScoopManifest(std::string_view manifestJson);
+    static std::string buildStandardReleaseAssetName(std::string_view version, bool portableMode, bool arm64);
     static std::string extractExpectedSha256ForAsset(std::string_view sha256SumsBody, std::string_view assetName);
     static std::string formatReleaseNotesSummary(std::string_view rawNotes, size_t maxBytes = 600);
     static bool isPortableDirectory(const std::filesystem::path& exeDir) noexcept;

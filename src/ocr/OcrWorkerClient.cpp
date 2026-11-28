@@ -143,13 +143,21 @@ bool OcrWorkerClient::ensureWorkerConnectedLocked(
         return false;
     }
 
-    int idleSec = worker::Constants::kDefaultOcrWorkerIdleSeconds;
+    int overrideIdleSec = 0;
     {
         std::lock_guard<std::mutex> cfgLock(m_configMutex);
         if (m_idleSecondsOverride > 0) {
-            idleSec = m_idleSecondsOverride;
+            overrideIdleSec = m_idleSecondsOverride;
         }
     }
+    MEMORYSTATUSEX memStatus{};
+    memStatus.dwLength = sizeof(memStatus);
+    const uint64_t totalPhysBytes = GlobalMemoryStatusEx(&memStatus)
+        ? static_cast<uint64_t>(memStatus.ullTotalPhys)
+        : 0ULL;
+    const bool isRemoteSession = (GetSystemMetrics(SM_REMOTESESSION) != 0);
+    const int idleSec = worker::resolveAdaptiveOcrWorkerIdleSeconds(
+        totalPhysBytes, isRemoteSession, overrideIdleSec);
 
     std::vector<std::wstring> args = {
         std::wstring(worker::Constants::kFlagWorkerMode) + worker::Constants::kModeOcr,

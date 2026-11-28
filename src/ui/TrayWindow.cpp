@@ -97,7 +97,9 @@ void TrayWindow::preload(HINSTANCE hInstance) {
 void TrayWindow::show(HINSTANCE hInstance, int x, int y) {
     m_anchor = {x, y};
     m_showTimeTick = GetTickCount64();
+    m_idleReleased.store(false, std::memory_order_release);
     if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_IDLE_DESTROY);
         updatePlacement();
         SetWindowPos(m_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
         ShowWindow(m_hwnd, SW_SHOW);
@@ -115,6 +117,10 @@ void TrayWindow::show(HINSTANCE hInstance, int x, int y) {
             if (m_webView) {
                 m_webView->ExecuteScript(L"window.dispatchEvent(new CustomEvent('tray:show'));", nullptr);
             }
+        } else if (!m_webViewInitializing) {
+            // WebView2 已在 3 分钟闲置期释放，用户再次呼出时按需无缝重建
+            m_suspendController.reset();
+            initializeWebView2();
         }
         return;
     }
@@ -146,6 +152,9 @@ void TrayWindow::hide() {
         }
         m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
         tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
+        if (m_controller || m_webViewInitializing) {
+            SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
+        }
     }
 }
 
@@ -153,7 +162,15 @@ bool TrayWindow::isVisible() const {
     return m_visible.load() && m_hwnd && IsWindowVisible(m_hwnd);
 }
 
-void TrayWindow::destroy() {
+void TrayWindow::releaseWebViewOnIdle() {
+    if (m_visible.load()) return;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+    }
+    const bool hadWebView = (m_controller != nullptr || m_webView != nullptr || m_webViewInitializing);
+    if (!hadWebView) return;
+
+    const bool wasReady = m_webViewReady.load(std::memory_order_acquire);
     m_suspendController.abandon();
     tools3000::core::MessageBridge::instance().unregisterEventPusher("tray");
     ++m_generation;
@@ -163,6 +180,30 @@ void TrayWindow::destroy() {
     }
     m_webView = nullptr;
     m_environment = nullptr;
+    m_webViewInitializing = false;
+    m_webViewReady.store(false, std::memory_order_release);
+    if (wasReady) {
+        m_idleReleased.store(true, std::memory_order_release);
+    }
+    tools3000::core::WinUtils::trimWorkingSet();
+    LOG_INFO("TrayWindow: idle timeout reached (180s), destroyed WebView2 controller to reclaim renderer memory");
+}
+
+void TrayWindow::destroy() {
+    m_suspendController.abandon();
+    tools3000::core::MessageBridge::instance().unregisterEventPusher("tray");
+    ++m_generation;
+    if (m_hwnd && IsWindow(m_hwnd)) {
+        KillTimer(m_hwnd, IDT_TRAY_AUTOHIDE);
+        KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+    }
+    if (m_controller) {
+        m_controller->Close();
+        m_controller = nullptr;
+    }
+    m_webView = nullptr;
+    m_environment = nullptr;
+    m_webViewInitializing = false;
 
     const HWND hwnd = std::exchange(m_hwnd, nullptr);
     if (hwnd && IsWindow(hwnd)) {
@@ -170,6 +211,8 @@ void TrayWindow::destroy() {
     }
     m_visible = false;
     m_webViewReady = false;
+    m_idleReleased = false;
+    tools3000::core::WinUtils::trimWorkingSet();
 }
 
 bool TrayWindow::createWindow(HINSTANCE hInstance, int x, int y) {
@@ -267,9 +310,13 @@ void TrayWindow::setContentSize(int width, int height) {
 
 void TrayWindow::initializeWebView2() {
     const uint64_t generation = ++m_generation;
+    m_webViewInitializing = true;
     WebViewEnvironmentManager::instance().acquire(
             [this, generation](HRESULT result, ICoreWebView2Environment* env) {
                 if (FAILED(result) || !env) {
+                    if (generation == m_generation.load()) {
+                        m_webViewInitializing = false;
+                    }
                     LOG_ERROR("TrayWindow: shared environment unavailable.");
                     return;
                 }
@@ -282,6 +329,9 @@ void TrayWindow::initializeWebView2() {
                     Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
                         [this, generation](HRESULT res, ICoreWebView2Controller* controller) -> HRESULT {
                             if (FAILED(res) || !controller) {
+                                if (generation == m_generation.load()) {
+                                    m_webViewInitializing = false;
+                                }
                                 LOG_WARN("TrayWindow: CreateCoreWebView2Controller 失败, res=0x{:08X}", static_cast<unsigned>(res));
                                 return E_FAIL;
                             }
@@ -292,6 +342,7 @@ void TrayWindow::initializeWebView2() {
                             m_controller = controller;
                             const HRESULT hrGetWeb = m_controller->get_CoreWebView2(&m_webView);
                             if (FAILED(hrGetWeb) || !m_webView) {
+                                m_webViewInitializing = false;
                                 LOG_WARN("TrayWindow: get_CoreWebView2 failed, hr=0x{:08X}",
                                          static_cast<unsigned>(hrGetWeb));
                                 return E_FAIL;
@@ -436,7 +487,9 @@ void TrayWindow::initializeWebView2() {
                                             args->get_WebErrorStatus(&status);
                                             LOG_ERROR("TrayWindow: WebView2 导航失败, status={}", static_cast<int>(status));
                                         }
+                                        m_webViewInitializing = false;
                                         m_webViewReady = true;
+                                        m_idleReleased.store(false, std::memory_order_release);
                                         if (m_visible.load()) {
                                             if (m_webView) {
                                                 m_webView->ExecuteScript(L"window.dispatchEvent(new CustomEvent('tray:show'));", nullptr);
@@ -445,6 +498,9 @@ void TrayWindow::initializeWebView2() {
                                             m_controller->put_IsVisible(FALSE);
                                             m_suspendController.requestSuspend(m_controller.Get(), m_webView.Get());
                                             tools3000::core::WinUtils::scheduleQuietIdleTrim(3000);
+                                            if (m_hwnd && IsWindow(m_hwnd)) {
+                                                SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
+                                            }
                                         }
                                         return S_OK;
                                     }
@@ -456,6 +512,9 @@ void TrayWindow::initializeWebView2() {
                         }
                     ).Get());
                 if (FAILED(controllerResult)) {
+                    if (generation == m_generation.load()) {
+                        m_webViewInitializing = false;
+                    }
                     LOG_ERROR("TrayWindow: Create controller request failed, hr=0x{:08X}",
                               static_cast<unsigned>(controllerResult));
                 }
@@ -566,6 +625,13 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
             }
             break;
         case WM_TIMER: {
+            if (wParam == IDT_IDLE_DESTROY) {
+                KillTimer(hwnd, IDT_IDLE_DESTROY);
+                if (!inst.m_visible.load()) {
+                    inst.releaseWebViewOnIdle();
+                }
+                break;
+            }
             if (wParam == IDT_TRAY_AUTOHIDE) {
                 if (!inst.m_visible.load()) {
                     KillTimer(hwnd, IDT_TRAY_AUTOHIDE);
@@ -614,6 +680,7 @@ LRESULT CALLBACK TrayWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPA
         }
         case WM_DESTROY:
             KillTimer(hwnd, IDT_TRAY_AUTOHIDE);
+            KillTimer(hwnd, IDT_IDLE_DESTROY);
             if (inst.m_hwnd == hwnd) inst.m_hwnd = nullptr;
             inst.destroy();
             break;

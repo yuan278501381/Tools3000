@@ -17,6 +17,9 @@ namespace tools3000::ui {
 
 class TrayWindow {
 public:
+    static constexpr UINT_PTR IDT_IDLE_DESTROY = 9002;
+    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 180000; // 隐藏闲置 3 分钟自动销毁 WebView 释放常驻 Renderer
+
     static TrayWindow& instance();
 
     /// 预热托盘菜单 WebView2 渲染环境（后台静默就绪，使用户右键时 0 毫秒瞬间呼出）
@@ -37,11 +40,24 @@ public:
     /// 销毁
     void destroy();
 
-    /// 查询 WebView2 渲染环境是否已就绪
-    bool isWebViewReady() const { return m_webViewReady.load(); }
+    /// 查询 WebView2 渲染环境是否已就绪（或已完成首次就绪并于闲置期释放，支持下次打开按需无缝重建）
+    bool isWebViewReady() const {
+        return m_webViewReady.load(std::memory_order_acquire) ||
+               m_idleReleased.load(std::memory_order_acquire);
+    }
 
     /// 设置 WebView2 就绪状态（供生命周期及测试桩注入使用）
-    void setWebViewReady(bool ready) { m_webViewReady.store(ready); }
+    void setWebViewReady(bool ready) {
+        m_webViewReady.store(ready, std::memory_order_release);
+        if (!ready) {
+            m_idleReleased.store(false, std::memory_order_release);
+        }
+    }
+
+    /// 查询当前是否处于 3 分钟闲置销毁 WebView 后的轻量休眠态
+    bool isIdleReleased() const noexcept {
+        return m_idleReleased.load(std::memory_order_acquire);
+    }
 
     /// 获取最后一次显示的时间戳 (GetTickCount64)
     uint64_t getShowTimeTick() const { return m_showTimeTick; }
@@ -94,6 +110,7 @@ private:
 
     bool createWindow(HINSTANCE hInstance, int x, int y);
     void initializeWebView2();
+    void releaseWebViewOnIdle();
     void updatePlacement();
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
@@ -101,6 +118,8 @@ private:
     HWND m_hwnd = nullptr;
     std::atomic<bool> m_visible{false};
     std::atomic<bool> m_webViewReady{false};
+    std::atomic<bool> m_idleReleased{false};
+    bool m_webViewInitializing = false;
     std::atomic<uint64_t> m_generation{0};
     uint64_t m_showTimeTick{0};
     std::atomic<uint64_t> m_lastHideTimeTick{0};

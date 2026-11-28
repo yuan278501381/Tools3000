@@ -161,6 +161,18 @@ bool MouseFeedbackOverlayBase::isVisible() const noexcept {
     return m_visible.load(std::memory_order_relaxed);
 }
 
+bool MouseFeedbackOverlayBase::hasPresentSurface() const noexcept {
+    return m_hasLiveSurface.load(std::memory_order_acquire);
+}
+
+void MouseFeedbackOverlayBase::setLazySurfaceIdleReleaseMsForTest(uint32_t releaseMs) noexcept {
+    m_lazySurfaceIdleReleaseMs.store(releaseMs, std::memory_order_release);
+}
+
+uint32_t MouseFeedbackOverlayBase::lazySurfaceIdleReleaseMs() const noexcept {
+    return m_lazySurfaceIdleReleaseMs.load(std::memory_order_acquire);
+}
+
 HWND MouseFeedbackOverlayBase::hwnd() const noexcept {
     return m_hwnd.load(std::memory_order_acquire);
 }
@@ -355,6 +367,8 @@ bool MouseFeedbackOverlayBase::initializeBase(HINSTANCE hInstance, const wchar_t
     m_helperOwnerName = helperOwnerName ? helperOwnerName : L"Tools3000_MouseHelperOwner";
     m_lazyCompositor = lazyCompositor;
     m_idleSince = {};
+    m_hiddenSinceMs.store(0, std::memory_order_release);
+    m_visualContentDetached = false;
     m_oversizedSince = {};
 
     m_wakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -498,7 +512,7 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
         return;
     }
 
-    static constexpr auto kLazyCompositorIdleRelease = std::chrono::seconds(60);
+    static constexpr auto kLazyCompositorIdleRelease = std::chrono::milliseconds(kDefaultLazyCompositorIdleReleaseMs);
     ScopedMmcssBoost mmcss;
     AdaptiveFrameTimer frameTimer;
     int64_t lastAnimPacingEndUs = 0;
@@ -513,6 +527,7 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
 
         if (animatingNow) {
             m_idleSince = {};
+            m_hiddenSinceMs.store(0, std::memory_order_release);
             if (!wasAnimating) {
                 mmcss.enter();
                 frameTimer.setActivePeriodBoost(true);
@@ -578,26 +593,69 @@ void MouseFeedbackOverlayBase::baseRenderLoop(std::stop_token st, HANDLE readyEv
             }
 
             DWORD waitMs = INFINITE;
-            if (idleNow && m_lazyCompositor && m_compositorReady.load(std::memory_order_acquire)) {
+            if (idleNow) {
                 const auto now = std::chrono::steady_clock::now();
-                if (m_idleSince == std::chrono::steady_clock::time_point{}) {
-                    m_idleSince = now;
-                }
-                const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_idleSince);
-                const auto limitMs = std::chrono::duration_cast<std::chrono::milliseconds>(kLazyCompositorIdleRelease);
-                if (elapsed >= limitMs) {
-                    releaseIdleCompositor();
-                    m_idleSince = {};
-                    waitMs = INFINITE;
+
+                // 1. 隐藏后 3 秒滞后释放 SwapChain / DCompSurface + DXGI Trim：
+                //    既免去高频连点水波纹/鼠标轨迹每秒反复销毁重建 SwapChain 引发的核显驱动提交碎片，
+                //    又确保 3 秒无新特效后迅速归还显存表面。
+                if (m_hasLiveSurface.load(std::memory_order_acquire)) {
+                    const int64_t nowMs = static_cast<int64_t>(GetTickCount64());
+                    int64_t hiddenSince = m_hiddenSinceMs.load(std::memory_order_acquire);
+                    if (hiddenSince == 0) {
+                        hiddenSince = nowMs;
+                        m_hiddenSinceMs.store(hiddenSince, std::memory_order_release);
+                    }
+                    const int64_t surfaceLimitMs = static_cast<int64_t>(
+                        m_lazySurfaceIdleReleaseMs.load(std::memory_order_acquire));
+                    const int64_t elapsedSurfaceMs = (nowMs >= hiddenSince) ? (nowMs - hiddenSince) : surfaceLimitMs;
+                    if (elapsedSurfaceMs >= surfaceLimitMs) {
+                        std::lock_guard lock(m_baseMutex);
+                        if (!m_visible.load(std::memory_order_acquire) &&
+                            (m_swapChain || m_dcompSurface)) {
+                            releaseDcompSurfaceLocked();
+                            if (m_d3dDevice) {
+                                Microsoft::WRL::ComPtr<IDXGIDevice3> dxgi3;
+                                if (SUCCEEDED(m_d3dDevice.As(&dxgi3)) && dxgi3) {
+                                    dxgi3->Trim();
+                                }
+                            }
+                        }
+                        m_hiddenSinceMs.store(0, std::memory_order_release);
+                    } else {
+                        const DWORD remainSurfaceMs = static_cast<DWORD>(
+                            (std::max<int64_t>)(50, surfaceLimitMs - elapsedSurfaceMs));
+                        waitMs = (std::min)(waitMs, remainSurfaceMs);
+                    }
                 } else {
-                    waitMs = static_cast<DWORD>((std::max<int64_t>)(1000, (limitMs - elapsed).count()));
+                    m_hiddenSinceMs.store(0, std::memory_order_release);
                 }
-            } else if (!idleNow) {
+
+                // 2. 闲置 60 秒后彻底释放 D3D11/D2D/DComp 设备并收缩工作集（保持原有逻辑不变）
+                if (m_lazyCompositor && m_compositorReady.load(std::memory_order_acquire)) {
+                    if (m_idleSince == std::chrono::steady_clock::time_point{}) {
+                        m_idleSince = now;
+                    }
+                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_idleSince);
+                    const auto limitMs = std::chrono::duration_cast<std::chrono::milliseconds>(kLazyCompositorIdleRelease);
+                    if (elapsed >= limitMs) {
+                        releaseIdleCompositor();
+                        m_idleSince = {};
+                        m_hiddenSinceMs.store(0, std::memory_order_release);
+                        waitMs = INFINITE;
+                    } else {
+                        const DWORD remainCompMs = static_cast<DWORD>(
+                            (std::max<int64_t>)(1000, (limitMs - elapsed).count()));
+                        waitMs = (std::min)(waitMs, remainCompMs);
+                    }
+                } else {
+                    m_idleSince = {};
+                }
+            } else {
                 // StaticHolding 态：覆盖层常亮静止，INFINITE 深度挂起 0% CPU，待鼠标移动/按键事件即时唤醒
                 m_idleSince = {};
+                m_hiddenSinceMs.store(0, std::memory_order_release);
                 waitMs = INFINITE;
-            } else {
-                m_idleSince = {};
             }
 
             HANDLE waitHandles[2] = {m_wakeEvent, m_controlEvent};
@@ -875,8 +933,11 @@ bool MouseFeedbackOverlayBase::createSwapChainForSizeLocked(int width, int heigh
         m_requestedWidth = width;
         m_requestedHeight = height;
         m_dcompNeedsCommit = true;
+        m_visualContentDetached = false;
+        m_hiddenSinceMs.store(0, std::memory_order_release);
         m_presentTier.store(cand.tier, std::memory_order_release);
         m_hasDcompSurface.store(true, std::memory_order_release);
+        m_hasLiveSurface.store(true, std::memory_order_release);
         {
             std::lock_guard mLock(m_metricsMutex);
             ++m_surfaceRebuildCount;
@@ -923,8 +984,11 @@ bool MouseFeedbackOverlayBase::createFallbackDcompSurfaceLocked(int width, int h
     m_requestedHeight = height;
     m_oversizedSince = {};
     m_dcompNeedsCommit = true;
+    m_visualContentDetached = false;
+    m_hiddenSinceMs.store(0, std::memory_order_release);
     m_presentTier.store(OverlayPresentTier::DcompSurfaceFallback, std::memory_order_release);
     m_hasDcompSurface.store(true, std::memory_order_release);
+    m_hasLiveSurface.store(true, std::memory_order_release);
     {
         std::lock_guard mLock(m_metricsMutex);
         ++m_surfaceRebuildCount;
@@ -942,6 +1006,13 @@ bool MouseFeedbackOverlayBase::ensurePresentSurfaceLocked(int width, int height)
 
     // Tier 1 / Tier 2 SwapChain 零销毁原位复用或平滑 ResizeBuffers
     if (m_swapChain && (tier == OverlayPresentTier::SwapChainWaitable || tier == OverlayPresentTier::SwapChainSequential)) {
+        m_hiddenSinceMs.store(0, std::memory_order_release);
+        if (m_visualContentDetached && m_dcompVisual) {
+            (void)m_dcompVisual->SetContent(m_swapChain.Get());
+            m_visualContentDetached = false;
+            m_dcompNeedsCommit = true;
+        }
+        m_hasDcompSurface.store(true, std::memory_order_release);
         if (m_surfaceWidth == clampedW && m_surfaceHeight == clampedH) {
             m_requestedWidth = clampedW;
             m_requestedHeight = clampedH;
@@ -978,6 +1049,13 @@ bool MouseFeedbackOverlayBase::ensurePresentSurfaceLocked(int width, int height)
 
     // Tier 3 高水位滞回复用（仅在不够大或持续 >4x 过大超过 2s 时重建，避免逐帧抖动）
     if (m_dcompSurface && tier == OverlayPresentTier::DcompSurfaceFallback) {
+        m_hiddenSinceMs.store(0, std::memory_order_release);
+        if (m_visualContentDetached && m_dcompVisual) {
+            (void)m_dcompVisual->SetContent(m_dcompSurface.Get());
+            m_visualContentDetached = false;
+            m_dcompNeedsCommit = true;
+        }
+        m_hasDcompSurface.store(true, std::memory_order_release);
         const bool fits = (clampedW <= m_surfaceWidth && clampedH <= m_surfaceHeight);
         if (fits) {
             const int64_t surfaceArea = static_cast<int64_t>(m_surfaceWidth) * static_cast<int64_t>(m_surfaceHeight);
@@ -1030,6 +1108,9 @@ void MouseFeedbackOverlayBase::releaseDcompSurfaceLocked() {
     m_dcompSurface.Reset();
     m_presentTier.store(OverlayPresentTier::None, std::memory_order_release);
     m_hasDcompSurface.store(false, std::memory_order_release);
+    m_hasLiveSurface.store(false, std::memory_order_release);
+    m_visualContentDetached = false;
+    m_hiddenSinceMs.store(0, std::memory_order_release);
     m_surfaceWidth = 0;
     m_surfaceHeight = 0;
     m_requestedWidth = 0;
@@ -1056,6 +1137,7 @@ void MouseFeedbackOverlayBase::applyViewportLocked(const MouseViewportRect& view
         SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_SHOWWINDOW
     );
     m_visible.store(true, std::memory_order_release);
+    m_hiddenSinceMs.store(0, std::memory_order_release);
     {
         std::lock_guard mLock(m_metricsMutex);
         ++m_setWindowPosCount;
@@ -1223,9 +1305,25 @@ void MouseFeedbackOverlayBase::applyHideOverlayStateLocked() {
     if (hwnd && IsWindow(hwnd)) {
         ShowWindow(hwnd, SW_HIDE);
     }
-    releaseDcompSurfaceLocked();
+    // 0ms 立即隐藏窗口并解绑 DComp Visual 防止再次显示瞬间残留旧帧，但保留底层 IDXGISwapChain1 / DCompSurface
+    // 3 秒供高频连续点击水波纹与鼠标轨迹零重建复用，消除核显驱动提交内存碎片；连续隐藏满 3 秒后再释放并 DXGI Trim。
+    if (m_dcompVisual && !m_visualContentDetached) {
+        (void)m_dcompVisual->SetContent(nullptr);
+        if (m_dcompDevice) {
+            (void)m_dcompDevice->Commit();
+        }
+        m_visualContentDetached = true;
+    }
     m_visible.store(false, std::memory_order_release);
+    m_hasDcompSurface.store(false, std::memory_order_release);
     m_currentViewport = MouseViewportRect{};
+    if (m_hasLiveSurface.load(std::memory_order_acquire)) {
+        if (m_hiddenSinceMs.load(std::memory_order_acquire) == 0) {
+            m_hiddenSinceMs.store(static_cast<int64_t>(GetTickCount64()), std::memory_order_release);
+        }
+    } else {
+        m_hiddenSinceMs.store(0, std::memory_order_release);
+    }
 }
 
 } // namespace tools3000::core

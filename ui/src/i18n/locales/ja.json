@@ -1598,6 +1598,7 @@
     "upToDate": "Tools3000 は最新バージョンです",
     "updateAvailable": "Tools3000 {{version}} が利用可能です",
     "updateFailed": "アップデートを確認できませんでした",
+    "updateRateLimited": "GitHub API のレート制限に達しました（共有プロキシでよく発生します）。プロキシを切り替えるか、しばらくしてから再試行してください",
     "updateCheckBusy": "現在アップデートを確認中です",
     "noPublishedRelease": "公開済みのリリースはまだありません",
     "openRelease": "リリースページを開く",

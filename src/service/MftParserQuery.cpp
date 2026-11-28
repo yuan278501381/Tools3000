@@ -220,6 +220,9 @@ std::vector<SearchResult> MftParser::Search(const std::wstring& query, int limit
     const uint64_t rootClauseMask = expr.computeDirectorySegmentMask(std::wstring_view(&driveW, 1));
     const int32_t baseDrivePriority = (m_DriveLetter != 'C' && m_DriveLetter != 'c') ? 800 : 200;
 
+    // 查询获取共享锁之前先合并冷态待处理 USN 变更，保证 100% 实时零漏文件且绝不产生锁升级死锁
+    flushPendingUsnChanges();
+
     std::shared_lock lock(m_MapMutex);
     const uint64_t generation = m_IndexGeneration.load(std::memory_order_acquire);
 

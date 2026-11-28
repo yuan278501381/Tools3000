@@ -121,9 +121,9 @@ private:
     UINT resolveIdleDestroyTimeoutMs() const noexcept;
 
     // 闲置自动销毁定时器：隐藏瞬间已通过 TrySuspend 冻结渲染器并修剪工作集；
-    // SSD 5 分钟 / 机械硬盘 15 分钟后再彻底销毁 WebView2，兼顾内存与 HDD 反复打开流畅度。
+    // SSD 3 分钟（与 TrayWindow 对齐）/ 机械硬盘 15 分钟后再彻底销毁 WebView2，兼顾内存及时释放与 HDD 反复打开流畅度。
     static constexpr UINT_PTR IDT_IDLE_DESTROY = 1001;
-    static constexpr UINT IDLE_DESTROY_TIMEOUT_SSD_MS = 300000;
+    static constexpr UINT IDLE_DESTROY_TIMEOUT_SSD_MS = 180000;
     static constexpr UINT IDLE_DESTROY_TIMEOUT_HDD_MS = 900000;
 
     HWND m_hwnd = nullptr;

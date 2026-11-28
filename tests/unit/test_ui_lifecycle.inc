@@ -2790,3 +2790,109 @@ TEST(OverlayZeroDropArchitectureTest, MouseShakeDetectorRejectsDailyNoiseAndHono
     EXPECT_EQ(spot.getSettings().shakeMinDistance, 650);
     spot.updateSettings(prev);
 }
+
+TEST(TrayWindowIdleDestroyContractTest, TimeoutConstantsAndIdleReleaseReadinessContract) {
+    using namespace tools3000::ui;
+
+    // 1. 验证托盘闲置自动销毁定时器常量为 3 分钟 (180,000 ms)
+    EXPECT_EQ(TrayWindow::IDT_IDLE_DESTROY, static_cast<UINT_PTR>(9002));
+    EXPECT_EQ(TrayWindow::IDLE_DESTROY_TIMEOUT_MS, 180000u);
+
+    // 2. 验证显式 setWebViewReady(false) 清除就绪与闲置释放态，兼容原生托盘降级契约
+    auto& trayWin = TrayWindow::instance();
+    const bool prevReady = trayWin.isWebViewReady();
+    trayWin.setWebViewReady(false);
+    EXPECT_FALSE(trayWin.isWebViewReady());
+    EXPECT_FALSE(trayWin.isIdleReleased());
+    trayWin.setWebViewReady(prevReady);
+}
+
+TEST(OverlayZeroDropArchitectureTest, SpotlightSwapChainDelayedReleaseAfterHideAndRapidReuse) {
+    using namespace tools3000::ui;
+    using namespace tools3000::core;
+
+    // 1. 验证默认滞后释放常量：SwapChain 3s / Compositor 60s
+    EXPECT_EQ(MouseFeedbackOverlayBase::kDefaultLazySurfaceIdleReleaseMs, 3000u);
+    EXPECT_EQ(MouseFeedbackOverlayBase::kDefaultLazyCompositorIdleReleaseMs, 60000u);
+
+    auto& spot = SpotlightOverlay::instance();
+    const bool alreadyInit = (spot.hwnd() != nullptr);
+    if (!alreadyInit) {
+        ASSERT_TRUE(spot.initialize(GetModuleHandleW(nullptr)));
+    }
+    ASSERT_NE(spot.hwnd(), nullptr);
+
+    const auto prevSettings = spot.getSettings();
+    const uint32_t prevReleaseMs = spot.lazySurfaceIdleReleaseMs();
+    struct ScopedRestore {
+        SpotlightOverlay& overlay;
+        SpotlightSettings settings;
+        uint32_t releaseMs;
+        bool needShutdown;
+        ~ScopedRestore() {
+            overlay.setLazySurfaceIdleReleaseMsForTest(releaseMs);
+            overlay.hideNow();
+            overlay.updateSettings(settings);
+            if (needShutdown) {
+                overlay.shutdown();
+            }
+        }
+    } guard{spot, prevSettings, prevReleaseMs, !alreadyInit};
+
+    // 使用短滞后窗口 (350ms) 实测真实渲染线程的隐藏保留 -> 热复用 -> 超时释放闭环
+    spot.setLazySurfaceIdleReleaseMsForTest(350u);
+    SpotlightSettings cfg = prevSettings;
+    cfg.enabled = true;
+    cfg.autoBypassFullscreen = false;
+    cfg.clickRippleEnabled = true;
+    cfg.clickRippleStyle = "sparkle_burst";
+    cfg.mouseTrailEnabled = false;
+    spot.updateSettings(cfg);
+    spot.resetFrameMetrics();
+
+    // 2. 触发第一次点击水波纹，确认表面创建并呈现
+    spot.onMouseDown(0, POINT{420, 420});
+    for (int i = 0; i < 80 && (!spot.isVisible() || !spot.hasPresentSurface() || spot.getFrameMetrics().framesPresented == 0); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ASSERT_TRUE(spot.isVisible());
+    ASSERT_TRUE(spot.hasPresentSurface());
+
+    // 3. 主动 hideNow()：0ms 立即隐藏窗口，但 350ms 滞后窗内仍保留 SwapChain 不销毁
+    const uint64_t rebuildsBeforeHide = spot.getFrameMetrics().surfaceRebuilds;
+    spot.hideNow();
+    for (int i = 0; i < 40 && (spot.isVisible() || IsWindowVisible(spot.hwnd()) != FALSE); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_FALSE(spot.isVisible()) << "hideNow() must hide overlay state immediately";
+    EXPECT_FALSE(IsWindowVisible(spot.hwnd()) != FALSE) << "hideNow() must SW_HIDE window immediately";
+    std::this_thread::sleep_for(std::chrono::milliseconds(60));
+    EXPECT_TRUE(spot.hasPresentSurface()) << "SwapChain surface must stay cached during lazy idle grace window";
+
+    // 4. 在滞后窗内再次点击同位置：不得吞掉第二次点击，且原位零重建复用 SwapChain
+    const uint64_t framesBeforeReuse = spot.getFrameMetrics().framesPresented;
+    spot.onMouseDown(0, POINT{420, 420});
+    for (int i = 0; i < 80 && (!spot.isVisible() || spot.getFrameMetrics().framesPresented <= framesBeforeReuse); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    EXPECT_TRUE(spot.isActive()) << "Second click within lazy surface retention window must not be swallowed";
+    EXPECT_TRUE(spot.isVisible());
+    EXPECT_EQ(spot.getFrameMetrics().surfaceRebuilds, rebuildsBeforeHide)
+        << "Reusing same-size cached SwapChain within grace window must incur zero surface rebuilds";
+
+    // 5. 再次隐藏并等待超过滞后窗口 (350ms)：SwapChain 必须自动释放并归还显存
+    spot.hideNow();
+    for (int i = 0; i < 80 && spot.hasPresentSurface(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(15));
+    }
+    EXPECT_FALSE(spot.isVisible());
+    EXPECT_FALSE(spot.hasPresentSurface())
+        << "Cached SwapChain must be released once lazy idle release window elapses";
+
+    // 6. 已隐藏且无活跃表面时重复 hideNow() 必须幂等静默，不重建表面
+    for (int i = 0; i < 5; ++i) {
+        spot.hideNow();
+    }
+    EXPECT_FALSE(spot.isVisible());
+    EXPECT_FALSE(spot.hasPresentSurface());
+}

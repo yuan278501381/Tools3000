@@ -1598,6 +1598,7 @@
     "upToDate": "O Tools3000 está atualizado",
     "updateAvailable": "Tools3000 {{version}} está disponível",
     "updateFailed": "Não foi possível verificar atualizações",
+    "updateRateLimited": "Limite de requisições da API do GitHub atingido (comum em proxies compartilhados). Troque de proxy ou tente novamente mais tarde.",
     "updateCheckBusy": "Já existe uma verificação de atualização em andamento",
     "noPublishedRelease": "Ainda não há nenhuma versão publicada disponível",
     "openRelease": "Abrir página de lançamento",

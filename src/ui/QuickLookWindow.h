@@ -51,9 +51,14 @@ private:
 
     static LRESULT CALLBACK windowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
 
-    // 隐藏后 60 秒自动销毁 QuickLook WebView2 与后台异步线程，归还第 4 个渲染进程内存
+    // 三段式内存生命周期：
+    // - 隐藏后 15s 热保活宽限期（连续按空格快速翻阅多个文件 0ms 瞬开零缺页，不立刻 TrySuspend/trimWorkingSet）；
+    // - 15s 软冻结（put_IsVisible(FALSE) + TrySuspend + 延迟静默工作集修剪）；
+    // - 90s 冷销毁（彻底释放 QuickLook WebView2 渲染进程与后台异步线程）。
     static constexpr UINT_PTR IDT_IDLE_DESTROY = 1002;
-    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 60000;
+    static constexpr UINT_PTR IDT_DEFERRED_SUSPEND = 1003;
+    static constexpr UINT DEFERRED_SUSPEND_DELAY_MS = 15000;
+    static constexpr UINT IDLE_DESTROY_TIMEOUT_MS = 90000;
 
     HWND m_hwnd = nullptr;
     Microsoft::WRL::ComPtr<ICoreWebView2Environment> m_environment;

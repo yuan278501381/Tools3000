@@ -99,6 +99,7 @@ const MIN_GRID_TRACK_PCT: f64 = 8.0;
 const MIN_CANVAS_W: f64 = 0.06;
 const MIN_CANVAS_H: f64 = 0.06;
 const SNAP_THRESHOLD_DIP: f32 = 10.0;
+const GRID_SLICER_SNAP_THRESHOLD_DIP: f32 = 8.0;
 
 fn pack_xy(x: i32, y: i32) -> i64 {
     ((x as u32 as u64) | ((y as u32 as u64) << 32)) as i64
@@ -354,6 +355,151 @@ pub fn snap_coord_to_targets(
             }),
         ),
         None => (raw_px, None),
+    }
+}
+
+/// Grid 切割光刀（Slicer）实时预演与微磁吸求解结果（预览渲染与落刀切分共用单一事实源，100% 所见即所得）
+#[derive(Debug, Clone, PartialEq)]
+pub struct GridSlicerPreview {
+    pub horizontal: bool,
+    pub cut_local_px: i32,
+    pub snapped: bool,
+    pub snap_label: Option<String>,
+    pub snap_from_window: bool,
+    pub first_pct: i32,
+    pub second_pct: i32,
+    pub first_px: i32,
+    pub second_px: i32,
+    /// 在当前分区内部的归一化切分比例 (0.0..1.0)
+    pub local_ratio: f64,
+    /// 相对整块工作区的绝对切分比例 (0.0..1.0)
+    pub abs_fraction: f64,
+}
+
+/// 计算 Grid 模式下单分区内高级切割光刀的精准落刀位置与微磁吸结果：
+/// - 磁吸分区内经典等分点（25% / 33.3% / 50% / 66.7% / 75%）及底层真实桌面窗口边缘；
+/// - 按住 Alt 时临时关闭所有磁吸，自由按像素落刀；
+/// - 预览绘制与单击切分调用同一函数，保证 100% 所见即所得。
+#[allow(clippy::too_many_arguments)]
+pub fn compute_grid_slicer_preview(
+    zone_local: RectI,
+    work_area: RectI,
+    cursor_local: (i32, i32),
+    horizontal: bool,
+    alt_disable_snap: bool,
+    real_windows: &[RealWindowSnapshot],
+    threshold_px: i32,
+    zh_ui: bool,
+) -> GridSlicerPreview {
+    let work_w = work_area.width().max(1);
+    let work_h = work_area.height().max(1);
+    let (z_start, z_end, raw_px, work_len) = if horizontal {
+        (zone_local.top, zone_local.bottom, cursor_local.1, work_h)
+    } else {
+        (zone_local.left, zone_local.right, cursor_local.0, work_w)
+    };
+    let z_len = (z_end - z_start).max(1);
+    let min_inset = ((z_len as f64 * 0.12).round() as i32).clamp(1, (z_len / 2).max(1));
+    let clamp_lo = z_start + min_inset;
+    let clamp_hi = (z_end - min_inset).max(clamp_lo);
+    let clamped_raw = raw_px.clamp(clamp_lo, clamp_hi);
+
+    let (cut_px, snapped, snap_label, snap_from_window) = if alt_disable_snap || threshold_px <= 0 {
+        (clamped_raw, false, None, false)
+    } else {
+        let mut targets = Vec::with_capacity(16);
+        const CLASSIC_FRACS: &[(f64, &str)] = &[
+            (0.25, "25%"),
+            (1.0 / 3.0, "33.3%"),
+            (0.5, "50%"),
+            (2.0 / 3.0, "66.7%"),
+            (0.75, "75%"),
+        ];
+        for &(frac, tag) in CLASSIC_FRACS {
+            let pos = z_start + (frac * z_len as f64).round() as i32;
+            if pos >= clamp_lo && pos <= clamp_hi {
+                targets.push(SnapTarget {
+                    pos_px: pos,
+                    label: tag.to_string(),
+                    priority: 1,
+                });
+            }
+        }
+        for win in real_windows {
+            if win.is_maximized {
+                continue;
+            }
+            let short_name = if win.process_name.is_empty() {
+                if zh_ui {
+                    "桌面窗口".to_string()
+                } else {
+                    "Window".to_string()
+                }
+            } else {
+                win.process_name.clone()
+            };
+            let edges = if horizontal {
+                [win.rect.top - work_area.top, win.rect.bottom - work_area.top]
+            } else {
+                [
+                    win.rect.left - work_area.left,
+                    win.rect.right - work_area.left,
+                ]
+            };
+            for pos in edges {
+                if pos >= clamp_lo && pos <= clamp_hi {
+                    targets.push(SnapTarget {
+                        pos_px: pos,
+                        label: short_name.clone(),
+                        priority: 2,
+                    });
+                }
+            }
+        }
+        // 查找最优吸附并记录来源是否来自真实窗口（priority == 2）
+        let mut best: Option<(i32, u8, &SnapTarget)> = None;
+        for t in &targets {
+            let dist = (clamped_raw - t.pos_px).abs();
+            if dist <= threshold_px {
+                let better = match best {
+                    None => true,
+                    Some((bd, bp, _)) => dist < bd || (dist == bd && t.priority > bp),
+                };
+                if better {
+                    best = Some((dist, t.priority, t));
+                }
+            }
+        }
+        match best {
+            Some((_, prio, t)) => (
+                t.pos_px.clamp(clamp_lo, clamp_hi),
+                true,
+                Some(t.label.clone()),
+                prio >= 2,
+            ),
+            None => (clamped_raw, false, None, false),
+        }
+    };
+
+    let local_ratio = ((cut_px - z_start) as f64 / z_len as f64).clamp(0.12, 0.88);
+    let first_pct = ((local_ratio * 100.0).round() as i32).clamp(1, 99);
+    let second_pct = 100 - first_pct;
+    let first_px = (cut_px - z_start).max(1);
+    let second_px = (z_end - cut_px).max(1);
+    let abs_fraction = (cut_px as f64 / work_len as f64).clamp(0.02, 0.98);
+
+    GridSlicerPreview {
+        horizontal,
+        cut_local_px: cut_px,
+        snapped,
+        snap_label,
+        snap_from_window,
+        first_pct,
+        second_pct,
+        first_px,
+        second_px,
+        local_ratio,
+        abs_fraction,
     }
 }
 
@@ -912,7 +1058,7 @@ impl EditorSnapshot {
             // 在第 c0 列内部按精确比例一分为二
             let col_start = col_starts[c0];
             let col_span = (self.col_weights[c0] / 100.0).max(0.01);
-            let local_ratio = ((abs_fraction - col_start) / col_span).clamp(0.22, 0.78);
+            let local_ratio = ((abs_fraction - col_start) / col_span).clamp(0.12, 0.88);
             let total_w = self.col_weights[c0];
             let w_left = (total_w * local_ratio).max(MIN_GRID_TRACK_PCT / 2.0);
             let w_right = (total_w - w_left).max(MIN_GRID_TRACK_PCT / 2.0);
@@ -963,7 +1109,7 @@ impl EditorSnapshot {
             }
             let row_start = row_starts[r0];
             let row_span = (self.row_weights[r0] / 100.0).max(0.01);
-            let local_ratio = ((abs_fraction - row_start) / row_span).clamp(0.22, 0.78);
+            let local_ratio = ((abs_fraction - row_start) / row_span).clamp(0.12, 0.88);
             let total_h = self.row_weights[r0];
             let h_top = (total_h * local_ratio).max(MIN_GRID_TRACK_PCT / 2.0);
             let h_bot = (total_h - h_top).max(MIN_GRID_TRACK_PCT / 2.0);
@@ -981,6 +1127,49 @@ impl EditorSnapshot {
             self.cell_map.insert(r0 + 1, new_row);
             self.cell_map = compact_cell_map(&self.cell_map);
             true
+        }
+    }
+
+    /// 将 GridSlicerPreview 精准映射为传给 split_grid_zone_at 的绝对轨道比例，
+    /// 消除存在 zone_gap 时单轨切分比例偏移，确保 50%/33.3%/25% 所见即所得落刀。
+    pub fn zone_split_abs_fraction(
+        &self,
+        target_zone_id: usize,
+        horizontal: bool,
+        slicer: &GridSlicerPreview,
+    ) -> f64 {
+        if self.mode != ZoneLayoutType::Grid {
+            return slicer.abs_fraction;
+        }
+        let mut r0 = self.rows;
+        let mut r1 = 0usize;
+        let mut c0 = self.columns;
+        let mut c1 = 0usize;
+        let mut found = false;
+        for r in 0..self.rows {
+            for c in 0..self.columns {
+                if self.cell_map[r][c] == target_zone_id {
+                    found = true;
+                    r0 = r0.min(r);
+                    r1 = r1.max(r);
+                    c0 = c0.min(c);
+                    c1 = c1.max(c);
+                }
+            }
+        }
+        if !found {
+            return slicer.abs_fraction;
+        }
+        if !horizontal && c0 == c1 {
+            let start: f64 = self.col_weights[..c0].iter().sum::<f64>() / 100.0;
+            let span = self.col_weights[c0] / 100.0;
+            (start + slicer.local_ratio * span).clamp(0.01, 0.99)
+        } else if horizontal && r0 == r1 {
+            let start: f64 = self.row_weights[..r0].iter().sum::<f64>() / 100.0;
+            let span = self.row_weights[r0] / 100.0;
+            (start + slicer.local_ratio * span).clamp(0.01, 0.99)
+        } else {
+            slicer.abs_fraction
         }
     }
 
@@ -2186,6 +2375,25 @@ impl EditorSession {
         matches.first().map(|z| z.index)
     }
 
+    fn compute_slicer_for_zone(
+        &self,
+        zone_local: RectI,
+        cursor_local: (i32, i32),
+        horizontal: bool,
+    ) -> GridSlicerPreview {
+        let thr = (GRID_SLICER_SNAP_THRESHOLD_DIP * self.scale()).round() as i32;
+        compute_grid_slicer_preview(
+            zone_local,
+            self.monitor.work_rect,
+            cursor_local,
+            horizontal,
+            self.alt_down,
+            &self.real_windows,
+            thr,
+            self.zh_ui,
+        )
+    }
+
     fn set_cursor_kind(&self, kind: u32) {
         let prev = EDITOR_CURSOR_KIND.swap(kind, Ordering::AcqRel);
         if prev != kind {
@@ -2514,7 +2722,7 @@ impl EditorSession {
                 return ClickOutcome::Redraw;
             }
             let hit_z = self.hit_test_zone_at(lx, ly);
-            self.selected_zone = hit_z;
+            self.selected_zone = None;
             self.drag = Some(ActiveDrag::GridMarquee {
                 start_x: lx,
                 start_y: ly,
@@ -2610,9 +2818,14 @@ impl EditorSession {
                         }
                     }
                 } else if let Some(zid) = start_zone {
-                    // 单击格子内部 -> 精确就地切分（按住 Shift 横切，默认纵切）
+                    // 单击格子内部 -> 使用与光刀预览完全一致的微磁吸坐标落刀切分（所见即所得！）
                     let horiz = self.shift_down;
-                    let frac = if horiz {
+                    let zones = self.resolved_zones();
+                    let frac = if let Some(z) = zones.iter().find(|item| item.index == zid) {
+                        let lr = self.local_rect(z.rect);
+                        let slicer = self.compute_slicer_for_zone(lr, (lx, ly), horiz);
+                        self.state.zone_split_abs_fraction(zid, horiz, &slicer)
+                    } else if horiz {
                         (ly as f64 / self.work_h() as f64).clamp(0.05, 0.95)
                     } else {
                         (lx as f64 / self.work_w() as f64).clamp(0.05, 0.95)
@@ -2628,6 +2841,8 @@ impl EditorSession {
                         self.show_toast(msg);
                     }
                 }
+                self.selected_zone = None;
+                self.hovered_zone = self.hit_test_zone_at(lx, ly);
                 self.rebuild_dock_geometry(false);
                 true
             }
@@ -2945,7 +3160,12 @@ impl EditorSession {
     }
 
     fn delete_selected_zone(&mut self) -> bool {
-        let Some(sel) = self.selected_zone else {
+        let target = if self.state.mode == ZoneLayoutType::Grid {
+            self.selected_zone.or(self.hovered_zone)
+        } else {
+            self.selected_zone
+        };
+        let Some(sel) = target else {
             return false;
         };
         if self.state.mode == ZoneLayoutType::Canvas {
@@ -3009,10 +3229,12 @@ impl EditorSession {
 
         let num_fmt = gfx.ui_text_format(20.0 * s, true, true).ok();
         let px_fmt = gfx.mono_text_format(12.5 * s, false, true).ok();
+        let slicer_pct_fmt = gfx.mono_text_format(12.5 * s, true, true).ok();
+        let slicer_sub_fmt = gfx.mono_text_format(12.0 * s, false, true).ok();
         let dock_fmt = gfx.ui_text_format(12.5 * s, false, true).ok();
         let dock_bold_fmt = gfx.ui_text_format(12.5 * s, true, true).ok();
         let hint_fmt = gfx.ui_text_format(12.0 * s, false, true).ok();
-        let tag_fmt = gfx.mono_text_format(11.5 * s, false, false).ok();
+        let tag_fmt = gfx.mono_text_format(12.0 * s, false, false).ok();
 
         let dash_props = D2D1_STROKE_STYLE_PROPERTIES {
             startCap: D2D1_CAP_STYLE_ROUND,
@@ -3023,6 +3245,13 @@ impl EditorSession {
         };
         let dashed_style: Option<ID2D1StrokeStyle> =
             unsafe { gfx.d2d_factory.CreateStrokeStyle(&dash_props, None).ok() };
+        let round_cap_props = D2D1_STROKE_STYLE_PROPERTIES {
+            startCap: D2D1_CAP_STYLE_ROUND,
+            endCap: D2D1_CAP_STYLE_ROUND,
+            ..Default::default()
+        };
+        let round_cap_style: Option<ID2D1StrokeStyle> =
+            unsafe { gfx.d2d_factory.CreateStrokeStyle(&round_cap_props, None).ok() };
 
         let _ = self.surface.render(self.hwnd, work.left, work.top, |rt| unsafe {
             // 1. 极轻柔全局透视幕布（复刻 FancyZones 图 6/12 通透质感，底层软件窗口保持清晰明亮）
@@ -3035,20 +3264,33 @@ impl EditorSession {
                 rt.FillRectangle(&rect_f(0.0, 0.0, w, h), &b_scrim);
             }
 
-            // 通用笔刷
+            // 通用笔刷（100% 对齐原版 PowerToys FancyZones Fluent 极简质感）
             let snap_cyan = rgba(0.02, 0.78, 0.90, 0.96);
+            // 主题色提亮态（对齐原版 GridResizer IsMouseOver -> SystemAccentColorLight1Brush）
+            let accent_hover = rgba(
+                (accent[0] + (1.0 - accent[0]) * 0.18).min(1.0),
+                (accent[1] + (1.0 - accent[1]) * 0.18).min(1.0),
+                (accent[2] + (1.0 - accent[2]) * 0.18).min(1.0),
+                0.98,
+            );
+            // 已有分割线静息态（与切割线同源的 Fluent 实体色条，静息柔和、激活实心高亮）
+            let divider_idle_fill = rgb_a(accent, if dark { 0.24 } else { 0.20 });
+            let soft_shadow_col = rgba(0.0, 0.0, 0.0, 0.24);
             let real_win_outline = rgba(0.02, 0.78, 0.90, 0.24);
             let real_win_tag_bg = rgba(0.06, 0.09, 0.14, 0.60);
             let zone_idle_fill = if dark {
-                rgba(0.08, 0.11, 0.17, 0.42)
+                rgba(0.08, 0.11, 0.17, 0.44)
             } else {
-                rgba(0.98, 0.985, 0.995, 0.56)
+                rgba(0.98, 0.985, 0.995, 0.58)
             };
-            let zone_hover_fill = rgb_a(accent, 0.18);
-            let zone_sel_fill = rgb_a(accent, 0.24);
-            let zone_idle_stroke = rgb_a(accent, if dark { 0.76 } else { 0.70 });
-            let accent_solid = rgb_a(accent, 0.96);
-            let accent_glow = rgb_a(accent, 0.26);
+            // Canvas 悬停采用克制薄雾高亮（Grid 模式绝不整块涂蓝）
+            let zone_hover_fill = rgb_a(accent, 0.10);
+            let zone_sel_fill = rgb_a(accent, 0.22);
+            // Grid 模式静息 1px 主题色细腻边框（对齐原版 GridZone.xaml BorderThickness=1 + AccentBrush）
+            let zone_grid_idle_stroke = rgb_a(accent, if dark { 0.44 } else { 0.38 });
+            let zone_idle_stroke = rgb_a(accent, if dark { 0.72 } else { 0.66 });
+            let accent_solid = rgb_a(accent, 0.95);
+            let accent_glow = rgb_a(accent, 0.24);
             let card_bg = if dark {
                 rgba(0.08, 0.10, 0.15, 0.92)
             } else {
@@ -3073,11 +3315,15 @@ impl EditorSession {
 
             let (
                 Ok(b_cyan),
+                Ok(b_accent_hover),
+                Ok(b_divider_idle),
+                Ok(b_soft_shadow),
                 Ok(b_real_outline),
                 Ok(b_real_tag_bg),
                 Ok(b_idle_fill),
                 Ok(b_hover_fill),
                 Ok(b_sel_fill),
+                Ok(b_grid_idle_stroke),
                 Ok(b_idle_stroke),
                 Ok(b_accent),
                 Ok(b_accent_glow),
@@ -3088,11 +3334,15 @@ impl EditorSession {
                 Ok(b_white),
             ) = (
                 rt.CreateSolidColorBrush(&snap_cyan, None),
+                rt.CreateSolidColorBrush(&accent_hover, None),
+                rt.CreateSolidColorBrush(&divider_idle_fill, None),
+                rt.CreateSolidColorBrush(&soft_shadow_col, None),
                 rt.CreateSolidColorBrush(&real_win_outline, None),
                 rt.CreateSolidColorBrush(&real_win_tag_bg, None),
                 rt.CreateSolidColorBrush(&zone_idle_fill, None),
                 rt.CreateSolidColorBrush(&zone_hover_fill, None),
                 rt.CreateSolidColorBrush(&zone_sel_fill, None),
+                rt.CreateSolidColorBrush(&zone_grid_idle_stroke, None),
                 rt.CreateSolidColorBrush(&zone_idle_stroke, None),
                 rt.CreateSolidColorBrush(&accent_solid, None),
                 rt.CreateSolidColorBrush(&accent_glow, None),
@@ -3140,7 +3390,9 @@ impl EditorSession {
             }
 
             // 3. 绘制所有分区（1:1 真实物理尺寸 + 中央编号 + 真实像素 W x H px 与百分比）
-            let radius = 10.0 * s;
+            // Grid 模式对齐原版 GridZone.xaml 的精致小圆角 (5*s)，与等宽实心分割线严丝合缝
+            let is_grid_mode = self.state.mode == ZoneLayoutType::Grid;
+            let radius = if is_grid_mode { 5.0 * s } else { 10.0 * s };
             let marquee_rect = if let Some(ActiveDrag::GridMarquee {
                 start_x,
                 start_y,
@@ -3163,6 +3415,8 @@ impl EditorSession {
                 None
             };
 
+            let mut marquee_hit_count = 0usize;
+
             for z in &zones {
                 let lr = self.local_rect(z.rect);
                 let rf = rect_f(
@@ -3176,8 +3430,21 @@ impl EditorSession {
                 let in_marquee = marquee_rect
                     .map(|mr| lr.intersect(&mr).is_some())
                     .unwrap_or(false);
-                let is_sel = self.selected_zone == Some(z.index) || in_marquee;
-                let is_hov = self.hovered_zone == Some(z.index);
+                if in_marquee {
+                    marquee_hit_count += 1;
+                }
+                // Grid 模式下彻底禁止普通悬停/点击后给整块分区涂蓝高亮或加粗描边；
+                // 仅按住左键拖拽框选合并 (in_marquee) 时才高亮待合并分区！
+                let is_sel = if is_grid_mode {
+                    in_marquee
+                } else {
+                    self.selected_zone == Some(z.index)
+                };
+                let is_hov = if is_grid_mode {
+                    false
+                } else {
+                    self.hovered_zone == Some(z.index)
+                };
 
                 let fill_brush = if is_sel {
                     &b_sel_fill
@@ -3188,12 +3455,14 @@ impl EditorSession {
                 };
                 rt.FillRoundedRectangle(&rr, fill_brush);
                 if is_sel {
-                    rt.DrawRoundedRectangle(&rr, &b_accent_glow, 6.0 * s, None);
-                    rt.DrawRoundedRectangle(&rr, &b_accent, 2.5 * s, None);
+                    rt.DrawRoundedRectangle(&rr, &b_accent_glow, 5.5 * s, None);
+                    rt.DrawRoundedRectangle(&rr, &b_accent, 2.2 * s, None);
                 } else if is_hov {
-                    rt.DrawRoundedRectangle(&rr, &b_accent, 2.0 * s, None);
+                    rt.DrawRoundedRectangle(&rr, &b_accent, 1.5 * s, None);
+                } else if is_grid_mode {
+                    rt.DrawRoundedRectangle(&rr, &b_grid_idle_stroke, 1.0 * s, None);
                 } else {
-                    rt.DrawRoundedRectangle(&rr, &b_idle_stroke, 1.5 * s, None);
+                    rt.DrawRoundedRectangle(&rr, &b_idle_stroke, 1.4 * s, None);
                 }
 
                 // 中央编号圆形徽章 + 下方实时物理像素尺寸与百分比
@@ -3284,8 +3553,31 @@ impl EditorSession {
                 }
             }
 
-            // 4. Grid 模式下绘制 FancyZones 标志性圆形 (||)/(=) 主题色拖动手柄 + 实线切割预览（图 12/13）
+            // 4. Grid 模式：100% 统一原版 PowerToys FancyZones Fluent 风格
+            // 已有分割线与新建切割线共用完全同一套实体等宽间距条（thickness = (zone_gap * s).max(4*s)）与纯净圆钮，浑然一体！
             if self.state.mode == ZoneLayoutType::Grid {
+                let splitter_thickness = (self.state.zone_gap as f32 * s).max(4.0 * s);
+                let splitter_half = splitter_thickness * 0.5;
+                let bar_corner = (splitter_thickness * 0.25).min(2.5 * s);
+
+                // 统一原版 Fluent 实心分割/切割色条绘制原语（已有分割线与悬停切割线 100% 同源）
+                let draw_fluent_splitter_bar = |is_vertical: bool,
+                                                axis_px: f32,
+                                                span_a: f32,
+                                                span_b: f32,
+                                                brush: &windows::Win32::Graphics::Direct2D::ID2D1SolidColorBrush| {
+                    let bar_rc = if is_vertical {
+                        rect_f(axis_px - splitter_half, span_a, axis_px + splitter_half, span_b)
+                    } else {
+                        rect_f(span_a, axis_px - splitter_half, span_b, axis_px + splitter_half)
+                    };
+                    if bar_corner >= 0.8 {
+                        rt.FillRoundedRectangle(&rounded_rect(bar_rc, bar_corner), brush);
+                    } else {
+                        rt.FillRectangle(&bar_rc, brush);
+                    }
+                };
+
                 for d in &dividers {
                     let is_active = self.hovered_divider == Some(*d)
                         || matches!(
@@ -3299,66 +3591,215 @@ impl EditorSession {
                     } else {
                         (mid, d.local_px as f32)
                     };
-                    if is_active {
-                        let p0 = if d.is_vertical {
-                            D2D_POINT_2F { x: d.local_px as f32, y: d.span_start_px as f32 }
-                        } else {
-                            D2D_POINT_2F { x: d.span_start_px as f32, y: d.local_px as f32 }
-                        };
-                        let p1 = if d.is_vertical {
-                            D2D_POINT_2F { x: d.local_px as f32, y: d.span_end_px as f32 }
-                        } else {
-                            D2D_POINT_2F { x: d.span_end_px as f32, y: d.local_px as f32 }
-                        };
-                        rt.DrawLine(p0, p1, &b_accent, 2.6 * s, None);
-                    }
-                    // 圆形主题色拖动手柄 + 两条白色平行纹 (||) 或 (=)
-                    let hr = if is_active { 14.5 * s } else { 12.5 * s };
+
+                    // 已有分割线本体：静息态即绘制与缝隙同宽的柔和 Fluent 分隔条，悬停/拖动时实心高亮，与切割线 100% 同款！
+                    let span_a = d.span_start_px as f32 + 1.0;
+                    let span_b = d.span_end_px as f32 - 1.0;
+                    draw_fluent_splitter_bar(
+                        d.is_vertical,
+                        d.local_px as f32,
+                        span_a,
+                        span_b,
+                        if is_active { &b_accent } else { &b_divider_idle },
+                    );
+
+                    // 原版 GridResizer.xaml 同款纯净主题色圆形拖动手柄：极柔投影 + 无生硬白圈 + 两条简洁白色平行短杠 (||)/(=)
+                    let hr = if is_active { 16.5 * s } else { 15.0 * s };
+                    let sh_r = hr + 1.2 * s;
+                    let sh_box = rect_f(cx - sh_r, cy - sh_r + 1.6 * s, cx + sh_r, cy + sh_r + 1.6 * s);
+                    rt.FillRoundedRectangle(&rounded_rect(sh_box, sh_r), &b_soft_shadow);
                     let hbox = rect_f(cx - hr, cy - hr, cx + hr, cy + hr);
-                    rt.FillRoundedRectangle(&rounded_rect(hbox, hr), &b_accent);
-                    rt.DrawRoundedRectangle(&rounded_rect(hbox, hr), &b_white, 1.6 * s, None);
-                    let bar_off = 2.6 * s;
-                    let bar_half = 4.6 * s;
+                    rt.FillRoundedRectangle(
+                        &rounded_rect(hbox, hr),
+                        if is_active { &b_accent_hover } else { &b_accent },
+                    );
+                    let bar_off = 2.8 * s;
+                    let bar_half = 6.2 * s;
                     if d.is_vertical {
-                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_off, y: cy - bar_half }, D2D_POINT_2F { x: cx - bar_off, y: cy + bar_half }, &b_white, 1.6 * s, None);
-                        rt.DrawLine(D2D_POINT_2F { x: cx + bar_off, y: cy - bar_half }, D2D_POINT_2F { x: cx + bar_off, y: cy + bar_half }, &b_white, 1.6 * s, None);
+                        rt.DrawLine(
+                            D2D_POINT_2F { x: cx - bar_off, y: cy - bar_half },
+                            D2D_POINT_2F { x: cx - bar_off, y: cy + bar_half },
+                            &b_white,
+                            1.8 * s,
+                            round_cap_style.as_ref(),
+                        );
+                        rt.DrawLine(
+                            D2D_POINT_2F { x: cx + bar_off, y: cy - bar_half },
+                            D2D_POINT_2F { x: cx + bar_off, y: cy + bar_half },
+                            &b_white,
+                            1.8 * s,
+                            round_cap_style.as_ref(),
+                        );
                     } else {
-                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_half, y: cy - bar_off }, D2D_POINT_2F { x: cx + bar_half, y: cy - bar_off }, &b_white, 1.6 * s, None);
-                        rt.DrawLine(D2D_POINT_2F { x: cx - bar_half, y: cy + bar_off }, D2D_POINT_2F { x: cx + bar_half, y: cy + bar_off }, &b_white, 1.6 * s, None);
+                        rt.DrawLine(
+                            D2D_POINT_2F { x: cx - bar_half, y: cy - bar_off },
+                            D2D_POINT_2F { x: cx + bar_half, y: cy - bar_off },
+                            &b_white,
+                            1.8 * s,
+                            round_cap_style.as_ref(),
+                        );
+                        rt.DrawLine(
+                            D2D_POINT_2F { x: cx - bar_half, y: cy + bar_off },
+                            D2D_POINT_2F { x: cx + bar_half, y: cy + bar_off },
+                            &b_white,
+                            1.8 * s,
+                            round_cap_style.as_ref(),
+                        );
                     }
                 }
 
-                // 悬停在网格分区内部且未拖拽/未悬停分割线时：绘制清晰主题色实线切割预览（按 Shift 切 90°）
+                // 悬停在网格分区内部且未拖拽/未悬停分割线/未悬停控制舱时：
+                // 直接复用 draw_fluent_splitter_bar 绘制与已有分割线 100% 相同 UI 风格的实体切割条（精确 1:1 预演切后间距）+ 极简比例胶囊
                 if self.drag.is_none() && self.hovered_divider.is_none() && self.hovered_dock_btn.is_none() {
                     if let Some(hz) = self.hovered_zone {
                         if let Some(z) = zones.iter().find(|item| item.index == hz) {
                             let lr = self.local_rect(z.rect);
                             let (cx, cy) = self.cursor_local;
                             if lr.contains_point(cx, cy) {
-                                let (p0, p1) = if self.shift_down {
-                                    (
-                                        D2D_POINT_2F { x: lr.left as f32 + 2.0, y: cy as f32 },
-                                        D2D_POINT_2F { x: lr.right as f32 - 2.0, y: cy as f32 },
-                                    )
+                                let slicer = self.compute_slicer_for_zone(lr, (cx, cy), self.shift_down);
+                                let cut = slicer.cut_local_px as f32;
+                                let bar_brush = if slicer.snapped { &b_cyan } else { &b_accent };
+
+                                if slicer.horizontal {
+                                    draw_fluent_splitter_bar(
+                                        false,
+                                        cut,
+                                        lr.left as f32 + 1.0,
+                                        lr.right as f32 - 1.0,
+                                        bar_brush,
+                                    );
                                 } else {
-                                    (
-                                        D2D_POINT_2F { x: cx as f32, y: lr.top as f32 + 2.0 },
-                                        D2D_POINT_2F { x: cx as f32, y: lr.bottom as f32 - 2.0 },
-                                    )
+                                    draw_fluent_splitter_bar(
+                                        true,
+                                        cut,
+                                        lr.top as f32 + 1.0,
+                                        lr.bottom as f32 - 1.0,
+                                        bar_brush,
+                                    );
+                                }
+
+                                // 光标旁侧极简圆角磨砂微晶胶囊：实时百分比 + 像素 + Shift 切向提示
+                                let top_line = if slicer.snap_from_window {
+                                    if let Some(ref lbl) = slicer.snap_label {
+                                        format!("{}% | {}%  ·  {}", slicer.first_pct, slicer.second_pct, lbl)
+                                    } else {
+                                        format!("{}% | {}%", slicer.first_pct, slicer.second_pct)
+                                    }
+                                } else {
+                                    format!("{}% | {}%", slicer.first_pct, slicer.second_pct)
                                 };
-                                rt.DrawLine(p0, p1, &b_accent_glow, 6.0 * s, None);
-                                rt.DrawLine(p0, p1, &b_accent, 2.2 * s, None);
+                                let shift_hint = if slicer.horizontal { "Shift ↔" } else { "Shift ↕" };
+                                let sub_line = format!("{} | {}  ·  {}", slicer.first_px, slicer.second_px, shift_hint);
+
+                                let max_chars = top_line.chars().count().max(sub_line.chars().count());
+                                let cap_w = ((max_chars as f32 * 7.6 + 24.0) * s).clamp(146.0 * s, 260.0 * s);
+                                let cap_h = 44.0 * s;
+                                let gap_off = splitter_half + 12.0 * s;
+
+                                let (raw_x, raw_y) = if slicer.horizontal {
+                                    let y_below = cut + gap_off;
+                                    let y_pref = if y_below + cap_h <= h - 54.0 * s {
+                                        y_below
+                                    } else {
+                                        cut - gap_off - cap_h
+                                    };
+                                    (cx as f32 + 14.0 * s, y_pref)
+                                } else {
+                                    let x_right = cut + gap_off;
+                                    let x_pref = if x_right + cap_w <= w - 12.0 * s {
+                                        x_right
+                                    } else {
+                                        cut - gap_off - cap_w
+                                    };
+                                    (x_pref, cy as f32 - cap_h * 0.5)
+                                };
+
+                                let cap_x = raw_x.clamp(12.0 * s, (w - cap_w - 12.0 * s).max(12.0 * s));
+                                let cap_y = raw_y.clamp(12.0 * s, (h - cap_h - 54.0 * s).max(12.0 * s));
+                                let cap_rc = rect_f(cap_x, cap_y, cap_x + cap_w, cap_y + cap_h);
+                                let cap_rr = rounded_rect(cap_rc, 9.0 * s);
+
+                                // 胶囊柔和投影 + 磨砂卡片底 + 吸附态青蓝描边
+                                let cap_sh = rect_f(
+                                    cap_rc.left - 1.0,
+                                    cap_rc.top + 2.5 * s,
+                                    cap_rc.right + 1.0,
+                                    cap_rc.bottom + 4.0 * s,
+                                );
+                                rt.FillRoundedRectangle(&rounded_rect(cap_sh, 10.0 * s), &b_soft_shadow);
+                                rt.FillRoundedRectangle(&cap_rr, &b_card_bg);
+                                rt.DrawRoundedRectangle(
+                                    &cap_rr,
+                                    if slicer.snapped { &b_cyan } else { &b_card_border },
+                                    if slicer.snapped { 1.4 * s } else { 1.1 * s },
+                                    None,
+                                );
+
+                                if let Some(fmt) = &slicer_pct_fmt {
+                                    let r_top = rect_f(cap_rc.left + 6.0 * s, cap_rc.top + 4.0 * s, cap_rc.right - 6.0 * s, cap_rc.top + 22.0 * s);
+                                    let wide = to_wide(&top_line);
+                                    rt.DrawText(
+                                        &wide[..wide.len().saturating_sub(1)],
+                                        fmt,
+                                        &r_top,
+                                        if slicer.snapped { &b_cyan } else { &b_text },
+                                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                                        DWRITE_MEASURING_MODE_NATURAL,
+                                    );
+                                }
+                                if let Some(fmt) = &slicer_sub_fmt {
+                                    let r_sub = rect_f(cap_rc.left + 6.0 * s, cap_rc.top + 22.0 * s, cap_rc.right - 6.0 * s, cap_rc.bottom - 3.0 * s);
+                                    let wide = to_wide(&sub_line);
+                                    rt.DrawText(
+                                        &wide[..wide.len().saturating_sub(1)],
+                                        fmt,
+                                        &r_sub,
+                                        &b_muted,
+                                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                                        DWRITE_MEASURING_MODE_NATURAL,
+                                    );
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // 5. 框选合并矩形
+            // 5. 框选合并矩形 + 清晰合并数量反馈胶囊
             if let Some(mr) = marquee_rect {
                 let mf = rect_f(mr.left as f32, mr.top as f32, mr.right as f32, mr.bottom as f32);
                 rt.FillRectangle(&mf, &b_accent_glow);
                 rt.DrawRectangle(&mf, &b_accent, 2.0 * s, dashed_style.as_ref());
+                if let Some(fmt) = &dock_bold_fmt {
+                    let merge_txt = if marquee_hit_count >= 2 {
+                        if self.zh_ui {
+                            format!("松开合并 {} 个区域", marquee_hit_count)
+                        } else {
+                            format!("Release to merge {} zones", marquee_hit_count)
+                        }
+                    } else if self.zh_ui {
+                        "拖框跨越相邻区域以合并".to_string()
+                    } else {
+                        "Drag across zones to merge".to_string()
+                    };
+                    let mw = ((merge_txt.chars().count() as f32 * 8.4 + 26.0) * s).clamp(150.0 * s, 260.0 * s);
+                    let mh = 28.0 * s;
+                    let mx = ((mf.left + mf.right - mw) * 0.5).clamp(12.0 * s, (w - mw - 12.0 * s).max(12.0 * s));
+                    let my = ((mf.top + mf.bottom - mh) * 0.5).clamp(12.0 * s, (h - mh - 54.0 * s).max(12.0 * s));
+                    let pill = rect_f(mx, my, mx + mw, my + mh);
+                    let pill_rr = rounded_rect(pill, mh * 0.5);
+                    rt.FillRoundedRectangle(&pill_rr, if marquee_hit_count >= 2 { &b_accent } else { &b_card_bg });
+                    rt.DrawRoundedRectangle(&pill_rr, if marquee_hit_count >= 2 { &b_white } else { &b_card_border }, 1.2 * s, None);
+                    let wide = to_wide(&merge_txt);
+                    rt.DrawText(
+                        &wide[..wide.len().saturating_sub(1)],
+                        fmt,
+                        &pill,
+                        if marquee_hit_count >= 2 { &b_white } else { &b_text },
+                        D2D1_DRAW_TEXT_OPTIONS_CLIP,
+                        DWRITE_MEASURING_MODE_NATURAL,
+                    );
+                }
             }
 
             // 6. 青色智能磁吸穿透引导线 + 吸附来源小胶囊（如 Snap: Code.exe / 50%）
@@ -3923,5 +4364,64 @@ mod tests {
             assert!(z.x + z.width <= 1.0001);
             assert!(z.y + z.height <= 1.0001);
         }
+    }
+
+    #[test]
+    fn grid_slicer_snaps_to_classic_fractions_real_windows_and_respects_alt_disable() {
+        let work = RectI::new(0, 0, 1920, 1080);
+        let zone = RectI::new(0, 0, 1920, 1080);
+        let real_wins = vec![RealWindowSnapshot {
+            hwnd: HWND::default(),
+            process_name: "Code.exe".to_string(),
+            title: "VS Code".to_string(),
+            rect: RectI::new(0, 0, 1100, 1080),
+            is_maximized: false,
+        }];
+
+        // 1. 靠近分区 50% (960) 偏移 5px -> 精准微磁吸到 960 (50% | 50%, 960 | 960)
+        let mid = compute_grid_slicer_preview(zone, work, (965, 500), false, false, &real_wins, 8, false);
+        assert!(mid.snapped);
+        assert!(!mid.snap_from_window);
+        assert_eq!(mid.cut_local_px, 960);
+        assert_eq!(mid.first_pct, 50);
+        assert_eq!(mid.second_pct, 50);
+        assert_eq!(mid.first_px, 960);
+        assert_eq!(mid.second_px, 960);
+
+        // 2. 靠近 33.3% (640) 偏移 4px -> 磁吸 33.3% (33% | 67%)
+        let third = compute_grid_slicer_preview(zone, work, (636, 500), false, false, &real_wins, 8, false);
+        assert!(third.snapped);
+        assert_eq!(third.cut_local_px, 640);
+        assert_eq!(third.first_pct, 33);
+        assert_eq!(third.second_pct, 67);
+
+        // 3. 靠近底层真实窗口边缘 1100 偏移 6px -> 磁吸至 Code.exe 边缘 1100
+        let win_snap = compute_grid_slicer_preview(zone, work, (1106, 500), false, false, &real_wins, 8, false);
+        assert!(win_snap.snapped);
+        assert!(win_snap.snap_from_window);
+        assert_eq!(win_snap.cut_local_px, 1100);
+        assert_eq!(win_snap.snap_label.as_deref(), Some("Code.exe"));
+        assert_eq!(win_snap.first_px + win_snap.second_px, 1920);
+
+        // 4. 按住 Alt 关闭磁吸 -> 即使在 965 处也不吸附到 960
+        let free = compute_grid_slicer_preview(zone, work, (965, 500), false, true, &real_wins, 8, false);
+        assert!(!free.snapped);
+        assert_eq!(free.cut_local_px, 965);
+        assert_eq!(free.snap_label, None);
+
+        // 5. 所见即所得：带 zone_gap 的 2 列布局，在左列 50% 磁吸处落刀，左列精确对半切分为 25/25/50
+        let mut grid = sample_grid();
+        let resolved = grid.resolve(work);
+        let left_local = resolved[0].rect;
+        let left_mid_x = (left_local.left + left_local.right) / 2 + 3;
+        let left_slicer = compute_grid_slicer_preview(left_local, work, (left_mid_x, 400), false, false, &[], 8, false);
+        assert!(left_slicer.snapped);
+        assert_eq!(left_slicer.first_pct, 50);
+        let frac = grid.zone_split_abs_fraction(0, false, &left_slicer);
+        assert!(grid.split_grid_zone_at(0, false, frac));
+        assert_eq!(grid.columns, 3);
+        assert!((grid.col_weights[0] - 25.0).abs() < 0.2);
+        assert!((grid.col_weights[1] - 25.0).abs() < 0.2);
+        assert!((grid.col_weights[2] - 50.0).abs() < 0.2);
     }
 }

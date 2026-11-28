@@ -6,6 +6,28 @@
 
 ## 1. 核心架构决策与业务暗坑记录 (Architectural Decisions & Pitfalls)
 
+### [2026-11-28] 全链路零损内存深度瘦身、SnapZones 原版统一 Fluent 分割/切割线、Alt+Tab 死卡/漏原生根治与抗 403 限流更新检查 (`feat/windowkit-polish-and-memory`)
+- **1. SnapZones 网格编辑器 100% 原版 PowerToys FancyZones 统一 Fluent 风格 (`src/window_kit/src/features/layout_editor.rs`)**：
+  - 彻底清除 `ZoneLayoutType::Grid` 模式下普通悬停/点击后的整块分区涂蓝与加粗边框，分区保持通透静息玻璃态（`5*s` 原版精致圆角 + `1*s` 柔和主题色边；仅左键拖拽框选合并 `in_marquee` 时高亮待合并区块并呈现居中合并胶囊）；
+  - 核查微软官方 `GridZone.xaml` / `GridZone.xaml.cs` / `GridResizer.xaml` 一手源码后，将「已有分割线」与「新建切割线」彻底统一收口为同一绘制原语 `draw_fluent_splitter_bar`（宽度严格等于 `(zone_gap * scale).max(4*scale)`，与切完后的真实分区缝隙 1:1 等宽，取消多余霓虹光晕/T 形卡尺/两端圆球；已有分割线静息态柔和实心可见、悬停/拖动实心高亮；`GridResizer` 圆形手柄去除白边圈，保留柔和投影 + 悬停提亮 + 白色双杠 `(||)`/`(=)`）；
+  - 抽象 `compute_grid_slicer_preview()` 统一预览与落刀求解（支持当前分区 `25% / 33.3% / 50% / 66.7% / 75%` 经典等分与底层真实窗口边缘微磁吸，`Alt` 临时禁吸，光标旁精简磨砂比例/像素/Shift 胶囊）。
+- **2. QuickSwitch (`Alt+Tab`) 根治「按 Tab 卡第一项」与「偶尔漏出原生 Alt+Tab」 (`main.rs`, `quick_switch.rs`, `ui_slint/mod.rs`, `quick_switch.slint`)**：
+  - *卡首项根因与根治*：原切项每次都重建 `VecModel` 触发 `w.set_items(...)`，导致鼠标停在第 1 行时新建 `TouchArea::moved` 立即回调 `select-row(0)` 把选中项打回首项；现拆分 `items_changed: bool`（切项零重建 `VecModel`）、新增 `should_accept_mouse_hover_select`（`>= 4px` 真实物理位移 + 键盘导航后 `250ms` 防抖守卫）、`Flickable` 经 `content-y` 自动跟随滚动、且 `QUICK_SWITCH_IS_OPEN` 期间低级钩子统一接管单按 `Tab`/`Shift+Tab` 直通转发；
+  - *漏原生根因与根治*：独立钩子线程内新增无锁原子物理修饰键位图 `HOOK_PHYS_MODS`（屏蔽 `LLKHF_INJECTED`、精准识别 AltGr 伴生假 `LCtrl` 防止右 Alt 误放行、融合 `LLKHF_ALTDOWN` 消除 `GetAsyncKeyState` 微秒竞态）；接入 `WTSRegisterSessionNotification`（`WM_WTSSESSION_CHANGE`）、`WM_POWERBROADCAST` 睡眠唤醒与 `> 5s` 时钟跳变自愈重挂 `WH_KEYBOARD_LL` 防止系统静默摘钩。
+- **3. 全链路零功能损失安全内存治理与三段式生命周期精调（不提前清、也不过晚清）**：
+  - **WindowKit Slint 真冷回收 (`ui_slint/mod.rs`, `main.rs`, `constants.rs`)**：隐藏即清空图标 `VecModel` 释放 `SharedPixelBuffer`；新增 25 秒 `TIMER_SLINT_IDLE_PURGE` 真正 `Drop` 销毁不可见大尺寸软件渲染 Slint 窗口池并缩减工作集；新增 `sync_border_reconcile_timer()` 在无置顶窗且未开 `focusBorder` 时彻底 `KillTimer(TIMER_BORDER_RECONCILE)` 杜绝 120ms 空跑重建 `SharedGraphics`。**实机隔离对比**：闲置态从 `18.19 MB PrivWS / 99.60 MB Commit` 降至 **`1.68 MB PrivWS / 7.18 MB Commit`（Commit `-92.8%`，PrivWS `-90.8%`）**，释放后再次打开 1ms 内无缝重建；
+  - **OCR Worker (`CaptureWorkerCommon.h`, `OcrWorkerClient.cpp`, `OcrWorkerHost.cpp`, `DeepOcrEngine.cpp`)**：DirectML GPU 模式下检测桶单活互斥（`<= 1`）、识别桶接入单调 LRU 上限（`<= 2`，淘汰时 `Close()` + `IDXGIDevice3::Trim()`），默认退场由 `900s` 收紧为自适应（`<= 16 GiB` 内存或 RDP `60s`，32GB+ 桌面 `180s`），解决 7 会话 `1.84 GB Commit` 滞留 15 分钟问题；全量 5 语种连切实测 Commit 封顶 `~1.62 GB` 不再爬坡，释放后直降 `> 1.06 GB`；
+  - **SearchService (`ServiceLifecyclePolicy.h`, `MftParser*.{h,cpp}`, `DatabaseManager.cpp`, `service/main.cpp`)**：命名管道常驻工作线程由固定 20 个缩容至 `[2, 4]`；冷态 `idle_trim` 后开启 `PendingUsnQueue` 轻量攒批缓冲（搜索查询/快照/4096 条上限/15 分钟前 `<2ms` 原子批量刷入主索引，严格单向锁序杜绝死锁），终结 trim 到 0 MB 后 5 秒内被 USN 写入拽回 102 MB；
+  - **TrayWindow / QuickLookWindow / SettingsWindow / SpotlightOverlay**：
+    - `TrayWindow` 补齐 3 分钟 `IDT_IDLE_DESTROY`（保留 `WebViewEnvironmentManager.cpp` 的 `--disable-backgrounding-occluded-windows` 100% 守住 `#29` 零黑屏）；
+    - `QuickLookWindow` 改为完整三段式（关闭瞬间清大图/媒体绑定，延迟 `15s` `IDT_DEFERRED_SUSPEND` 再冻结渲染器与静默修剪，保护连续空格快速翻阅 0 软缺页卡顿；`90s` `IDT_IDLE_DESTROY` 彻底销毁释放 WebView2）；
+    - `SettingsWindow` SSD 闲置冷毁由 `5 分钟` 收敛至 `3 分钟`（与 `TrayWindow` 对齐，机械盘保持 15 分钟）；
+    - `SpotlightOverlay` 保持 0ms 隐藏窗口与解绑 DCompVisual，将 SwapChain 销毁滞后至连续隐藏 3 秒后执行（+ 60 秒释放 Compositor）并降噪日志，真显卡 60FPS 压测 `dropRate=0%`。
+- **4. 检查更新抗 GitHub API 403 限流 3 级降级与前端提示去重 (`UpdateChecker.{h,cpp}`, `AboutPage.tsx`, 8 语种 JSON, `AboutPage.update.test.tsx`, `test_core.inc`)**：
+  - 主通道 `api.github.com` 遇共享代理 403/429 限流或 5xx/网络失败时，无感自动降级至零限流的 `github.com/.../releases/latest` 302 `Location` -> `raw.githubusercontent.com/.../bucket/tools3000.json`，并用 `SHA256SUMS.txt` 强验对应架构资产存在性与哈希；前端 8 语种新增 `about.updateRateLimited` 精准区分限流/断网，所有更新 Toast 固定 `{ id: 'about-update-check' }` 彻底去重。
+- **5. 免费翻译稳定性复盘教训**：
+  - 经 149 张真实 OCR 测试图实网压测验证：免费公共翻译接口（Google / Bing Edge）对同 IP 高频多源并发极其敏感且易触发 HTTP 429，且全局持久化 WinHTTP 连接池经本地 HTTP 代理易累积半开僵尸连接；按项目负责人决策，翻译服务保持 `v1.5.6` 稳健版本逻辑不动。
+
 ### [2026-11-28] 重要新功能全触点同步交付铁律 & 出厂默认关闭策略（项目负责人明确确立）
 - **重要新功能全渠道同步清单（小修小补/微调免做，重要新功能/一级模块强制同步）**：
   1. **新手向导 (`OnboardingModal.tsx`)**：在对应步骤卡片或可选能力导览中体现新功能价值与开启路径；

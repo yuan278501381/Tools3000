@@ -54,6 +54,32 @@ static QS_HOST_BOUNDS_MSG: AtomicU32 = AtomicU32::new(0);
 
 const MIN_WIN_W_DIP: f32 = 580.0;
 const MIN_WIN_H_DIP: f32 = 340.0;
+/// 键盘导航/开窗后阻断静默鼠标悬停抢选的防抖时间窗（毫秒）
+const QS_HOVER_GUARD_MS: u128 = 250;
+/// 触发鼠标悬停接管选中项所需的最小物理光标位移（像素）
+const QS_HOVER_MIN_MOVE_PX: i32 = 4;
+
+/// 鼠标防偷选守卫：检查距离上次键盘导航是否超过防抖窗口且光标发生真实物理位移 (>= 4px)
+pub(crate) fn should_accept_mouse_hover_select(
+    last_keyboard_nav_at: Option<Instant>,
+    last_cursor: Option<(i32, i32)>,
+    current_cursor: (i32, i32),
+    now: Instant,
+) -> bool {
+    if let Some(nav_at) = last_keyboard_nav_at {
+        if now.saturating_duration_since(nav_at).as_millis() < QS_HOVER_GUARD_MS {
+            return false;
+        }
+    }
+    if let Some((lx, ly)) = last_cursor {
+        let dx = (current_cursor.0 - lx).abs();
+        let dy = (current_cursor.1 - ly).abs();
+        if dx.max(dy) < QS_HOVER_MIN_MOVE_PX {
+            return false;
+        }
+    }
+    true
+}
 
 fn host_bounds_msg_id() -> u32 {
     let cached = QS_HOST_BOUNDS_MSG.load(Ordering::Acquire);
@@ -143,6 +169,8 @@ pub struct QuickSwitchManager {
     scope_app_label: String,
     open: bool,
     opened_at: Option<Instant>,
+    last_keyboard_nav_at: Option<Instant>,
+    last_hover_cursor: Option<(i32, i32)>,
     window_rect: RectI,
     card_dpi: u32,
     list_width_ratio: f32,
@@ -164,12 +192,23 @@ impl QuickSwitchManager {
             scope_app_label: String::new(),
             open: false,
             opened_at: None,
+            last_keyboard_nav_at: None,
+            last_hover_cursor: None,
             window_rect: RectI::from_xywh(200, 140, 1080, 620),
             card_dpi: 96,
             list_width_ratio: 0.30,
             preview_desktop_pos_override: None,
             monitors_snapshot: Vec::new(),
         }
+    }
+
+    /// 刷新键盘导航时间戳与当前物理光标坐标，彻底阻断静止/微抖鼠标把 Tab 切项抢回第 1 行
+    fn mark_keyboard_navigation(&mut self) {
+        let mut pt = POINT::default();
+        if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+            self.last_hover_cursor = Some((pt.x, pt.y));
+        }
+        self.last_keyboard_nav_at = Some(Instant::now());
     }
 
     pub fn set_control_hwnd(&mut self, _hwnd: HWND) {}
@@ -260,7 +299,7 @@ impl QuickSwitchManager {
     /// 主题或强调色热变更时实时同步已打开的卡片
     pub fn refresh_theme_if_open(&self, cfg: &WindowKitConfig) {
         if self.open {
-            self.push_to_slint(cfg, false);
+            self.push_to_slint(cfg, false, true);
         }
     }
 
@@ -279,7 +318,7 @@ impl QuickSwitchManager {
             &self.monitors_snapshot,
         );
         self.window_rect = safe;
-        self.push_to_slint(cfg, true);
+        self.push_to_slint(cfg, true, false);
     }
 
     /// 同步搜索锁定态与查询非空态至原子变量，供独立低级钩子线程无锁判别 1-9 直达与字母入搜
@@ -334,6 +373,10 @@ impl QuickSwitchManager {
 
         // 2. 导航 / 确认 / 取消
         match vk {
+            0x09 /* VK_TAB */ => {
+                self.step_selection(if shift { -1 } else { 1 }, cfg);
+                return QuickSwitchDelegatedAction::None;
+            }
             0x26 /* VK_UP */ => {
                 self.step_selection(-1, cfg);
                 return QuickSwitchDelegatedAction::None;
@@ -350,7 +393,8 @@ impl QuickSwitchManager {
                     self.search_query.clear();
                     self.apply_filter(cfg);
                     self.sync_hook_search_flags();
-                    self.push_to_slint(cfg, false);
+                    self.mark_keyboard_navigation();
+                    self.push_to_slint(cfg, false, true);
                     return QuickSwitchDelegatedAction::None;
                 }
                 self.close_and_release(trace_id);
@@ -362,7 +406,8 @@ impl QuickSwitchManager {
                     self.search_mode = true;
                     self.apply_filter(cfg);
                     self.sync_hook_search_flags();
-                    self.push_to_slint(cfg, false);
+                    self.mark_keyboard_navigation();
+                    self.push_to_slint(cfg, false, true);
                     focus_quick_switch_search();
                 }
                 return QuickSwitchDelegatedAction::None;
@@ -371,7 +416,7 @@ impl QuickSwitchManager {
                 // 按住 Alt 时敲 Space 或 /：立即锁定搜索模式并强聚焦输入框，松手继续打中文/拼音！
                 self.search_mode = true;
                 self.sync_hook_search_flags();
-                self.push_to_slint(cfg, false);
+                self.push_to_slint(cfg, false, false);
                 focus_quick_switch_search();
                 return QuickSwitchDelegatedAction::None;
             }
@@ -391,7 +436,8 @@ impl QuickSwitchManager {
             }
             self.apply_filter(cfg);
             self.sync_hook_search_flags();
-            self.push_to_slint(cfg, false);
+            self.mark_keyboard_navigation();
+            self.push_to_slint(cfg, false, true);
             focus_quick_switch_search();
         }
         QuickSwitchDelegatedAction::None
@@ -410,10 +456,27 @@ impl QuickSwitchManager {
         }
         match ev {
             SlintUiEvent::QsSelectRow(idx) => {
+                let mut pt = POINT::default();
+                let cur_cursor = if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+                    (pt.x, pt.y)
+                } else {
+                    self.last_hover_cursor.unwrap_or((0, 0))
+                };
+                if !should_accept_mouse_hover_select(
+                    self.last_keyboard_nav_at,
+                    self.last_hover_cursor,
+                    cur_cursor,
+                    Instant::now(),
+                ) {
+                    return QuickSwitchDelegatedAction::None;
+                }
+                // 鼠标发生真实位移并越过防抖期 -> 交还给鼠标平滑浏览，后续跨行无粘滞
+                self.last_keyboard_nav_at = None;
+                self.last_hover_cursor = None;
                 let uidx = (*idx).max(0) as usize;
                 if uidx < self.filtered.len() && uidx != self.selected_index {
                     self.selected_index = uidx;
-                    self.push_to_slint(cfg, false);
+                    self.push_to_slint(cfg, false, false);
                 }
                 QuickSwitchDelegatedAction::None
             }
@@ -436,20 +499,22 @@ impl QuickSwitchManager {
                 self.search_query = text.chars().take(48).collect();
                 self.apply_filter(cfg);
                 self.sync_hook_search_flags();
-                self.push_to_slint(cfg, false);
+                self.mark_keyboard_navigation();
+                self.push_to_slint(cfg, false, true);
                 QuickSwitchDelegatedAction::None
             }
             SlintUiEvent::QsClearFilter => {
                 self.search_query.clear();
                 self.apply_filter(cfg);
                 self.sync_hook_search_flags();
-                self.push_to_slint(cfg, false);
+                self.mark_keyboard_navigation();
+                self.push_to_slint(cfg, false, true);
                 QuickSwitchDelegatedAction::None
             }
             SlintUiEvent::QsSearchEngaged => {
                 self.search_mode = true;
                 self.sync_hook_search_flags();
-                self.push_to_slint(cfg, false);
+                self.push_to_slint(cfg, false, false);
                 QuickSwitchDelegatedAction::None
             }
             SlintUiEvent::QsAction(act) => {
@@ -525,7 +590,7 @@ impl QuickSwitchManager {
                                 self.all_entries
                                     .retain(|e| e.info.hwnd.0 as isize != hwnd_raw);
                                 self.apply_filter(cfg);
-                                self.push_to_slint(cfg, false);
+                                self.push_to_slint(cfg, false, true);
                                 return QuickSwitchDelegatedAction::MinimizeWindowToTray(hwnd_raw);
                             }
                         }
@@ -535,7 +600,7 @@ impl QuickSwitchManager {
                         let next = !self.effective_desktop_preview(cfg);
                         self.preview_desktop_pos_override = Some(next);
                         cfg.quick_switch.preview_in_desktop_position = next;
-                        self.push_to_slint(cfg, false);
+                        self.push_to_slint(cfg, false, false);
                         QuickSwitchDelegatedAction::None
                     }
                     _ => QuickSwitchDelegatedAction::None,
@@ -559,7 +624,8 @@ impl QuickSwitchManager {
                     if !self.search_query.is_empty() {
                         self.search_query.clear();
                         self.apply_filter(cfg);
-                        self.push_to_slint(cfg, false);
+                        self.mark_keyboard_navigation();
+                        self.push_to_slint(cfg, false, true);
                         QuickSwitchDelegatedAction::None
                     } else {
                         self.close_and_release(trace_id);
@@ -633,7 +699,7 @@ impl QuickSwitchManager {
             }
         }
         self.apply_filter(cfg);
-        self.push_to_slint(cfg, false);
+        self.push_to_slint(cfg, false, true);
     }
 
     fn launch_new_instance_selected(&self, trace_id: &str) {
@@ -689,7 +755,7 @@ impl QuickSwitchManager {
             }
         }
         self.apply_filter(cfg);
-        self.push_to_slint(cfg, false);
+        self.push_to_slint(cfg, false, true);
         wk_info!(
             trace_id,
             "quickSwitch",
@@ -877,11 +943,14 @@ impl QuickSwitchManager {
 
         self.window_rect = target_rect;
         self.open = true;
-        self.opened_at = Some(Instant::now());
+        let now = Instant::now();
+        self.opened_at = Some(now);
+        self.last_hover_cursor = Some((cursor.x, cursor.y));
+        self.last_keyboard_nav_at = Some(now);
         QUICK_SWITCH_IS_OPEN.store(true, Ordering::Release);
         self.sync_hook_search_flags();
 
-        self.push_to_slint(cfg, true);
+        self.push_to_slint(cfg, true, true);
 
         wk_info!(
             trace_id,
@@ -895,41 +964,66 @@ impl QuickSwitchManager {
         );
     }
 
-    fn push_to_slint(&self, cfg: &WindowKitConfig, reposition_window: bool) {
-        let mut rows = Vec::with_capacity(self.filtered.len());
-        for (idx, entry) in self.filtered.iter().enumerate() {
-            let hwnd_raw = entry.info.hwnd.0 as isize;
-            let is_pinned = if !entry.is_tray_hidden {
-                let ex = unsafe { GetWindowLongPtrW(entry.info.hwnd, GWL_EXSTYLE) as u32 };
-                (ex & WS_EX_TOPMOST.0) != 0
-            } else {
-                false
-            };
-            let state_badge = if entry.is_tray_hidden {
-                "TRAY".to_string()
-            } else if is_pinned {
-                "PIN".to_string()
-            } else if entry.info.is_minimized {
-                "MIN".to_string()
-            } else {
-                String::new()
-            };
-            rows.push(QuickSwitchRowData {
-                index: idx as i32,
-                title: entry.info.title.clone(),
-                app_name: entry.info.process_name.clone(),
-                icon_rgba: self.icon_cache.get(&hwnd_raw).cloned(),
-                number_label: if idx < 9 {
-                    (idx + 1).to_string()
+    fn push_to_slint(&self, cfg: &WindowKitConfig, reposition_window: bool, items_changed: bool) {
+        let mut rows = if items_changed {
+            Vec::with_capacity(self.filtered.len())
+        } else {
+            Vec::new()
+        };
+        if items_changed {
+            for (idx, entry) in self.filtered.iter().enumerate() {
+                let hwnd_raw = entry.info.hwnd.0 as isize;
+                let is_pinned = if !entry.is_tray_hidden {
+                    let ex = unsafe { GetWindowLongPtrW(entry.info.hwnd, GWL_EXSTYLE) as u32 };
+                    (ex & WS_EX_TOPMOST.0) != 0
+                } else {
+                    false
+                };
+                let state_badge = if entry.is_tray_hidden {
+                    "TRAY".to_string()
+                } else if is_pinned {
+                    "PIN".to_string()
+                } else if entry.info.is_minimized {
+                    "MIN".to_string()
                 } else {
                     String::new()
-                },
-                is_minimized: entry.info.is_minimized,
-                is_pinned,
-                is_tray: entry.is_tray_hidden,
-                state_badge,
-            });
+                };
+                rows.push(QuickSwitchRowData {
+                    index: idx as i32,
+                    title: entry.info.title.clone(),
+                    app_name: entry.info.process_name.clone(),
+                    icon_rgba: self.icon_cache.get(&hwnd_raw).cloned(),
+                    number_label: if idx < 9 {
+                        (idx + 1).to_string()
+                    } else {
+                        String::new()
+                    },
+                    is_minimized: entry.info.is_minimized,
+                    is_pinned,
+                    is_tray: entry.is_tray_hidden,
+                    state_badge,
+                });
+            }
         }
+
+        let (selected_title, selected_app_name, selected_icon_rgba, selected_is_pinned) =
+            if let Some(sel) = self.filtered.get(self.selected_index) {
+                let hwnd_raw = sel.info.hwnd.0 as isize;
+                let pinned = if !sel.is_tray_hidden {
+                    let ex = unsafe { GetWindowLongPtrW(sel.info.hwnd, GWL_EXSTYLE) as u32 };
+                    (ex & WS_EX_TOPMOST.0) != 0
+                } else {
+                    false
+                };
+                (
+                    sel.info.title.clone(),
+                    sel.info.process_name.clone(),
+                    self.icon_cache.get(&hwnd_raw).cloned(),
+                    pinned,
+                )
+            } else {
+                (String::new(), String::new(), None, false)
+            };
 
         let (preview_target_hwnd, preview_target_minimized, preview_target_norm_rect) =
             if let Some(sel) = self.filtered.get(self.selected_index) {
@@ -968,7 +1062,12 @@ impl QuickSwitchManager {
             window_rect: self.window_rect,
             dpi: self.card_dpi,
             items: rows,
+            items_changed,
             selected_index: self.selected_index as i32,
+            selected_title,
+            selected_app_name,
+            selected_icon_rgba,
+            selected_is_pinned,
             filter_text: self.search_query.clone(),
             search_visible: true,
             search_locked: self.search_mode,
@@ -1090,6 +1189,8 @@ impl QuickSwitchManager {
         self.search_query.clear();
         self.search_mode = false;
         self.open = false;
+        self.last_keyboard_nav_at = None;
+        self.last_hover_cursor = None;
         QUICK_SWITCH_IS_OPEN.store(false, Ordering::Release);
         QUICK_SWITCH_SEARCH_LOCKED.store(false, Ordering::Release);
         QUICK_SWITCH_HAS_QUERY.store(false, Ordering::Release);
@@ -1136,7 +1237,8 @@ impl QuickSwitchManager {
         }
         let len = self.filtered.len() as i32;
         self.selected_index = ((self.selected_index as i32 + delta).rem_euclid(len)) as usize;
-        self.push_to_slint(cfg, false);
+        self.mark_keyboard_navigation();
+        self.push_to_slint(cfg, false, false);
     }
 }
 
@@ -1150,6 +1252,59 @@ impl Drop for QuickSwitchManager {
 mod tests {
     use super::*;
     use crate::core::config::WindowKitConfig;
+    use std::time::Duration;
+
+    #[test]
+    fn quick_switch_hover_guard_blocks_stationary_and_debounces_keyboard_nav() {
+        let t0 = Instant::now();
+        let origin = (320, 240);
+
+        // 1. 键盘导航后 250ms 防抖窗口内：即使鼠标大跨度移动也拒绝悬停抢选
+        assert!(!should_accept_mouse_hover_select(
+            Some(t0),
+            Some(origin),
+            (420, 340),
+            t0 + Duration::from_millis(120),
+        ));
+
+        // 2. 越过 250ms 后，但光标纹丝不动（悬停在第 1 行）-> 严禁抢回第 1 项
+        assert!(!should_accept_mouse_hover_select(
+            Some(t0),
+            Some(origin),
+            origin,
+            t0 + Duration::from_millis(600),
+        ));
+
+        // 3. 越过 250ms 后，微抖动 3px (< 4px 阈值) -> 仍拒绝
+        assert!(!should_accept_mouse_hover_select(
+            Some(t0),
+            Some(origin),
+            (323, 242),
+            t0 + Duration::from_millis(600),
+        ));
+
+        // 4. 越过 250ms 且光标真实移动 >= 4px -> 允许鼠标接管选中行
+        assert!(should_accept_mouse_hover_select(
+            Some(t0),
+            Some(origin),
+            (324, 240),
+            t0 + Duration::from_millis(260),
+        ));
+        assert!(should_accept_mouse_hover_select(
+            Some(t0),
+            Some(origin),
+            (320, 244),
+            t0 + Duration::from_millis(300),
+        ));
+
+        // 5. 鼠标已接管（守卫清空）后，跨行微动直接放行零粘滞
+        assert!(should_accept_mouse_hover_select(
+            None,
+            None,
+            (321, 245),
+            t0 + Duration::from_millis(310),
+        ));
+    }
 
     #[test]
     fn quick_switch_v2_defaults_and_bounds_config_parse_cleanly() {

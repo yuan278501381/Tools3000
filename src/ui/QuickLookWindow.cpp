@@ -1325,6 +1325,7 @@ void QuickLookWindow::show(const std::wstring& filePath, HINSTANCE hInstance) {
 
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+        KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
         syncQuickLookWindowTheme(m_hwnd);
         if (!wasAlreadyVisible) {
             updatePlacement();
@@ -1630,10 +1631,10 @@ void QuickLookWindow::hide() {
         clearActiveMediaBinding();
         ShowWindow(m_hwnd, SW_HIDE);
         m_visible = false;
-        if (m_controller) m_controller->put_IsVisible(FALSE);
-        if (m_webView) m_suspendController.requestSuspend(m_webView.Get(), "quicklook");
+        // 延迟 15 秒再冻结 WebView2（保护用户连续按空格预览多个文件的热态瞬开，避免同步 trimWorkingSet 引发软缺页微卡顿）；
+        // 90 秒彻底销毁 WebView2 与异步工作线程释放全部内存。
+        SetTimer(m_hwnd, IDT_DEFERRED_SUSPEND, DEFERRED_SUSPEND_DELAY_MS, nullptr);
         SetTimer(m_hwnd, IDT_IDLE_DESTROY, IDLE_DESTROY_TIMEOUT_MS, nullptr);
-        tools3000::core::WinUtils::trimWorkingSet();
 
         // 若搜索窗口仍处于显示状态（用户从 Alt+Space 搜索窗口唤起预览），关闭预览后自动将焦点归还给搜索窗口
         auto& searchWin = SearchWindow::instance();
@@ -1661,6 +1662,7 @@ void QuickLookWindow::destroy() {
     clearActiveMediaBinding();
     if (m_hwnd && IsWindow(m_hwnd)) {
         KillTimer(m_hwnd, IDT_IDLE_DESTROY);
+        KillTimer(m_hwnd, IDT_DEFERRED_SUSPEND);
     }
     if (m_controller) {
         m_controller->Close();
@@ -1996,10 +1998,20 @@ LRESULT CALLBACK QuickLookWindow::windowProc(HWND hwnd, UINT uMsg, WPARAM wParam
 
     switch (uMsg) {
         case WM_TIMER: {
+            if (wParam == IDT_DEFERRED_SUSPEND) {
+                KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
+                if (self && !self->isVisible()) {
+                    if (self->m_controller) self->m_controller->put_IsVisible(FALSE);
+                    if (self->m_webView) self->m_suspendController.requestSuspend(self->m_webView.Get(), "quicklook");
+                    tools3000::core::WinUtils::scheduleQuietIdleTrim(2500);
+                }
+                return 0;
+            }
             if (wParam == IDT_IDLE_DESTROY) {
                 KillTimer(hwnd, IDT_IDLE_DESTROY);
+                KillTimer(hwnd, IDT_DEFERRED_SUSPEND);
                 if (self && !self->isVisible()) {
-                    LOG_INFO("QuickLookWindow: idle 60s, destroying WebView2 and releasing memory");
+                    LOG_INFO("QuickLookWindow: idle 90s, destroying WebView2 and releasing memory");
                     self->destroy();
                 }
                 return 0;

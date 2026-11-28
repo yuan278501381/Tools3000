@@ -668,8 +668,17 @@ SpotlightOverlay::ViewportBounds SpotlightOverlay::calculateViewportBoundsLocked
 }
 
 void SpotlightOverlay::hideNow() {
+    bool wasVisibleOrActive = false;
     {
         std::lock_guard<std::recursive_mutex> lock(m_mutex);
+        const HWND curHwnd = m_hwnd.load(std::memory_order_acquire);
+        wasVisibleOrActive =
+            (m_animState != AnimState::Idle) ||
+            !m_ripples.empty() ||
+            !m_trail.empty() ||
+            m_visible.load(std::memory_order_acquire) ||
+            (curHwnd && IsWindow(curHwnd) && IsWindowVisible(curHwnd)) ||
+            m_hasDcompSurface.load(std::memory_order_acquire);
         m_animState = AnimState::Idle;
         m_ringOnlyMode = false;
         m_currentAlpha = 0.0f;
@@ -682,8 +691,12 @@ void SpotlightOverlay::hideNow() {
         updateNeedMouseMoveLocked();
     }
 
+    if (!wasVisibleOrActive) {
+        return;
+    }
+
     requestHide();
-    LOG_DEBUG("SpotlightOverlay: 聚光灯已完全隐藏并完成物理内存收缩 (DirectComposition GPU 直通)");
+    LOG_TRACE("SpotlightOverlay: 聚光灯已完全隐藏并完成物理内存收缩 (DirectComposition GPU 直通)");
 }
 
 void SpotlightOverlay::wakeRenderThread() {
